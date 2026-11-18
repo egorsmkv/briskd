@@ -1,6 +1,7 @@
 -module(ircd_account).
 -export([
     add_certfp/2,
+    min_password/0,
     import/1,
     list/0,
     verify/2,
@@ -20,8 +21,16 @@
 %% verifiers (RFC 5802, RFC 7677), which also verify SASL PLAIN.
 
 -define(ITERATIONS, 4096).
+%% Default shortest password; `account_password_min` in configuration overrides it.
 -define(MIN_PASSWORD, 8).
 -define(MAX_PASSWORD, 300).
+
+%% @doc Shortest accepted password in bytes.
+-spec min_password() -> pos_integer().
+min_password() ->
+    maps:get(
+        account_password_min, persistent_term:get({ircd_state, config}, #{}), ?MIN_PASSWORD
+    ).
 
 %% @doc Account names follow the nickname rules of `ircd_wire:nickname/1`.
 -spec valid_name(binary()) -> boolean().
@@ -104,7 +113,7 @@ create(Name, Email, Password, CertFps, Pending) ->
     case
         {
             valid_name(Name),
-            byte_size(Password) >= ?MIN_PASSWORD,
+            byte_size(Password) >= min_password(),
             byte_size(Password) =< ?MAX_PASSWORD,
             lookup(Name)
         }

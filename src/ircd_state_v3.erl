@@ -361,7 +361,12 @@ mask(Client) -> iolist_to_binary(ircd_state_send:prefix(Client)).
 %% @doc `REGISTER <account|*> <email|*> <password>`. Allowed before
 %% registration completes (`before-connect`). Success logs the client in.
 -spec register([binary()], #client{}, binary()) -> ok.
-register([Requested, Email, Password | _], #client{pid = Pid, nick = Nick} = Client, Server) ->
+register([Requested, Email, Password | _], #client{pid = Pid, nick = Current} = Client, Server) ->
+    Nick =
+        case Current of
+            <<"*">> -> ircd_conn:get(Pid, wanted_nick, <<"*">>);
+            _ -> Current
+        end,
     Name =
         case Requested of
             <<"*">> -> Nick;
@@ -375,6 +380,7 @@ register([Requested, Email, Password | _], #client{pid = Pid, nick = Nick} = Cli
     ),
     EmailOk =
         valid_email(Email) andalso (Verification =:= null orelse Email =/= <<"*">>),
+    Held = Nick =/= <<"*">> andalso nick_held_by_other(Name, Pid),
     case {Enabled, Nick, account(Pid), EmailOk} of
         {false, _, _, _} ->
             reg_fail(Pid, <<"TEMPORARILY_UNAVAILABLE">>, Name, <<"Registration is disabled">>);
@@ -382,6 +388,10 @@ register([Requested, Email, Password | _], #client{pid = Pid, nick = Nick} = Cli
             reg_fail(Pid, <<"NEED_NICK">>, <<"*">>, <<"Send NICK before REGISTER">>);
         {_, _, Logged, _} when Logged =/= undefined ->
             reg_fail(Pid, <<"ALREADY_AUTHENTICATED">>, Logged, <<"You are already logged in">>);
+        {_, _, _, _} when Held ->
+            %% No land grabs: an account cannot take a nickname that another
+            %% client is using.
+            reg_fail(Pid, <<"ACCOUNT_EXISTS">>, Name, <<"Account already exists">>);
         {_, _, _, false} ->
             reg_fail(Pid, <<"INVALID_EMAIL">>, Name, <<"Invalid email address">>);
         {true, _, undefined, true} ->
@@ -437,6 +447,15 @@ register(_, Client, Server) ->
     ircd_state_send:numeric(
         Client, Server, <<"461">>, [<<"REGISTER">>], <<"Not enough parameters">>
     ).
+
+%% True when another local or remote client currently uses the nickname.
+nick_held_by_other(Name, Pid) ->
+    case ircd_state_client:find_nick(Name) of
+        #client{pid = Other} when Other =/= Pid ->
+            true;
+        _ ->
+            mnesia:dirty_read(remote_client, ircd_wire:fold(Name)) =/= []
+    end.
 
 reg_fail(Pid, Code, Name, Text) ->
     ircd_state_send:fail(Pid, <<"REGISTER">>, Code, [Name], Text).

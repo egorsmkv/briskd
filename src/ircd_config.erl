@@ -53,6 +53,7 @@ load(Path) ->
             network => Network,
             network_icon => network_icon(maps:get(<<"network_icon">>, Json, null)),
             sts => sts(maps:get(<<"sts">>, Json, null)),
+            account_password_min => password_min(maps:get(<<"account_password_min">>, Json, 8)),
             account_registration => boolean_setting(
                 account_registration, maps:get(<<"account_registration">>, Json, true)
             ),
@@ -154,6 +155,9 @@ sni_hosts(Entries) when is_list(Entries) ->
          || Entry <- Entries
         ]}
     ].
+
+password_min(Value) when is_integer(Value), Value >= 1, Value =< 300 -> Value;
+password_min(Value) -> erlang:error({invalid_account_password_min, Value}).
 
 boolean_setting(_Key, Value) when is_boolean(Value) -> Value;
 boolean_setting(Key, Value) -> erlang:error({invalid_boolean, Key, Value}).

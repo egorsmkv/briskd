@@ -313,8 +313,9 @@ value(<<"draft/account-registration">>, _Info) ->
                     _ -> <<",email-required">>
                 end,
             {ok,
-                <<"before-connect,custom-account-name", Email/binary,
-                    ",min-password-length=8,max-password-length=300">>};
+                <<"before-connect,custom-account-name", Email/binary, ",min-password-length=",
+                    (integer_to_binary(ircd_account:min_password()))/binary,
+                    ",max-password-length=300">>};
         false ->
             error
     end;

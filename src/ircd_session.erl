@@ -605,7 +605,7 @@ receive_data(Packet, Kind, Socket, Peer, Buffer, Role) ->
             case consume(Data, {Kind, Socket, Peer, <<>>, Role}) of
                 {ok, State} -> active(State);
                 {starttls, State} -> starttls(State);
-                quit -> {stop, normal, {Kind, Socket, Peer, <<>>}};
+                quit -> flush_and_stop({Kind, Socket, Peer, <<>>, Role});
                 error -> {stop, normal, {Kind, Socket, Peer, <<>>}}
             end;
         error ->
@@ -626,4 +626,24 @@ discard(Packet) ->
             end;
         _ ->
             {ok, Packet}
+    end.
+
+%% Replies the state process queued before a QUIT (including ERROR) reach the
+%% socket before it closes, so a client that pipelines commands with QUIT
+%% still gets every answer.
+flush_and_stop({Kind, Socket, Peer, _, _}) ->
+    Module = transport(Kind),
+    flush_outgoing(Module, Socket),
+    {stop, normal, {Kind, Socket, Peer, <<>>}}.
+
+flush_outgoing(Module, Socket) ->
+    receive
+        {irc, Line} ->
+            _ = Module:send(Socket, outgoing(Line)),
+            flush_outgoing(Module, Socket);
+        {irc_close, Line} ->
+            _ = Module:send(Socket, outgoing(Line)),
+            ok
+    after 0 ->
+        ok
     end.

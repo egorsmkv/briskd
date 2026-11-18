@@ -6,6 +6,7 @@
   "tls_port": null,
   "ws_port": 8080,
   "network": "DevNet",
+  "account_password_min": 4,
   "mnesia_dir": "/var/lib/ircd/mnesia",
   "retention": "transient",
   "history_limit": 100,

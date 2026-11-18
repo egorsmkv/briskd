@@ -1,0 +1,14 @@
+{
+  "name": "My.Little.Server",
+  "network": "IRCTest",
+  "log_level": "warning",
+  "bind": "0.0.0.0",
+  "tcp_port": 6667,
+  "tls_port": null,
+  "mnesia_dir": "/tmp/ircd-irctest-db",
+  "retention": "transient",
+  "history_limit": 100,
+  "account_password_min": 4,
+  "operators": [{"name": "operuser", "password": "operpassword"}],
+  "max_clients": 10000
+}

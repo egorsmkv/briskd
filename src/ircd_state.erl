@@ -1230,10 +1230,12 @@ change_nick(Nick, Client, Server) ->
         {false, _, _, _} ->
             ircd_state_send:numeric(Client, Server, <<"432">>, [Nick], <<"Erroneous nickname">>);
         {true, _, #client{pid = Pid}, _} when Pid =/= Client#client.pid ->
+            remember_wanted_nick(Client, Nick),
             ircd_state_send:numeric(
                 Client, Server, <<"433">>, [Nick], <<"Nickname is already in use">>
             );
         {true, _, _, true} ->
+            remember_wanted_nick(Client, Nick),
             ircd_state_send:numeric(
                 Client, Server, <<"433">>, [Nick], <<"Nickname is already in use">>
             );
@@ -1270,6 +1272,13 @@ change_nick(Nick, Client, Server) ->
                     ok
             end
     end.
+
+%% Before registration, a refused NICK is remembered so `REGISTER *` can name
+%% the nickname the client asked for (draft/account-registration).
+remember_wanted_nick(#client{pid = Pid, nick = <<"*">>}, Nick) ->
+    ircd_conn:put(Pid, wanted_nick, ircd_wire:retain(Nick));
+remember_wanted_nick(_Client, _Nick) ->
+    ok.
 
 count_command(Pid, Command, MessageBytes) ->
     case supported_command(Command) of
