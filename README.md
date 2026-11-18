@@ -1,7 +1,8 @@
 # ircd
 
 An IRC server written in Erlang/OTP, with TCP and optional TLS listeners,
-Mnesia-backed state, and support for direct server links.
+Mnesia-backed state, and server links that carry bursts, multi-hop routing,
+and netsplit cleanup.
 
 This is an implementation of the RFC 1459 and RFC 2810–2813 behavior listed in
 the [roadmap](ROADMAP.md). It does not implement IRCv3 message tags, labeled
