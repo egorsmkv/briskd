@@ -7,6 +7,7 @@ start(_, _) ->
     Path = os:getenv("IRCD_CONFIG", "config/ircd.json"),
     case ircd_config:load(Path) of
         {ok, Config} ->
+            #{level := Primary} = logger:get_primary_config(),
             {ok, Previous} = logger:get_handler_config(default),
             Formatter =
                 case maps:get(log_format, Config) of
@@ -14,26 +15,28 @@ start(_, _) ->
                     <<"text">> -> {flatlog, #{template => [time, " ", level, " ", msg]}}
                 end,
             ok = logger:update_handler_config(default, formatter, Formatter),
-            ok = logger:update_handler_config(default, level, maps:get(level, Config)),
+            ok = ircd_log:apply_level(maps:get(level, Config)),
             case start_mnesia(maps:get(mnesia_dir, Config)) of
                 {ok, StartedMnesia} ->
                     case ircd_sup:start_link(Config) of
                         {ok, Pid} ->
-                            {ok, Pid, {Previous, StartedMnesia}};
+                            {ok, Pid, {Previous, Primary, StartedMnesia}};
                         Error ->
-                            stop({Previous, StartedMnesia}),
+                            stop({Previous, Primary, StartedMnesia}),
                             Error
                     end;
                 {error, Reason} ->
-                    logger:update_handler_config(default, Previous),
+                    ok = logger:set_primary_config(level, Primary),
+                    ok = logger:update_handler_config(default, Previous),
                     {error, Reason}
             end;
         Error ->
             Error
     end.
 
-%% @doc Restore the default logger formatter when the application stops.
-stop({Previous, StartedMnesia}) ->
+%% @doc Restore the logger level and formatter from before startup.
+stop({Previous, Primary, StartedMnesia}) ->
+    ok = logger:set_primary_config(level, Primary),
     ok = logger:update_handler_config(default, Previous),
     case StartedMnesia of
         true -> application:stop(mnesia);

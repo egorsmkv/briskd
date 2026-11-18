@@ -48,6 +48,40 @@ retention_setting_test() ->
     {ok, Named} = ircd_config:load(Explicit),
     ?assertEqual(transient, maps:get(retention, Named)).
 
+log_level_test() ->
+    Dir = filename:join(
+        "/tmp", "ircd-config-log-" ++ integer_to_list(erlang:unique_integer([positive]))
+    ),
+    ok = filelib:ensure_dir(filename:join(Dir, "x")),
+    lists:foreach(
+        fun({Name, Expected}) ->
+            Path = filename:join(Dir, Name ++ ".json"),
+            ok = file:write_file(
+                Path, <<"{\"log_level\":\"", (list_to_binary(Name))/binary, "\"}">>
+            ),
+            {ok, Config} = ircd_config:load(Path),
+            ?assertEqual(Expected, maps:get(level, Config))
+        end,
+        [{"debug", debug}, {"info", info}, {"error", error}, {"trace", trace}]
+    ),
+    Bad = filename:join(Dir, "bad.json"),
+    ok = file:write_file(Bad, <<"{\"log_level\":\"verbose\"}">>),
+    ?assertMatch(
+        {error, {invalid_config, _, {invalid_log_level, <<"verbose">>}}}, ircd_config:load(Bad)
+    ),
+    #{level := Primary} = logger:get_primary_config(),
+    {ok, #{level := Handler}} = logger:get_handler_config(default),
+    try
+        ok = ircd_log:apply_level(trace),
+        ?assertMatch(#{level := all}, logger:get_primary_config()),
+        ?assertMatch({ok, #{level := all}}, logger:get_handler_config(default)),
+        ok = ircd_log:apply_level(error),
+        ?assertMatch(#{level := error}, logger:get_primary_config())
+    after
+        ok = logger:set_primary_config(level, Primary),
+        ok = logger:update_handler_config(default, level, Handler)
+    end.
+
 predefined_lists_test() ->
     Dir = filename:join(
         "/tmp", "ircd-config-lists-" ++ integer_to_list(erlang:unique_integer([positive]))

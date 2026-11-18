@@ -341,7 +341,7 @@ apply_rehash(Config) ->
             <<"text">> -> {flatlog, #{template => [time, " ", level, " ", msg]}}
         end,
     ok = logger:update_handler_config(default, formatter, Formatter),
-    ok = logger:update_handler_config(default, level, maps:get(level, Config)).
+    ok = ircd_log:apply_level(maps:get(level, Config)).
 
 admin(Params, Client, Server) ->
     case admin_target(Params, Server) of

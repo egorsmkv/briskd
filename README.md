@@ -93,7 +93,7 @@ to the process working directory unless they are absolute.
 | `tcp_port` | `6667` | TCP port; `null` disables TCP |
 | `tls_port` | `null` | Direct TLS port; `null` disables TLS |
 | `certfile`, `keyfile` | `null` | PEM certificate and private key for TLS |
-| `log_level` | `info` | OTP logger level |
+| `log_level` | `info` | `debug`, `info`, `notice`, `warning`, `error`, `critical`, `alert`, `emergency`, or `trace`. `trace` shows every event |
 | `log_format` | `json` | `json` or `text` |
 | `max_clients` | `10000` | Maximum active client sessions |
 | `client_password` | `null` | Optional password required with IRC `PASS` before registration |

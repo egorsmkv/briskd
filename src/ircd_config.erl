@@ -27,8 +27,7 @@ load(Path) ->
         TLS = port(maps:get(<<"tls_port">>, Json, null)),
         true = TCP =/= null orelse TLS =/= null,
         TLSOptions = tls_options(TLS, Json),
-        Level = binary_to_existing_atom(maps:get(<<"log_level">>, Json, <<"info">>)),
-        true = lists:member(Level, [debug, info, notice, warning, error, critical, alert, emergency]),
+        Level = log_level(maps:get(<<"log_level">>, Json, <<"info">>)),
         Format = maps:get(<<"log_format">>, Json, <<"json">>),
         true = lists:member(Format, [<<"json">>, <<"text">>]),
         MaxClients = positive_limit(maps:get(<<"max_clients">>, Json, 10000)),
@@ -72,6 +71,19 @@ load(Path) ->
 
 port(null) -> null;
 port(Port) when is_integer(Port), Port >= 0, Port =< 65535 -> Port.
+
+%% Logger severity. `trace` is more verbose than `debug`. The other atoms are
+%% OTP logger levels. An unknown value is rejected before the server starts.
+log_level(<<"trace">>) -> trace;
+log_level(<<"debug">>) -> debug;
+log_level(<<"info">>) -> info;
+log_level(<<"notice">>) -> notice;
+log_level(<<"warning">>) -> warning;
+log_level(<<"error">>) -> error;
+log_level(<<"critical">>) -> critical;
+log_level(<<"alert">>) -> alert;
+log_level(<<"emergency">>) -> emergency;
+log_level(Value) -> erlang:error({invalid_log_level, Value}).
 
 tls_options(null, _) ->
     [];

@@ -1,5 +1,18 @@
 -module(ircd_log).
--export([format/2]).
+-export([apply_level/1, format/2]).
+
+%% @doc Apply a configured log level to the primary filter and the default handler.
+%% `trace` is stored in the config map and installed as OTP level `all`, which
+%% passes every event, including `debug`.
+-spec apply_level(trace | debug | info | notice | warning | error | critical | alert | emergency) ->
+    ok.
+apply_level(Level) ->
+    LoggerLevel = logger_level(Level),
+    ok = logger:set_primary_config(level, LoggerLevel),
+    ok = logger:update_handler_config(default, level, LoggerLevel).
+
+logger_level(trace) -> all;
+logger_level(Level) -> Level.
 
 %% @doc Format an OTP Logger event as one newline-terminated JSON object.
 %% Flatlog renders the message field; invalid Unicode falls back to Erlang term text.
