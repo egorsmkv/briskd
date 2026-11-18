@@ -528,7 +528,7 @@ remote_source(Peer, Prefix) ->
 
 update_remote_topic(Peer, Prefix, Name, Topic) ->
     Key = ircd_wire:fold(Name),
-    case {ircd_wire:channel(Name), ircd_wire:fold(Prefix) =:= ircd_wire:fold(Peer)} of
+    case {ircd_wire:channel(Name), trusted_server(Peer, Prefix)} of
         {false, _} ->
             {error, invalid_channel};
         {true, true} ->
@@ -587,6 +587,20 @@ local_channel_mode(Key, Mode) ->
     case mnesia:dirty_read(channel, Key) of
         [#channel{flags = Flags}] -> maps:is_key(Mode, Flags);
         [] -> false
+    end.
+
+%% True when Prefix is the adjacent peer or a known server reached through it.
+trusted_server(Peer, Prefix) ->
+    case ircd_wire:fold(Prefix) =:= ircd_wire:fold(Peer) of
+        true ->
+            true;
+        false ->
+            case mnesia:dirty_read(known_server, ircd_wire:fold(Prefix)) of
+                [#known_server{adjacent = Adjacent}] ->
+                    ircd_wire:fold(Adjacent) =:= ircd_wire:fold(Peer);
+                [] ->
+                    false
+            end
     end.
 
 rename_remote_memberships(Peer, OldKey, NewKey) ->
@@ -847,7 +861,9 @@ update_remote_modes(Peer, Prefix, Name, ModeString, Args) ->
 
 update_remote_channel_modes(Peer, Prefix, Name, ModeString, Args) ->
     Key = ircd_wire:fold(Name),
-    TrustedServer = ircd_wire:fold(Prefix) =:= ircd_wire:fold(Peer),
+    %% A relayed MODE keeps the upstream server prefix. Trust that prefix when
+    %% the named server is this link or was introduced through it.
+    TrustedServer = trusted_server(Peer, Prefix),
     Channel =
         case mnesia:dirty_read(remote_channel, Key) of
             [ExistingRecord] -> ExistingRecord;
