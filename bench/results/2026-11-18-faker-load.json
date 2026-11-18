@@ -1,0 +1,623 @@
+{
+  "when": "2026-11-18T19:19:02.742018+00:00",
+  "target": "127.0.0.1:6667",
+  "python": "3.15.2",
+  "host": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "faker": "40.54.0",
+  "seed": 20261118,
+  "duration_s": 5,
+  "messages_per_client_s": 10,
+  "tls_fraction": 0,
+  "warmup": "registration and JOIN; no traffic warmup",
+  "environment": "linux aarch64 CPUs=2 Memory=4195151872",
+  "otp": "29.1.2",
+  "limitations": [
+    "Development server; host generator shares resources with Docker.",
+    "Scheduler utilization, Erlang mailbox lengths, GC and kernel socket drops were not instrumented.",
+    "No code/configuration changes or before/after optimization comparison; repeated identical workloads only.",
+    "Delivery latency is per recipient, from writer enqueue to reader processing; includes generator scheduling.",
+    "Docker CPU/memory are coarse container samples; no capacity or saturation claim."
+  ],
+  "runs": [
+    {
+      "clients": 10,
+      "repeat": 1,
+      "channel": "#load0f5e10r1",
+      "sent": 500,
+      "expected_deliveries": 4500,
+      "received_deliveries": 4500,
+      "missing_deliveries": 0,
+      "duplicates": 0,
+      "unexpected": 0,
+      "disconnects": 0,
+      "errors": [],
+      "error_numerics": {
+        "422": 10
+      },
+      "elapsed_s": 4.992575000040233,
+      "send_elapsed_s": 4.991173125046771,
+      "messages_per_s": 100.17684970511108,
+      "deliveries_per_s": 901.3384876469029,
+      "latency_samples": 4500,
+      "delivery_latency": {
+        "p50_ms": 1.532,
+        "p95_ms": 2.969,
+        "p99_ms": 5.586,
+        "p99.9_ms": 12.883
+      },
+      "registration_latency": {
+        "p50_ms": 1.536,
+        "p95_ms": 2.124,
+        "p99_ms": 2.124,
+        "p99.9_ms": 2.124
+      },
+      "client_wire_bytes": {
+        "min": 88,
+        "max": 213,
+        "mean": 146.172
+      },
+      "resource_samples": [
+        {
+          "elapsed_s": 0.537,
+          "BlockIO": "1.67GB / 4.89MB",
+          "CPUPerc": "13.69%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.17%",
+          "MemUsage": "88.82MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "22.8MB / 77MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 1.581,
+          "BlockIO": "1.67GB / 4.89MB",
+          "CPUPerc": "8.74%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.18%",
+          "MemUsage": "89.46MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "22.8MB / 77.2MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 2.612,
+          "BlockIO": "1.67GB / 4.89MB",
+          "CPUPerc": "10.88%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.18%",
+          "MemUsage": "89.35MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "22.9MB / 77.5MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 3.661,
+          "BlockIO": "1.67GB / 4.89MB",
+          "CPUPerc": "12.22%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.18%",
+          "MemUsage": "89.34MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "23MB / 77.7MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 4.707,
+          "BlockIO": "1.67GB / 5.31MB",
+          "CPUPerc": "10.82%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.18%",
+          "MemUsage": "89.32MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "23.1MB / 77.9MB",
+          "PIDs": "28"
+        }
+      ]
+    },
+    {
+      "clients": 10,
+      "repeat": 2,
+      "channel": "#load494810r2",
+      "sent": 500,
+      "expected_deliveries": 4500,
+      "received_deliveries": 4500,
+      "missing_deliveries": 0,
+      "duplicates": 0,
+      "unexpected": 0,
+      "disconnects": 0,
+      "errors": [],
+      "error_numerics": {
+        "422": 10
+      },
+      "elapsed_s": 4.993125583976507,
+      "send_elapsed_s": 4.990955833985936,
+      "messages_per_s": 100.18121110093738,
+      "deliveries_per_s": 901.2390984999453,
+      "latency_samples": 4500,
+      "delivery_latency": {
+        "p50_ms": 1.743,
+        "p95_ms": 3.29,
+        "p99_ms": 6.422,
+        "p99.9_ms": 35.184
+      },
+      "registration_latency": {
+        "p50_ms": 1.031,
+        "p95_ms": 1.823,
+        "p99_ms": 1.823,
+        "p99.9_ms": 1.823
+      },
+      "client_wire_bytes": {
+        "min": 88,
+        "max": 213,
+        "mean": 146.172
+      },
+      "resource_samples": [
+        {
+          "elapsed_s": 0.535,
+          "BlockIO": "1.67GB / 5.56MB",
+          "CPUPerc": "11.30%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.19%",
+          "MemUsage": "89.52MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "23.2MB / 78.1MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 1.582,
+          "BlockIO": "1.67GB / 5.56MB",
+          "CPUPerc": "14.10%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.18%",
+          "MemUsage": "89.43MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "23.3MB / 78.4MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 2.623,
+          "BlockIO": "1.67GB / 5.56MB",
+          "CPUPerc": "13.54%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.19%",
+          "MemUsage": "89.58MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "23.3MB / 78.6MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 3.671,
+          "BlockIO": "1.67GB / 5.56MB",
+          "CPUPerc": "11.76%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.18%",
+          "MemUsage": "89.42MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "23.4MB / 78.8MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 4.72,
+          "BlockIO": "1.67GB / 5.56MB",
+          "CPUPerc": "13.47%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.18%",
+          "MemUsage": "89.35MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "23.5MB / 79MB",
+          "PIDs": "28"
+        }
+      ]
+    },
+    {
+      "clients": 25,
+      "repeat": 1,
+      "channel": "#loadd88c25r1",
+      "sent": 1250,
+      "expected_deliveries": 30000,
+      "received_deliveries": 30000,
+      "missing_deliveries": 0,
+      "duplicates": 0,
+      "unexpected": 0,
+      "disconnects": 0,
+      "errors": [],
+      "error_numerics": {
+        "422": 25
+      },
+      "elapsed_s": 4.9985227909637615,
+      "send_elapsed_s": 4.99648737499956,
+      "messages_per_s": 250.17575472210814,
+      "deliveries_per_s": 6001.7731747134285,
+      "latency_samples": 30000,
+      "delivery_latency": {
+        "p50_ms": 1.368,
+        "p95_ms": 2.527,
+        "p99_ms": 4.594,
+        "p99.9_ms": 9.232
+      },
+      "registration_latency": {
+        "p50_ms": 1.078,
+        "p95_ms": 2.047,
+        "p99_ms": 2.281,
+        "p99.9_ms": 2.281
+      },
+      "client_wire_bytes": {
+        "min": 83,
+        "max": 220,
+        "mean": 145.2456
+      },
+      "resource_samples": [
+        {
+          "elapsed_s": 0.537,
+          "BlockIO": "1.67GB / 5.78MB",
+          "CPUPerc": "63.27%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.18%",
+          "MemUsage": "89.44MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "23.8MB / 79.9MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 1.572,
+          "BlockIO": "1.67GB / 5.78MB",
+          "CPUPerc": "55.08%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.19%",
+          "MemUsage": "89.55MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "24.3MB / 81.5MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 2.622,
+          "BlockIO": "1.67GB / 5.78MB",
+          "CPUPerc": "63.25%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.18%",
+          "MemUsage": "89.33MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "24.7MB / 83MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 3.664,
+          "BlockIO": "1.67GB / 5.78MB",
+          "CPUPerc": "52.34%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.18%",
+          "MemUsage": "89.35MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "25.2MB / 84.5MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 4.707,
+          "BlockIO": "1.67GB / 6.04MB",
+          "CPUPerc": "65.08%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.23%",
+          "MemUsage": "91.31MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "25.7MB / 86MB",
+          "PIDs": "28"
+        }
+      ]
+    },
+    {
+      "clients": 25,
+      "repeat": 2,
+      "channel": "#loadf94d25r2",
+      "sent": 1250,
+      "expected_deliveries": 30000,
+      "received_deliveries": 30000,
+      "missing_deliveries": 0,
+      "duplicates": 0,
+      "unexpected": 0,
+      "disconnects": 0,
+      "errors": [],
+      "error_numerics": {
+        "422": 25
+      },
+      "elapsed_s": 4.998163875017781,
+      "send_elapsed_s": 4.996370667009614,
+      "messages_per_s": 250.18159846577984,
+      "deliveries_per_s": 6002.204159401092,
+      "latency_samples": 30000,
+      "delivery_latency": {
+        "p50_ms": 1.318,
+        "p95_ms": 2.791,
+        "p99_ms": 22.328,
+        "p99.9_ms": 70.31
+      },
+      "registration_latency": {
+        "p50_ms": 1.088,
+        "p95_ms": 1.695,
+        "p99_ms": 2.357,
+        "p99.9_ms": 2.357
+      },
+      "client_wire_bytes": {
+        "min": 83,
+        "max": 220,
+        "mean": 145.2456
+      },
+      "resource_samples": [
+        {
+          "elapsed_s": 0.527,
+          "BlockIO": "1.67GB / 6.04MB",
+          "CPUPerc": "33.87%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.18%",
+          "MemUsage": "89.35MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "26.1MB / 87.3MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 1.575,
+          "BlockIO": "1.67GB / 6.33MB",
+          "CPUPerc": "35.18%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.18%",
+          "MemUsage": "89.32MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "26.6MB / 88.8MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 2.619,
+          "BlockIO": "1.67GB / 6.33MB",
+          "CPUPerc": "34.31%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.19%",
+          "MemUsage": "89.67MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "27MB / 90.3MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 3.656,
+          "BlockIO": "1.67GB / 6.33MB",
+          "CPUPerc": "43.03%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.19%",
+          "MemUsage": "89.52MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "27.5MB / 91.9MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 4.687,
+          "BlockIO": "1.67GB / 6.33MB",
+          "CPUPerc": "34.13%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.19%",
+          "MemUsage": "89.54MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "27.9MB / 93.4MB",
+          "PIDs": "28"
+        }
+      ]
+    },
+    {
+      "clients": 50,
+      "repeat": 1,
+      "channel": "#load966150r1",
+      "sent": 2500,
+      "expected_deliveries": 122500,
+      "received_deliveries": 122500,
+      "missing_deliveries": 0,
+      "duplicates": 0,
+      "unexpected": 0,
+      "disconnects": 0,
+      "errors": [],
+      "error_numerics": {
+        "422": 50
+      },
+      "elapsed_s": 4.999602708034217,
+      "send_elapsed_s": 4.998211916012224,
+      "messages_per_s": 500.17887236654053,
+      "deliveries_per_s": 24501.946885328714,
+      "latency_samples": 122500,
+      "delivery_latency": {
+        "p50_ms": 0.952,
+        "p95_ms": 2.565,
+        "p99_ms": 34.731,
+        "p99.9_ms": 63.4
+      },
+      "registration_latency": {
+        "p50_ms": 0.842,
+        "p95_ms": 1.289,
+        "p99_ms": 1.357,
+        "p99.9_ms": 1.357
+      },
+      "client_wire_bytes": {
+        "min": 82,
+        "max": 222,
+        "mean": 145.4084
+      },
+      "resource_samples": [
+        {
+          "elapsed_s": 0.53,
+          "BlockIO": "1.67GB / 6.66MB",
+          "CPUPerc": "89.74%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.19%",
+          "MemUsage": "89.62MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "29MB / 97.1MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 1.562,
+          "BlockIO": "1.67GB / 7.01MB",
+          "CPUPerc": "77.44%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.21%",
+          "MemUsage": "90.57MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "30.8MB / 103MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 2.591,
+          "BlockIO": "1.67GB / 7.01MB",
+          "CPUPerc": "84.52%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.21%",
+          "MemUsage": "90.38MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "32.5MB / 109MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 3.627,
+          "BlockIO": "1.67GB / 7.27MB",
+          "CPUPerc": "102.28%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.26%",
+          "MemUsage": "92.45MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "34.3MB / 116MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 4.659,
+          "BlockIO": "1.67GB / 7.27MB",
+          "CPUPerc": "90.50%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.25%",
+          "MemUsage": "92.33MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "36MB / 122MB",
+          "PIDs": "28"
+        }
+      ]
+    },
+    {
+      "clients": 50,
+      "repeat": 2,
+      "channel": "#loada10450r2",
+      "sent": 2500,
+      "expected_deliveries": 122500,
+      "received_deliveries": 122500,
+      "missing_deliveries": 0,
+      "duplicates": 0,
+      "unexpected": 0,
+      "disconnects": 0,
+      "errors": [],
+      "error_numerics": {
+        "422": 50
+      },
+      "elapsed_s": 5.000102665973827,
+      "send_elapsed_s": 4.998283749970142,
+      "messages_per_s": 500.17168393349704,
+      "deliveries_per_s": 24499.49694705753,
+      "latency_samples": 122500,
+      "delivery_latency": {
+        "p50_ms": 0.964,
+        "p95_ms": 1.665,
+        "p99_ms": 5.002,
+        "p99.9_ms": 25.603
+      },
+      "registration_latency": {
+        "p50_ms": 0.867,
+        "p95_ms": 1.782,
+        "p99_ms": 2.184,
+        "p99.9_ms": 2.184
+      },
+      "client_wire_bytes": {
+        "min": 82,
+        "max": 222,
+        "mean": 145.4084
+      },
+      "resource_samples": [
+        {
+          "elapsed_s": 0.528,
+          "BlockIO": "1.67GB / 7.81MB",
+          "CPUPerc": "84.78%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.26%",
+          "MemUsage": "92.5MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "37.7MB / 127MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 1.558,
+          "BlockIO": "1.67GB / 7.81MB",
+          "CPUPerc": "103.51%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.26%",
+          "MemUsage": "92.46MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "39.4MB / 133MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 2.595,
+          "BlockIO": "1.67GB / 7.97MB",
+          "CPUPerc": "90.02%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.26%",
+          "MemUsage": "92.59MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "41.2MB / 139MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 3.628,
+          "BlockIO": "1.67GB / 7.97MB",
+          "CPUPerc": "102.69%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.26%",
+          "MemUsage": "92.47MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "43MB / 145MB",
+          "PIDs": "28"
+        },
+        {
+          "elapsed_s": 4.655,
+          "BlockIO": "1.67GB / 8.24MB",
+          "CPUPerc": "93.64%",
+          "Container": "irc-server-ircd-dev-1",
+          "ID": "68cf1e6f1d05",
+          "MemPerc": "2.30%",
+          "MemUsage": "94.34MiB / 4GiB",
+          "Name": "irc-server-ircd-dev-1",
+          "NetIO": "44.7MB / 152MB",
+          "PIDs": "28"
+        }
+      ]
+    }
+  ]
+}
