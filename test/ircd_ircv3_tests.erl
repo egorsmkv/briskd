@@ -19,7 +19,8 @@ ircv3() ->
     Port = listener_port(),
     try
         registration_and_labels(Port),
-        tags_and_link(Port)
+        tags_and_link(Port),
+        labeled_server_notice(Port)
     after
         _ = application:stop(ircd),
         os:unsetenv("IRCD_CONFIG")
@@ -220,6 +221,36 @@ tags_and_link(Port) ->
     gen_tcp:close(Carol),
     gen_tcp:close(Peer).
 
+labeled_server_notice(Port) ->
+    Oper = negotiate(Port, <<"oper">>, <<"Oper">>),
+    send(Oper, <<"OPER oper opersecret">>),
+    ?assert(has(collect(Oper), <<" 381 ">>)),
+    send(Oper, <<"@label=conn CONNECT peer.test">>),
+    Connected = collect(Oper),
+    ?assertEqual(1, count_lines(Connected, <<"@label=conn">>)),
+    ?assert(has(Connected, <<"NOTICE oper :Connect attempt for peer.test">>)),
+    ?assertNot(has(Connected, <<" ACK">>)),
+    ?assertNot(has(Connected, <<"BATCH">>)),
+    Peer = handshake(Port, <<"peer.test">>),
+    _ = collect_quiet(Oper),
+    send(Oper, <<"@label=sq SQUIT peer.test">>),
+    Squitted = collect(Oper),
+    ?assertEqual(1, count_lines(Squitted, <<"@label=sq">>)),
+    ?assert(has(Squitted, <<"NOTICE oper :SQUIT peer.test">>)),
+    ?assertNot(has(Squitted, <<" ACK">>)),
+    ?assertNot(has(Squitted, <<"BATCH">>)),
+    send(Oper, <<"@label=me PRIVMSG oper :echo">>),
+    Echo = collect(Oper),
+    EchoLines = [Line || Line <- binary:split(Echo, <<"\r\n">>, [global]), Line =/= <<>>],
+    Priv = [Line || Line <- EchoLines, has(Line, <<"PRIVMSG oper :echo">>)],
+    Acks = [Line || Line <- EchoLines, has(Line, <<" ACK">>)],
+    ?assertEqual(1, length(Priv)),
+    ?assertNot(has(hd(Priv), <<"label=">>)),
+    ?assertEqual(1, length(Acks)),
+    ?assert(has(hd(Acks), <<"@label=me">>)),
+    gen_tcp:close(Peer),
+    gen_tcp:close(Oper).
+
 negotiate(Port, Nick, Real) ->
     Sock = connect(Port),
     send(Sock, <<"CAP LS 302">>),
@@ -245,6 +276,7 @@ config(Db) ->
         <<"\"mnesia_dir\":\"">>,
         list_to_binary(Db),
         <<"\",">>,
+        <<"\"operators\":[{\"name\":\"oper\",\"password\":\"opersecret\"}],">>,
         <<"\"server_links\":[">>,
         <<"{\"name\":\"peer.test\",\"host\":\"127.0.0.1\",\"port\":1,">>,
         <<"\"password\":\"linksecret\",\"tls\":false}]">>,

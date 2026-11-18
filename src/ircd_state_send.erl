@@ -65,7 +65,7 @@ end_label(Server) ->
 send(Pid, Prefix, Command, Middle, Tail, Tags) ->
     case get(ircd_label) of
         {Pid, Label, _Acc} when is_binary(Label) ->
-            case own_message(Command) of
+            case client_echo(Command, Prefix) of
                 true -> relay(Pid, Prefix, Command, Middle, Tail, Tags);
                 false -> buffer_label(Prefix, Command, Middle, Tail, Tags)
             end;
@@ -103,10 +103,19 @@ deliver(Pid, Prefix, Command, Middle, Tail, Tags) ->
     ircd_state_client:update_connection_stats(Pid, sent_messages, sent_bytes, iolist_size(Line)),
     ok.
 
-own_message(<<"PRIVMSG">>) -> true;
-own_message(<<"NOTICE">>) -> true;
-own_message(<<"TAGMSG">>) -> true;
-own_message(_) -> false.
+%% A copy of the sender's own PRIVMSG, NOTICE, or TAGMSG is not a labeled reply.
+%% Those copies use a nick!user@host prefix. A server-prefixed NOTICE, including
+%% the SQUIT and CONNECT results, is the command's reply and keeps the label.
+client_echo(Command, Prefix) ->
+    message_command(Command) andalso user_prefix(iolist_to_binary(Prefix)).
+
+message_command(<<"PRIVMSG">>) -> true;
+message_command(<<"NOTICE">>) -> true;
+message_command(<<"TAGMSG">>) -> true;
+message_command(_) -> false.
+
+user_prefix(Prefix) ->
+    binary:match(Prefix, <<"!">>) =/= nomatch.
 
 batch_ref() ->
     Next =
