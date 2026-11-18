@@ -3,9 +3,9 @@
 An IRC server written in Erlang/OTP, with TCP and optional TLS listeners,
 Mnesia-backed state, and support for direct server links.
 
-This is an actively developed implementation of selected parts of RFC 1459 and
-RFC 2810–2813. It is not a complete implementation of those specifications.
-See the [roadmap](ROADMAP.md) for current coverage and unfinished work.
+This is an implementation of the RFC 1459 and RFC 2810–2813 behavior listed in
+the [roadmap](ROADMAP.md). It does not implement IRCv3 message tags, labeled
+responses, or capability families.
 
 ## Features
 
@@ -13,8 +13,8 @@ See the [roadmap](ROADMAP.md) for current coverage and unfinished work.
 - Client registration, messaging, user queries, and common channel commands.
 - Channel modes, access lists, invitations, safe channels, and anonymous
   channels.
-- Optional direct server-to-server links, including state bursts and message
-  routing between directly connected servers.
+- Server-to-server links, including bursts, multi-hop routing, invitations,
+  and netsplit cleanup.
 - Mnesia disk-copy tables, with persistence for WHOWAS history and safe-channel state.
 - JSON logging by default, with text logging available in configuration.
 
