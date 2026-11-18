@@ -25,6 +25,10 @@ run:
 run-config config:
     IRCD_CONFIG={{config}} rebar3 shell
 
+# Check for undefined and deprecated calls with xref.
+xref:
+    rebar3 xref
+
 # Run the Erlang unit test suite.
 test:
     rebar3 eunit

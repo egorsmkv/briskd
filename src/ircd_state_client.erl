@@ -1,6 +1,7 @@
 -module(ircd_state_client).
 -export([
     client/1,
+    identified/1,
     connection_stats/1,
     disconnect/3,
     find_nick/1,
@@ -24,7 +25,15 @@ client(Pid) ->
     [Client] = mnesia:dirty_read(client, Pid),
     Client.
 
-ready(#client{nick = Nick, user = User, pass = Pass}) ->
+%% A client is registered once NICK, USER (and PASS when required) are done
+%% and the welcome has been sent. While CAP negotiation holds the welcome
+%% (IRCv3: registration MUST NOT complete before CAP END) the client is not
+%% ready: commands that need registration get 451 and peers do not see it.
+ready(#client{pid = Pid} = Client) ->
+    identified(Client) andalso ircd_cap:welcomed(Pid).
+
+%% @doc NICK, USER, and any required PASS have been accepted.
+identified(#client{nick = Nick, user = User, pass = Pass}) ->
     HasIdentity = Nick =/= <<"*">> andalso User =/= undefined,
     Password = persistent_term:get({ircd_state, client_password}, null),
     Authenticated = Password =:= null orelse Pass =:= true,
@@ -64,9 +73,8 @@ save_identity(Old, New, Server) ->
         false -> ok
     end,
     mnesia:dirty_write(Updated),
-    case not ready(Old) andalso ready(Updated) of
+    case not identified(Old) andalso identified(Updated) of
         true ->
-            ircd_state_link:propagate_introduction(Updated, Server),
             case maps:get(negotiating, ircd_cap:state(Updated#client.pid)) of
                 true ->
                     ok;
@@ -81,6 +89,8 @@ save_identity(Old, New, Server) ->
 %% @doc Send the numeric burst that completes registration.
 %% The caller marks the connection welcomed before this runs.
 send_welcome(#client{nick = Nick, user = User, host = Host} = Client, Server) ->
+    ircd_state_link:propagate_introduction(Client, Server),
+    ircd_state_v3:registered(Client, Server),
     logger:info(#{event => client_registered, nick => Nick, user => User, host => Host}),
     ircd_state_send:numeric(Client, Server, <<"001">>, [], [
         <<"Welcome to IRC ">>, ircd_state_send:prefix(Client)
@@ -106,9 +116,11 @@ send_welcome(#client{nick = Nick, user = User, host = Host} = Client, Server) ->
         Client,
         Server,
         <<"004">>,
-        [Server, <<"0.1.0">>, <<"iow">>, <<"abeIimnpsqrKltkov">>],
+        [Server, <<"0.1.0">>, <<"iowB">>, <<"abeIimnpsqrKltkov">>],
         none
     ),
+    ircd_isupport:send(Client, Server, ircd_isupport:tokens()),
+    ircd_state_meta:on_registered(Client, Server),
     ircd_state_info:motd([], Client, Server).
 
 pass(Params, Client, Server) ->
@@ -209,6 +221,9 @@ disconnect(#client{pid = Pid, channels = Channels} = Client, Reason, Server) ->
         true ->
             ircd_state_send:broadcast(
                 quit_recipients(Client), ircd_state_send:prefix(Client), <<"QUIT">>, [], Reason
+            ),
+            ircd_state_history:note_user_event(
+                Channels, <<"QUIT">>, ircd_state_send:prefix(Client), Reason
             );
         false ->
             ok
@@ -234,6 +249,7 @@ disconnect(#client{pid = Pid, channels = Channels} = Client, Reason, Server) ->
         undefined -> ok;
         _ -> ets:delete(ircd_admins, Pid)
     end,
+    ircd_state_v3:disconnect(Client),
     ircd_cap:disconnect(Pid),
     remove_connection_stats(Pid),
     logger:info(#{
@@ -266,17 +282,20 @@ user_visible(#client{pid = Pid}, #client{pid = RequesterPid}) when
     Pid =:= RequesterPid
 ->
     true;
-user_visible(#client{pid = Pid, channels = Channels}, #client{pid = RequesterPid}) ->
-    not maps:is_key($i, user_modes(Pid)) orelse
-        lists:any(
-            fun(Key) ->
-                case mnesia:dirty_read(channel, Key) of
-                    [#channel{members = Members}] -> maps:is_key(RequesterPid, Members);
-                    [] -> false
-                end
-            end,
-            Channels
-        ).
+user_visible(#client{pid = Pid, channels = Channels} = Target, #client{pid = RequesterPid}) ->
+    %% A client whose registration is still held by CAP negotiation is not
+    %% visible to anyone else yet.
+    ready(Target) andalso
+        (not maps:is_key($i, user_modes(Pid)) orelse
+            lists:any(
+                fun(Key) ->
+                    case mnesia:dirty_read(channel, Key) of
+                        [#channel{members = Members}] -> maps:is_key(RequesterPid, Members);
+                        [] -> false
+                    end
+                end,
+                Channels
+            )).
 
 %% `<<"*">>` means the caller is not changing the nickname.
 stored_nick(<<"*">>, Current) -> Current;

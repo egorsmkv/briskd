@@ -266,7 +266,14 @@ handle_server_line(
     Command =:= <<"INVITE">>;
     Command =:= <<"SERVICE">>;
     Command =:= <<"SQUERY">>;
-    Command =:= <<"KILL">>
+    Command =:= <<"KILL">>;
+    Command =:= <<"ACCOUNT">>;
+    Command =:= <<"SETNAME">>;
+    Command =:= <<"CHGHOST">>;
+    Command =:= <<"REDACT">>;
+    Command =:= <<"ACCOUNTSYNC">>;
+    Command =:= <<"METADATA">>;
+    Command =:= <<"MARKREAD">>
 ->
     case ircd_state:server_command(PeerName, Prefix, Command, Params, Tags) of
         ok -> {ok, State};

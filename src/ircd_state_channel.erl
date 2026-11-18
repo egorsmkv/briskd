@@ -1,6 +1,7 @@
 -module(ircd_state_channel).
 -export([
     deliver/5,
+    deliver_body/6,
     invite/4,
     join_channels/4,
     kick/5,
@@ -15,9 +16,12 @@
     names_unattached/2,
     nick_recipients/1,
     reop_channels/1,
+    rename/3,
+    role_prefix/2,
     split/1,
     topic/4,
     note_channel_history/4,
+    note_channel_history/5,
     grant_predefined_operator/2,
     release_if_empty/2,
     track_opless/2,
@@ -39,6 +43,7 @@ release_if_empty(#channel{key = Key} = Channel, Remaining) ->
         true ->
             mnesia:dirty_write(Channel#channel{members = Remaining});
         false ->
+            ircd_state_meta:drop_channel(Key),
             mnesia:dirty_delete(channel, Key),
             mnesia:dirty_delete(channel_history, Key)
     end.
@@ -376,11 +381,30 @@ finish_join(
             true -> [Pid];
             false -> maps:keys(NewMembers)
         end,
-    ircd_state_send:broadcast(
-        JoinRecipients, channel_origin_prefix(Channel, Client), <<"JOIN">>, [Canonical], none
-    ),
+    Origin = channel_origin_prefix(Channel, Client),
+    Anonymous = maps:is_key($a, Flags),
+    {JoinAccount, JoinReal} =
+        case Anonymous of
+            true -> {undefined, <<"anonymous">>};
+            false -> {ircd_state_v3:account(Pid), Client#client.real}
+        end,
+    ircd_state_v3:join_broadcast(JoinRecipients, Origin, Canonical, JoinAccount, JoinReal),
+    ircd_state_history:note_event(Key, <<"JOIN">>, Origin, [], none),
+    case Anonymous of
+        true ->
+            ok;
+        false ->
+            ircd_state_v3:away_on_join(
+                [P || P <- JoinRecipients, P =/= Pid], Origin, Client#client.away
+            )
+    end,
     topic_reply(Channel, Client, Server),
-    names(Canonical, Client, Server),
+    ircd_state_history:markread_on_join(Pid, Canonical, Server),
+    case ircd_cap:enabled(Pid, <<"no-implicit-names">>) of
+        true -> ok;
+        false -> names(Canonical, Client, Server)
+    end,
+    ircd_state_meta:on_join(Key, Client, Server),
     replay_channel_history(Key, Canonical, Pid).
 
 leave(Key, Client, Command, Reason, Notify) ->
@@ -398,6 +422,9 @@ leave(Key, #client{pid = Pid} = Client, Command, Reason, Notify, Propagate) ->
                 end,
             ircd_state_send:broadcast(
                 Recipients, channel_origin_prefix(Channel, Client), Command, [Name], Reason
+            ),
+            ircd_state_history:note_event(
+                Key, Command, channel_origin_prefix(Channel, Client), [], Reason
             );
         false ->
             ok
@@ -491,6 +518,9 @@ kick_member(
                         [Canonical, Actual],
                         Reason
                     ),
+                    ircd_state_history:note_event(
+                        Key, <<"KICK">>, channel_origin_prefix(Channel, Client), [Actual], Reason
+                    ),
                     ircd_state_link:propagate_channel_kick(Client, Canonical, Actual, Reason),
                     Remaining = maps:remove(TargetPid, Members),
                     case map_size(Remaining) of
@@ -525,7 +555,8 @@ channel_origin_prefix(_, Client) ->
     ircd_state_send:prefix(Client).
 
 %% Route PRIVMSG/NOTICE/TAGMSG to nicknames and channels, applying channel restrictions.
-%% Only client-only tags are relayed. TAGMSG has no text body.
+%% Client-only tags are relayed. Each delivered message gets a `msgid` and a
+%% `time` tag (filtered per recipient by capability). TAGMSG has no text body.
 deliver(Command, Params, #client{pid = Pid} = Client, Server, Tags) ->
     ClientTags =
         case ircd_cap:enabled(Pid, <<"message-tags">>) of
@@ -549,11 +580,18 @@ deliver(Command, Params, #client{pid = Pid} = Client, Server, Tags) ->
 
 deliver_targets(Targets, Text, Command, Client, Server, Tags) ->
     lists:foreach(
-        fun(Target) -> deliver_to(Target, Text, Command, Client, Server, Tags) end,
+        fun(Target) -> deliver_body(Command, Target, Text, Client, Server, Tags) end,
         lists:uniq(split(Targets))
     ).
 
-deliver_to(Target, Text, Command, #client{pid = Pid} = Client, Server, Tags) ->
+%% @doc Deliver one message body to one target. `Body` is a binary, `none`
+%% for TAGMSG, or `{multiline, Lines}` from a draft/multiline batch.
+deliver_body(Command, Target, Body, #client{pid = Pid} = Client, Server, ClientTags) ->
+    MsgId = ircd_state_send:msgid(),
+    Now = erlang:system_time(millisecond),
+    %% message-tags: server tags come before client-only tags.
+    Tags = [{<<"msgid">>, MsgId}, {<<"time">>, ircd_state_send:time_value(Now)} | ClientTags],
+    Account = ircd_state_v3:account(Pid),
     case mnesia:dirty_read(channel, ircd_wire:fold(Target)) of
         [#channel{name = Name, members = Members, flags = Flags} = Channel] ->
             Roles = maps:get(Pid, Members, []),
@@ -574,22 +612,59 @@ deliver_to(Target, Text, Command, #client{pid = Pid} = Client, Server, Tags) ->
                     );
                 false ->
                     Origin = channel_origin_prefix(Channel, Client),
-                    ircd_state_send:broadcast(
-                        maps:keys(maps:remove(Pid, Members)),
-                        Origin,
-                        Command,
-                        [Name],
-                        Text,
-                        Tags
+                    Recipients = maps:keys(maps:remove(Pid, Members)),
+                    fan_out(Recipients, Origin, Command, Name, Body, Tags),
+                    echo(Pid, Origin, Command, Name, Body, Tags),
+                    Stored =
+                        case maps:is_key($a, Flags) of
+                            true -> undefined;
+                            false -> Account
+                        end,
+                    ircd_state_history:note_channel(
+                        ircd_wire:fold(Name),
+                        ircd_state_history:entry(
+                            Command, Origin, Body, MsgId, Now, ClientTags, Stored
+                        )
                     ),
-                    note_channel_history(ircd_wire:fold(Name), Command, Origin, Text),
-                    ircd_state_link:propagate_channel_message(Name, Text, Command, Client, Tags)
+                    lists:foreach(
+                        fun({Text, LineTags}) ->
+                            ircd_state_link:propagate_channel_message(
+                                Name, Text, Command, Client, LineTags
+                            )
+                        end,
+                        wire_lines(Body, Tags)
+                    )
             end;
         [] ->
-            case ircd_state_client:find_nick(Target) of
+            Recipient =
+                case ircd_state_client:find_nick(Target) of
+                    #client{} = Found ->
+                        case ircd_state_client:ready(Found) of
+                            true -> Found;
+                            false -> held
+                        end;
+                    undefined ->
+                        undefined
+                end,
+            case Recipient of
+                held ->
+                    message_error(
+                        Command, Client, Server, <<"401">>, [Target], <<"No such nick/channel">>
+                    );
                 #client{pid = Other, nick = Nick, away = Away} ->
-                    ircd_state_send:send(
-                        Other, ircd_state_send:prefix(Client), Command, [Nick], Text, Tags
+                    Prefix = ircd_state_send:prefix(Client),
+                    case Other =:= Pid andalso ircd_cap:enabled(Pid, <<"echo-message">>) of
+                        true -> ok;
+                        false -> fan_out([Other], Prefix, Command, Nick, Body, Tags)
+                    end,
+                    echo(Pid, Prefix, Command, Nick, Body, Tags),
+                    ircd_state_history:note_direct(
+                        Account,
+                        ircd_state_v3:account(Other),
+                        Nick,
+                        ircd_state_history:entry(
+                            Command, Prefix, Body, MsgId, Now, ClientTags, Account
+                        )
                     ),
                     case {Command, Away} of
                         {<<"PRIVMSG">>, Message} when Message =/= undefined ->
@@ -599,14 +674,26 @@ deliver_to(Target, Text, Command, #client{pid = Pid} = Client, Server, Tags) ->
                     end;
                 undefined ->
                     case mnesia:dirty_read(remote_client, ircd_wire:fold(Target)) of
-                        [#remote_client{peer = Peer, nick = Nick}] ->
-                            Line = ircd_wire:message(
-                                Tags, ircd_state_send:prefix(Client), Command, [Nick], Text
-                            ),
-                            case ircd_links:send(Peer, Line) of
-                                ok ->
-                                    ok;
-                                {error, _} ->
+                        [#remote_client{peer = Peer, nick = Nick, account = Theirs}] ->
+                            Prefix = ircd_state_send:prefix(Client),
+                            Results = [
+                                ircd_links:send(
+                                    Peer, ircd_wire:message(LineTags, Prefix, Command, [Nick], Text)
+                                )
+                             || {Text, LineTags} <- wire_lines(Body, Tags)
+                            ],
+                            case lists:all(fun(R) -> R =:= ok end, Results) of
+                                true ->
+                                    echo(Pid, Prefix, Command, Nick, Body, Tags),
+                                    ircd_state_history:note_direct(
+                                        Account,
+                                        Theirs,
+                                        Nick,
+                                        ircd_state_history:entry(
+                                            Command, Prefix, Body, MsgId, Now, ClientTags, Account
+                                        )
+                                    );
+                                false ->
                                     message_error(
                                         Command,
                                         Client,
@@ -629,59 +716,90 @@ deliver_to(Target, Text, Command, #client{pid = Pid} = Client, Server, Tags) ->
             end
     end.
 
+fan_out(Pids, Prefix, Command, Target, {multiline, Lines}, Tags) ->
+    lists:foreach(
+        fun(P) ->
+            ircd_state_batch:deliver_multiline(P, Prefix, Command, Target, Lines, Tags, normal)
+        end,
+        Pids
+    );
+fan_out(Pids, Prefix, Command, Target, Text, Tags) ->
+    ircd_state_send:broadcast(Pids, Prefix, Command, [Target], Text, Tags).
+
+%% echo-message: the sender gets the message as recipients saw it.
+echo(Pid, Prefix, Command, Target, Body, Tags) ->
+    case ircd_cap:enabled(Pid, <<"echo-message">>) of
+        false ->
+            ok;
+        true ->
+            case Body of
+                {multiline, Lines} ->
+                    ircd_state_batch:deliver_multiline(
+                        Pid, Prefix, Command, Target, Lines, Tags, echo
+                    );
+                _ ->
+                    ircd_state_send:echo(Pid, Prefix, Command, [Target], Body, Tags)
+            end
+    end.
+
+%% Server-link form of a body: one line, or the multiline fallback lines with
+%% the message tags on the first.
+wire_lines({multiline, Lines}, Tags) ->
+    NonBlank = [Text || {_, Text} <- Lines, Text =/= <<>>],
+    {Out, _} = lists:mapfoldl(
+        fun(Text, First) ->
+            case First of
+                true -> {{Text, Tags}, false};
+                false -> {{Text, [T || {<<"+", _/binary>>, _} = T <- Tags]}, false}
+            end
+        end,
+        true,
+        NonBlank
+    ),
+    Out;
+wire_lines(Text, Tags) ->
+    [{Text, Tags}].
+
 message_error(<<"NOTICE">>, _, _, _, _, _) ->
     ok;
 message_error(_, Client, Server, Number, Middle, Text) ->
     ircd_state_send:numeric(Client, Server, Number, Middle, Text).
 
-%% Remember an accepted channel PRIVMSG or NOTICE. The body is not logged.
-%% Entries are newest-first and never longer than the configured limit.
-note_channel_history(Key, Command, Prefix, Text) when
-    (Command =:= <<"PRIVMSG">> orelse Command =:= <<"NOTICE">>), is_binary(Text)
-->
-    case ircd_state:retention() of
-        channels ->
-            Entry = {Command, ircd_wire:retain(iolist_to_binary(Prefix)), ircd_wire:retain(Text)},
-            Existing =
-                case mnesia:dirty_read(channel_history, Key) of
-                    [#channel_history{entries = Entries}] -> Entries;
-                    [] -> []
-                end,
-            mnesia:dirty_write(#channel_history{
-                channel = Key,
-                entries = trim_history([Entry | Existing], ircd_state:history_limit())
-            });
-        transient ->
-            ok
-    end;
-note_channel_history(_Key, _Command, _Prefix, _Text) ->
+%% Remember an accepted channel PRIVMSG or NOTICE from a peer. The body is not
+%% logged. `Tags` may carry the peer's `msgid` and `time`.
+note_channel_history(Key, Command, Prefix, Text) ->
+    note_channel_history(Key, Command, Prefix, Text, []).
+
+note_channel_history(Key, Command, Prefix, Text, Tags) when is_binary(Text) ->
+    MsgId =
+        case lists:keyfind(<<"msgid">>, 1, Tags) of
+            {_, Id} when is_binary(Id) -> Id;
+            _ -> ircd_state_send:msgid()
+        end,
+    Time =
+        case lists:keyfind(<<"time">>, 1, Tags) of
+            {_, Stamp} when is_binary(Stamp) ->
+                case ircd_state_history:parse_timestamp(Stamp) of
+                    {ok, T} -> T;
+                    error -> erlang:system_time(millisecond)
+                end;
+            _ ->
+                erlang:system_time(millisecond)
+        end,
+    Account = maps:get(
+        account, ircd_state_v3:remote_source_info(iolist_to_binary(Prefix)), undefined
+    ),
+    ircd_state_history:note_channel(
+        Key,
+        ircd_state_history:entry(
+            Command, Prefix, Text, MsgId, Time, ircd_cap:client_tags(Tags), Account
+        )
+    );
+note_channel_history(_Key, _Command, _Prefix, _Text, _Tags) ->
     ok.
 
 replay_channel_history(Key, Name, Pid) ->
-    case ircd_state:retention() of
-        channels ->
-            case mnesia:dirty_read(channel_history, Key) of
-                [#channel_history{entries = Entries}] ->
-                    lists:foreach(
-                        fun({Command, Prefix, Text}) ->
-                            ircd_state_send:send(Pid, Prefix, Command, [Name], Text)
-                        end,
-                        lists:reverse(trim_history(Entries, ircd_state:history_limit()))
-                    );
-                [] ->
-                    ok
-            end;
-        transient ->
-            ok
-    end.
-
-trim_history(Entries, Limit) ->
-    trim_history(Entries, Limit, []).
-
-trim_history([Entry | Rest], Left, Acc) when Left > 0 ->
-    trim_history(Rest, Left - 1, [Entry | Acc]);
-trim_history(_, _, Acc) ->
-    lists:reverse(Acc).
+    ircd_state_history:replay_on_join(Key, Name, Pid).
 
 topic(Name, Rest, #client{pid = Pid} = Client, Server) ->
     case mnesia:dirty_read(channel, ircd_wire:fold(Name)) of
@@ -705,6 +823,13 @@ topic(Name, Rest, #client{pid = Pid} = Client, Server) ->
                     );
                 {false, true, [Text | _]} ->
                     mnesia:dirty_write(Channel#channel{topic = ircd_wire:retain(Text)}),
+                    ircd_state_history:note_event(
+                        Channel#channel.key,
+                        <<"TOPIC">>,
+                        channel_origin_prefix(Channel, Client),
+                        [],
+                        Text
+                    ),
                     ircd_state_send:broadcast(
                         maps:keys(Members),
                         channel_origin_prefix(Channel, Client),
@@ -787,7 +912,9 @@ names(Name, Client, Server) ->
                                     maps:keys(Members)
                             end,
                         LocalEntries = [
-                            display_nick(ircd_state_client:client(Pid), maps:get(Pid, Members))
+                            display_nick(
+                                ircd_state_client:client(Pid), maps:get(Pid, Members), Client
+                            )
                          || Pid <- VisiblePids,
                             visible_member(Pid, Client, Members)
                         ],
@@ -851,7 +978,9 @@ names_listing(Key, Client, Server) ->
                                 maps:keys(Members)
                         end,
                     LocalEntries = [
-                        display_nick(ircd_state_client:client(Pid), maps:get(Pid, Members))
+                        display_nick(
+                            ircd_state_client:client(Pid), maps:get(Pid, Members), Client
+                        )
                      || Pid <- VisiblePids,
                         visible_member(Pid, Client, Members)
                     ],
@@ -934,16 +1063,56 @@ names_symbol(Name) ->
             end
     end.
 
-display_nick(#client{nick = Nick}, Roles) ->
-    case {lists:member(operator, Roles), lists:member(voice, Roles)} of
-        {true, _} -> <<$@, Nick/binary>>;
-        {false, true} -> <<$+, Nick/binary>>;
-        _ -> Nick
+%% NAMES entry for a local member as seen by Requester: multi-prefix shows
+%% every status prefix and userhost-in-names adds `!user@host`.
+display_nick(#client{nick = Nick, user = User, host = Host}, Roles, #client{pid = Requester}) ->
+    Name =
+        case ircd_cap:enabled(Requester, <<"userhost-in-names">>) of
+            true -> <<Nick/binary, "!", User/binary, "@", Host/binary>>;
+            false -> Nick
+        end,
+    <<(role_prefix(Roles, Requester))/binary, Name/binary>>.
+
+%% @doc Status prefix for channel roles. With multi-prefix the requester sees
+%% every prefix in rank order (`@+`), otherwise only the highest.
+-spec role_prefix([atom()], pid()) -> binary().
+role_prefix(Roles, Requester) ->
+    Operator = lists:member(operator, Roles) orelse lists:member(creator, Roles),
+    Voice = lists:member(voice, Roles),
+    case {Operator, Voice, ircd_cap:enabled(Requester, <<"multi-prefix">>)} of
+        {true, true, true} -> <<"@+">>;
+        {true, _, _} -> <<"@">>;
+        {false, true, _} -> <<"+">>;
+        _ -> <<>>
     end.
 
-mask_matches(#channel{lists = Lists}, Type, #client{nick = Nick, user = User, host = Host}) ->
+%% Ban, exception, and invite masks. `$a:<account>` (IRCv3 account-extban,
+%% advertised as EXTBAN=$,a and ACCOUNTEXTBAN=a) matches a logged-in user by
+%% account name with wildcards and RFC 1459 folding; `$a` alone matches any
+%% logged-in user. Other masks match `nick!user@host`.
+mask_matches(
+    #channel{lists = Lists}, Type, #client{nick = Nick, user = User, host = Host} = Client
+) ->
     Identity = <<Nick/binary, "!", User/binary, "@", Host/binary>>,
-    lists:any(fun(Mask) -> wildcard_match(Mask, Identity) end, maps:get(Type, Lists, [])).
+    lists:any(
+        fun
+            (<<"$a:", AccountMask/binary>>) ->
+                case identity_account(Client) of
+                    undefined -> false;
+                    Account -> wildcard_match(AccountMask, Account)
+                end;
+            (<<"$a">>) ->
+                identity_account(Client) =/= undefined;
+            (Mask) ->
+                wildcard_match(Mask, Identity)
+        end,
+        maps:get(Type, Lists, [])
+    ).
+
+identity_account(#client{pid = Pid}) when is_pid(Pid) ->
+    ircd_state_v3:account(Pid);
+identity_account(#client{nick = Nick}) ->
+    ircd_state_v3:remote_account(ircd_wire:fold(Nick)).
 
 wildcard_match(Mask, Value) ->
     wildcard_match_chars(
@@ -1029,7 +1198,19 @@ knock(Name, ReasonParams, #client{pid = Pid} = Client, Server) ->
     end.
 
 invite(Nick, Name, #client{pid = Pid} = Client, Server) ->
-    case ircd_state_client:find_nick(Nick) of
+    Found =
+        case ircd_state_client:find_nick(Nick) of
+            #client{} = Local ->
+                case ircd_state_client:ready(Local) of
+                    true -> Local;
+                    false -> held
+                end;
+            undefined ->
+                undefined
+        end,
+    case Found of
+        held ->
+            ircd_state_send:numeric(Client, Server, <<"401">>, [Nick], <<"No such nick">>);
         undefined ->
             case mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) of
                 [#remote_client{} = Remote] ->
@@ -1087,7 +1268,13 @@ invite(Nick, Name, #client{pid = Pid} = Client, Server) ->
                                 invited =
                                     lists:usort([Target#client.pid | Invited])
                             }),
-                            notify_invite(Target, Canonical, Client, Server)
+                            notify_invite(Target, Canonical, Client, Server),
+                            ircd_state_v3:invite_notify(
+                                Channel,
+                                Target,
+                                Target#client.nick,
+                                {Pid, invite_origin_prefix(Canonical, Client)}
+                            )
                     end
             end
     end.
@@ -1202,7 +1389,7 @@ change_user_modes([_Mode | Rest], undefined, Modes, Nick, Client, Server) ->
     ircd_state_send:numeric(Client, Server, <<"501">>, [], <<"Unknown MODE flag">>),
     change_user_modes(Rest, undefined, Modes, Nick, Client, Server);
 change_user_modes([Mode | Rest], Action, Modes, Nick, Client, Server) when
-    Mode =:= $i; Mode =:= $w
+    Mode =:= $i; Mode =:= $w; Mode =:= $B
 ->
     New =
         case Action of
@@ -1380,6 +1567,19 @@ change_modes([Mode | Rest], Action, Args, Channel, Client, Server) ->
                         [Name, <<Sign, Mode>> | Parameters],
                         none
                     ),
+                    %% A channel key is not written to history.
+                    case Mode of
+                        $k ->
+                            ok;
+                        _ ->
+                            ircd_state_history:note_event(
+                                Channel#channel.key,
+                                <<"MODE">>,
+                                channel_origin_prefix(Channel, Client),
+                                [<<Sign, Mode>> | Parameters],
+                                none
+                            )
+                    end,
                     ircd_state_link:propagate_channel_mode(
                         Client, Name, <<Sign, Mode>>, Parameters
                     );
@@ -1517,3 +1717,166 @@ apply_mode(Mode, _, [], _) when Mode =:= $k; Mode =:= $l; Mode =:= $o; Mode =:= 
 apply_mode(Mode, _, Args, _) ->
     {error, <<"472">>, [<<Mode>>], <<"Unknown mode character">>, Args}.
 split(Value) -> binary:split(Value, <<",">>, [global, trim_all]).
+
+%% @doc `RENAME <old> <new> [:reason]` (draft/channel-rename). A channel
+%% operator may rename a local channel. The type prefix cannot change, safe
+%% `!` channels and channels shared with a server link cannot be renamed.
+%% channel-rename clients see RENAME; other members see PART, then JOIN with
+%% the topic and names burst. A case-only rename sends no fallback.
+rename([Old, New | Rest], #client{pid = Pid} = Client, Server) ->
+    Reason =
+        case Rest of
+            [Text | _] -> Text;
+            [] -> <<>>
+        end,
+    OldKey = ircd_wire:fold(Old),
+    NewKey = ircd_wire:fold(New),
+    case mnesia:dirty_read(channel, OldKey) of
+        [] ->
+            ircd_state_send:numeric(Client, Server, <<"403">>, [Old], <<"No such channel">>);
+        [#channel{name = Canonical, members = Members} = Channel] ->
+            Roles = maps:get(Pid, Members, undefined),
+            CaseOnly = OldKey =:= NewKey,
+            Shared =
+                mnesia:dirty_read(remote_channel, OldKey) =/= [] orelse
+                    mnesia:dirty_read(remote_channel, NewKey) =/= [],
+            Taken =
+                not CaseOnly andalso
+                    (mnesia:dirty_read(channel, NewKey) =/= [] orelse
+                        mnesia:dirty_read(remote_channel, NewKey) =/= []),
+            if
+                Roles =:= undefined ->
+                    ircd_state_send:numeric(
+                        Client, Server, <<"442">>, [Canonical], <<"You're not on that channel">>
+                    );
+                not is_list(Roles) ->
+                    ok;
+                true ->
+                    case lists:member(operator, Roles) of
+                        false ->
+                            ircd_state_send:numeric(
+                                Client,
+                                Server,
+                                <<"482">>,
+                                [Canonical],
+                                <<"You're not channel operator">>
+                            );
+                        true ->
+                            Valid =
+                                ircd_wire:channel(New) andalso
+                                    binary:first(New) =:= binary:first(Canonical) andalso
+                                    binary:first(New) =/= $! andalso not Shared,
+                            case {Valid, Taken} of
+                                {false, _} ->
+                                    ircd_state_send:fail(
+                                        Pid,
+                                        <<"RENAME">>,
+                                        <<"CANNOT_RENAME">>,
+                                        [Canonical, New],
+                                        <<"The channel cannot be renamed">>
+                                    );
+                                {true, true} ->
+                                    ircd_state_send:fail(
+                                        Pid,
+                                        <<"RENAME">>,
+                                        <<"CHANNEL_NAME_IN_USE">>,
+                                        [Canonical, New],
+                                        <<"The channel name is already taken">>
+                                    );
+                                {true, false} ->
+                                    apply_rename(Channel, New, Reason, Client, Server, CaseOnly)
+                            end
+                    end
+            end
+    end;
+rename(_, Client, Server) ->
+    ircd_state_send:numeric(Client, Server, <<"461">>, [<<"RENAME">>], <<"Not enough parameters">>).
+
+apply_rename(
+    #channel{key = OldKey, name = OldName, members = Members} = Channel,
+    New,
+    Reason,
+    Client,
+    Server,
+    CaseOnly
+) ->
+    NewKey = ircd_wire:fold(New),
+    Name = ircd_wire:retain(New),
+    Renamed = Channel#channel{key = NewKey, name = Name},
+    case CaseOnly of
+        true ->
+            mnesia:dirty_write(Renamed);
+        false ->
+            mnesia:dirty_delete(channel, OldKey),
+            mnesia:dirty_write(Renamed),
+            lists:foreach(
+                fun(Pid) ->
+                    case mnesia:dirty_read(client, Pid) of
+                        [#client{channels = Keys} = Member] ->
+                            mnesia:dirty_write(Member#client{
+                                channels = [
+                                    case K of
+                                        OldKey -> NewKey;
+                                        _ -> K
+                                    end
+                                 || K <- Keys
+                                ]
+                            });
+                        [] ->
+                            ok
+                    end
+                end,
+                maps:keys(Members)
+            ),
+            case mnesia:dirty_read(channel_history, OldKey) of
+                [History] ->
+                    mnesia:dirty_delete(channel_history, OldKey),
+                    mnesia:dirty_write(History#channel_history{channel = NewKey});
+                [] ->
+                    ok
+            end,
+            ircd_state_meta:rename_channel(OldKey, NewKey),
+            ircd_state_history:rename_markers(OldKey, NewKey)
+    end,
+    logger:info(#{event => channel_renamed, actor => Client#client.nick}),
+    Origin = channel_origin_prefix(Channel, Client),
+    {Capable, Legacy} = lists:partition(
+        fun(P) -> ircd_cap:enabled(P, <<"draft/channel-rename">>) end, maps:keys(Members)
+    ),
+    ircd_state_send:broadcast(Capable, Origin, <<"RENAME">>, [OldName, Name], Reason),
+    case CaseOnly of
+        true ->
+            ok;
+        false ->
+            PartReason =
+                case Reason of
+                    <<>> -> none;
+                    _ -> Reason
+                end,
+            lists:foreach(
+                fun(Pid) ->
+                    case mnesia:dirty_read(client, Pid) of
+                        [Member] ->
+                            Self = ircd_state_send:prefix(Member),
+                            ircd_state_send:send(Pid, Self, <<"PART">>, [OldName], PartReason),
+                            ircd_state_v3:join_broadcast(
+                                [Pid],
+                                Self,
+                                Name,
+                                ircd_state_v3:account(Pid),
+                                Member#client.real
+                            ),
+                            topic_reply(Renamed, Member, Server),
+                            ircd_state_history:markread_on_join(Pid, Name, Server),
+                            case ircd_cap:enabled(Pid, <<"no-implicit-names">>) of
+                                true -> ok;
+                                false -> names(Name, Member, Server)
+                            end;
+                        [] ->
+                            ok
+                    end
+                end,
+                Legacy
+            )
+    end,
+    ok.

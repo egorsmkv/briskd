@@ -1,5 +1,6 @@
 -module(ircd_session).
 -behaviour(gen_server).
+-include("ircd_wire.hrl").
 -export([
     start_link/3,
     init/1,
@@ -10,8 +11,11 @@
     terminate/2
 ]).
 
-%% @doc Start a temporary process for one accepted TCP or TLS client socket.
--spec start_link(tcp | tls, port(), binary()) -> gen_server:start_ret().
+%% @doc Start a temporary process for one accepted client socket. `ws` and
+%% `wss` are WebSocket listeners over TCP and TLS (IRCv3 WebSocket transport);
+%% the session then speaks RFC 6455 frames, one IRC line per message.
+-spec start_link(tcp | tls | ws | wss, port() | ssl:sslsocket(), binary()) ->
+    gen_server:start_ret().
 start_link(Kind, Socket, Peer) -> gen_server:start_link(?MODULE, {Kind, Socket, Peer}, []).
 
 %% @doc Initialize the session before socket ownership is transferred to it.
@@ -24,6 +28,11 @@ handle_info(activate, {Kind, Socket, Peer} = State) ->
     case handshake(Kind, Socket) of
         ok ->
             erlang:send_after(30000, self(), registration_timeout),
+            case Kind of
+                ws -> put(ircd_ws, #{phase => handshake, buffer => <<>>});
+                wss -> put(ircd_ws, #{phase => handshake, buffer => <<>>});
+                _ -> ok
+            end,
             active({Kind, Socket, Peer, <<>>, awaiting});
         {error, Reason} ->
             logger:warning(#{event => tls_handshake_failed, peer => Peer, reason => Reason}),
@@ -31,7 +40,7 @@ handle_info(activate, {Kind, Socket, Peer} = State) ->
     end;
 handle_info({irc, Line}, {Kind, Socket, _, _, _} = State) ->
     Module = transport(Kind),
-    case Module:send(Socket, Line) of
+    case Module:send(Socket, outgoing(Line)) of
         ok ->
             {noreply, State};
         {error, Reason} ->
@@ -40,8 +49,12 @@ handle_info({irc, Line}, {Kind, Socket, _, _, _} = State) ->
     end;
 handle_info({irc_close, Line}, {Kind, Socket, _, _, _} = State) ->
     Module = transport(Kind),
-    _ = Module:send(Socket, Line),
+    _ = Module:send(Socket, outgoing(Line)),
     {stop, normal, State};
+handle_info({Tag, Socket, Packet}, {Kind, Socket, Peer, _Buffer, _Role} = State) when
+    (Tag =:= tcp orelse Tag =:= ssl), (Kind =:= ws orelse Kind =:= wss)
+->
+    websocket_data(Packet, State, Peer);
 handle_info({Tag, Socket, Packet}, {Kind, Socket, Peer, Buffer, Role}) when
     Tag =:= tcp; Tag =:= ssl
 ->
@@ -49,6 +62,7 @@ handle_info({Tag, Socket, Packet}, {Kind, Socket, Peer, Buffer, Role}) when
         {ok, Data} ->
             case consume(Data, {Kind, Socket, Peer, <<>>, Role}) of
                 {ok, State} -> active(State);
+                {starttls, State} -> starttls(State);
                 quit -> {stop, normal, {Kind, Socket, Peer, <<>>}};
                 error -> {stop, normal, {Kind, Socket, Peer, <<>>}}
             end;
@@ -122,15 +136,188 @@ terminate(_, {_, _, Peer, _, {server, _}}) ->
 terminate(_, _) ->
     ok.
 
-transport(tcp) -> gen_tcp;
-transport(tls) -> ssl.
+transport(Kind) ->
+    case base(Kind) of
+        tcp -> gen_tcp;
+        tls -> ssl
+    end.
 
-handshake(tcp, _) ->
-    ok;
-handshake(tls, Socket) ->
-    case ssl:handshake(Socket, 5000) of
-        {ok, Socket} -> ok;
-        Error -> Error
+base(tcp) -> tcp;
+base(ws) -> tcp;
+base(tls) -> tls;
+base(wss) -> tls.
+
+handshake(Kind, Socket) ->
+    case base(Kind) of
+        tcp ->
+            ok;
+        tls ->
+            case ssl:handshake(Socket, 5000) of
+                {ok, Socket} -> ok;
+                Error -> Error
+            end
+    end.
+
+%% IRC lines to a WebSocket client become one frame each, without CR LF.
+%% A text-mode client only receives valid UTF-8.
+outgoing(Line) ->
+    case get(ircd_ws) of
+        #{phase := open, mode := Mode} ->
+            Bin = iolist_to_binary(Line),
+            Body =
+                case binary:longest_common_suffix([Bin, <<"\r\n">>]) of
+                    2 -> binary:part(Bin, 0, byte_size(Bin) - 2);
+                    _ -> Bin
+                end,
+            case Mode of
+                text -> ircd_websocket:encode(text, ircd_websocket:utf8_safe(Body));
+                binary -> ircd_websocket:encode(binary, Body)
+            end;
+        _ ->
+            Line
+    end.
+
+%% Handle bytes from a WebSocket connection: the HTTP upgrade, then frames.
+websocket_data(Packet, {Kind, Socket, _, _, _} = State, Peer) ->
+    Module = transport(Kind),
+    case get(ircd_ws) of
+        #{phase := handshake, buffer := Pending} ->
+            Config = persistent_term:get({ircd_state, config}),
+            case
+                ircd_websocket:handshake(
+                    <<Pending/binary, Packet/binary>>, maps:get(ws_origins, Config, null)
+                )
+            of
+                more ->
+                    put(ircd_ws, #{phase => handshake, buffer => <<Pending/binary, Packet/binary>>}),
+                    active(State);
+                {error, Response} ->
+                    _ = Module:send(Socket, Response),
+                    logger:info(#{event => websocket_rejected, peer => Peer}),
+                    {stop, normal, State};
+                {ok, Response, Mode, Rest} ->
+                    case Module:send(Socket, Response) of
+                        ok ->
+                            put(ircd_ws, #{phase => open, mode => Mode, buffer => <<>>}),
+                            websocket_frames(Rest, State);
+                        {error, _} ->
+                            {stop, normal, State}
+                    end
+            end;
+        #{phase := open, buffer := Pending} ->
+            websocket_frames(<<Pending/binary, Packet/binary>>, State)
+    end.
+
+websocket_frames(Data, {Kind, Socket, Peer, _, Role} = State) ->
+    Module = transport(Kind),
+    case byte_size(Data) > ?MAX_PENDING_BYTES of
+        true ->
+            {stop, normal, State};
+        false ->
+            case ircd_websocket:decode(Data, ?MAX_WIRE_LINE) of
+                {error, Reason} ->
+                    logger:debug(#{event => websocket_error, peer => Peer, reason => Reason}),
+                    _ = Module:send(Socket, ircd_websocket:encode(close, <<1002:16>>)),
+                    {stop, normal, State};
+                {ok, [], Rest} ->
+                    Ws = get(ircd_ws),
+                    put(ircd_ws, Ws#{buffer => Rest}),
+                    active(State);
+                {ok, Frames, Rest} ->
+                    Ws = get(ircd_ws),
+                    put(ircd_ws, Ws#{buffer => Rest}),
+                    %% WebSocket connections are always clients, never server links.
+                    case Role of
+                        awaiting ->
+                            case promote_client({Kind, Socket, Peer, <<>>, awaiting}) of
+                                {ok, Client} -> websocket_messages(Frames, Client);
+                                error -> {stop, normal, State}
+                            end;
+                        _ ->
+                            websocket_messages(Frames, {Kind, Socket, Peer, <<>>, Role})
+                    end
+            end
+    end.
+
+websocket_messages([], State) ->
+    active(State);
+websocket_messages([{ping, Payload} | Rest], {Kind, Socket, _, _, _} = State) ->
+    Module = transport(Kind),
+    _ = Module:send(Socket, ircd_websocket:encode(pong, Payload)),
+    websocket_messages(Rest, State);
+websocket_messages([{pong, _} | Rest], State) ->
+    websocket_messages(Rest, State);
+websocket_messages([{close, _} | _], {Kind, Socket, _, _, _} = State) ->
+    Module = transport(Kind),
+    _ = Module:send(Socket, ircd_websocket:encode(close, <<1000:16>>)),
+    {stop, normal, State};
+websocket_messages([{Type, Payload} | Rest], {Kind, Socket, Peer, _, Role} = State) ->
+    Valid = Type =:= binary orelse ircd_websocket:utf8_safe(Payload) =:= Payload,
+    Line = strip_crlf(Payload),
+    case Valid of
+        false ->
+            {stop, normal, State};
+        true ->
+            case consume(<<Line/binary, "\r\n">>, {Kind, Socket, Peer, <<>>, Role}) of
+                {ok, Updated} -> websocket_messages(Rest, Updated);
+                {starttls, _} -> {stop, normal, State};
+                quit -> {stop, normal, State};
+                error -> {stop, normal, State}
+            end
+    end.
+
+strip_crlf(Payload) ->
+    case binary:longest_common_suffix([Payload, <<"\r\n">>]) of
+        2 -> binary:part(Payload, 0, byte_size(Payload) - 2);
+        _ -> Payload
+    end.
+
+%% STARTTLS (IRCv3 `tls`, deprecated in favor of implicit TLS): send the
+%% queued 670 reply in plaintext, then run the server-side TLS handshake on the
+%% same TCP socket with the listener's TLS options.
+starttls({tcp, Socket, Peer, _, Role} = State) ->
+    ok = flush_plain(Socket),
+    Options = maps:get(tls_options, persistent_term:get({ircd_state, config})),
+    case inet:setopts(Socket, [{active, false}]) of
+        ok ->
+            case ssl:handshake(Socket, Options, 5000) of
+                {ok, Tls} ->
+                    ok = ircd_state:tls_upgraded(connection_info(tls, Tls)),
+                    logger:info(#{event => starttls_completed, peer => Peer}),
+                    active({tls, Tls, Peer, <<>>, Role});
+                {error, Reason} ->
+                    logger:warning(#{event => starttls_failed, peer => Peer, reason => Reason}),
+                    {stop, normal, State}
+            end;
+        {error, _} ->
+            {stop, normal, State}
+    end;
+starttls(State) ->
+    {stop, normal, State}.
+
+%% Lines the state process queued before the upgrade go out unencrypted.
+flush_plain(Socket) ->
+    receive
+        {irc, Line} ->
+            _ = gen_tcp:send(Socket, Line),
+            flush_plain(Socket)
+    after 0 ->
+        ok
+    end.
+
+%% Connection facts for capability values and SASL EXTERNAL: whether the
+%% transport is TLS and the SHA-256 fingerprint of a client certificate.
+connection_info(Kind, Socket) ->
+    case base(Kind) of
+        tcp ->
+            #{secure => false, transport => Kind};
+        tls ->
+            Fingerprint =
+                case ssl:peercert(Socket) of
+                    {ok, Der} -> binary:encode_hex(crypto:hash(sha256, Der), lowercase);
+                    _ -> undefined
+                end,
+            #{secure => true, certfp => Fingerprint, transport => Kind}
     end.
 
 consume(Data, State) ->
@@ -151,6 +338,10 @@ consume(Data, State) ->
                         end,
                     case Result of
                         {ok, Updated} -> consume(Rest, Updated);
+                        %% The client must wait for 670 before the handshake,
+                        %% so nothing may follow STARTTLS in the same read.
+                        {starttls, Updated} when Rest =:= <<>> -> {starttls, Updated};
+                        {starttls, _} -> error;
                         quit -> quit;
                         error -> error
                     end;
@@ -200,7 +391,7 @@ set_buffer({Kind, Socket, Peer, _, Role}, Buffer) ->
 
 active({Kind, Socket, _, _, _} = State) ->
     Result =
-        case Kind of
+        case base(Kind) of
             tcp -> inet:setopts(Socket, [{active, once}]);
             tls -> ssl:setopts(Socket, [{active, once}])
         end,
@@ -324,7 +515,14 @@ process_server_line(Tags, Prefix, Command, Params, _Bytes, {_, _, Peer, _, _} = 
     Command =:= <<"INVITE">>;
     Command =:= <<"SERVICE">>;
     Command =:= <<"SQUERY">>;
-    Command =:= <<"KILL">>
+    Command =:= <<"KILL">>;
+    Command =:= <<"ACCOUNT">>;
+    Command =:= <<"SETNAME">>;
+    Command =:= <<"CHGHOST">>;
+    Command =:= <<"REDACT">>;
+    Command =:= <<"ACCOUNTSYNC">>;
+    Command =:= <<"METADATA">>;
+    Command =:= <<"MARKREAD">>
 ->
     case ircd_state:server_command(Peer, Prefix, Command, Params, Tags) of
         ok ->
@@ -339,11 +537,12 @@ process_server_line(_Tags, _Prefix, _Command, _Params, _Bytes, State) ->
 process_client_line(Tags, Command, Params, Bytes, {_, _, _, _, client} = State) ->
     case ircd_state:command(Command, Params, Bytes, Tags) of
         quit -> quit;
+        starttls -> {starttls, State};
         ok -> {ok, State}
     end.
 
 promote_client({Kind, Socket, Peer, Buffer, awaiting}) ->
-    ok = ircd_state:connect(Peer),
+    ok = ircd_state:connect(Peer, connection_info(Kind, Socket)),
     {ok, {Kind, Socket, Peer, Buffer, client}};
 promote_client(_) ->
     error.

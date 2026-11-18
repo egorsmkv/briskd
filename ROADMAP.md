@@ -43,8 +43,7 @@ in the referenced RFC.
   `SQUERY` register and reach services. `CONNECT` and `SQUIT` are operator
   commands. `SUMMON` and `USERS` stay disabled with numerics 445 and 446.
   Operator `DIE` stops the node and operator `RESTART` restarts it; other
-  clients receive numeric 481. Capability negotiation is the IRCv3 subset
-  below.
+  clients receive numeric 481. IRCv3 support is listed below.
 - [x] Audit parameter limits, error numerics, visibility, and command edge cases
   against the RFCs.
 
@@ -119,19 +118,95 @@ in the referenced RFC.
 
 ## IRCv3
 
-- [x] Capability negotiation for `batch`, `cap-notify`, `labeled-response`, and
-  `message-tags` only. `CAP REQ` is atomic. `CAP LS 302` or any higher version
-  keeps version 302 for the connection, including implicit `cap-notify` that
-  cannot be disabled. Clients that never send 302 may disable `cap-notify`.
-  Registration waits for `CAP END` after `CAP LS` or `CAP REQ`. The other
-  specifications listed at <https://ircv3.net/irc/> are not implemented.
-- [x] Message tags and `TAGMSG`. Client-only `+` tags on `PRIVMSG`, `NOTICE`,
-  and `TAGMSG` are relayed to clients that negotiated `message-tags` and across
-  a direct server link. Other client or peer tags are removed. Tag data over
-  4094 bytes, or a tag section over 8191 bytes, returns numeric 417.
-- [x] Labeled responses while `labeled-response`, `batch`, and `message-tags`
-  are enabled: one labeled reply line, one `labeled-response` batch, or one
-  labeled `ACK`.
+Every specification on <https://ircv3.net/irc/> is implemented, including the
+deprecated `STARTTLS`. The base protocol stays the RFC 1459 and RFC 2812
+subset above, not the Modern IRC document. A checked item does not imply every
+edge case of the specification.
+
+Capabilities, tags, and batches:
+
+- [x] Capability negotiation 302 with values, multi-line `CAP LS`, atomic
+  `CAP REQ`, and implicit `cap-notify`. `CAP NEW` and `CAP DEL` are sent when a
+  `REHASH` changes the offered set or a value (`sts` is never deleted). `sts`
+  cannot be requested. Unknown subcommands return numeric 410.
+- [x] Message tags and `TAGMSG`. Client-only `+` tags are relayed, which
+  covers the `reply`, `react`, `typing`, and `channel-context` client tags.
+  Tag data over 4094 bytes, or a tag section over 8191 bytes, returns 417.
+- [x] Server tags filtered per recipient: `msgid` (message-ids, with
+  `message-tags`), `time` (`server-time`, on every line), `account`
+  (`account-tag`), `bot` (bot mode), and `draft/oper` (`draft/oper-tag`).
+  Peers carry `msgid` and `time` so every server shows the same values.
+- [x] `batch`: `labeled-response`, `netsplit`, `netjoin`, `chathistory`,
+  `draft/chathistory-targets`, `draft/isupport`, `metadata`, `metadata-subs`,
+  and `draft/multiline`. Nested batches keep their own reference.
+- [x] Client-initiated batches (`client-batch`) of type `draft/multiline` with
+  `max-bytes` and `max-lines`, `draft/multiline-concat`, the non-capable
+  fallback, and the `FAIL BATCH` codes.
+- [x] Labeled responses, including echoes under `echo-message` and the
+  closing `BATCH` of a multiline message.
+- [x] `standard-replies`: `FAIL`, `WARN`, and `NOTE` for the new commands.
+
+Accounts:
+
+- [x] SASL 3.1 and 3.2: `AUTHENTICATE` with `PLAIN`, `EXTERNAL` (TLS client
+  certificate SHA-256 fingerprint), and `SCRAM-SHA-256`; numerics 900 to 908;
+  400-byte chunking; reauthentication after registration.
+- [x] `draft/account-registration`: `REGISTER` and `VERIFY` with
+  `before-connect` and `custom-account-name`. With `account_verification`
+  configured, registration needs an email address (`email-required`), a
+  configured program delivers an expiring code, and `VERIFY` completes it.
+  Accounts are Mnesia rows with SCRAM verifiers only.
+- [x] `account-notify` (`ACCOUNT`), `account-tag`, `extended-join`, WHOIS 330,
+  and account extbans (`$a:<account>`, `EXTBAN=$,a`, `ACCOUNTEXTBAN=a`).
+
+Presence and identity:
+
+- [x] `away-notify`, including `AWAY` after a JOIN; `draft/pre-away` with
+  `AWAY *`.
+- [x] `setname` (`SETNAME`, `NAMELEN`), `chghost` (operator `CHGHOST` with the
+  QUIT and JOIN fallback), and bot mode (`+B`, `BOT=B`, WHOIS 335, WHO `B`).
+
+Messages and history:
+
+- [x] `echo-message`, `server-time`, and message IDs.
+- [x] `draft/chathistory`: `BEFORE`, `AFTER`, `LATEST`, `AROUND`, `BETWEEN`,
+  and `TARGETS`, by timestamp or msgid. Channel history is readable by
+  members. Direct-message history is kept only between two logged-in accounts,
+  in Mnesia with the same retention as channel history.
+- [x] `draft/event-playback`: JOIN, PART, KICK, TOPIC, MODE, QUIT, NICK, and
+  TAGMSG are recorded and replayed to clients with the capability. Events and
+  messages each keep `history_limit` entries.
+- [x] `draft/read-marker` (`MARKREAD`), stored per account.
+- [x] `draft/message-redaction` (`REDACT`) by the sender's account or a
+  channel operator.
+
+Channels and queries:
+
+- [x] `multi-prefix`, `userhost-in-names`, WHOX (`354`, tokens, `%acdfhilnorstu`),
+  `no-implicit-names`, `invite-notify`, `draft/channel-rename` (`RENAME` with
+  the PART and JOIN fallback), and `draft/metadata-2` (`METADATA` and numerics
+  760 to 774).
+- [x] `MONITOR` (730 to 734, `MONITOR=<limit>`) and `extended-monitor`.
+
+Connection and transport:
+
+- [x] `WEBIRC` from configured gateway addresses, with the `secure` option.
+- [x] WebSocket listeners (`ws_port`, `wss_port`) with `binary.ircv3.net` and
+  `text.ircv3.net`, and an optional origin allow list.
+- [x] Deprecated `STARTTLS` (`tls` capability, 670 and 691) on plaintext TCP
+  connections when TLS is configured.
+- [x] STS (`sts` policy: upgrade port on plaintext, duration on TLS), SNI
+  certificate selection (`sni`), `UTF8ONLY`, `draft/extended-isupport`
+  (`ISUPPORT`), RPL_ISUPPORT 005, and `draft/ICON`.
+
+Across server links:
+
+- [x] Accounts (`ACCOUNTSYNC`, SCRAM verifiers only, the first-created copy
+  wins), user and channel metadata (`METADATA`), read markers (`MARKREAD`),
+  `ACCOUNT`, `SETNAME`, `CHGHOST`, `REDACT`, user mode `B`, and each message's
+  `msgid` and `time` cross links in the burst and as live updates.
+- [x] Interoperability gate: `test/ircd_interop_tests.erl` runs two separate
+  ircd OS processes linked over RFC 2813 TCP and checks these paths.
 
 ## Documentation and verification
 

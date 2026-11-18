@@ -10,19 +10,94 @@ pack_splits_on_the_byte_budget_test() ->
     ?assertEqual([Huge], ircd_cap:pack([Huge], 10)),
     ?assertEqual([<<>>], ircd_cap:pack([], 10)).
 
-offered_caps_are_the_four_implemented_names_test() ->
-    ?assertEqual(
-        [<<"batch">>, <<"cap-notify">>, <<"labeled-response">>, <<"message-tags">>],
-        ircd_cap:offered()
+offered_caps_cover_the_ircv3_registry_test() ->
+    Offered = ircd_cap:offered(),
+    ?assertEqual(lists:sort(Offered), Offered),
+    lists:foreach(
+        fun(Name) -> ?assert(lists:member(Name, Offered)) end,
+        [
+            <<"account-notify">>,
+            <<"account-tag">>,
+            <<"away-notify">>,
+            <<"batch">>,
+            <<"cap-notify">>,
+            <<"chghost">>,
+            <<"echo-message">>,
+            <<"extended-join">>,
+            <<"extended-monitor">>,
+            <<"invite-notify">>,
+            <<"labeled-response">>,
+            <<"message-tags">>,
+            <<"multi-prefix">>,
+            <<"no-implicit-names">>,
+            <<"sasl">>,
+            <<"server-time">>,
+            <<"setname">>,
+            <<"standard-replies">>,
+            <<"sts">>,
+            <<"userhost-in-names">>,
+            <<"draft/account-registration">>,
+            <<"draft/channel-rename">>,
+            <<"draft/chathistory">>,
+            <<"draft/extended-isupport">>,
+            <<"draft/message-redaction">>,
+            <<"draft/metadata-2">>,
+            <<"draft/multiline">>,
+            <<"draft/oper-tag">>,
+            <<"draft/pre-away">>,
+            <<"draft/read-marker">>
+        ]
     ).
+
+sts_is_advertised_only_when_configured_and_never_requested_test() ->
+    with_cap(fun(Pid) ->
+        ?assertNot(lists:keymember(<<"sts">>, 1, ircd_cap:advertised(Pid))),
+        ?assertEqual({nak, <<"sts">>}, ircd_cap:request(Pid, [<<"sts">>]))
+    end),
+    Previous = persistent_term:get({ircd_state, config}, undefined),
+    persistent_term:put(
+        {ircd_state, config},
+        #{sts => #{port => 6697, duration => 300, preload => false}}
+    ),
+    try
+        with_cap(fun(Pid) ->
+            ?assertEqual(
+                {<<"sts">>, <<"port=6697">>},
+                lists:keyfind(<<"sts">>, 1, ircd_cap:advertised(Pid))
+            ),
+            ok = ircd_cap:set_info(Pid, secure, true),
+            ?assertEqual(
+                {<<"sts">>, <<"duration=300">>},
+                lists:keyfind(<<"sts">>, 1, ircd_cap:advertised(Pid))
+            ),
+            ?assertEqual({nak, <<"sts">>}, ircd_cap:request(Pid, [<<"sts">>]))
+        end)
+    after
+        case Previous of
+            undefined -> persistent_term:erase({ircd_state, config});
+            _ -> persistent_term:put({ircd_state, config}, Previous)
+        end
+    end.
+
+capability_values_test() ->
+    with_cap(fun(Pid) ->
+        Advertised = ircd_cap:advertised(Pid),
+        ?assertEqual(
+            {<<"sasl">>, <<"EXTERNAL,PLAIN,SCRAM-SHA-256">>},
+            lists:keyfind(<<"sasl">>, 1, Advertised)
+        ),
+        {_, Multiline} = lists:keyfind(<<"draft/multiline">>, 1, Advertised),
+        ?assertMatch({match, _}, re:run(Multiline, <<"max-bytes=[0-9]+">>)),
+        ?assertEqual({<<"batch">>, undefined}, lists:keyfind(<<"batch">>, 1, Advertised))
+    end).
 
 atomic_request_and_version_test() ->
     with_cap(fun(Pid) ->
-        ?assertEqual({nak, <<"sasl">>}, ircd_cap:request(Pid, [<<"sasl">>])),
+        ?assertEqual({nak, <<"bogus">>}, ircd_cap:request(Pid, [<<"bogus">>])),
         ?assertEqual([], ircd_cap:list_names(Pid)),
         ?assertEqual(
-            {nak, <<"message-tags sasl">>},
-            ircd_cap:request(Pid, [<<"message-tags sasl">>])
+            {nak, <<"message-tags bogus">>},
+            ircd_cap:request(Pid, [<<"message-tags bogus">>])
         ),
         ?assertEqual([], ircd_cap:list_names(Pid)),
         ?assertEqual(

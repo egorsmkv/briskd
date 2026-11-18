@@ -1,17 +1,21 @@
 # ircd
 
-An IRC server written in Erlang/OTP, with TCP and optional TLS listeners,
+An IRC server written in Erlang/OTP, with TCP, TLS, and WebSocket listeners,
 Mnesia-backed state, and server links that carry bursts, multi-hop routing,
 and netsplit cleanup.
 
 This is an implementation of the RFC 1459 and RFC 2810–2813 behavior listed in
-the [roadmap](ROADMAP.md), plus a small IRCv3 subset: capability negotiation,
-message tags, and labeled responses. The other specifications on
-<https://ircv3.net/irc/> are not implemented.
+the [roadmap](ROADMAP.md), plus the IRCv3 specifications on
+<https://ircv3.net/irc/>.
 
 ## Features
 
-- Supervised TCP and TLS listeners, client sessions, and server links.
+- Supervised TCP, TLS, and WebSocket listeners, client sessions, and server
+  links.
+- IRCv3: capability negotiation 302, message tags and server tags, batches,
+  labeled responses, SASL and account registration, account and presence
+  notifications, echo-message, chathistory, read markers, redaction,
+  multiline, metadata, MONITOR, WHOX, channel rename, WEBIRC, STS, and more.
 - Client registration, messaging, user queries, and common channel commands.
 - Channel modes, access lists, invitations, safe channels, and anonymous
   channels.
@@ -55,7 +59,8 @@ Docker Compose provides OTP 29, Rebar3, and `just`, and mounts the checkout at
 docker compose -f docker-compose.dev.yml up --build
 ```
 
-The development server is available at `localhost:6667`. To run the container
+The development server is available at `localhost:6667`, and IRC over
+WebSocket at `ws://localhost:8080`. To run the container
 in the background, add `-d`; then run project commands inside it, for example:
 
 ```sh
@@ -78,7 +83,8 @@ If `just` is installed, `just --list` shows the available commands:
 | `just run-config path/to/file.json` | Start with a selected configuration |
 | `just format` | Format Erlang source with erlfmt |
 | `just format-check` | Check Erlang formatting |
-| `just test` | Run the EUnit suite |
+| `just xref` | Check for undefined and deprecated calls |
+| `just test` | Run the EUnit suite, including the two-server interop test |
 | `just deps` | Fetch Rebar3 dependencies |
 | `just clean` | Remove compiled build artifacts |
 
@@ -115,19 +121,39 @@ to the process working directory unless they are absolute.
 | `retention` | `transient` | `transient` or `channels`. `channels` keeps ordinary channel state and channel message history across a restart |
 | `history_limit` | `100` | Channel `PRIVMSG`/`NOTICE` lines kept per channel when `retention` is `channels` (1..10000) |
 | `server_links` | `[]` | Direct peer definitions with `name`, `host`, `port`, `password`, and optional `tls` |
+| `ws_port`, `wss_port` | `null` | IRCv3 WebSocket listeners over TCP and TLS; `null` disables |
+| `ws_origins` | `null` | Allowed WebSocket `Origin` values; `null` allows any origin |
+| `network` | value of `name` | `NETWORK` ISUPPORT token |
+| `network_icon` | `null` | `draft/ICON` ISUPPORT URL |
+| `sts` | `null` | STS policy `{"port": P, "duration": seconds, "preload": false}`. `null` disables the `sts` capability |
+| `sni` | `[]` | Extra TLS certificates chosen by SNI host name, each with `hostname`, `certfile`, and `keyfile` |
+| `account_registration` | `true` | Allow `REGISTER` (draft/account-registration) |
+| `chathistory` | `true` | Record channel and account-to-account messages for `CHATHISTORY` (bounded by `history_limit`) |
+| `utf8_only` | `false` | Advertise `UTF8ONLY` and reject commands whose parameters are not UTF-8 |
+| `monitor_limit` | `100` | Maximum `MONITOR` targets per client |
+| `webirc` | `[]` | Trusted WebIRC gateways, each with `password` and a `hosts` list of IP addresses |
+| `account_verification` | `null` | `{"command": ["/abs/program", "args"...], "ttl": 900}`. When set, `REGISTER` needs an email address and the program delivers a verification code (environment `IRCD_ACCOUNT`, `IRCD_EMAIL`, `IRCD_CODE`) |
 
-Set at least one of `tcp_port` or `tls_port`. TLS uses TLS 1.2 and 1.3; configure
-`certfile` and `keyfile` when enabling the TLS listener. Port `0` requests an
-ephemeral port, which is reported in the startup log.
+Set at least one of `tcp_port`, `tls_port`, `ws_port`, or `wss_port`. TLS
+uses TLS 1.2 and 1.3; configure `certfile` and `keyfile` when enabling the TLS
+or secure WebSocket listener. The TLS listeners ask for an optional client
+certificate. A missing or self-signed one does not fail the handshake; its
+SHA-256 fingerprint is only used by SASL `EXTERNAL`. Server certificate
+handling is unchanged. Port `0` requests an ephemeral port, which is reported
+in the startup log.
 
 `mnesia_dir` should point to writable storage. The default `retention` value
-`transient` persists WHOWAS history and safe-channel state, and clears ordinary
-channels on restart. `channels` also keeps ordinary channel names, topics,
-modes, keys, limits, access masks, and a bounded channel `PRIVMSG`/`NOTICE`
-history (`history_limit` lines, default 100). A joining client receives that
-history after the restart. Client sessions, operator status, and imported peer
-state are cleared on restart in both modes. Message bodies are not written to
-the log. An invalid `retention` or `history_limit` is rejected at startup.
+`transient` persists WHOWAS history, safe-channel state, accounts, and read
+markers, and clears ordinary channels and channel history on restart.
+`channels` also keeps ordinary channel names, topics, modes, keys, limits,
+access masks, and the bounded channel `PRIVMSG`/`NOTICE` history
+(`history_limit` lines, default 100). With `chathistory` enabled (the
+default) that history is recorded in both modes for `CHATHISTORY`; under
+`transient` retention it lasts until the next restart. A joining client
+without `draft/chathistory` receives it after a restart under `channels`
+retention. Client sessions, operator status, and imported peer state are
+cleared on restart in both modes. Message bodies are not written to the log.
+An invalid `retention` or `history_limit` is rejected at startup.
 
 `administrators` are additional `OPER` accounts. `nick` is the name passed to
 `OPER` and is a nickname under this server's nickname rules. It is compared
@@ -183,32 +209,105 @@ lost link remove the users, services, and channels that were reachable only
 through the lost server and tell the remaining peers. Channel invitations are
 stored and forwarded after the burst.
 
-IRCv3 support is limited to capability negotiation, message tags, and labeled
-responses. `CAP LS` and `CAP LIST` advertise only `batch`, `cap-notify`,
-`labeled-response`, and `message-tags`. `CAP LS 302` (or any higher version)
-keeps version 302 for the rest of the connection: `cap-notify` is implicit and
-cannot be disabled, and a long list uses a `*` continuation. Clients that never
-send version 302 may disable `cap-notify`. `CAP REQ` is atomic. An unknown
-capability, including `sasl`, is `NAK`, and an unknown subcommand returns
-numeric 410. `CAP LS` or `CAP REQ` during registration holds the welcome
-numerics until `CAP END`.
+### IRCv3
 
-A client that has negotiated `message-tags` may send client-only tags (keys
-that begin with `+`) on `PRIVMSG`, `NOTICE`, and `TAGMSG`. Those tags are
-relayed to other clients who also negotiated `message-tags`, including across
-a direct server link. Tags without `+`, including `label`, are not relayed.
-`TAGMSG` follows the same channel membership and mode rules as `PRIVMSG` and
-is not sent to a client that did not negotiate `message-tags`. Tag data longer
-than 4094 bytes, or a tag section longer than 8191 bytes, is rejected with
-numeric 417 and is not delivered. Untagged lines stay at most 512 octets
-including CRLF. A client that has `labeled-response`, `batch`, and
-`message-tags` enabled can put a `label` tag of 1 to 64 bytes on a command.
-One reply line carries that label; several reply lines are one
-`labeled-response` batch; a command with no reply gets one labeled `ACK`.
+`CAP LS` advertises `account-notify`, `account-tag`, `away-notify`, `batch`,
+`cap-notify`, `chghost`, `echo-message`, `extended-join`, `extended-monitor`,
+`invite-notify`, `labeled-response`, `message-tags`, `multi-prefix`,
+`no-implicit-names`, `sasl`, `server-time`, `setname`, `standard-replies`,
+`userhost-in-names`, `sts` (when configured), `tls` (STARTTLS, on plaintext
+TCP when TLS is configured), and the drafts
+`draft/account-registration`, `draft/channel-rename`, `draft/chathistory`,
+`draft/event-playback`, `draft/extended-isupport`, `draft/message-redaction`,
+`draft/metadata-2`,
+`draft/multiline`, `draft/oper-tag`, `draft/pre-away`, and
+`draft/read-marker`. `CAP LS 302` shows values (`sasl` mechanisms, multiline
+and metadata limits, the STS policy) and uses `*` continuation lines. Version
+302 makes `cap-notify` implicit. `CAP REQ` is atomic; an unknown or
+unrequestable name (`sts`) is `NAK`, and an unknown subcommand is numeric 410.
+`CAP LS` or `CAP REQ` during registration holds the welcome until `CAP END`;
+until then the client is not registered: other commands get 451, it is
+invisible to WHOIS, WHO, ISON, and messages, and peers do not see it. A
+`CAP ACK` is sent with the capabilities in force before the request.
+A `REHASH` that changes the offered set sends `CAP NEW` and `CAP DEL` to
+`cap-notify` clients and an updated 005 batch to `draft/extended-isupport`
+clients.
 
-`SUMMON` and `USERS` are not available as working features. SASL, accounts,
-`server-time`, `echo-message`, and the other specifications on
-<https://ircv3.net/irc/> are not implemented. Consult the
+Tags: server tags are placed before client-only tags. Client-only `+` tags on
+`PRIVMSG`, `NOTICE`, and `TAGMSG` are relayed to
+`message-tags` clients and across server links. Every message gets a `msgid`
+(sent with `message-tags`) and a `time` (sent with `server-time`, which also
+stamps every other line). Lines from a logged-in user carry `account`
+(`account-tag`), lines from a `+B` user carry `bot`, and lines from an IRC
+operator carry `draft/oper` (`draft/oper-tag`). Tag data over 4094 bytes, or a
+tag section over 8191 bytes, is numeric 417. Untagged lines stay within 512
+octets. With `labeled-response`, `batch`, and `message-tags`, a `label` of 1 to
+64 bytes gets one labeled line, a `labeled-response` batch, or an `ACK`.
+
+Accounts: `AUTHENTICATE` supports `PLAIN`, `EXTERNAL` (TLS client certificate
+fingerprint), and `SCRAM-SHA-256`, before or after registration. `REGISTER
+<account|*> <email|*> <password>` creates an account and logs in (passwords of
+8 to 300 bytes; only SCRAM verifiers are stored; a TLS client certificate
+presented at registration is remembered for `EXTERNAL`). With
+`account_verification` set, `REGISTER` answers `VERIFICATION_REQUIRED`, the
+configured program sends the code, and `VERIFY <account> <code>` completes the
+account and logs in; the code expires after `ttl` seconds and is never logged. Logins send `ACCOUNT` to `account-notify` clients, JOIN carries the
+account with `extended-join`, WHOIS shows 330, WHOX shows the `a` field, and
+`$a:<account>` works in ban, exception, and invite lists.
+
+Presence: `AWAY` is sent to `away-notify` clients (and after a JOIN);
+`draft/pre-away` allows `AWAY` before registration. `SETNAME :<realname>`
+changes the realname (at most 200 bytes, `NAMELEN`). Operators can run
+`CHGHOST <nick> <user> <host>`; `chghost` clients see `CHGHOST` and others see
+QUIT and JOIN. User mode `+B` marks a bot (`BOT=B`, WHOIS 335, WHO flag `B`).
+`MONITOR` (limit `monitor_limit`) reports online and offline nicknames;
+`extended-monitor` adds away, account, host, and realname changes.
+
+Messages: `echo-message` returns the sender's own messages with their
+`msgid`. `draft/multiline` batches (up to 4096 bytes and 100 lines) are
+delivered as batches to capable clients and as separate lines to others.
+`CHATHISTORY` (`BEFORE`, `AFTER`, `LATEST`, `AROUND`, `BETWEEN`, `TARGETS`,
+by `timestamp=` or `msgid=`) returns history in a `chathistory` batch.
+Channel history is available to current members. Direct-message history is
+kept only between two logged-in accounts. Clients with `draft/event-playback`
+also get JOIN, PART, KICK, TOPIC, MODE, QUIT, NICK, and TAGMSG events. `MARKREAD` stores read
+markers per account and sends them after a JOIN. `REDACT <target> <msgid>
+[:reason]` removes a message from history and tells
+`draft/message-redaction` clients; the sender's account or a channel operator
+may redact.
+
+Channels and queries: `multi-prefix` and `userhost-in-names` change NAMES,
+WHO, and WHOIS prefixes; `no-implicit-names` drops the NAMES after JOIN; WHOX
+(`WHO <mask> %<fields>[,<token>]`) answers with numeric 354;
+`invite-notify` tells channel members (operators only on `+i` channels) about
+invitations. `RENAME <old> <new> [:reason]` renames a local channel (same
+type prefix, not `!`, not shared with a peer); clients without
+`draft/channel-rename` see PART and JOIN. `METADATA` stores public user and
+channel keys (`draft/metadata-2`, local to this server).
+
+Connections: `WEBIRC <password> <gateway> <hostname> <ip> [:options]` is
+accepted as the first command from a configured gateway address; a bad
+password gets `ERROR` and the connection closes. The gateway's own TLS
+certificate is never used for SASL `EXTERNAL`; a `certfp-sha-256=` option
+from a `secure` gateway is. With `utf8_only`, invalid UTF-8 arriving from a
+peer is replaced with U+FFFD before local delivery. `ws_port` and `wss_port`
+serve IRC over WebSocket with the `binary.ircv3.net` and `text.ircv3.net`
+subprotocols. Registration sends RPL_ISUPPORT (005) with `CASEMAPPING`,
+`CHANTYPES`, `PREFIX`, `MONITOR`, `WHOX`, `BOT`, `CHATHISTORY`,
+`MSGREFTYPES`, `EXTBAN`, `ACCOUNTEXTBAN`, `NAMELEN`, `UTF8ONLY` (when set),
+and `draft/ICON` (when set). `ISUPPORT` returns the same list, also before
+registration with `draft/extended-isupport`. A server split sends the QUITs in
+one `netsplit` batch, and users that arrive in a peer burst appear in a
+`netjoin` batch.
+
+Over server links, accounts (SCRAM verifiers, not email addresses), user and
+channel metadata, read markers, `ACCOUNT`, `SETNAME`, `CHGHOST`, `REDACT`,
+user mode `B`, and the `msgid` and `time` of messages are propagated in the
+burst and as they change. When two servers hold the same account name, the
+one created first wins. `STARTTLS` (deprecated by IRCv3) upgrades a plaintext
+TCP connection before registration; prefer `tls_port` and STS.
+
+`SUMMON` and `USERS` are not available as working features. Consult the
 [roadmap](ROADMAP.md) for the checked coverage list.
 
 ## Protocol references
@@ -222,6 +321,7 @@ One reply line carries that label; several reply lines are one
 - [IRCv3 Capability Negotiation](https://ircv3.net/specs/extensions/capability-negotiation.html)
 - [IRCv3 Message Tags](https://ircv3.net/specs/extensions/message-tags.html)
 - [IRCv3 Labeled Responses](https://ircv3.net/specs/extensions/labeled-response.html)
+- [IRCv3 specification index](https://ircv3.net/irc/)
 
 ## License
 

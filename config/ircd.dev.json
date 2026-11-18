@@ -4,6 +4,8 @@
   "bind": "0.0.0.0",
   "tcp_port": 6667,
   "tls_port": null,
+  "ws_port": 8080,
+  "network": "DevNet",
   "mnesia_dir": "/var/lib/ircd/mnesia",
   "retention": "transient",
   "history_limit": 100,

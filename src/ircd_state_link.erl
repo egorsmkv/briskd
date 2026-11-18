@@ -4,6 +4,7 @@
     import_remote_nick/3,
     receive_remote_invite/4,
     import_remote_njoin/3,
+    flush_netjoin/1,
     propagate_away/2,
     propagate_channel_kick/4,
     propagate_channel_message/5,
@@ -24,6 +25,7 @@
     remote_user_local_recipients/1,
     remote_user_visible_to_requester/3,
     receive_remote_kill/3,
+    relay_except/2,
     remove_remote_channel_member/4,
     remove_remote_nick/3,
     rename_remote_nick/3,
@@ -64,7 +66,8 @@ server_burst_lines(Server) ->
             end,
             mnesia:dirty_all_keys(channel)
         ),
-    ServerLines ++ ClientLines ++ remote_client_burst_lines() ++ ChannelLines ++
+    ServerLines ++ ClientLines ++ remote_client_burst_lines() ++
+        ircd_state_v3:burst_lines(Server) ++ ChannelLines ++ ircd_state_sync:burst_lines(Server) ++
         remote_channel_burst_lines(Server).
 
 client_burst_lines(
@@ -318,6 +321,8 @@ import_remote_nick(Peer, Home, Distance, Nick, _Hop, User, Host, Token, ModeStri
             write_remote_nick(
                 Peer, Home, Distance, Key, Nick, User, Host, Token, Modes, Real
             ),
+            ircd_state_monitor:online(Nick, <<Nick/binary, "!", User/binary, "@", Host/binary>>),
+            ircd_state_meta:forget_remote(Key),
             relay_except(
                 Peer, remote_nick_line(Home, Nick, Distance, User, Host, Token, Modes, Real)
             ),
@@ -462,6 +467,13 @@ rename_remote_nick(Peer, Prefix, Nick) ->
                     mnesia:dirty_delete(remote_client, OldKey),
                     mnesia:dirty_write(Remote#remote_client{key = NewKey, nick = Nick}),
                     rename_remote_memberships(Peer, OldKey, NewKey),
+                    ircd_state_meta:rename_remote(OldKey, NewKey),
+                    ircd_state_monitor:offline(Remote#remote_client.nick),
+                    ircd_state_monitor:online(
+                        Nick,
+                        <<Nick/binary, "!", (Remote#remote_client.user)/binary, "@",
+                            (Remote#remote_client.host)/binary>>
+                    ),
                     relay_except(Peer, ircd_wire:line(Prefix, <<"NICK">>, [Nick], none)),
                     ok;
                 {true, true, undefined, [#remote_client{key = OldKey, peer = Peer}]} ->
@@ -482,9 +494,11 @@ rename_remote_nick(Peer, Prefix, Nick) ->
 
 remove_remote_nick(Peer, Prefix, Reason) ->
     case remote_source(Peer, Prefix) of
-        {ok, #remote_client{key = Key}} ->
+        {ok, #remote_client{key = Key, nick = Nick}} ->
             relay_except(Peer, ircd_wire:line(Prefix, <<"QUIT">>, [], Reason)),
             mnesia:dirty_delete(remote_client, Key),
+            ircd_state_monitor:offline(Nick),
+            ircd_state_meta:forget_remote(Key),
             remove_remote_memberships(Peer, Key),
             ok;
         error ->
@@ -500,6 +514,14 @@ set_remote_away(Peer, Prefix, Params) ->
                     [_Message | _] -> (Remote#remote_client.modes)#{$a => true}
                 end,
             mnesia:dirty_write(Remote#remote_client{modes = Modes}),
+            AwayTail =
+                case Params of
+                    [] -> none;
+                    [Text | _] -> Text
+                end,
+            ircd_state_v3:notify_remote(
+                Remote, Prefix, <<"away-notify">>, <<"AWAY">>, [], AwayTail
+            ),
             AwayLine =
                 case Params of
                     [] -> ircd_wire:line(Prefix, <<"AWAY">>, [], none);
@@ -661,12 +683,15 @@ import_remote_njoin(Peer, Name, Members) ->
                             [Channel] -> Channel;
                             [] -> #remote_channel{key = Key, name = Name}
                         end,
+                    Previous = Existing#remote_channel.members,
                     NewMembers = lists:foldl(
                         fun({NickKey, Roles}, Acc) -> Acc#{NickKey => {Peer, Roles}} end,
-                        Existing#remote_channel.members,
+                        Previous,
                         Parsed
                     ),
                     mnesia:dirty_write(Existing#remote_channel{members = NewMembers}),
+                    Joined = [K || {K, _} <- Parsed, not maps:is_key(K, Previous)],
+                    show_netjoin(Name, Joined, Peer),
                     relay_except(
                         Peer, ircd_wire:line(local_server(), <<"NJOIN">>, [Name], Members)
                     ),
@@ -675,6 +700,50 @@ import_remote_njoin(Peer, Name, Members) ->
                     {error, empty_njoin};
                 Error ->
                     Error
+            end
+    end.
+
+%% Members that arrive in a peer's burst are shown to local channel members as
+%% JOINs inside one `netjoin` batch per burst (IRCv3 netsplit/netjoin batch
+%% types). RFC 2813 bursts have no end marker, so joins are collected per peer
+%% and flushed when the peer sends a non-burst command, when its link closes,
+%% or one second after the first collected join.
+show_netjoin(_Name, [], _Peer) ->
+    ok;
+show_netjoin(Name, Joined, Peer) ->
+    Pending =
+        case get({ircd_netjoin, Peer}) of
+            undefined ->
+                erlang:send_after(1000, self(), {flush_netjoin, Peer}),
+                [];
+            List ->
+                List
+        end,
+    put({ircd_netjoin, Peer}, lists:reverse([{Name, Key} || Key <- Joined], Pending)),
+    ok.
+
+%% @doc Send the collected burst JOINs from Peer in one netjoin batch.
+-spec flush_netjoin(binary()) -> ok.
+flush_netjoin(Peer) ->
+    case erase({ircd_netjoin, Peer}) of
+        undefined ->
+            ok;
+        Reversed ->
+            ircd_state_send:begin_batch(<<"netjoin">>, [local_server(), Peer], [<<"JOIN">>]),
+            try
+                lists:foreach(
+                    fun({Name, Key}) ->
+                        case mnesia:dirty_read(remote_channel, ircd_wire:fold(Name)) of
+                            [#remote_channel{members = Members}] when is_map_key(Key, Members) ->
+                                broadcast_remote_join(Name, Key);
+                            _ ->
+                                ok
+                        end
+                    end,
+                    lists:reverse(Reversed)
+                )
+            after
+                ircd_state_send:end_batch()
             end
     end.
 
@@ -695,7 +764,7 @@ import_remote_join(Peer, Prefix, Name) ->
                     mnesia:dirty_write(
                         Channel#remote_channel{members = Members#{NickKey => {Peer, [member]}}}
                     ),
-                    broadcast_remote_channel_event(Name, Prefix, <<"JOIN">>, none),
+                    broadcast_remote_join(Name, NickKey),
                     relay_except(Peer, ircd_wire:line(Prefix, <<"JOIN">>, [Name], none)),
                     ok
             end;
@@ -811,6 +880,48 @@ broadcast_kick_by_name(Name, Prefix, Nick, Reason) ->
     case mnesia:dirty_read(channel, ircd_wire:fold(Name)) of
         [Channel] -> broadcast_kick(Channel, Prefix, Nick, Reason);
         [] -> ok
+    end.
+
+%% Show a remote member joining a local channel. extended-join clients get the
+%% account and realname; away-notify clients learn that the member is away.
+broadcast_remote_join(Name, NickKey) ->
+    case
+        {
+            mnesia:dirty_read(channel, ircd_wire:fold(Name)),
+            mnesia:dirty_read(remote_client, NickKey)
+        }
+    of
+        {
+            [#channel{name = Canonical, members = Members, flags = Flags}],
+            [
+                #remote_client{
+                    nick = N, user = U, host = H, real = Real, account = Account, modes = Modes
+                }
+            ]
+        } ->
+            case maps:is_key($a, Flags) of
+                true ->
+                    ircd_state_send:broadcast(
+                        maps:keys(Members),
+                        <<"anonymous!anonymous@anonymous.">>,
+                        <<"JOIN">>,
+                        [Canonical],
+                        none
+                    );
+                false ->
+                    Prefix = <<N/binary, "!", U/binary, "@", H/binary>>,
+                    ircd_state_v3:join_broadcast(
+                        maps:keys(Members), Prefix, Canonical, Account, Real
+                    ),
+                    case maps:is_key($a, Modes) of
+                        true ->
+                            ircd_state_v3:away_on_join(maps:keys(Members), Prefix, <<"Away">>);
+                        false ->
+                            ok
+                    end
+            end;
+        _ ->
+            ok
     end.
 
 broadcast_remote_channel_event(Name, Prefix, Command, Reason) ->
@@ -1072,7 +1183,7 @@ apply_remote_user_modes([$+ | Rest], _Action, Modes) ->
 apply_remote_user_modes([$- | Rest], _Action, Modes) ->
     apply_remote_user_modes(Rest, remove, Modes);
 apply_remote_user_modes([Mode | Rest], Action, Modes) when
-    Mode =:= $a; Mode =:= $i; Mode =:= $o; Mode =:= $w
+    Mode =:= $a; Mode =:= $i; Mode =:= $o; Mode =:= $w; Mode =:= $B
 ->
     NewModes =
         case Action of
@@ -1096,7 +1207,7 @@ valid_server_host(Host) ->
         binary:match(Host, [<<0>>, <<" ">>, <<"\r">>, <<"\n">>]) =:= nomatch.
 
 server_user_modes(<<$+, Modes/binary>>) ->
-    case lists:all(fun(Mode) -> lists:member(Mode, "aiow") end, binary_to_list(Modes)) of
+    case lists:all(fun(Mode) -> lists:member(Mode, "aiowB") end, binary_to_list(Modes)) of
         true -> {ok, maps:from_list([{Mode, true} || Mode <- binary_to_list(Modes)])};
         false -> error
     end;
@@ -1113,7 +1224,7 @@ receive_remote_message(_Peer, _Prefix, _Command, _Params, _Tags) ->
     {error, invalid_remote_message}.
 
 relay_remote_message(Peer, Prefix, Command, Target, Text, Tags) ->
-    ClientTags = ircd_cap:client_tags(Tags),
+    ClientTags = trusted_server_tags(Tags) ++ ircd_cap:client_tags(Tags),
     case binary:split(Prefix, <<"!">>) of
         [Nick, _UserHost] ->
             case mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) of
@@ -1141,10 +1252,36 @@ relay_remote_message(Peer, Prefix, Command, Target, Text, Tags) ->
             {error, malformed_remote_prefix}
     end.
 
+%% A configured peer may carry the original `msgid` and `time` of a message so
+%% every server shows the same values. Malformed values are dropped.
+trusted_server_tags(Tags) ->
+    MsgId =
+        case lists:keyfind(<<"msgid">>, 1, Tags) of
+            {_, Id} when is_binary(Id), byte_size(Id) =< 64 ->
+                case binary:match(Id, [<<" ">>, <<":">>]) of
+                    nomatch -> [{<<"msgid">>, Id}];
+                    _ -> []
+                end;
+            _ ->
+                []
+        end,
+    Time =
+        case lists:keyfind(<<"time">>, 1, Tags) of
+            {_, Stamp} when is_binary(Stamp) ->
+                case ircd_state_history:parse_timestamp(Stamp) of
+                    {ok, _} -> [{<<"time">>, Stamp}];
+                    error -> []
+                end;
+            _ ->
+                []
+        end,
+    MsgId ++ Time.
+
 receive_remote_target(Peer, Remote, Prefix, Target, Text, Command, Tags) ->
     case ircd_state_client:find_nick(Target) of
         #client{pid = Pid, nick = LocalNick} ->
             ircd_state_send:send(Pid, Prefix, Command, [LocalNick], Text, Tags),
+            note_remote_direct(Remote, Prefix, Command, LocalNick, Text, Tags, Pid),
             ok;
         undefined ->
             case ircd_wire:channel(Target) of
@@ -1158,6 +1295,32 @@ receive_remote_target(Peer, Remote, Prefix, Target, Text, Command, Tags) ->
                     forward_user(Peer, Prefix, Command, Target, Text, Tags)
             end
     end.
+
+%% Keep the recipient's copy of a direct message from a remote account.
+note_remote_direct(#remote_client{account = From}, Prefix, Command, Target, Text, Tags, Pid) ->
+    Time =
+        case lists:keyfind(<<"time">>, 1, Tags) of
+            {_, Stamp} ->
+                case ircd_state_history:parse_timestamp(Stamp) of
+                    {ok, T} -> T;
+                    error -> erlang:system_time(millisecond)
+                end;
+            false ->
+                erlang:system_time(millisecond)
+        end,
+    MsgId =
+        case lists:keyfind(<<"msgid">>, 1, Tags) of
+            {_, Id} -> Id;
+            false -> ircd_state_send:msgid()
+        end,
+    ircd_state_history:note_direct(
+        From,
+        ircd_state_v3:account(Pid),
+        Target,
+        ircd_state_history:entry(
+            Command, Prefix, Text, MsgId, Time, ircd_cap:client_tags(Tags), From
+        )
+    ).
 
 forward_user(Ingress, Prefix, Command, Target, Text, Tags) ->
     case mnesia:dirty_read(remote_client, ircd_wire:fold(Target)) of
@@ -1227,7 +1390,7 @@ receive_remote_channel_message(Peer, Remote, Prefix, Name, Text, Command, Tags) 
                                 Tags
                             ),
                             ircd_state_channel:note_channel_history(
-                                Channel#channel.key, Command, Origin, Text
+                                Channel#channel.key, Command, Origin, Text, Tags
                             );
                         false ->
                             ok
@@ -1279,7 +1442,7 @@ remote_names_entries(Name, Client, LocalMember) ->
     case mnesia:dirty_read(remote_channel, ircd_wire:fold(Name)) of
         [#remote_channel{members = Members}] ->
             lists:sort([
-                remote_display_nick(Remote, Roles)
+                remote_display_nick(Remote, Roles, Client)
              || {NickKey, {_Peer, Roles}} <- maps:to_list(Members),
                 [Remote] <- [mnesia:dirty_read(remote_client, NickKey)],
                 remote_visible_in_names(Remote, Client, LocalMember)
@@ -1330,15 +1493,13 @@ remote_user_local_recipients(NickKey) ->
         Pid <- maps:keys(LocalMembers)
     ]).
 
-remote_display_nick(#remote_client{nick = Nick}, Roles) ->
-    case
-        {lists:member(creator, Roles), lists:member(operator, Roles), lists:member(voice, Roles)}
-    of
-        {true, _, _} -> <<$@, Nick/binary>>;
-        {false, true, _} -> <<$@, Nick/binary>>;
-        {false, false, true} -> <<$+, Nick/binary>>;
-        _ -> Nick
-    end.
+remote_display_nick(#remote_client{nick = Nick, user = User, host = Host}, Roles, #client{pid = Pid}) ->
+    Name =
+        case ircd_cap:enabled(Pid, <<"userhost-in-names">>) of
+            true -> <<Nick/binary, "!", User/binary, "@", Host/binary>>;
+            false -> Nick
+        end,
+    <<(ircd_state_channel:role_prefix(Roles, Pid))/binary, Name/binary>>.
 
 propagate_introduction(
     #client{nick = Nick, user = User, host = Host, real = Real, pid = Pid}, Server

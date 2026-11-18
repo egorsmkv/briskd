@@ -1,6 +1,7 @@
 -module(ircd_state_net).
 -export([
     cap/3,
+    notify_cap_changes/2,
     channel_blocked/1,
     hold_channel/1,
     hold_nick/1,
@@ -82,20 +83,32 @@ remove_remote_user(Remote) ->
 -spec split(binary(), binary(), undefined | binary()) -> ok.
 split(Lost, Reason, Except) ->
     Folds = [ircd_wire:fold(Name) || Name <- lost_names(Lost)],
-    lists:foreach(
-        fun(Key) ->
-            case mnesia:dirty_read(remote_client, Key) of
-                [#remote_client{} = Remote] ->
-                    case lost_client(Remote, Folds) of
-                        true -> drop_remote_user(Remote, Reason);
-                        false -> ok
-                    end;
-                _ ->
-                    ok
-            end
+    %% Every QUIT caused by this split goes in one `netsplit` batch.
+    %% The two parameters are the servers on either side of the split.
+    Uplink =
+        case mnesia:dirty_read(known_server, ircd_wire:fold(Lost)) of
+            [#known_server{parent = Parent}] when is_binary(Parent) -> Parent;
+            _ -> local_name()
         end,
-        mnesia:dirty_all_keys(remote_client)
-    ),
+    ircd_state_send:begin_batch(<<"netsplit">>, [Uplink, Lost], [<<"QUIT">>]),
+    try
+        lists:foreach(
+            fun(Key) ->
+                case mnesia:dirty_read(remote_client, Key) of
+                    [#remote_client{} = Remote] ->
+                        case lost_client(Remote, Folds) of
+                            true -> drop_remote_user(Remote, Reason);
+                            false -> ok
+                        end;
+                    _ ->
+                        ok
+                end
+            end,
+            mnesia:dirty_all_keys(remote_client)
+        )
+    after
+        ircd_state_send:end_batch()
+    end,
     lists:foreach(
         fun(Key) ->
             case mnesia:dirty_read(service, Key) of
@@ -149,20 +162,26 @@ cap(#client{pid = Pid, nick = Nick} = Client, Server, [Sub | Rest]) ->
         <<"LS">> ->
             ircd_cap:note_ls(Pid, [Sub | Rest]),
             ircd_cap:hold(Pid),
-            send_cap_list(Pid, Nick, Server, <<"LS">>, ircd_cap:offered());
+            send_cap_list(Pid, Nick, Server, <<"LS">>, ls_tokens(Pid));
         <<"LIST">> ->
             send_cap_list(Pid, Nick, Server, <<"LIST">>, ircd_cap:list_names(Pid));
         <<"REQ">> ->
             ircd_cap:hold(Pid),
+            %% The ACK is sent with the capabilities in force before the
+            %% request; the new set applies from the next line on.
+            Before = ircd_cap:state(Pid),
             {Kind, Text} = ircd_cap:request(Pid, Rest),
+            After = ircd_cap:state(Pid),
             Reply =
                 case Kind of
                     ack -> <<"ACK">>;
                     nak -> <<"NAK">>
                 end,
-            ircd_state_send:send(Pid, Server, <<"CAP">>, [Nick, Reply], Text);
+            ircd_cap:restore(Pid, Before),
+            ircd_state_send:send(Pid, Server, <<"CAP">>, [Nick, Reply], Text),
+            ircd_cap:restore(Pid, After);
         <<"END">> ->
-            case ircd_cap:finish(Pid, ircd_state_client:ready(Client)) of
+            case ircd_cap:finish(Pid, ircd_state_client:identified(Client)) of
                 welcome -> ircd_state_client:send_welcome(ircd_state_client:client(Pid), Server);
                 _ -> ok
             end;
@@ -172,8 +191,64 @@ cap(#client{pid = Pid, nick = Nick} = Client, Server, [Sub | Rest]) ->
 cap(Client, Server, []) ->
     ircd_state_send:numeric(Client, Server, <<"410">>, [<<>>], <<"Invalid CAP command">>).
 
+%% CAP LS tokens. Values are only shown to clients that asked for version 302.
+ls_tokens(Pid) ->
+    Values = maps:get(version, ircd_cap:state(Pid)) >= 302,
+    [cap_token(Name, Value, Values) || {Name, Value} <- ircd_cap:advertised(Pid)].
+
+cap_token(Name, undefined, _) -> Name;
+cap_token(Name, _Value, false) -> Name;
+cap_token(Name, Value, true) -> <<Name/binary, "=", Value/binary>>.
+
+%% @doc Tell cap-notify clients about capabilities whose advertisement changed.
+%% `Before` maps each client pid to its earlier advertised list. A capability
+%% that disappears is `CAP DEL` (never for `sts`) and is disabled. A new
+%% capability, or one whose value changed, is `CAP NEW`.
+-spec notify_cap_changes(#{pid() => [{binary(), undefined | binary()}]}, binary()) -> ok.
+notify_cap_changes(Before, Server) ->
+    maps:foreach(
+        fun(Pid, Old) ->
+            case ircd_cap:enabled(Pid, <<"cap-notify">>) of
+                true -> notify_cap_change(Pid, Old, ircd_cap:advertised(Pid), Server);
+                false -> ok
+            end
+        end,
+        Before
+    ).
+
+notify_cap_change(Pid, Old, New, Server) ->
+    Nick =
+        case mnesia:dirty_read(client, Pid) of
+            [#client{nick = N}] -> N;
+            [] -> <<"*">>
+        end,
+    Removed = [
+        Name
+     || {Name, _} <- Old, not lists:keymember(Name, 1, New), Name =/= <<"sts">>
+    ],
+    Added = [Pair || Pair <- New, not lists:member(Pair, Old)],
+    case Removed of
+        [] ->
+            ok;
+        _ ->
+            ircd_cap:disable(Pid, Removed),
+            send_cap_list(Pid, Nick, Server, <<"DEL">>, Removed)
+    end,
+    case Added of
+        [] ->
+            ok;
+        _ ->
+            Values = maps:get(version, ircd_cap:state(Pid)) >= 302,
+            send_cap_list(
+                Pid, Nick, Server, <<"NEW">>, [cap_token(N, V, Values) || {N, V} <- Added]
+            )
+    end.
+
 send_cap_list(Pid, Nick, Server, Sub, Names) ->
-    Multiline = maps:get(version, ircd_cap:state(Pid)) >= 302,
+    %% The `*` continuation exists only for LS and LIST.
+    Multiline =
+        maps:get(version, ircd_cap:state(Pid)) >= 302 andalso
+            (Sub =:= <<"LS">> orelse Sub =:= <<"LIST">>),
     Budget = cap_budget(Server, Nick, Sub, Multiline),
     Bodies = ircd_cap:pack(Names, Budget),
     Last = length(Bodies),
@@ -438,6 +513,8 @@ drop_remote_user(#remote_client{key = Key, nick = Nick, user = User, host = Host
         ircd_state_link:remote_user_local_recipients(Key), Prefix, <<"QUIT">>, [], Reason
     ),
     mnesia:dirty_delete(remote_client, Key),
+    ircd_state_monitor:offline(Nick),
+    ircd_state_meta:forget_remote(Key),
     drop_memberships(Key).
 
 drop_memberships(NickKey) ->

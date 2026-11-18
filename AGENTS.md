@@ -19,7 +19,7 @@ Do not trade off a MUST-level requirement of the implemented IRC specifications 
 
 This tree implements **selected parts** of RFC 1459 and RFC 2810–2813. It is not a complete IRC daemon. `ROADMAP.md` is the coverage record: a checked item is present, and it does not mean every edge case in the cited RFC is done. Extend behavior only when the task asks for it, and update the roadmap and README when coverage changes.
 
-Where RFC 1459 and RFC 2812 disagree, keep the choice already encoded in this server and name it in the change. Identity comparison uses the **RFC 1459** case mapping in `ircd_wire:fold/1` (`[\]^` fold to `{|}~`). The implemented IRCv3 subset is capability negotiation, message tags, and labeled responses for `batch`, `cap-notify`, `labeled-response`, and `message-tags` only. Do not add the other specifications on <https://ircv3.net/irc/> unless the task explicitly requires them. `CAP LS` advertises that set, `CAP REQ` is atomic, and an unknown subcommand returns 410.
+Where RFC 1459 and RFC 2812 disagree, keep the choice already encoded in this server and name it in the change. Identity comparison uses the **RFC 1459** case mapping in `ircd_wire:fold/1` (`[\]^` fold to `{|}~`). IRCv3 support covers the specifications on <https://ircv3.net/irc/>, including the deprecated `STARTTLS`; `ROADMAP.md` lists each one. `CAP LS` advertises the set in `ircd_cap`, `CAP REQ` is atomic, and an unknown subcommand returns 410. Server tags are filtered per recipient in `ircd_state_send`. Keep draft capability names prefixed exactly as the specification publishes them, and change a draft only when the published draft changes.
 
 ## 2. Working protocol for the agent
 
@@ -76,7 +76,12 @@ src/ircd_app.erl             # application callback
 src/ircd_sup.erl             # rest_for_one: state, sessions, links, listeners
 src/ircd_config.erl          # JSON config load and validation (IRCD_CONFIG)
 src/ircd_wire.erl            # line parse/encode, message tags, RFC 1459 case fold
-src/ircd_cap.erl             # per-connection capability negotiation
+src/ircd_cap.erl             # per-connection capability negotiation and values
+src/ircd_conn.erl            # per-connection IRCv3 state (account, MONITOR, metadata, batch)
+src/ircd_isupport.erl        # RPL_ISUPPORT (005) tokens
+src/ircd_account.erl         # accounts and SCRAM-SHA-256 verifiers
+src/ircd_sasl.erl            # SASL PLAIN, EXTERNAL, SCRAM-SHA-256 (pure)
+src/ircd_websocket.erl       # RFC 6455 handshake and framing (pure)
 src/ircd_state.erl           # state process, command dispatch, public API
 src/ircd_state_client.erl    # registration, identity, visibility, connection stats
 src/ircd_state_channel.erl   # membership, modes, names, and safe-channel reop
@@ -84,7 +89,13 @@ src/ircd_state_link.erl      # burst, import, propagation, and multi-hop deliver
 src/ircd_state_net.erl       # known servers, services, netsplits, and holds
 src/ircd_route.erl           # pure hop, loop, burst-order, and numeric decisions
 src/ircd_state_info.erl      # operator, statistics, and server query commands
-src/ircd_state_send.erl      # numeric replies and client delivery
+src/ircd_state_send.erl      # numeric replies, tag filtering, batches, client delivery
+src/ircd_state_v3.erl        # IRCv3 accounts, SASL, identity, and notifications
+src/ircd_state_monitor.erl   # MONITOR and extended-monitor
+src/ircd_state_history.erl   # chathistory, read markers, redaction
+src/ircd_state_batch.erl     # client batches and draft/multiline
+src/ircd_state_meta.erl      # draft/metadata-2
+src/ircd_state_sync.erl      # accounts, metadata, read markers across server links
 src/ircd_state_queries.erl   # WHO/WHOIS/WHOWAS and related numerics
 src/ircd_listener.erl        # TCP or TLS accept loop
 src/ircd_session.erl         # one client connection
@@ -96,6 +107,7 @@ include/ircd_state.hrl       # includes the records below
 include/ircd_client.hrl
 include/ircd_channel.hrl
 include/ircd_remote.hrl
+include/ircd_account.hrl     # account and read_marker records
 include/ircd_wire.hrl        # wire buffer limit
 config/ircd.json             # sample/operator config
 config/ircd.dev.json         # development container config
@@ -291,7 +303,7 @@ just format-check
 just test
 ```
 
-GitHub Actions (`.github/workflows/ci.yml`) builds the development image and runs `just format-check` and `just test`. Keep that workflow on the same OTP image as the Dockerfile.
+GitHub Actions (`.github/workflows/ci.yml`) builds the development image and runs `just format-check` and `just test`. `just test` includes `ircd_interop_tests`, which starts two ircd OS processes linked over TCP; keep it green for link changes. Keep that workflow on the same OTP image as the Dockerfile.
 
 Add `rebar3 dialyzer`, `rebar3 xref`, Common Test, and a release smoke test when those providers exist for the change. `rebar.config` enables `warnings_as_errors` and erlfmt. A new warning or format drift is a defect. Say so when a check is skipped because the container or a plugin is absent.
 

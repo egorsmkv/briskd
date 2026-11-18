@@ -19,6 +19,6 @@ init(Config) ->
     ],
     Listeners = [
         #{id => Kind, start => {ircd_listener, start_link, [Kind, Port, Config]}}
-     || Kind <- [tcp, tls], Port <- [maps:get(Kind, Config)], Port =/= null
+     || Kind <- [tcp, tls, ws, wss], Port <- [maps:get(Kind, Config)], Port =/= null
     ],
     {ok, {#{strategy => rest_for_one}, Children ++ Listeners}}.

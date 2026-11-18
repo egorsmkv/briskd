@@ -6,6 +6,8 @@
     command/4,
     input_too_long/1,
     connect/1,
+    connect/2,
+    tls_upgraded/1,
     find_nick/1,
     format_status/1,
     handle_call/3,
@@ -35,6 +37,7 @@
     wildcard_match/2
 ]).
 -include("ircd_state.hrl").
+-include("ircd_account.hrl").
 
 %% @doc Own IRC client, channel, and peer state for this server.
 
@@ -44,7 +47,16 @@ start_link(Config) -> gen_server:start_link({local, ?MODULE}, ?MODULE, Config, [
 
 %% @doc Register the calling session as a connected client using its peer host.
 -spec connect(binary()) -> ok.
-connect(Host) -> gen_server:call(?MODULE, {connect, Host}).
+connect(Host) -> connect(Host, #{}).
+
+%% @doc Register the calling session with connection facts: `secure` (TLS) and
+%% `certfp` (lowercase hex SHA-256 of the client certificate, if any).
+-spec connect(binary(), map()) -> ok.
+connect(Host, Info) -> gen_server:call(?MODULE, {connect, Host, Info}).
+
+%% @doc Record that the calling session finished a STARTTLS handshake.
+-spec tls_upgraded(map()) -> ok.
+tls_upgraded(Info) -> gen_server:call(?MODULE, {tls_upgraded, Info}).
 
 %% @doc Apply a parsed IRC command on behalf of the calling session.
 %% Params contains the command's tokenized parameters and Bytes is the wire line size.
@@ -53,7 +65,7 @@ command(Command, Params, Bytes) -> command(Command, Params, Bytes, []).
 
 %% @doc Apply a client command that may carry IRCv3 message tags.
 -spec command(binary(), [binary()], non_neg_integer(), [{binary(), undefined | binary()}]) ->
-    ok | quit.
+    ok | quit | starttls.
 command(Command, Params, Bytes, Tags) ->
     gen_server:call(?MODULE, {command, Command, Params, Bytes, Tags}).
 
@@ -126,6 +138,11 @@ init(#{name := Name} = Config) ->
     ensure_ets(ircd_outbound_ready),
     ensure_ets(ircd_holds),
     ensure_ets(ircd_admins),
+    ensure_ets(ircd_conn),
+    ensure_ets(ircd_chan_meta),
+    ensure_ets(ircd_dm_history),
+    ensure_bag(ircd_monitor),
+    ensure_ets(ircd_remote_meta),
     persistent_term:put({?MODULE, config}, Config),
     persistent_term:put({?MODULE, config_path}, maps:get(config_path, Config)),
     persistent_term:put({?MODULE, motd_file}, maps:get(motd_file, Config, null)),
@@ -144,8 +161,14 @@ init(#{name := Name} = Config) ->
     table(remote_channel, record_info(fields, remote_channel), []),
     table(known_server, record_info(fields, known_server), []),
     table(service, record_info(fields, service), []),
+    table(account, record_info(fields, account), []),
+    table(read_marker, record_info(fields, read_marker), []),
+    table(direct_history, record_info(fields, direct_history), []),
     ok = mnesia:wait_for_tables(
         [
+            account,
+            read_marker,
+            direct_history,
             client,
             channel,
             channel_history,
@@ -237,6 +260,8 @@ ensure_table_shape(client, Fields) ->
             ),
             logger:info("Migrated Mnesia client table from ~p", [OldFields])
     end;
+ensure_table_shape(account, Fields) ->
+    migrate_appended(account, Fields, undefined);
 ensure_table_shape(remote_channel, Fields) ->
     migrate_appended(remote_channel, Fields, #{});
 ensure_table_shape(remote_client, Fields) ->
@@ -294,6 +319,12 @@ pads(remote_client, Missing, _Default) when Missing >= 2 ->
 pads(_Table, Missing, Default) ->
     lists:duplicate(Missing, Default).
 
+ensure_bag(Name) ->
+    case ets:whereis(Name) of
+        undefined -> ets:new(Name, [named_table, public, bag]);
+        _ -> ets:delete_all_objects(Name)
+    end.
+
 ensure_ets(Name) ->
     case ets:whereis(Name) of
         undefined -> ets:new(Name, [named_table, public, set]);
@@ -337,7 +368,8 @@ reset_channels() ->
                 end,
                 mnesia:dirty_all_keys(channel)
             ),
-            {atomic, ok} = mnesia:clear_table(channel_history)
+            {atomic, ok} = mnesia:clear_table(channel_history),
+            {atomic, ok} = mnesia:clear_table(direct_history)
     end.
 
 cleared_membership(Channel) ->
@@ -412,14 +444,19 @@ history_limit() ->
     maps:get(history_limit, persistent_term:get({?MODULE, config}), 100).
 
 %% @doc Handle session registration, registration queries, and client commands.
-handle_call({connect, Host}, {Pid, _}, Server) ->
+handle_call({connect, Host}, From, Server) ->
+    handle_call({connect, Host, #{}}, From, Server);
+handle_call({connect, Host, Info}, {Pid, _}, Server) ->
     monitor(process, Pid),
     mnesia:dirty_write(#client{pid = Pid, host = ircd_wire:retain(Host)}),
-    ircd_cap:connect(Pid),
+    ircd_cap:connect(Pid, Info),
     ircd_state_client:touch_activity(Pid),
     ircd_state_client:put_connection_stats(Pid, #{}),
     mnesia:dirty_write(#user_modes{pid = Pid}),
     logger:info(#{event => client_connected, peer => Host}),
+    {reply, ok, Server};
+handle_call({tls_upgraded, Info}, {Pid, _}, Server) ->
+    maps:foreach(fun(Key, Value) -> ircd_cap:set_info(Pid, Key, Value) end, Info),
     {reply, ok, Server};
 handle_call(registered, {Pid, _}, Server) ->
     {reply, ircd_state_client:ready(ircd_state_client:client(Pid)), Server};
@@ -430,13 +467,76 @@ handle_call({register_adjacent, Name, Token, Kind}, {Pid, _}, Server) ->
     %% found through the link supervisor, so the caller pid is not stored.
     Result = ircd_state_net:register_adjacent(Name, Token, Kind, Pid),
     {reply, Result, Server};
-handle_call({server_command, Peer, _Prefix, <<"NJOIN">>, [Name, Members]}, _, Server) ->
+handle_call({server_command, Peer, Prefix, Command, Params, Tags}, From, Server) ->
+    case burst_command(Command) of
+        true -> ok;
+        false -> ircd_state_link:flush_netjoin(Peer)
+    end,
+    ircd_state_send:set_source(ircd_state_v3:remote_source_info(Prefix)),
+    %% UTF8ONLY: text from peers reaches local clients only as valid UTF-8;
+    %% invalid bytes become U+FFFD.
+    Safe =
+        case maps:get(utf8_only, persistent_term:get({?MODULE, config}), false) of
+            true -> [ircd_websocket:utf8_safe(P) || P <- Params];
+            false -> Params
+        end,
+    try
+        server_call({server_command, Peer, Prefix, Command, Safe, Tags}, From, Server)
+    after
+        ircd_state_send:clear_source()
+    end;
+handle_call(Request, From, Server) ->
+    other_call(Request, From, Server).
+
+%% Commands that may appear inside a peer's burst between NJOIN lines.
+burst_command(Command) ->
+    lists:member(Command, [
+        <<"NJOIN">>,
+        <<"NICK">>,
+        <<"SERVER">>,
+        <<"MODE">>,
+        <<"SERVICE">>,
+        <<"ACCOUNT">>,
+        <<"ACCOUNTSYNC">>,
+        <<"METADATA">>,
+        <<"MARKREAD">>,
+        <<"AWAY">>
+    ]).
+
+server_call({server_command, Peer, Prefix, <<"ACCOUNT">>, Params, _Tags}, _, Server) when
+    is_binary(Prefix)
+->
+    {reply, ircd_state_v3:receive_remote_account(Peer, Prefix, Params), Server};
+server_call({server_command, Peer, Prefix, <<"SETNAME">>, Params, _Tags}, _, Server) when
+    is_binary(Prefix)
+->
+    {reply, ircd_state_v3:receive_remote_setname(Peer, Prefix, Params), Server};
+server_call({server_command, Peer, Prefix, <<"CHGHOST">>, Params, _Tags}, _, Server) when
+    is_binary(Prefix)
+->
+    {reply, ircd_state_v3:receive_remote_chghost(Peer, Prefix, Params), Server};
+server_call({server_command, Peer, Prefix, <<"REDACT">>, Params, _Tags}, _, Server) when
+    is_binary(Prefix)
+->
+    {reply, ircd_state_history:receive_remote_redact(Peer, Prefix, Params), Server};
+server_call({server_command, Peer, Prefix, <<"ACCOUNTSYNC">>, Params, _Tags}, _, Server) ->
+    {reply, ircd_state_sync:receive_accountsync(Peer, Prefix, Params), Server};
+server_call({server_command, Peer, Prefix, <<"METADATA">>, Params, _Tags}, _, Server) when
+    is_binary(Prefix)
+->
+    {reply, ircd_state_sync:receive_metadata(Peer, Prefix, Params), Server};
+server_call({server_command, Peer, Prefix, <<"MARKREAD">>, Params, _Tags}, _, Server) ->
+    {reply, ircd_state_sync:receive_markread(Peer, Prefix, Params), Server};
+server_call(Request, From, Server) ->
+    other_call(Request, From, Server).
+
+other_call({server_command, Peer, _Prefix, <<"NJOIN">>, [Name, Members]}, _, Server) ->
     {reply, ircd_state_link:import_remote_njoin(Peer, Name, Members), Server};
-handle_call({server_command, Peer, Prefix, <<"JOIN">>, [Name | _]}, _, Server) when
+other_call({server_command, Peer, Prefix, <<"JOIN">>, [Name | _]}, _, Server) when
     is_binary(Prefix)
 ->
     {reply, ircd_state_link:import_remote_join(Peer, Prefix, Name), Server};
-handle_call({server_command, Peer, Prefix, <<"PART">>, [Name | Rest]}, _, Server) when
+other_call({server_command, Peer, Prefix, <<"PART">>, [Name | Rest]}, _, Server) when
     is_binary(Prefix)
 ->
     Reason =
@@ -445,11 +545,11 @@ handle_call({server_command, Peer, Prefix, <<"PART">>, [Name | Rest]}, _, Server
             [] -> none
         end,
     {reply, ircd_state_link:remove_remote_channel_member(Peer, Prefix, Name, Reason), Server};
-handle_call({server_command, Peer, Prefix, <<"TOPIC">>, [Name, Text]}, _, Server) when
+other_call({server_command, Peer, Prefix, <<"TOPIC">>, [Name, Text]}, _, Server) when
     is_binary(Prefix)
 ->
     {reply, ircd_state_link:update_remote_topic(Peer, Prefix, Name, Text), Server};
-handle_call({server_command, Peer, Prefix, <<"KICK">>, [Name, Nick | Rest]}, _, Server) when
+other_call({server_command, Peer, Prefix, <<"KICK">>, [Name, Nick | Rest]}, _, Server) when
     is_binary(Prefix)
 ->
     Reason =
@@ -458,11 +558,11 @@ handle_call({server_command, Peer, Prefix, <<"KICK">>, [Name, Nick | Rest]}, _, 
             [] -> none
         end,
     {reply, ircd_state_link:receive_remote_kick(Peer, Prefix, Name, Nick, Reason), Server};
-handle_call({server_command, Peer, Prefix, <<"NICK">>, [Nick]}, _, Server) when
+other_call({server_command, Peer, Prefix, <<"NICK">>, [Nick]}, _, Server) when
     is_binary(Prefix)
 ->
     {reply, ircd_state_link:rename_remote_nick(Peer, Prefix, Nick), Server};
-handle_call({server_command, Peer, Prefix, <<"QUIT">>, Params}, _, Server) when
+other_call({server_command, Peer, Prefix, <<"QUIT">>, Params}, _, Server) when
     is_binary(Prefix)
 ->
     Reason =
@@ -471,30 +571,30 @@ handle_call({server_command, Peer, Prefix, <<"QUIT">>, Params}, _, Server) when
             [] -> <<"QUIT">>
         end,
     {reply, ircd_state_link:remove_remote_nick(Peer, Prefix, Reason), Server};
-handle_call({server_command, Peer, Prefix, <<"AWAY">>, Params}, _, Server) when
+other_call({server_command, Peer, Prefix, <<"AWAY">>, Params}, _, Server) when
     is_binary(Prefix)
 ->
     {reply, ircd_state_link:set_remote_away(Peer, Prefix, Params), Server};
-handle_call({server_command, Peer, Prefix, <<"NICK">>, Params}, _, Server) when
+other_call({server_command, Peer, Prefix, <<"NICK">>, Params}, _, Server) when
     is_binary(Prefix), length(Params) =:= 7
 ->
     {reply, ircd_state_link:import_remote_nick(Peer, Prefix, Params), Server};
-handle_call({server_command, Peer, Prefix, <<"MODE">>, [Name, Modes | Args]}, _, Server) ->
+other_call({server_command, Peer, Prefix, <<"MODE">>, [Name, Modes | Args]}, _, Server) ->
     {reply, ircd_state_link:update_remote_modes(Peer, Prefix, Name, Modes, Args), Server};
-handle_call({server_command, Peer, Prefix, Command, Params, Tags}, _, Server) when
+other_call({server_command, Peer, Prefix, Command, Params, Tags}, _, Server) when
     is_binary(Prefix),
     (Command =:= <<"PRIVMSG">> orelse Command =:= <<"NOTICE">> orelse Command =:= <<"TAGMSG">>)
 ->
     {reply, ircd_state_link:receive_remote_message(Peer, Prefix, Command, Params, Tags), Server};
-handle_call({server_command, Peer, Prefix, Command, Params, _Tags}, From, Server) ->
-    handle_call({server_command, Peer, Prefix, Command, Params}, From, Server);
-handle_call({server_command, Peer, Prefix, Command, Params}, _, Server) when
+other_call({server_command, Peer, Prefix, Command, Params, _Tags}, From, Server) ->
+    other_call({server_command, Peer, Prefix, Command, Params}, From, Server);
+other_call({server_command, Peer, Prefix, Command, Params}, _, Server) when
     is_binary(Prefix), (Command =:= <<"PRIVMSG">> orelse Command =:= <<"NOTICE">>)
 ->
     {reply, ircd_state_link:receive_remote_message(Peer, Prefix, Command, Params, []), Server};
-handle_call({server_command, Peer, Prefix, <<"SERVER">>, [Name, Hop, Token, Info | _]}, _, Server) ->
+other_call({server_command, Peer, Prefix, <<"SERVER">>, [Name, Hop, Token, Info | _]}, _, Server) ->
     {reply, ircd_state_net:introduce_server(Peer, Prefix, Name, Hop, Token, Info), Server};
-handle_call({server_command, Peer, _Prefix, <<"SQUIT">>, [Target | Rest]}, _, Server) ->
+other_call({server_command, Peer, _Prefix, <<"SQUIT">>, [Target | Rest]}, _, Server) ->
     Reason =
         case Rest of
             [Text | _] -> Text;
@@ -502,27 +602,28 @@ handle_call({server_command, Peer, _Prefix, <<"SQUIT">>, [Target | Rest]}, _, Se
         end,
     ircd_state_net:split(Target, Reason, Peer),
     {reply, ok, Server};
-handle_call({server_command, Peer, Prefix, <<"INVITE">>, [Nick, Name | _]}, _, Server) ->
+other_call({server_command, Peer, Prefix, <<"INVITE">>, [Nick, Name | _]}, _, Server) ->
     {reply, ircd_state_link:receive_remote_invite(Peer, Prefix, Nick, Name), Server};
-handle_call({server_command, Peer, Prefix, <<"SERVICE">>, Params}, _, Server) ->
+other_call({server_command, Peer, Prefix, <<"SERVICE">>, Params}, _, Server) ->
     {reply, ircd_state_net:import_service(Peer, Prefix, Params), Server};
-handle_call({server_command, Peer, Prefix, <<"SQUERY">>, Params}, _, Server) when
+other_call({server_command, Peer, Prefix, <<"SQUERY">>, Params}, _, Server) when
     is_binary(Prefix)
 ->
     {reply, ircd_state_link:receive_remote_message(Peer, Prefix, <<"SQUERY">>, Params), Server};
-handle_call({server_command, Peer, _Prefix, <<"KILL">>, [Nick | Rest]}, _, Server) ->
+other_call({server_command, Peer, _Prefix, <<"KILL">>, [Nick | Rest]}, _, Server) ->
     Reason =
         case Rest of
             [Text | _] -> Text;
             [] -> <<"KILL">>
         end,
     {reply, ircd_state_link:receive_remote_kill(Peer, Nick, Reason), Server};
-handle_call({server_command, _Peer, _Prefix, _Command, _Params}, _, Server) ->
+other_call({server_command, _Peer, _Prefix, _Command, _Params}, _, Server) ->
     {reply, ok, Server};
-handle_call({server_disconnect, Peer}, _, Server) ->
+other_call({server_disconnect, Peer}, _, Server) ->
+    ircd_state_link:flush_netjoin(Peer),
     ircd_state_net:split(Peer, <<"Netsplit ", Peer/binary>>, Peer),
     {reply, ok, Server};
-handle_call({input_too_long, Tags}, {Pid, _}, Server) ->
+other_call({input_too_long, Tags}, {Pid, _}, Server) ->
     Client = ircd_state_client:client(Pid),
     Label = ircd_cap:label(ircd_cap:state(Pid), Tags),
     ok = ircd_state_send:begin_label(Pid, Label),
@@ -532,21 +633,23 @@ handle_call({input_too_long, Tags}, {Pid, _}, Server) ->
         ircd_state_send:end_label(Server)
     end,
     {reply, ok, Server};
-handle_call({command, Command, Params, Bytes, Tags}, {Pid, _}, Server) ->
+other_call({command, Command, Params, Bytes, Tags}, {Pid, _}, Server) ->
     count_command(Pid, Command, Bytes),
     Client = ircd_state_client:client(Pid),
     ircd_log:client_command(Client#client.nick, Command, Params),
     Label =
         case welcomed_cap_end(Client, Command, Params) of
             true -> undefined;
-            false -> ircd_cap:label(ircd_cap:state(Pid), Tags)
+            false -> command_label(Pid, Command, Params, Tags)
         end,
     ok = ircd_state_send:begin_label(Pid, Label),
+    ircd_state_send:set_source(ircd_state_v3:source_info(Client)),
     Reply =
         try
             dispatch(Command, Params, Client, Server, Tags)
         after
-            ircd_state_send:end_label(Server)
+            ircd_state_send:end_label(Server),
+            ircd_state_send:clear_source()
         end,
     case Reply of
         quit -> ok;
@@ -564,6 +667,9 @@ handle_info({'DOWN', _, process, Pid, _}, State) ->
         [] -> ok
     end,
     {noreply, State};
+handle_info({flush_netjoin, Peer}, Server) ->
+    ircd_state_link:flush_netjoin(Peer),
+    {noreply, Server};
 handle_info(reop_tick, Server) ->
     ircd_state_channel:reop_channels(Server),
     erlang:send_after(1000, self(), reop_tick),
@@ -604,13 +710,62 @@ redact_command({command, <<"OPER">>, [Name, _Password | Rest], Bytes}) ->
 redact_command(Message) ->
     Message.
 
+%% Lines inside a client batch, and the opening BATCH, are answered when the
+%% batch closes. The closing BATCH uses the label from the opening line.
+command_label(_Pid, <<"BATCH">>, [<<"+", _/binary>> | _], _Tags) ->
+    undefined;
+command_label(Pid, <<"BATCH">>, [<<"-", _/binary>> | _], _Tags) ->
+    case ircd_state_batch:label(Pid) of
+        undefined -> undefined;
+        Stored -> ircd_cap:label(ircd_cap:state(Pid), [{<<"label">>, Stored}])
+    end;
+command_label(Pid, Command, _Params, Tags) when
+    Command =:= <<"PRIVMSG">>; Command =:= <<"NOTICE">>
+->
+    case lists:keymember(<<"batch">>, 1, Tags) of
+        true -> undefined;
+        false -> ircd_cap:label(ircd_cap:state(Pid), Tags)
+    end;
+command_label(Pid, _Command, _Params, Tags) ->
+    ircd_cap:label(ircd_cap:state(Pid), Tags).
+
 welcomed_cap_end(Client, <<"CAP">>, [<<"END">> | _]) ->
     ircd_cap:welcomed(Client#client.pid);
 welcomed_cap_end(_, _, _) ->
     false.
 
+%% UTF8ONLY: with `utf8_only` set, a command whose parameters are not valid
+%% UTF-8 is rejected with `FAIL <command> INVALID_UTF8` and not applied, so
+%% no non-UTF-8 text (messages, topics, realnames, reasons) is relayed.
+%% Credentials are exempt because they are never relayed.
+dispatch(Command, Params, Client, Server, Tags) ->
+    case utf8_rejected(Command, Params) of
+        true ->
+            ircd_state_send:fail(
+                Client#client.pid,
+                Command,
+                <<"INVALID_UTF8">>,
+                [],
+                <<"Message rejected, your IRC software MUST use UTF-8 encoding on this network">>
+            );
+        false ->
+            dispatch_command(Command, Params, Client, Server, Tags)
+    end.
+
+utf8_rejected(Command, _Params) when
+    Command =:= <<"PASS">>;
+    Command =:= <<"OPER">>;
+    Command =:= <<"AUTHENTICATE">>;
+    Command =:= <<"REGISTER">>;
+    Command =:= <<"WEBIRC">>
+->
+    false;
+utf8_rejected(_Command, Params) ->
+    maps:get(utf8_only, persistent_term:get({?MODULE, config}), false) andalso
+        not lists:all(fun ircd_state_v3:valid_utf8/1, Params).
+
 %% Route commands accepted before registration and enforce registration for the rest.
-dispatch(<<"QUIT">>, Params, Client, Server, _Tags) ->
+dispatch_command(<<"QUIT">>, Params, Client, Server, _Tags) ->
     Reason =
         case Params of
             [Text | _] -> Text;
@@ -618,17 +773,36 @@ dispatch(<<"QUIT">>, Params, Client, Server, _Tags) ->
         end,
     ircd_state_client:disconnect(Client, Reason, Server),
     quit;
-dispatch(<<"PASS">>, Params, Client, Server, _Tags) ->
+dispatch_command(<<"PASS">>, Params, Client, Server, _Tags) ->
     ircd_state_client:pass(Params, Client, Server);
-dispatch(<<"PING">>, [Token | _], Client, Server, _Tags) ->
+dispatch_command(<<"PING">>, [Token | _], Client, Server, _Tags) ->
     ircd_state_send:send(Client#client.pid, Server, <<"PONG">>, [Server], Token);
-dispatch(<<"PING">>, [], Client, Server, _Tags) ->
+dispatch_command(<<"PING">>, [], Client, Server, _Tags) ->
     ircd_state_send:numeric(Client, Server, <<"409">>, [], <<"No origin specified">>);
-dispatch(<<"PONG">>, _, _, _, _Tags) ->
+dispatch_command(<<"PONG">>, _, _, _, _Tags) ->
     ok;
-dispatch(<<"CAP">>, Params, Client, Server, _Tags) ->
+dispatch_command(<<"CAP">>, Params, Client, Server, _Tags) ->
     ircd_state_net:cap(Client, Server, Params);
-dispatch(<<"NICK">>, [Nick | _], Client, Server, _Tags) ->
+dispatch_command(<<"STARTTLS">>, _Params, Client, Server, _Tags) ->
+    ircd_state_v3:starttls(Client, Server);
+dispatch_command(<<"AUTHENTICATE">>, Params, Client, Server, _Tags) ->
+    ircd_state_v3:authenticate(Params, Client, Server);
+dispatch_command(<<"REGISTER">>, Params, Client, Server, _Tags) ->
+    ircd_state_v3:register(Params, Client, Server);
+dispatch_command(<<"VERIFY">>, Params, Client, Server, _Tags) ->
+    ircd_state_v3:verify(Params, Client, Server);
+dispatch_command(<<"WEBIRC">>, Params, Client, Server, _Tags) ->
+    ircd_state_v3:webirc(Params, Client, Server);
+dispatch_command(<<"ISUPPORT">>, Params, Client, Server, _Tags) ->
+    ircd_state_v3:isupport(Params, Client, Server);
+dispatch_command(<<"AWAY">>, Params, Client, Server, Tags) ->
+    case ircd_state_client:ready(Client) of
+        true -> registered_command(<<"AWAY">>, Params, Client, Server, Tags);
+        false -> ircd_state_v3:pre_away(Params, Client, Server)
+    end;
+dispatch_command(<<"METADATA">>, [<<"*">> | _] = Params, Client, Server, _Tags) ->
+    ircd_state_meta:metadata(Params, Client, Server);
+dispatch_command(<<"NICK">>, [Nick | _], Client, Server, _Tags) ->
     case ircd_state_net:nick_blocked(Nick) of
         true ->
             ircd_state_send:numeric(
@@ -637,9 +811,11 @@ dispatch(<<"NICK">>, [Nick | _], Client, Server, _Tags) ->
         false ->
             change_nick(Nick, Client, Server)
     end;
-dispatch(<<"NICK">>, [], Client, Server, _Tags) ->
+dispatch_command(<<"NICK">>, [], Client, Server, _Tags) ->
     ircd_state_send:numeric(Client, Server, <<"431">>, [], <<"No nickname given">>);
-dispatch(<<"USER">>, [User, Mode, _, Real], #client{user = undefined} = Client, Server, _Tags) ->
+dispatch_command(
+    <<"USER">>, [User, Mode, _, Real], #client{user = undefined} = Client, Server, _Tags
+) ->
     case
         {
             re:run(User, <<"^[A-Za-z0-9_.-]{1,32}$">>, [{capture, none}, dollar_endonly]),
@@ -660,7 +836,7 @@ dispatch(<<"USER">>, [User, Mode, _, Real], #client{user = undefined} = Client, 
                 Client, Server, <<"461">>, [<<"USER">>], <<"Invalid user mode mask">>
             )
     end;
-dispatch(<<"USER">>, _, Client, Server, _Tags) ->
+dispatch_command(<<"USER">>, _, Client, Server, _Tags) ->
     case Client#client.user of
         undefined ->
             ircd_state_send:numeric(
@@ -669,7 +845,7 @@ dispatch(<<"USER">>, _, Client, Server, _Tags) ->
         _ ->
             ircd_state_send:numeric(Client, Server, <<"462">>, [], <<"You may not reregister">>)
     end;
-dispatch(Command, Params, Client, Server, Tags) ->
+dispatch_command(Command, Params, Client, Server, Tags) ->
     case ircd_state_client:ready(Client) of
         true ->
             registered_command(Command, Params, Client, Server, Tags);
@@ -681,10 +857,17 @@ dispatch(Command, Params, Client, Server, Tags) ->
 registered_command(Command, Params, Client, Server, Tags) when
     Command =:= <<"PRIVMSG">>; Command =:= <<"NOTICE">>; Command =:= <<"TAGMSG">>
 ->
-    ircd_state_channel:deliver(Command, Params, Client, Server, Tags);
+    case ircd_state_batch:in_batch({Command, Params, Tags}, Client) of
+        true -> ok;
+        false -> ircd_state_channel:deliver(Command, Params, Client, Server, Tags)
+    end;
+registered_command(<<"BATCH">>, Params, Client, Server, Tags) ->
+    ircd_state_batch:batch(Params, Tags, Client, Server);
 registered_command(Command, Params, Client, Server, _Tags) ->
     registered_command(Command, Params, Client, Server).
 
+registered_command(<<"AWAY">>, [<<>> | _], #client{} = Client, Server) ->
+    registered_command(<<"AWAY">>, [], Client, Server);
 registered_command(<<"AWAY">>, [], #client{} = Client, Server) ->
     case Client#client.away of
         undefined ->
@@ -694,14 +877,21 @@ registered_command(<<"AWAY">>, [], #client{} = Client, Server) ->
         _ ->
             mnesia:dirty_write(Client#client{away = undefined}),
             ircd_state_link:propagate_away(Client, none),
+            ircd_state_v3:notify(Client, <<"away-notify">>, <<"AWAY">>, [], none, false),
             ircd_state_send:numeric(
                 Client, Server, <<"305">>, [], <<"You are no longer marked as being away">>
             )
     end,
     ok;
-registered_command(<<"AWAY">>, [Message | _], #client{} = Client, Server) ->
+registered_command(<<"AWAY">>, [Raw | _], #client{} = Client, Server) ->
+    Message =
+        case Raw of
+            <<"*">> -> <<"Away">>;
+            _ -> Raw
+        end,
     mnesia:dirty_write(Client#client{away = ircd_wire:retain(Message)}),
     ircd_state_link:propagate_away(Client, Message),
+    ircd_state_v3:notify(Client, <<"away-notify">>, <<"AWAY">>, [], Message, false),
     ircd_state_send:numeric(
         Client, Server, <<"306">>, [], <<"You have been marked as being away">>
     ),
@@ -773,6 +963,22 @@ registered_command(<<"KICK">>, [Name, Nicks | Rest], Client, Server) ->
     end;
 registered_command(<<"KICK">>, _, Client, Server) ->
     ircd_state_send:numeric(Client, Server, <<"461">>, [<<"KICK">>], <<"Not enough parameters">>);
+registered_command(<<"SETNAME">>, Params, Client, Server) ->
+    ircd_state_v3:setname(Params, Client, Server);
+registered_command(<<"CHGHOST">>, Params, Client, Server) ->
+    ircd_state_v3:chghost(Params, Client, Server);
+registered_command(<<"MONITOR">>, Params, Client, Server) ->
+    ircd_state_monitor:monitor(Params, Client, Server);
+registered_command(<<"CHATHISTORY">>, Params, Client, Server) ->
+    ircd_state_history:chathistory(Params, Client, Server);
+registered_command(<<"MARKREAD">>, Params, Client, Server) ->
+    ircd_state_history:markread(Params, Client, Server);
+registered_command(<<"REDACT">>, Params, Client, Server) ->
+    ircd_state_history:redact(Params, Client, Server);
+registered_command(<<"METADATA">>, Params, Client, Server) ->
+    ircd_state_meta:metadata(Params, Client, Server);
+registered_command(<<"RENAME">>, Params, Client, Server) ->
+    ircd_state_channel:rename(Params, Client, Server);
 registered_command(<<"KNOCK">>, [Name | Rest], Client, Server) ->
     ircd_state_channel:knock(Name, Rest, Client, Server);
 registered_command(<<"KNOCK">>, [], Client, Server) ->
@@ -1019,7 +1225,10 @@ change_nick(Nick, Client, Server) ->
                         [],
                         Nick
                     ),
-                    ircd_state_link:propagate_nick_change(Client, Nick);
+                    ircd_state_link:propagate_nick_change(Client, Nick),
+                    ircd_state_history:note_user_event(
+                        Client#client.channels, <<"NICK">>, ircd_state_send:prefix(Client), Nick
+                    );
                 false ->
                     ok
             end,
@@ -1027,7 +1236,17 @@ change_nick(Nick, Client, Server) ->
                 true -> ircd_state_net:hold_nick(Client#client.nick);
                 false -> ok
             end,
-            ircd_state_client:save_identity(Client, Client#client{nick = Nick}, Server)
+            ircd_state_client:save_identity(Client, Client#client{nick = Nick}, Server),
+            case ircd_state_client:ready(Client) of
+                true ->
+                    Renamed = ircd_state_client:client(Client#client.pid),
+                    ircd_state_monitor:offline(Client#client.nick),
+                    ircd_state_monitor:online(
+                        Nick, iolist_to_binary(ircd_state_send:prefix(Renamed))
+                    );
+                false ->
+                    ok
+            end
     end.
 
 count_command(Pid, Command, MessageBytes) ->
@@ -1049,8 +1268,23 @@ supported_command(Command) ->
         Command,
         [
             <<"ADMIN">>,
+            <<"AUTHENTICATE">>,
             <<"AWAY">>,
+            <<"BATCH">>,
             <<"CAP">>,
+            <<"CHATHISTORY">>,
+            <<"CHGHOST">>,
+            <<"ISUPPORT">>,
+            <<"MARKREAD">>,
+            <<"METADATA">>,
+            <<"MONITOR">>,
+            <<"REDACT">>,
+            <<"REGISTER">>,
+            <<"RENAME">>,
+            <<"SETNAME">>,
+            <<"STARTTLS">>,
+            <<"VERIFY">>,
+            <<"WEBIRC">>,
             <<"CONNECT">>,
             <<"DIE">>,
             <<"INVITE">>,

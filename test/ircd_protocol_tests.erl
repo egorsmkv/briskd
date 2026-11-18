@@ -30,8 +30,8 @@ protocol() ->
     try
         Alice = register_client(Port, <<"alice">>, <<"Alice">>),
         ?assert(has(recv(Alice), <<" 001 ">>)),
-        send(Alice, <<"CAP REQ sasl">>),
-        ?assert(has(recv(Alice), <<" NAK :sasl">>)),
+        send(Alice, <<"CAP REQ bogus">>),
+        ?assert(has(recv(Alice), <<" NAK :bogus">>)),
         send(Alice, <<"CAP NOPE">>),
         ?assert(has(recv(Alice), <<" 410 ">>)),
         send(Alice, <<"SUMMON">>),

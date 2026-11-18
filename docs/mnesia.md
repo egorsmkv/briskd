@@ -23,6 +23,10 @@ decided by the setting loaded at that start.
 | Client sessions, presence, away text, and user modes | Deleted | Deleted |
 | Channel members and pid invitations | Cleared | Cleared |
 | Imported peers, remote users, remote channels, and services | Deleted | Deleted |
+| Accounts (`account`: SCRAM-SHA-256 verifiers, email, client certificate fingerprints, pending verification) | Kept | Kept |
+| Read markers (`read_marker`, per account and target) | Kept | Kept |
+| IRCv3 connection state: capabilities, MONITOR lists, metadata, SASL progress | Deleted | Deleted |
+| Direct-message history between accounts (`direct_history`) | Deleted | Kept, newest `history_limit` entries per pair |
 
 A restart therefore drops live nick occupancy, operator status, and peer state
 even when the table files are still on disk. Kept channel rows come back with
@@ -30,14 +34,30 @@ the same name, topic, modes, key, limit, and ban, exception, and invite masks,
 and with no members until someone joins. A join still enforces the restored
 key, limit, and masks.
 
-With `channels` retention, an accepted channel `PRIVMSG` or `NOTICE` is
-appended to that channel's history. The list does not grow past
-`history_limit`; the oldest line is dropped. The body is not written to the
-logger. After a restart, a registered client who successfully joins the
-channel receives those lines, oldest first, as ordinary `PRIVMSG` and `NOTICE`
-addressed to the channel. Clients who are not allowed to join do not receive
-them. Private messages are not stored. This is not an IRCv3 capability and
-does not change the offered `CAP LS` set.
+With `chathistory` enabled (the default), an accepted channel `PRIVMSG` or
+`NOTICE` is appended to that channel's history in both retention modes, with
+its `msgid`, `time`, client-only tags, and the sender's account. The list does
+not grow past `history_limit`; the oldest line is dropped. The body is not
+written to the logger. `transient` retention clears the table at startup, so
+history lasts until the next restart; `channels` retention keeps it. Members
+read it with IRCv3 `CHATHISTORY`. Under `channels` retention a client without
+`draft/chathistory` that joins after a restart receives the stored lines,
+oldest first, in a `chathistory` batch when it negotiated `batch`. `REDACT`
+deletes one entry. Entries written by an older version as
+`{Command, Prefix, Text}` are still read; they have no `msgid` or time.
+Channel events (JOIN, PART, KICK, TOPIC, MODE without the channel key, QUIT,
+NICK, TAGMSG) are recorded for `draft/event-playback`; messages and events
+each keep `history_limit` entries. Direct messages are kept only between two
+logged-in accounts, in the `direct_history` table under the same retention
+rules. Set `"chathistory": false` to record nothing.
+
+The `account` and `read_marker` tables are disc copies created at startup and
+are never cleared. An account row created before the `pending` field existed is
+migrated by appending `undefined`. A pending account whose code expired is
+replaced by the next `REGISTER` of that name. Accounts and read markers are
+also copied to linked servers, so deleting an account must be done on every
+server. Removing an account means deleting its row while the server
+is stopped, or from a shell with `mnesia:dirty_delete(account, FoldedName)`.
 
 An empty ordinary channel is removed when its last member leaves under
 `transient` retention. Under `channels` retention the empty channel and its

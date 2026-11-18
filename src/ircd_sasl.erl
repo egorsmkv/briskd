@@ -1,0 +1,204 @@
+-module(ircd_sasl).
+-export([start/2, step/2, decode_chunk/2, encode_chunks/1]).
+-include("ircd_account.hrl").
+
+%% SASL mechanisms for AUTHENTICATE (IRCv3 SASL 3.1 / 3.2):
+%% PLAIN (RFC 4616), EXTERNAL (RFC 4422 appendix A, client certificate
+%% fingerprint), and SCRAM-SHA-256 (RFC 5802, RFC 7677, no channel binding).
+%% Payloads travel base64-encoded in 400-byte AUTHENTICATE chunks.
+
+-define(CHUNK, 400).
+%% Upper bound on one reassembled client response, before base64 decoding.
+-define(MAX_RESPONSE, 8192).
+
+-type state() ::
+    plain
+    | {external, undefined | binary()}
+    | {scram_first, undefined}
+    | {scram_final, map()}
+    | {scram_done, binary()}.
+-export_type([state/0]).
+
+%% @doc Begin a mechanism. The challenge `<<>>` is sent as `AUTHENTICATE +`.
+-spec start(binary(), map()) -> {continue, binary(), state()} | {error, unknown_mechanism}.
+start(Mechanism, Context) ->
+    case string:uppercase(Mechanism) of
+        <<"PLAIN">> -> {continue, <<>>, plain};
+        <<"EXTERNAL">> -> {continue, <<>>, {external, maps:get(certfp, Context, undefined)}};
+        <<"SCRAM-SHA-256">> -> {continue, <<>>, {scram_first, undefined}};
+        _ -> {error, unknown_mechanism}
+    end.
+
+%% @doc Apply one decoded client response.
+-spec step(state(), binary()) ->
+    {continue, binary(), state()} | {success, binary()} | {error, failed}.
+step(plain, Data) ->
+    case binary:split(Data, <<0>>, [global]) of
+        [Authz, Authc, Password] when Authc =/= <<>> ->
+            case authz_ok(Authz, Authc) of
+                true ->
+                    case ircd_account:check_password(Authc, Password) of
+                        {ok, #account{name = Name}} -> {success, Name};
+                        error -> {error, failed}
+                    end;
+                false ->
+                    {error, failed}
+            end;
+        _ ->
+            {error, failed}
+    end;
+step({external, undefined}, _Data) ->
+    {error, failed};
+step({external, Fingerprint}, Authz) ->
+    case ircd_account:by_certfp(Fingerprint) of
+        {ok, #account{name = Name}} ->
+            case authz_ok(Authz, Name) of
+                true -> {success, Name};
+                false -> {error, failed}
+            end;
+        error ->
+            {error, failed}
+    end;
+step({scram_first, undefined}, ClientFirst) ->
+    scram_first(ClientFirst);
+step({scram_final, Session}, ClientFinal) ->
+    scram_final(Session, ClientFinal);
+step({scram_done, Name}, <<>>) ->
+    {success, Name};
+step(_State, _Data) ->
+    {error, failed}.
+
+%% @doc Add one AUTHENTICATE parameter to the pending response.
+%% `+` alone is an empty chunk. A chunk of exactly 400 bytes means more follows.
+-spec decode_chunk(binary(), binary()) ->
+    {more, binary()} | {done, binary()} | {error, too_long | invalid}.
+decode_chunk(Buffer, <<"+">>) ->
+    finish(Buffer);
+decode_chunk(Buffer, Chunk) when byte_size(Chunk) > ?CHUNK ->
+    _ = Buffer,
+    {error, too_long};
+decode_chunk(Buffer, Chunk) when byte_size(Buffer) + byte_size(Chunk) > ?MAX_RESPONSE ->
+    {error, too_long};
+decode_chunk(Buffer, Chunk) when byte_size(Chunk) =:= ?CHUNK ->
+    {more, <<Buffer/binary, Chunk/binary>>};
+decode_chunk(Buffer, Chunk) ->
+    finish(<<Buffer/binary, Chunk/binary>>).
+
+finish(Encoded) ->
+    try base64:decode(Encoded) of
+        Decoded -> {done, Decoded}
+    catch
+        error:_ -> {error, invalid}
+    end.
+
+%% @doc Split an outgoing challenge into AUTHENTICATE parameters.
+-spec encode_chunks(binary()) -> [binary()].
+encode_chunks(<<>>) ->
+    [<<"+">>];
+encode_chunks(Data) ->
+    split_chunks(base64:encode(Data)).
+
+split_chunks(Encoded) when byte_size(Encoded) < ?CHUNK ->
+    [Encoded];
+split_chunks(Encoded) when byte_size(Encoded) =:= ?CHUNK ->
+    [Encoded, <<"+">>];
+split_chunks(<<Chunk:?CHUNK/binary, Rest/binary>>) ->
+    [Chunk | split_chunks(Rest)].
+
+authz_ok(<<>>, _Authc) -> true;
+authz_ok(Authz, Authc) -> ircd_wire:fold(Authz) =:= ircd_wire:fold(Authc).
+
+%% client-first-message = gs2-header client-first-message-bare
+%% gs2-header = "n," / "y," then [ "a=" authzid ] ","
+scram_first(ClientFirst) ->
+    case binary:split(ClientFirst, <<",">>, [global]) of
+        [Flag, AuthzPart | BareParts] when (Flag =:= <<"n">> orelse Flag =:= <<"y">>) ->
+            Bare = iolist_to_binary(lists:join(<<",">>, BareParts)),
+            Attrs = attributes(BareParts),
+            case {authzid(AuthzPart), maps:find($n, Attrs), maps:find($r, Attrs)} of
+                {{ok, Authz}, {ok, RawUser}, {ok, ClientNonce}} when ClientNonce =/= <<>> ->
+                    User = scram_unescape(RawUser),
+                    case authz_ok(Authz, User) andalso ircd_account:scram_credentials(User) of
+                        {ok, Credentials} ->
+                            ServerNonce = base64:encode(crypto:strong_rand_bytes(18)),
+                            Nonce = <<ClientNonce/binary, ServerNonce/binary>>,
+                            ServerFirst = iolist_to_binary([
+                                <<"r=">>,
+                                Nonce,
+                                <<",s=">>,
+                                base64:encode(maps:get(salt, Credentials)),
+                                <<",i=">>,
+                                integer_to_binary(maps:get(iterations, Credentials))
+                            ]),
+                            Gs2 = <<Flag/binary, ",", AuthzPart/binary, ",">>,
+                            {continue, ServerFirst,
+                                {scram_final, Credentials#{
+                                    nonce => Nonce,
+                                    gs2 => Gs2,
+                                    first_bare => Bare,
+                                    server_first => ServerFirst
+                                }}};
+                        _ ->
+                            {error, failed}
+                    end;
+                _ ->
+                    {error, failed}
+            end;
+        _ ->
+            {error, failed}
+    end.
+
+scram_final(Session, ClientFinal) ->
+    Parts = binary:split(ClientFinal, <<",">>, [global]),
+    case lists:reverse(Parts) of
+        [<<"p=", Proof64/binary>> | RevWithout] ->
+            Without = iolist_to_binary(lists:join(<<",">>, lists:reverse(RevWithout))),
+            Attrs = attributes(lists:reverse(RevWithout)),
+            #{
+                nonce := Nonce,
+                gs2 := Gs2,
+                first_bare := Bare,
+                server_first := ServerFirst,
+                stored_key := Stored,
+                server_key := ServerKey,
+                name := Name
+            } = Session,
+            Binding = base64:encode(Gs2),
+            case {maps:find($c, Attrs), maps:find($r, Attrs), decode64(Proof64)} of
+                {{ok, Binding}, {ok, Nonce}, {ok, Proof}} when byte_size(Proof) =:= 32 ->
+                    AuthMessage = <<Bare/binary, ",", ServerFirst/binary, ",", Without/binary>>,
+                    Signature = crypto:mac(hmac, sha256, Stored, AuthMessage),
+                    ClientKey = crypto:exor(Proof, Signature),
+                    case crypto:hash_equals(crypto:hash(sha256, ClientKey), Stored) of
+                        true ->
+                            ServerSignature = crypto:mac(hmac, sha256, ServerKey, AuthMessage),
+                            {continue, <<"v=", (base64:encode(ServerSignature))/binary>>,
+                                {scram_done, Name}};
+                        false ->
+                            {error, failed}
+                    end;
+                _ ->
+                    {error, failed}
+            end;
+        _ ->
+            {error, failed}
+    end.
+
+authzid(<<>>) -> {ok, <<>>};
+authzid(<<"a=", Authz/binary>>) -> {ok, scram_unescape(Authz)};
+authzid(_) -> error.
+
+attributes(Parts) ->
+    maps:from_list([{Key, Value} || <<Key, $=, Value/binary>> <- Parts]).
+
+scram_unescape(Value) ->
+    binary:replace(binary:replace(Value, <<"=2C">>, <<",">>, [global]), <<"=3D">>, <<"=">>, [
+        global
+    ]).
+
+decode64(Value) ->
+    try
+        {ok, base64:decode(Value)}
+    catch
+        error:_ -> error
+    end.

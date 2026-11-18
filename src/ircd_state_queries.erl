@@ -17,7 +17,7 @@ ison(Nicks, Client, Server) ->
 userhost(Nicks, Client, Server) ->
     Entries = lists:filtermap(
         fun(Nick) ->
-            case ircd_state:find_nick(Nick) of
+            case registered_nick(Nick) of
                 #client{pid = Pid, nick = Actual, host = Host, away = Away} ->
                     AwayMarker =
                         case Away of
@@ -41,8 +41,20 @@ userhost(Nicks, Client, Server) ->
     ),
     ircd_state:numeric(Client, Server, <<"302">>, [], lists:join(<<" ">>, Entries)).
 
-ison_nick(Nick) ->
+%% A local client only counts once its registration has completed.
+registered_nick(Nick) ->
     case ircd_state:find_nick(Nick) of
+        #client{} = Client ->
+            case ircd_state:ready(Client) of
+                true -> Client;
+                false -> undefined
+            end;
+        undefined ->
+            undefined
+    end.
+
+ison_nick(Nick) ->
+    case registered_nick(Nick) of
         #client{nick = Actual} ->
             Actual;
         undefined ->
@@ -70,13 +82,94 @@ remote_userhost(Nick) ->
             false
     end.
 
-%% Select WHO matches and format RFC 2812 WHO replies.
+%% Select WHO matches and format RFC 2812 WHO replies (352), or IRCv3 WHOX
+%% replies (354) when the second parameter carries `%<fields>[,<token>]`.
 who_command([], Client, Server) ->
     who_mask(<<"*">>, false, Client, Server);
 who_command([Mask, Filter | _], Client, Server) ->
-    who_mask(Mask, ircd_wire:fold(Filter) =:= <<"o">>, Client, Server);
+    case binary:split(Filter, <<"%">>) of
+        [Flags, Spec] ->
+            case whox_spec(Spec) of
+                {ok, Fields, Token} ->
+                    put(ircd_whox, {Fields, Token}),
+                    try
+                        who_mask(Mask, binary:match(Flags, <<"o">>) =/= nomatch, Client, Server)
+                    after
+                        erase(ircd_whox)
+                    end;
+                error ->
+                    who_mask(Mask, false, Client, Server)
+            end;
+        [_] ->
+            who_mask(Mask, ircd_wire:fold(Filter) =:= <<"o">>, Client, Server)
+    end;
 who_command([Mask], Client, Server) ->
     who_mask(Mask, false, Client, Server).
+
+%% `%<fields>[,<token>]`. The token is 1 to 3 digits. Unknown field letters
+%% are ignored, as WHOX requires.
+whox_spec(Spec) ->
+    {FieldPart, Token} =
+        case binary:split(Spec, <<",">>) of
+            [F, T] -> {F, T};
+            [F] -> {F, undefined}
+        end,
+    Fields = [C || <<C>> <= FieldPart, lists:member(C, "tcuihsnfdlaor")],
+    TokenOk =
+        Token =:= undefined orelse
+            (byte_size(Token) >= 1 andalso byte_size(Token) =< 3 andalso
+                re:run(Token, <<"^[0-9]+$">>, [{capture, none}]) =:= match),
+    case TokenOk of
+        true -> {ok, Fields, Token};
+        false -> error
+    end.
+
+%% Emit one WHO row as 352, or as 354 with only the requested WHOX fields in
+%% the fixed order t c u i h s n f d l a o r.
+emit_who(Requester, Server, Row) ->
+    case get(ircd_whox) of
+        undefined ->
+            #{
+                channel := C,
+                user := U,
+                host := H,
+                server := S,
+                nick := N,
+                flags := F,
+                hop := D,
+                real := R
+            } = Row,
+            ircd_state:numeric(
+                Requester, Server, <<"352">>, [C, U, H, S, N, F], [integer_to_binary(D), <<" ">>, R]
+            );
+        {Fields, Token} ->
+            Order = "tcuihsnfdlaor",
+            Wanted = [Field || Field <- Order, lists:member(Field, Fields)],
+            {Middle, Trailing} = lists:foldl(
+                fun
+                    ($r, {Acc, _}) -> {Acc, maps:get(real, Row)};
+                    ($t, {Acc, T}) when Token =:= undefined -> {Acc, T};
+                    ($t, {Acc, T}) -> {[Token | Acc], T};
+                    (Field, {Acc, T}) -> {[whox_field(Field, Row) | Acc], T}
+                end,
+                {[], none},
+                Wanted
+            ),
+            ircd_state:numeric(Requester, Server, <<"354">>, lists:reverse(Middle), Trailing)
+    end.
+
+whox_field($c, #{channel := V}) -> V;
+whox_field($u, #{user := V}) -> V;
+whox_field($i, #{ip := V}) -> V;
+whox_field($h, #{host := V}) -> V;
+whox_field($s, #{server := V}) -> V;
+whox_field($n, #{nick := V}) -> V;
+whox_field($f, #{flags := V}) -> V;
+whox_field($d, #{hop := V}) -> integer_to_binary(V);
+whox_field($l, #{idle := V}) -> integer_to_binary(V);
+whox_field($a, #{account := undefined}) -> <<"0">>;
+whox_field($a, #{account := V}) -> V;
+whox_field($o, _) -> <<"n/a">>.
 
 who_mask(Mask, OperatorsOnly, Client, Server) ->
     ChannelKey = ircd_wire:fold(Mask),
@@ -205,33 +298,26 @@ remote_who_channel(Name, Client, OperatorsOnly, Server) ->
                                                     true -> $*;
                                                     false -> <<>>
                                                 end,
-                                            ChannelStatus =
-                                                case
-                                                    {
-                                                        lists:member(operator, Roles),
-                                                        lists:member(voice, Roles)
-                                                    }
-                                                of
-                                                    {true, _} -> <<$@>>;
-                                                    {false, true} -> <<$+>>;
-                                                    _ -> <<>>
-                                                end,
+                                            ChannelStatus = ircd_state_channel:role_prefix(
+                                                Roles, Client#client.pid
+                                            ),
                                             Status = list_to_binary([
-                                                Away, UserOperator, ChannelStatus
+                                                Away, UserOperator, bot_flag(Modes), ChannelStatus
                                             ]),
-                                            ircd_state:numeric(
+                                            emit_who(
                                                 Client,
                                                 Server,
-                                                <<"352">>,
-                                                [
+                                                remote_row(
+                                                    NickKey,
                                                     Canonical,
+                                                    Status,
+                                                    Home,
+                                                    Peer,
+                                                    Nick,
                                                     User,
                                                     Host,
-                                                    home_server_name(Home, Peer),
-                                                    Nick,
-                                                    Status
-                                                ],
-                                                [<<"0 ">>, Real]
+                                                    Real
+                                                )
                                             );
                                         false ->
                                             ok
@@ -288,14 +374,13 @@ remote_who_mask(Mask, OperatorsOnly, Client, Server) ->
                                     case Operator of
                                         true -> $*;
                                         false -> <<>>
-                                    end
+                                    end,
+                                    bot_flag(Modes)
                                 ]),
-                            ircd_state:numeric(
+                            emit_who(
                                 Client,
                                 Server,
-                                <<"352">>,
-                                [<<"*">>, User, Host, home_server_name(Home, Peer), Nick, Status],
-                                [<<"0 ">>, Real]
+                                remote_row(Key, <<"*">>, Status, Home, Peer, Nick, User, Host, Real)
                             );
                         false ->
                             ok
@@ -306,6 +391,32 @@ remote_who_mask(Mask, OperatorsOnly, Client, Server) ->
         end,
         mnesia:dirty_all_keys(remote_client)
     ).
+
+bot_flag(Modes) ->
+    case maps:is_key($B, Modes) of
+        true -> <<"B">>;
+        false -> <<>>
+    end.
+
+remote_row(NickKey, Channel, Status, Home, Peer, Nick, User, Host, Real) ->
+    Hop =
+        case mnesia:dirty_read(remote_client, NickKey) of
+            [#remote_client{hop = H}] when is_integer(H) -> H;
+            _ -> 1
+        end,
+    #{
+        channel => Channel,
+        user => User,
+        ip => <<"255.255.255.255">>,
+        host => Host,
+        server => home_server_name(Home, Peer),
+        nick => Nick,
+        flags => Status,
+        hop => Hop,
+        idle => 0,
+        account => ircd_state_v3:remote_account(NickKey),
+        real => Real
+    }.
 
 who_matches(<<"*">>, _) ->
     true;
@@ -347,25 +458,54 @@ who_reply(
             [#channel{members = Members}] -> maps:get(Member#client.pid, Members, []);
             [] -> []
         end,
-    ChannelStatus =
-        case {lists:member(operator, Roles), lists:member(voice, Roles)} of
-            {true, _} -> <<"@">>;
-            {false, true} -> <<"+">>;
-            _ -> <<>>
-        end,
+    ChannelStatus = ircd_state_channel:role_prefix(Roles, Requester#client.pid),
+    Modes = ircd_state:user_modes(Member#client.pid),
     UserOperator =
-        case maps:is_key($o, ircd_state:user_modes(Member#client.pid)) of
+        case maps:is_key($o, Modes) of
             true -> <<"*">>;
             false -> <<>>
         end,
-    Status = <<Away/binary, UserOperator/binary, ChannelStatus/binary>>,
-    ircd_state:numeric(
-        Requester,
-        Server,
-        <<"352">>,
-        [Channel, User, Host, Server, Nick, Status],
-        [<<"0 ">>, Real]
-    ).
+    Bot =
+        case maps:is_key($B, Modes) of
+            true -> <<"B">>;
+            false -> <<>>
+        end,
+    Status = <<Away/binary, UserOperator/binary, Bot/binary, ChannelStatus/binary>>,
+    Idle =
+        case mnesia:dirty_read(activity, Member#client.pid) of
+            [#activity{last = Last}] -> max(0, erlang:system_time(second) - Last);
+            [] -> 0
+        end,
+    emit_who(Requester, Server, #{
+        channel => Channel,
+        user => User,
+        ip => visible_ip(Member, Requester),
+        host => Host,
+        server => Server,
+        nick => Nick,
+        flags => Status,
+        hop => 0,
+        idle => Idle,
+        account => ircd_state_v3:account(Member#client.pid),
+        real => Real
+    }).
+
+%% WHOX `i`: the address is shown to the user and to IRC operators only.
+visible_ip(#client{pid = Pid, host = Host}, #client{pid = Requester}) ->
+    case Pid =:= Requester orelse maps:is_key($o, ircd_state:user_modes(Requester)) of
+        true ->
+            case maps:get(ip, ircd_cap:info(Pid), undefined) of
+                undefined ->
+                    case inet:parse_address(binary_to_list(Host)) of
+                        {ok, _} -> Host;
+                        _ -> <<"255.255.255.255">>
+                    end;
+                Ip ->
+                    Ip
+            end;
+        false ->
+            <<"255.255.255.255">>
+    end.
 
 whois_operator(Nick, Pid, Client, Server) ->
     case maps:is_key($o, ircd_state:user_modes(Pid)) of
@@ -406,6 +546,13 @@ whois(Nick, Client, Server) ->
                         Client, Server, <<"312">>, [Actual, Server], <<"IRC server">>
                     ),
                     whois_operator(Actual, TargetPid, Client, Server),
+                    whois_v3(
+                        Actual,
+                        ircd_state_v3:account(TargetPid),
+                        maps:is_key($B, ircd_state:user_modes(TargetPid)),
+                        Client,
+                        Server
+                    ),
                     Idle =
                         case mnesia:dirty_read(activity, TargetPid) of
                             [#activity{last = Last}] ->
@@ -474,10 +621,24 @@ remote_whois(Nick, Client, Server) ->
                             );
                         false ->
                             ok
-                    end
+                    end,
+                    whois_v3(
+                        Actual, Remote#remote_client.account, maps:is_key($B, Modes), Client, Server
+                    )
             end;
         [] ->
             ircd_state:numeric(Client, Server, <<"401">>, [Nick], <<"No such nick/channel">>)
+    end.
+
+%% RPL_WHOISACCOUNT (330) and RPL_WHOISBOT (335, IRCv3 bot mode).
+whois_v3(Nick, Account, Bot, Client, Server) ->
+    case Account of
+        undefined -> ok;
+        _ -> ircd_state:numeric(Client, Server, <<"330">>, [Nick, Account], <<"is logged in as">>)
+    end,
+    case Bot of
+        true -> ircd_state:numeric(Client, Server, <<"335">>, [Nick], <<"is a bot">>);
+        false -> ok
     end.
 
 whois_channels(Keys, Pid, Nick, Client, Server) ->
@@ -494,12 +655,7 @@ whois_channels(Keys, Pid, Nick, Client, Server) ->
                         false ->
                             false;
                         true ->
-                            Prefix =
-                                case {lists:member(operator, Roles), lists:member(voice, Roles)} of
-                                    {true, _} -> <<"@">>;
-                                    {false, true} -> <<"+">>;
-                                    _ -> <<>>
-                                end,
+                            Prefix = ircd_state_channel:role_prefix(Roles, Client#client.pid),
                             {true, <<Prefix/binary, Name/binary>>}
                     end;
                 [] ->

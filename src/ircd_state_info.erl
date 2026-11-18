@@ -319,7 +319,9 @@ rehash(#client{pid = Pid} = Client, Server) ->
 
 rehash_config(NewConfig, Path, Client, Server) ->
     OldConfig = persistent_term:get({ircd_state, config}),
-    StaticKeys = [name, ip, tcp, tls, tls_options, mnesia_dir, client_password, server_links],
+    StaticKeys = [
+        name, ip, tcp, tls, ws, wss, tls_options, mnesia_dir, client_password, server_links
+    ],
     case
         lists:all(fun(Key) -> maps:get(Key, OldConfig) =:= maps:get(Key, NewConfig) end, StaticKeys)
     of
@@ -332,7 +334,12 @@ rehash_config(NewConfig, Path, Client, Server) ->
                 <<"Listener and database changes require a restart">>
             );
         true ->
+            Clients = [Pid || {Pid, _} <- ets:tab2list(ircd_caps)],
+            Advertised = maps:from_list([{Pid, ircd_cap:advertised(Pid)} || Pid <- Clients]),
+            Tokens = ircd_isupport:tokens(),
             apply_rehash(NewConfig),
+            ircd_state_net:notify_cap_changes(Advertised, Server),
+            notify_isupport_changes(Tokens, ircd_isupport:tokens(), Clients, Server),
             server_wallops(
                 [<<"Oper ">>, Client#client.nick, <<" rehashed the configuration">>], Server
             ),
@@ -340,6 +347,34 @@ rehash_config(NewConfig, Path, Client, Server) ->
                 Client, Server, <<"382">>, [unicode:characters_to_binary(Path)], <<"Rehashing">>
             )
     end.
+
+%% draft/extended-isupport: registered clients with the capability get the
+%% changed and removed (`-TOKEN`) ISUPPORT entries in a new batch.
+notify_isupport_changes(Old, Old, _Clients, _Server) ->
+    ok;
+notify_isupport_changes(Old, New, Clients, Server) ->
+    Name = fun(Token) -> hd(binary:split(Token, <<"=">>)) end,
+    NewNames = [Name(T) || T <- New],
+    Changed =
+        [T || T <- New, not lists:member(T, Old)] ++
+            [<<"-", (Name(T))/binary>> || T <- Old, not lists:member(Name(T), NewNames)],
+    lists:foreach(
+        fun(Pid) ->
+            case
+                ircd_cap:enabled(Pid, <<"draft/extended-isupport">>) andalso
+                    mnesia:dirty_read(client, Pid)
+            of
+                [#client{} = Client] ->
+                    case ircd_state_client:ready(Client) of
+                        true -> ircd_isupport:send_tokens(Client, Server, Changed, true);
+                        false -> ok
+                    end;
+                _ ->
+                    ok
+            end
+        end,
+        Clients
+    ).
 
 apply_rehash(Config) ->
     persistent_term:put({ircd_state, config}, Config),

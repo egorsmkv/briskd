@@ -9,6 +9,7 @@ services:
       IRCD_CONFIG: config/ircd.dev.json
     ports:
       - "6667:6667"
+      - "8080:8080"
     volumes:
       - .:/workspace
       - rebar3-cache:/root/.cache/rebar3

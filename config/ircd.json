@@ -21,5 +21,17 @@
   "admin_location2": "Not configured",
   "admin_email": "Not configured",
   "client_password": null,
-  "server_links": []
+  "server_links": [],
+  "ws_port": null,
+  "wss_port": null,
+  "ws_origins": null,
+  "network": "irc.local",
+  "network_icon": null,
+  "sts": null,
+  "sni": [],
+  "account_registration": true,
+  "chathistory": true,
+  "utf8_only": false,
+  "monitor_limit": 100,
+  "webirc": []
 }

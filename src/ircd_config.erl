@@ -25,8 +25,10 @@ load(Path) ->
         {ok, IP} = inet:parse_address(binary_to_list(Bind)),
         TCP = port(maps:get(<<"tcp_port">>, Json, 6667)),
         TLS = port(maps:get(<<"tls_port">>, Json, null)),
-        true = TCP =/= null orelse TLS =/= null,
-        TLSOptions = tls_options(TLS, Json),
+        WS = port(maps:get(<<"ws_port">>, Json, null)),
+        WSS = port(maps:get(<<"wss_port">>, Json, null)),
+        true = TCP =/= null orelse TLS =/= null orelse WS =/= null orelse WSS =/= null,
+        TLSOptions = tls_options(first_port([TLS, WSS]), Json),
         Level = log_level(maps:get(<<"log_level">>, Json, <<"info">>)),
         Format = maps:get(<<"log_format">>, Json, <<"json">>),
         true = lists:member(Format, [<<"json">>, <<"text">>]),
@@ -43,7 +45,24 @@ load(Path) ->
         Channels = channels(maps:get(<<"channels">>, Json, [])),
         ServerLinks = server_links(maps:get(<<"server_links">>, Json, []), Name),
         Admin = admin_info(Json),
+        Network = network_name(maps:get(<<"network">>, Json, Name)),
         {ok, #{
+            ws => WS,
+            wss => WSS,
+            ws_origins => ws_origins(maps:get(<<"ws_origins">>, Json, null)),
+            network => Network,
+            network_icon => network_icon(maps:get(<<"network_icon">>, Json, null)),
+            sts => sts(maps:get(<<"sts">>, Json, null)),
+            account_registration => boolean_setting(
+                account_registration, maps:get(<<"account_registration">>, Json, true)
+            ),
+            utf8_only => boolean_setting(utf8_only, maps:get(<<"utf8_only">>, Json, false)),
+            chathistory => boolean_setting(chathistory, maps:get(<<"chathistory">>, Json, true)),
+            monitor_limit => positive_limit(maps:get(<<"monitor_limit">>, Json, 100)),
+            webirc => webirc(maps:get(<<"webirc">>, Json, [])),
+            account_verification => account_verification(
+                maps:get(<<"account_verification">>, Json, null)
+            ),
             config_path => filename:absname(Path),
             name => Name,
             ip => IP,
@@ -85,14 +104,135 @@ log_level(<<"alert">>) -> alert;
 log_level(<<"emergency">>) -> emergency;
 log_level(Value) -> erlang:error({invalid_log_level, Value}).
 
+first_port(Ports) ->
+    case [Port || Port <- Ports, Port =/= null] of
+        [Port | _] -> Port;
+        [] -> null
+    end.
+
+%% Server certificate verification is unchanged. The listener asks for an
+%% optional client certificate so SASL EXTERNAL can use its SHA-256 fingerprint
+%% (CertFP). A missing or self-signed client certificate does not fail the
+%% handshake; it only means EXTERNAL has no identity to offer. `sni` entries
+%% select a different certificate by requested host name.
 tls_options(null, _) ->
     [];
 tls_options(_, Json) ->
     [
         {certfile, binary_to_list(maps:get(<<"certfile">>, Json))},
         {keyfile, binary_to_list(maps:get(<<"keyfile">>, Json))},
-        {versions, ['tlsv1.3', 'tlsv1.2']}
+        {versions, ['tlsv1.3', 'tlsv1.2']},
+        {verify, verify_peer},
+        %% No CA is trusted for client certificates: they are only matched by
+        %% fingerprint, so verify_fun accepts an unknown issuer.
+        {cacerts, []},
+        {fail_if_no_peer_cert, false},
+        {verify_fun, {fun accept_client_certificate/3, []}}
+        | sni_hosts(maps:get(<<"sni">>, Json, []))
     ].
+
+%% Client certificates are identities for SASL EXTERNAL, not chains to trust,
+%% so any well-formed certificate is accepted here and matched by fingerprint.
+accept_client_certificate(_Cert, {bad_cert, _Reason}, State) -> {valid, State};
+accept_client_certificate(_Cert, {extension, _}, State) -> {unknown, State};
+accept_client_certificate(_Cert, valid, State) -> {valid, State};
+accept_client_certificate(_Cert, valid_peer, State) -> {valid, State}.
+
+sni_hosts([]) ->
+    [];
+sni_hosts(Entries) when is_list(Entries) ->
+    [
+        {sni_hosts, [
+            begin
+                Host = maps:get(<<"hostname">>, Entry),
+                true = is_binary(Host) andalso byte_size(Host) > 0 andalso byte_size(Host) =< 253,
+                {binary_to_list(Host), [
+                    {certfile, binary_to_list(maps:get(<<"certfile">>, Entry))},
+                    {keyfile, binary_to_list(maps:get(<<"keyfile">>, Entry))}
+                ]}
+            end
+         || Entry <- Entries
+        ]}
+    ].
+
+boolean_setting(_Key, Value) when is_boolean(Value) -> Value;
+boolean_setting(Key, Value) -> erlang:error({invalid_boolean, Key, Value}).
+
+network_name(Name) when is_binary(Name), byte_size(Name) > 0, byte_size(Name) =< 64 ->
+    case binary:match(Name, [<<" ">>, <<0>>, <<"\r">>, <<"\n">>, <<",">>]) of
+        nomatch -> Name;
+        _ -> erlang:error({invalid_network, Name})
+    end;
+network_name(Name) ->
+    erlang:error({invalid_network, Name}).
+
+network_icon(null) ->
+    null;
+network_icon(Url) when is_binary(Url), byte_size(Url) > 0, byte_size(Url) =< 300 ->
+    case binary:match(Url, [<<" ">>, <<0>>, <<"\r">>, <<"\n">>]) of
+        nomatch -> Url;
+        _ -> erlang:error({invalid_network_icon, invalid})
+    end;
+network_icon(_) ->
+    erlang:error({invalid_network_icon, invalid}).
+
+ws_origins(null) ->
+    null;
+ws_origins(List) when is_list(List) ->
+    [Origin || Origin <- List, is_binary(Origin) orelse erlang:error({invalid_ws_origin, Origin})].
+
+%% STS policy. `port` is the TLS port advertised to plaintext clients and
+%% `duration` (seconds) is the persistence policy advertised to TLS clients.
+sts(null) ->
+    null;
+sts(Map) when is_map(Map) ->
+    Port = maps:get(<<"port">>, Map),
+    true = is_integer(Port) andalso Port > 0 andalso Port =< 65535,
+    Duration = maps:get(<<"duration">>, Map, 2592000),
+    true = is_integer(Duration) andalso Duration >= 0,
+    Preload = maps:get(<<"preload">>, Map, false),
+    true = is_boolean(Preload),
+    #{port => Port, duration => Duration, preload => Preload};
+sts(Value) ->
+    erlang:error({invalid_sts, Value}).
+
+%% Email verification for draft/account-registration. `command` is the
+%% program (absolute path, then arguments) that delivers a code; `ttl` is how
+%% long a code stays valid, in seconds.
+account_verification(null) ->
+    null;
+account_verification(Map) when is_map(Map) ->
+    [Exe | Args] = Command = maps:get(<<"command">>, Map),
+    true = lists:all(fun(Part) -> is_binary(Part) andalso byte_size(Part) > 0 end, Command),
+    true = filename:pathtype(Exe) =:= absolute,
+    Ttl = maps:get(<<"ttl">>, Map, 900),
+    true = is_integer(Ttl) andalso Ttl > 0 andalso Ttl =< 86400,
+    #{command => [binary_to_list(Exe) | [binary_to_list(A) || A <- Args]], ttl => Ttl};
+account_verification(Value) ->
+    erlang:error({invalid_account_verification, Value}).
+
+%% Trusted WebIRC gateways. `hosts` lists gateway IP addresses that may send
+%% WEBIRC with `password`. A missing `hosts` list does not trust any address.
+webirc(Entries) when is_list(Entries) ->
+    [
+        begin
+            Password = maps:get(<<"password">>, Entry),
+            true = is_binary(Password) andalso byte_size(Password) > 0,
+            Hosts = maps:get(<<"hosts">>, Entry),
+            true = is_list(Hosts) andalso Hosts =/= [],
+            Parsed = [
+                begin
+                    {ok, Address} = inet:parse_address(binary_to_list(Host)),
+                    Address
+                end
+             || Host <- Hosts
+            ],
+            #{password => Password, hosts => Parsed}
+        end
+     || Entry <- Entries
+    ];
+webirc(Value) ->
+    erlang:error({invalid_webirc, Value}).
 
 positive_limit(Value) when is_integer(Value), Value > 0, Value =< 1000000 -> Value.
 
