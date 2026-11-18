@@ -63,8 +63,10 @@ in the referenced RFC.
 
 - [x] Mnesia persists WHOWAS history and safe-channel state using disk copies.
 - [x] The Mnesia database directory is configurable with `mnesia_dir` in JSON.
-- [x] Transient client sessions and peer-imported records are cleared when the
-  server restarts; non-safe channels expire on restart.
+- [x] `retention` selects restart policy. The default `transient` clears
+  ordinary channels. `channels` keeps ordinary channel state and a bounded
+  `PRIVMSG`/`NOTICE` history (`history_limit`). Both policies clear client
+  sessions, operator status, and peer-imported records on restart.
 - [x] Define and document backup, restore, and schema migration procedures for
   long-lived Mnesia data in `docs/mnesia.md`.
 - [x] Add restart-level verification for each state category that is intended

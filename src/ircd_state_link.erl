@@ -756,14 +756,7 @@ apply_remote_kick(Peer, Prefix, Name, Nick, Reason, RemoteChannel) ->
                     Remaining = maps:remove(TargetPid, Members),
                     case map_size(Remaining) of
                         0 ->
-                            case Channel#channel.name of
-                                <<$!, _/binary>> ->
-                                    mnesia:dirty_write(
-                                        ircd_state_channel:track_opless(Channel, Remaining)
-                                    );
-                                _ ->
-                                    mnesia:dirty_delete(channel, Key)
-                            end;
+                            ircd_state_channel:release_if_empty(Channel, Remaining);
                         _ ->
                             mnesia:dirty_write(ircd_state_channel:track_opless(Channel, Remaining))
                     end,
@@ -1232,6 +1225,9 @@ receive_remote_channel_message(Peer, Remote, Prefix, Name, Text, Command, Tags) 
                                 [Name],
                                 Text,
                                 Tags
+                            ),
+                            ircd_state_channel:note_channel_history(
+                                Channel#channel.key, Command, Origin, Text
                             );
                         false ->
                             ok

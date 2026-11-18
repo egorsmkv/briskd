@@ -36,6 +36,8 @@ load(Path) ->
         MotdFile = optional_path(maps:get(<<"motd_file">>, Json, null)),
         ClientPassword = optional_secret(maps:get(<<"client_password">>, Json, null)),
         MnesiaDir = required_path(maps:get(<<"mnesia_dir">>, Json, <<"data/mnesia">>)),
+        Retention = retention(maps:get(<<"retention">>, Json, <<"transient">>)),
+        HistoryLimit = history_limit(maps:get(<<"history_limit">>, Json, 100)),
         Operators = operators(maps:get(<<"operators">>, Json, [])),
         ServerLinks = server_links(maps:get(<<"server_links">>, Json, []), Name),
         Admin = admin_info(Json),
@@ -53,6 +55,8 @@ load(Path) ->
             motd_file => MotdFile,
             client_password => ClientPassword,
             mnesia_dir => MnesiaDir,
+            retention => Retention,
+            history_limit => HistoryLimit,
             operators => Operators,
             server_links => ServerLinks,
             admin => Admin
@@ -79,6 +83,21 @@ optional_path(null) -> null;
 optional_path(Path) when is_binary(Path), byte_size(Path) > 0 -> binary_to_list(Path).
 
 required_path(Path) when is_binary(Path), byte_size(Path) > 0 -> binary_to_list(Path).
+
+%% `transient` is today's restart policy. `channels` also keeps ordinary channel
+%% rows and a bounded channel message history.
+retention(<<"transient">>) ->
+    transient;
+retention(<<"channels">>) ->
+    channels;
+retention(Value) ->
+    erlang:error({invalid_retention, Value}).
+
+%% Newest channel PRIVMSG/NOTICE lines kept per channel when retention is `channels`.
+history_limit(Value) when is_integer(Value), Value >= 1, Value =< 10000 ->
+    Value;
+history_limit(Value) ->
+    erlang:error({invalid_history_limit, Value}).
 
 optional_secret(null) -> null;
 optional_secret(Secret) when is_binary(Secret), byte_size(Secret) > 0 -> Secret.

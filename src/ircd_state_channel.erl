@@ -17,6 +17,8 @@
     reop_channels/1,
     split/1,
     topic/4,
+    note_channel_history/4,
+    release_if_empty/2,
     track_opless/2,
     user_mode_string/1,
     visible_member/3,
@@ -25,6 +27,19 @@
 -include("ircd_state.hrl").
 
 %% @doc Local channel membership, modes, names, and reop.
+
+%% Last local member left. Safe channels always remain. Ordinary channels remain
+%% only when retention is `channels`, so a later restart can restore them.
+release_if_empty(#channel{name = <<$!, _/binary>>} = Channel, Remaining) ->
+    mnesia:dirty_write(track_opless(Channel, Remaining));
+release_if_empty(#channel{key = Key} = Channel, Remaining) ->
+    case ircd_state:retention() of
+        channels ->
+            mnesia:dirty_write(Channel#channel{members = Remaining});
+        transient ->
+            mnesia:dirty_delete(channel, Key),
+            mnesia:dirty_delete(channel_history, Key)
+    end.
 
 track_opless(#channel{} = Channel, Remaining) ->
     HasOperator = lists:any(
@@ -316,7 +331,8 @@ finish_join(
         JoinRecipients, channel_origin_prefix(Channel, Client), <<"JOIN">>, [Canonical], none
     ),
     topic_reply(Channel, Client, Server),
-    names(Canonical, Client, Server).
+    names(Canonical, Client, Server),
+    replay_channel_history(Key, Canonical, Pid).
 
 leave(Key, Client, Command, Reason, Notify) ->
     leave(Key, Client, Command, Reason, Notify, Notify).
@@ -352,12 +368,7 @@ leave(Key, #client{pid = Pid} = Client, Command, Reason, Notify, Propagate) ->
     end,
     case maps:remove(Pid, Members) of
         Remaining when map_size(Remaining) =:= 0 ->
-            case Name of
-                <<$!, _/binary>> ->
-                    mnesia:dirty_write(track_opless(Channel, Remaining));
-                _ ->
-                    mnesia:dirty_delete(channel, Key)
-            end;
+            release_if_empty(Channel, Remaining);
         Remaining ->
             mnesia:dirty_write(track_opless(Channel, Remaining))
     end,
@@ -435,12 +446,7 @@ kick_member(
                     Remaining = maps:remove(TargetPid, Members),
                     case map_size(Remaining) of
                         0 ->
-                            case Canonical of
-                                <<$!, _/binary>> ->
-                                    mnesia:dirty_write(track_opless(Channel, Remaining));
-                                _ ->
-                                    mnesia:dirty_delete(channel, Key)
-                            end;
+                            release_if_empty(Channel, Remaining);
                         _ ->
                             mnesia:dirty_write(track_opless(Channel, Remaining))
                     end,
@@ -518,14 +524,16 @@ deliver_to(Target, Text, Command, #client{pid = Pid} = Client, Server, Tags) ->
                         Command, Client, Server, <<"404">>, [Name], <<"Cannot send to channel">>
                     );
                 false ->
+                    Origin = channel_origin_prefix(Channel, Client),
                     ircd_state_send:broadcast(
                         maps:keys(maps:remove(Pid, Members)),
-                        channel_origin_prefix(Channel, Client),
+                        Origin,
                         Command,
                         [Name],
                         Text,
                         Tags
                     ),
+                    note_channel_history(ircd_wire:fold(Name), Command, Origin, Text),
                     ircd_state_link:propagate_channel_message(Name, Text, Command, Client, Tags)
             end;
         [] ->
@@ -576,6 +584,55 @@ message_error(<<"NOTICE">>, _, _, _, _, _) ->
     ok;
 message_error(_, Client, Server, Number, Middle, Text) ->
     ircd_state_send:numeric(Client, Server, Number, Middle, Text).
+
+%% Remember an accepted channel PRIVMSG or NOTICE. The body is not logged.
+%% Entries are newest-first and never longer than the configured limit.
+note_channel_history(Key, Command, Prefix, Text) when
+    (Command =:= <<"PRIVMSG">> orelse Command =:= <<"NOTICE">>), is_binary(Text)
+->
+    case ircd_state:retention() of
+        channels ->
+            Entry = {Command, ircd_wire:retain(iolist_to_binary(Prefix)), ircd_wire:retain(Text)},
+            Existing =
+                case mnesia:dirty_read(channel_history, Key) of
+                    [#channel_history{entries = Entries}] -> Entries;
+                    [] -> []
+                end,
+            mnesia:dirty_write(#channel_history{
+                channel = Key,
+                entries = trim_history([Entry | Existing], ircd_state:history_limit())
+            });
+        transient ->
+            ok
+    end;
+note_channel_history(_Key, _Command, _Prefix, _Text) ->
+    ok.
+
+replay_channel_history(Key, Name, Pid) ->
+    case ircd_state:retention() of
+        channels ->
+            case mnesia:dirty_read(channel_history, Key) of
+                [#channel_history{entries = Entries}] ->
+                    lists:foreach(
+                        fun({Command, Prefix, Text}) ->
+                            ircd_state_send:send(Pid, Prefix, Command, [Name], Text)
+                        end,
+                        lists:reverse(trim_history(Entries, ircd_state:history_limit()))
+                    );
+                [] ->
+                    ok
+            end;
+        transient ->
+            ok
+    end.
+
+trim_history(Entries, Limit) ->
+    trim_history(Entries, Limit, []).
+
+trim_history([Entry | Rest], Left, Acc) when Left > 0 ->
+    trim_history(Rest, Left - 1, [Entry | Acc]);
+trim_history(_, _, Acc) ->
+    lists:reverse(Acc).
 
 topic(Name, Rest, #client{pid = Pid} = Client, Server) ->
     case mnesia:dirty_read(channel, ircd_wire:fold(Name)) of

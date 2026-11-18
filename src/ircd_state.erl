@@ -25,6 +25,8 @@
     start_link/1,
     user_modes/1,
     user_visible/2,
+    history_limit/0,
+    retention/0,
     visible_member/3,
     wildcard_match/2
 ]).
@@ -128,6 +130,7 @@ init(#{name := Name} = Config) ->
     persistent_term:put({?MODULE, reop_delay}, maps:get(reop_delay, Config, 30)),
     table(client, record_info(fields, client), [{index, [nick]}]),
     table(channel, record_info(fields, channel), []),
+    table(channel_history, record_info(fields, channel_history), []),
     table(activity, record_info(fields, activity), []),
     table(whowas, record_info(fields, whowas), []),
     table(user_modes, record_info(fields, user_modes), []),
@@ -139,6 +142,7 @@ init(#{name := Name} = Config) ->
         [
             client,
             channel,
+            channel_history,
             activity,
             whowas,
             user_modes,
@@ -290,21 +294,57 @@ ensure_ets(Name) ->
     end.
 
 reset_channels() ->
-    lists:foreach(
-        fun(Key) ->
-            case mnesia:dirty_read(channel, Key) of
-                [#channel{name = <<$!, _/binary>>} = Channel] ->
-                    mnesia:dirty_write(
-                        Channel#channel{members = #{}, invited = [], opless_since = undefined}
-                    );
-                [_Channel] ->
-                    mnesia:dirty_delete(channel, Key);
-                [] ->
-                    ok
-            end
-        end,
-        mnesia:dirty_all_keys(channel)
-    ).
+    case retention() of
+        channels ->
+            lists:foreach(
+                fun(Key) ->
+                    case mnesia:dirty_read(channel, Key) of
+                        [Channel] ->
+                            mnesia:dirty_write(cleared_membership(Channel));
+                        [] ->
+                            ok
+                    end
+                end,
+                mnesia:dirty_all_keys(channel)
+            ),
+            lists:foreach(
+                fun(Key) ->
+                    case mnesia:dirty_read(channel, Key) of
+                        [] -> mnesia:dirty_delete(channel_history, Key);
+                        [_] -> ok
+                    end
+                end,
+                mnesia:dirty_all_keys(channel_history)
+            );
+        transient ->
+            lists:foreach(
+                fun(Key) ->
+                    case mnesia:dirty_read(channel, Key) of
+                        [#channel{name = <<$!, _/binary>>} = Channel] ->
+                            mnesia:dirty_write(cleared_membership(Channel));
+                        [_Channel] ->
+                            mnesia:dirty_delete(channel, Key);
+                        [] ->
+                            ok
+                    end
+                end,
+                mnesia:dirty_all_keys(channel)
+            ),
+            {atomic, ok} = mnesia:clear_table(channel_history)
+    end.
+
+cleared_membership(Channel) ->
+    Channel#channel{members = #{}, invited = [], opless_since = undefined}.
+
+%% @doc Restart policy loaded from JSON. `transient` drops ordinary channels.
+-spec retention() -> transient | channels.
+retention() ->
+    maps:get(retention, persistent_term:get({?MODULE, config}), transient).
+
+%% @doc Maximum channel PRIVMSG/NOTICE lines stored for one channel.
+-spec history_limit() -> pos_integer().
+history_limit() ->
+    maps:get(history_limit, persistent_term:get({?MODULE, config}), 100).
 
 %% @doc Handle session registration, registration queries, and client commands.
 handle_call({connect, Host}, {Pid, _}, Server) ->

@@ -8,6 +8,12 @@
 protocol_test_() ->
     {timeout, 120, fun protocol/0}.
 
+retention_test_() ->
+    {timeout, 60, fun retention/0}.
+
+rejected_retention_test_() ->
+    {timeout, 30, fun rejected_retention/0}.
+
 protocol() ->
     Dir = filename:join(
         "/tmp", "ircd-protocol-" ++ integer_to_list(erlang:unique_integer([positive]))
@@ -181,6 +187,8 @@ link_and_restart(Port, Bob, Dir, _Config) ->
     ?assert(has(recv(Bob), <<" 401 ">>)),
     gen_tcp:close(Other),
     gen_tcp:close(Bob),
+    %% Default retention: the config omits the key, so WHOWAS and the safe
+    %% channel return and the ordinary channel does not.
     ok = application:stop(ircd),
     {ok, _} = application:ensure_all_started(ircd),
     Again = listener_port(),
@@ -206,6 +214,7 @@ restore_from_backup(Dir) ->
     Backup = filename:join(Dir, "state.bak"),
     ok = mnesia:backup(Backup),
     ok = application:stop(ircd),
+    _ = application:stop(mnesia),
     Restored = filename:join(Dir, "restored"),
     ok = filelib:ensure_dir(filename:join(Restored, "schema.DAT")),
     ok = application:set_env(mnesia, dir, Restored),
@@ -232,7 +241,152 @@ restore_from_backup(Dir) ->
     ?assertNot(has(Ordinary, <<"temp">>)),
     gen_tcp:close(Dave).
 
+%% `channels` retention keeps an ordinary channel, its modes, and a bounded
+%% PRIVMSG/NOTICE history. Sessions, operator mode, and peer rows do not.
+retention() ->
+    Dir = filename:join(
+        "/tmp", "ircd-retention-" ++ integer_to_list(erlang:unique_integer([positive]))
+    ),
+    ok = filelib:ensure_dir(filename:join(Dir, "db")),
+    Db = filename:join(Dir, "db"),
+    Config = filename:join(Dir, "ircd.json"),
+    Extra = <<"\"retention\":\"channels\",\"history_limit\":2,">>,
+    ok = file:write_file(Config, config(Db, Extra)),
+    os:putenv("IRCD_CONFIG", Config),
+    logger:remove_primary_filter(retention_bodies),
+    ok = logger:add_primary_filter(retention_bodies, {fun retention_log/2, self()}),
+    {ok, _} = application:ensure_all_started(ircd),
+    try
+        Port = listener_port(),
+        Alice = register_client(Port, <<"alice">>, <<"Alice">>),
+        ?assert(has(recv(Alice), <<" 001 ">>)),
+        send(Alice, <<"OPER oper opersecret">>),
+        ?assert(has(recv(Alice), <<" 381 ">>)),
+        send(Alice, <<"JOIN #kept">>),
+        _ = recv(Alice),
+        send(Alice, <<"TOPIC #kept :kept-topic">>),
+        _ = recv(Alice),
+        send(Alice, <<"MODE #kept +t">>),
+        _ = recv(Alice),
+        send(Alice, <<"MODE #kept +k secret">>),
+        _ = recv(Alice),
+        send(Alice, <<"MODE #kept +l 1">>),
+        _ = recv(Alice),
+        send(Alice, <<"MODE #kept +b banned!*@*">>),
+        _ = recv(Alice),
+        send(Alice, <<"PRIVMSG #kept :hist-old">>),
+        send(Alice, <<"NOTICE #kept :hist-mid">>),
+        send(Alice, <<"PRIVMSG #kept :hist-new">>),
+        _ = recv_quiet(Alice),
+        Peer = handshake(Port, <<"peer.test">>),
+        send(Peer, <<":peer.test NICK remote 0 user peer.test 1 + :Remote">>),
+        timer:sleep(200),
+        ?assert(lists:member(<<"remote">>, mnesia:dirty_all_keys(remote_client))),
+        gen_tcp:close(Alice),
+        gen_tcp:close(Peer),
+        timer:sleep(200),
+        ok = application:stop(ircd),
+        {ok, _} = application:ensure_all_started(ircd),
+        ?assertEqual([], mnesia:dirty_all_keys(remote_client)),
+        ?assertEqual([], mnesia:dirty_all_keys(remote_channel)),
+        ?assertEqual([], mnesia:dirty_all_keys(known_server)),
+        ?assertEqual([], mnesia:dirty_all_keys(service)),
+        ?assertEqual([], mnesia:dirty_all_keys(client)),
+        ?assertEqual([], mnesia:dirty_all_keys(user_modes)),
+        Again = listener_port(),
+        Carol = register_client(Again, <<"carol">>, <<"Carol">>),
+        ?assert(has(recv(Carol), <<" 001 ">>)),
+        send(Carol, <<"WHOWAS alice">>),
+        History = recv(Carol),
+        ?assert(has(History, <<" 314 ">>)),
+        ?assert(has(History, <<"alice">>)),
+        send(Carol, <<"WHOIS alice">>),
+        ?assert(has(recv(Carol), <<" 401 ">>)),
+        send(Carol, <<"WHOIS carol">>),
+        ?assertNot(has(recv(Carol), <<" 313 ">>)),
+        send(Carol, <<"KILL carol :no">>),
+        ?assert(has(recv(Carol), <<" 481 ">>)),
+        send(Carol, <<"JOIN #kept">>),
+        ?assert(has(recv(Carol), <<" 475 ">>)),
+        Banned = register_client(Again, <<"banned">>, <<"Banned">>),
+        ?assert(has(recv(Banned), <<" 001 ">>)),
+        send(Banned, <<"JOIN #kept secret">>),
+        ?assert(has(recv(Banned), <<" 474 ">>)),
+        send(Carol, <<"JOIN #kept secret">>),
+        Joined = recv(Carol),
+        ?assert(has(Joined, <<" 332 ">>)),
+        ?assert(has(Joined, <<"kept-topic">>)),
+        ?assertNot(has(Joined, <<"hist-old">>)),
+        ?assert(has(Joined, <<"NOTICE #kept :hist-mid">>)),
+        ?assert(has(Joined, <<"PRIVMSG #kept :hist-new">>)),
+        assert_before(Joined, <<"hist-mid">>, <<"hist-new">>),
+        ?assert(has(Joined, <<"= #kept :carol">>)),
+        ?assertNot(has(Joined, <<"@carol">>)),
+        send(Carol, <<"MODE #kept">>),
+        Modes = recv(Carol),
+        ?assert(has(Modes, <<" 324 ">>)),
+        ?assert(has(Modes, <<"+tkl">>)),
+        ?assert(has(Modes, <<"secret 1">>)),
+        send(Carol, <<"TOPIC #kept :changed">>),
+        ?assert(has(recv(Carol), <<" 482 ">>)),
+        Dave = register_client(Again, <<"dave">>, <<"Dave">>),
+        ?assert(has(recv(Dave), <<" 001 ">>)),
+        send(Dave, <<"JOIN #kept secret">>),
+        ?assert(has(recv(Dave), <<" 471 ">>)),
+        assert_bodies_unlogged([<<"hist-old">>, <<"hist-mid">>, <<"hist-new">>]),
+        gen_tcp:close(Carol),
+        gen_tcp:close(Banned),
+        gen_tcp:close(Dave)
+    after
+        logger:remove_primary_filter(retention_bodies),
+        _ = application:stop(ircd),
+        os:unsetenv("IRCD_CONFIG")
+    end.
+
+rejected_retention() ->
+    Dir = filename:join(
+        "/tmp", "ircd-retention-bad-" ++ integer_to_list(erlang:unique_integer([positive]))
+    ),
+    ok = filelib:ensure_dir(filename:join(Dir, "db")),
+    Config = filename:join(Dir, "ircd.json"),
+    ok = file:write_file(
+        Config,
+        config(filename:join(Dir, "db"), <<"\"retention\":\"forever\",">>)
+    ),
+    os:putenv("IRCD_CONFIG", Config),
+    try
+        ?assertMatch(
+            {error, {ircd, {{invalid_config, _, {invalid_retention, <<"forever">>}}, _}}},
+            application:ensure_all_started(ircd)
+        )
+    after
+        _ = application:stop(ircd),
+        os:unsetenv("IRCD_CONFIG")
+    end.
+
+retention_log(Event, Pid) ->
+    Pid ! {retention_log, Event},
+    Event.
+
+assert_bodies_unlogged(Tokens) ->
+    Rendered = iolist_to_binary(io_lib:format("~0tp", [drain_logs([])])),
+    lists:foreach(fun(Token) -> ?assertNot(has(Rendered, Token)) end, Tokens).
+
+drain_logs(Acc) ->
+    receive
+        {retention_log, Event} -> drain_logs([Event | Acc])
+    after 0 -> Acc
+    end.
+
+assert_before(Bin, Left, Right) ->
+    {LeftAt, _} = binary:match(Bin, Left),
+    {RightAt, _} = binary:match(Bin, Right),
+    ?assert(LeftAt < RightAt).
+
 config(Db) ->
+    config(Db, <<>>).
+
+config(Db, Extra) ->
     iolist_to_binary([
         <<"{">>,
         <<"\"name\":\"irc.test\",">>,
@@ -244,6 +398,7 @@ config(Db) ->
         <<"\"mnesia_dir\":\"">>,
         list_to_binary(Db),
         <<"\",">>,
+        Extra,
         <<"\"operators\":[{\"name\":\"oper\",\"password\":\"opersecret\"}],">>,
         <<"\"server_links\":[">>,
         <<"{\"name\":\"peer.test\",\"host\":\"127.0.0.1\",\"port\":1,">>,

@@ -102,16 +102,25 @@ to the process working directory unless they are absolute.
 | `admin_name`, `admin_location1`, `admin_location2`, `admin_email` | See config | Values returned by `ADMIN` |
 | `reop_delay` | `30` | Base delay in seconds before re-opping an operatorless safe channel |
 | `mnesia_dir` | `data/mnesia` | Mnesia database directory |
+| `retention` | `transient` | `transient` or `channels`. `channels` keeps ordinary channel state and channel message history across a restart |
+| `history_limit` | `100` | Channel `PRIVMSG`/`NOTICE` lines kept per channel when `retention` is `channels` (1..10000) |
 | `server_links` | `[]` | Direct peer definitions with `name`, `host`, `port`, `password`, and optional `tls` |
 
 Set at least one of `tcp_port` or `tls_port`. TLS uses TLS 1.2 and 1.3; configure
 `certfile` and `keyfile` when enabling the TLS listener. Port `0` requests an
 ephemeral port, which is reported in the startup log.
 
-`mnesia_dir` should point to writable storage. Mnesia persists WHOWAS history
-and safe-channel state. Client sessions and imported peer state are transient;
-ordinary channels are cleared on restart. Backup, restore, and schema
-migration are described in [docs/mnesia.md](docs/mnesia.md).
+`mnesia_dir` should point to writable storage. The default `retention` value
+`transient` persists WHOWAS history and safe-channel state, and clears ordinary
+channels on restart. `channels` also keeps ordinary channel names, topics,
+modes, keys, limits, access masks, and a bounded channel `PRIVMSG`/`NOTICE`
+history (`history_limit` lines, default 100). A joining client receives that
+history after the restart. Client sessions, operator status, and imported peer
+state are cleared on restart in both modes. Message bodies are not written to
+the log. An invalid `retention` or `history_limit` is rejected at startup.
+Backup, restore, and schema migration are described in
+[docs/mnesia.md](docs/mnesia.md). A restored directory follows the same
+retention policy as a normal start.
 
 ## IRC support and limitations
 

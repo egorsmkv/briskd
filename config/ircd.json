@@ -12,6 +12,8 @@
   "reop_delay": 30,
   "motd_file": null,
   "mnesia_dir": "data/mnesia",
+  "retention": "transient",
+  "history_limit": 100,
   "admin_name": "IRC server administrator",
   "admin_location1": "Not configured",
   "admin_location2": "Not configured",

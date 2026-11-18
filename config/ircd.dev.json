@@ -3,5 +3,7 @@
   "bind": "0.0.0.0",
   "tcp_port": 6667,
   "tls_port": null,
-  "mnesia_dir": "/var/lib/ircd/mnesia"
+  "mnesia_dir": "/var/lib/ircd/mnesia",
+  "retention": "transient",
+  "history_limit": 100
 }

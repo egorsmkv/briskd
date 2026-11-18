@@ -6,17 +6,42 @@ that directory and the schema before it starts Mnesia.
 
 ## What survives a restart
 
-| Data | Restart behavior |
-| --- | --- |
-| WHOWAS history | Kept |
-| Safe `!` channels | Kept, with members, invitations, and the reop deadline cleared |
-| Client sessions, presence, and user modes | Deleted |
-| Ordinary and local `&` / `#` / `+` channels | Deleted |
-| Imported peers, remote users, remote channels, and services | Deleted |
+`retention` in the JSON configuration selects the policy. The default is
+`transient`. `history_limit` (default 100, maximum 10000) is the number of
+channel `PRIVMSG` and `NOTICE` bodies kept per channel when retention is
+`channels`. Any other `retention` string, or a `history_limit` outside
+1..10000, is rejected at startup. `REHASH` accepts a new limit and retention
+value for messages sent after the reload. Which rows survive a restart is
+decided by the setting loaded at that start.
 
-A restart therefore drops live sessions and peer state even when the table
-files are still on disk. Safe-channel rows stay so the channel id and topic
-can be restored, but nobody is a member until they join again.
+| Data | `transient` (default) | `channels` |
+| --- | --- | --- |
+| WHOWAS history | Kept | Kept |
+| Safe `!` channels | Kept | Kept |
+| Ordinary `#`, `&`, and `+` channels | Deleted | Kept |
+| Channel `PRIVMSG` / `NOTICE` history | Deleted | Kept, newest `history_limit` lines |
+| Client sessions, presence, away text, and user modes | Deleted | Deleted |
+| Channel members and pid invitations | Cleared | Cleared |
+| Imported peers, remote users, remote channels, and services | Deleted | Deleted |
+
+A restart therefore drops live nick occupancy, operator status, and peer state
+even when the table files are still on disk. Kept channel rows come back with
+the same name, topic, modes, key, limit, and ban, exception, and invite masks,
+and with no members until someone joins. A join still enforces the restored
+key, limit, and masks.
+
+With `channels` retention, an accepted channel `PRIVMSG` or `NOTICE` is
+appended to that channel's history. The list does not grow past
+`history_limit`; the oldest line is dropped. The body is not written to the
+logger. After a restart, a registered client who successfully joins the
+channel receives those lines, oldest first, as ordinary `PRIVMSG` and `NOTICE`
+addressed to the channel. Clients who are not allowed to join do not receive
+them. Private messages are not stored. This is not an IRCv3 capability and
+does not change the offered `CAP LS` set.
+
+An empty ordinary channel is removed when its last member leaves under
+`transient` retention. Under `channels` retention the empty channel and its
+history stay, so a later restart can still restore them.
 
 ## Backup
 
@@ -47,10 +72,11 @@ ok = mnesia:restore(BackupFile, [{default_op, recreate_tables}]).
 
 4. Start ircd against that directory.
 
-Startup still clears client sessions, ordinary channels, and peer-imported
-rows. Restoring a backup brings WHOWAS and safe channels back, then the same
-startup rules apply. Do not restore a backup onto a node that is already
-serving traffic.
+Startup applies the `retention` policy of the configuration that starts ircd.
+A restored directory does not bypass that policy: `transient` still drops
+ordinary channels and channel history, and `channels` keeps them. Both
+policies clear client sessions and peer-imported rows. Do not restore a
+backup onto a node that is already serving traffic.
 
 `mnesia:install_fallback/1` is the alternative when the node must load the
 backup at the next start. Use it only while ircd and Mnesia are stopped.
@@ -74,8 +100,10 @@ stored attributes with `record_info(fields, ...)`.
 The transform only appends fields. Renaming or reordering a field needs a new
 explicit transform and a backup taken before the upgrade. Remote and client
 tables are cleared after migration, so their transforms matter when a running
-node loads a newer module without a restart. WHOWAS and safe channels are the
-rows an operator must be able to read after the new code starts.
+node loads a newer module without a restart. WHOWAS and the channel rows kept
+by the active retention policy are what an operator must be able to read after
+the new code starts. `channel_history` is a separate table created empty when
+it is missing.
 
 Roll back by stopping the node and restoring the backup taken before the
 upgrade. Do not mix a newer schema with an older beam without that restore.
