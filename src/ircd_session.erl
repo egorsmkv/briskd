@@ -55,19 +55,12 @@ handle_info({Tag, Socket, Packet}, {Kind, Socket, Peer, _Buffer, _Role} = State)
     (Tag =:= tcp orelse Tag =:= ssl), (Kind =:= ws orelse Kind =:= wss)
 ->
     websocket_data(Packet, State, Peer);
-handle_info({Tag, Socket, Packet}, {Kind, Socket, Peer, Buffer, Role}) when
+handle_info({Tag, Socket, Packet0}, {Kind, Socket, Peer, Buffer, Role} = State0) when
     Tag =:= tcp; Tag =:= ssl
 ->
-    case ircd_wire:append_pending(Buffer, Packet) of
-        {ok, Data} ->
-            case consume(Data, {Kind, Socket, Peer, <<>>, Role}) of
-                {ok, State} -> active(State);
-                {starttls, State} -> starttls(State);
-                quit -> {stop, normal, {Kind, Socket, Peer, <<>>}};
-                error -> {stop, normal, {Kind, Socket, Peer, <<>>}}
-            end;
-        error ->
-            {stop, normal, {Kind, Socket, Peer, <<>>}}
+    case discard(Packet0) of
+        more -> active(State0);
+        {ok, Packet} -> receive_data(Packet, Kind, Socket, Peer, Buffer, Role)
     end;
 handle_info(registration_timeout, {_, _, _, _, Role} = State) ->
     case Role of
@@ -358,7 +351,7 @@ consume(Data, State) ->
         nomatch ->
             case ircd_wire:partial(Data) of
                 ok -> {ok, set_buffer(State, Data)};
-                error -> error
+                error -> overlong(Data, State)
             end
     end.
 
@@ -369,6 +362,27 @@ parse_line(Line, _) ->
         {ok, Tags, Command, Params} -> {ok, Tags, undefined, Command, Params};
         Other -> Other
     end.
+
+%% A client's tagged line that outgrows the wire cap before its CR LF gets
+%% numeric 417 (IRCv3 message-tags); the rest of that line is discarded.
+%% Other malformed input still closes the connection.
+overlong(<<"@", _/binary>> = Data, {_, _, _, _, Role} = State) when
+    Role =:= client; Role =:= awaiting
+->
+    case binary:match(Data, [<<"\r">>, <<"\n">>]) of
+        nomatch ->
+            case reject_long_line([], State) of
+                {ok, Updated} ->
+                    put(ircd_discard, true),
+                    {ok, set_buffer(Updated, <<>>)};
+                error ->
+                    error
+            end;
+        _ ->
+            error
+    end;
+overlong(_Data, _State) ->
+    error.
 
 reject_long_line(_Tags, {_, _, _, _, {server, _}}) ->
     error;
@@ -522,7 +536,8 @@ process_server_line(Tags, Prefix, Command, Params, _Bytes, {_, _, Peer, _, _} = 
     Command =:= <<"REDACT">>;
     Command =:= <<"ACCOUNTSYNC">>;
     Command =:= <<"METADATA">>;
-    Command =:= <<"MARKREAD">>
+    Command =:= <<"MARKREAD">>;
+    Command =:= <<"BATCH">>
 ->
     case ircd_state:server_command(Peer, Prefix, Command, Params, Tags) of
         ok ->
@@ -583,3 +598,32 @@ raw_line(Command, Params, Trailing) ->
         Trailing,
         <<"\r\n">>
     ]).
+
+receive_data(Packet, Kind, Socket, Peer, Buffer, Role) ->
+    case ircd_wire:append_pending(Buffer, Packet) of
+        {ok, Data} ->
+            case consume(Data, {Kind, Socket, Peer, <<>>, Role}) of
+                {ok, State} -> active(State);
+                {starttls, State} -> starttls(State);
+                quit -> {stop, normal, {Kind, Socket, Peer, <<>>}};
+                error -> {stop, normal, {Kind, Socket, Peer, <<>>}}
+            end;
+        error ->
+            {stop, normal, {Kind, Socket, Peer, <<>>}}
+    end.
+
+%% While skipping the rest of an over-long tagged line, drop bytes up to and
+%% including the next LF.
+discard(Packet) ->
+    case get(ircd_discard) of
+        true ->
+            case binary:match(Packet, <<"\n">>) of
+                nomatch ->
+                    more;
+                {Offset, 1} ->
+                    erase(ircd_discard),
+                    {ok, binary:part(Packet, Offset + 1, byte_size(Packet) - Offset - 1)}
+            end;
+        _ ->
+            {ok, Packet}
+    end.

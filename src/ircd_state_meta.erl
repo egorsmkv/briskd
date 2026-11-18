@@ -294,22 +294,44 @@ unsub(Keys, #client{pid = Pid} = Client, Server) ->
 
 subs(#client{pid = Pid} = Client, Server) ->
     ircd_state_send:with_batch(Pid, <<"metadata-subs">>, [], [], fun() ->
-        case ircd_conn:get(Pid, metasubs, []) of
-            [] -> ok;
-            Keys -> ircd_state_send:numeric(Client, Server, <<"772">>, Keys, none)
-        end
+        %% At most 13 keys per 772, so the line keeps within 15 parameters
+        %% and 512 bytes (keys are at most 64 bytes, but usually short).
+        lists:foreach(
+            fun(Chunk) -> ircd_state_send:numeric(Client, Server, <<"772">>, Chunk, none) end,
+            key_chunks(ircd_conn:get(Pid, metasubs, []))
+        )
     end).
+
+key_chunks([]) ->
+    [];
+key_chunks(Keys) ->
+    key_chunks(Keys, [], 0, []).
+
+key_chunks([], [], _, Acc) ->
+    lists:reverse(Acc);
+key_chunks([], Current, _, Acc) ->
+    lists:reverse([lists:reverse(Current) | Acc]);
+key_chunks([Key | Rest], Current, Size, Acc) when
+    Current =/= [], (length(Current) >= 6 orelse Size + byte_size(Key) + 1 > 380)
+->
+    key_chunks([Key | Rest], [], 0, [lists:reverse(Current) | Acc]);
+key_chunks([Key | Rest], Current, Size, Acc) ->
+    key_chunks(Rest, [Key | Current], Size + byte_size(Key) + 1, Acc).
 
 %% @doc After registration, send the client's own metadata in a metadata batch.
 -spec on_registered(#client{}, binary()) -> ok.
-on_registered(#client{pid = Pid, nick = Nick} = Client, Server) ->
+on_registered(#client{pid = Pid, nick = Nick}, Server) ->
     case ircd_cap:enabled(Pid, <<"draft/metadata-2">>) of
         true ->
-            Target = {user, Pid, Nick},
+            %% The registration burst is METADATA messages, not 761 numerics.
             in_batch(Pid, Nick, fun() ->
                 maps:foreach(
-                    fun(Key, Value) -> key_value(Client, Server, Target, Key, Value) end,
-                    maps:iterator(read(Target), ordered)
+                    fun(Key, Value) ->
+                        ircd_state_send:send(
+                            Pid, Server, <<"METADATA">>, [Nick, Key, <<"*">>], Value
+                        )
+                    end,
+                    maps:iterator(read({user, Pid, Nick}), ordered)
                 )
             end);
         false ->

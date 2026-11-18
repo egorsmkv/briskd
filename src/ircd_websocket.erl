@@ -88,12 +88,23 @@ subprotocol(Offered) ->
         [] -> {text, []}
     end.
 
+%% Repeated header fields are joined with `,` (RFC 7230), so two
+%% Sec-WebSocket-Protocol lines keep the client's order of preference.
 headers(Lines) ->
-    maps:from_list([
-        {string:lowercase(string:trim(Name)), string:trim(Value)}
-     || Line <- Lines,
-        [Name, Value] <- [binary:split(Line, <<":">>)]
-    ]).
+    lists:foldl(
+        fun({Name, Value}, Acc) ->
+            case Acc of
+                #{Name := Existing} -> Acc#{Name => <<Existing/binary, ", ", Value/binary>>};
+                _ -> Acc#{Name => Value}
+            end
+        end,
+        #{},
+        [
+            {string:lowercase(string:trim(Name)), string:trim(Value)}
+         || Line <- Lines,
+            [Name, Value] <- [binary:split(Line, <<":">>)]
+        ]
+    ).
 
 response(Status, Headers) ->
     [

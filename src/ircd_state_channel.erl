@@ -626,13 +626,11 @@ deliver_body(Command, Target, Body, #client{pid = Pid} = Client, Server, ClientT
                             Command, Origin, Body, MsgId, Now, ClientTags, Stored
                         )
                     ),
-                    lists:foreach(
-                        fun({Text, LineTags}) ->
-                            ircd_state_link:propagate_channel_message(
-                                Name, Text, Command, Client, LineTags
-                            )
-                        end,
-                        wire_lines(Body, Tags)
+                    ircd_state_link:propagate_channel_lines(
+                        Name,
+                        ircd_state_batch:link_lines(
+                            ircd_state_send:prefix(Client), Command, Name, Body, Tags
+                        )
                     )
             end;
         [] ->
@@ -677,10 +675,10 @@ deliver_body(Command, Target, Body, #client{pid = Pid} = Client, Server, ClientT
                         [#remote_client{peer = Peer, nick = Nick, account = Theirs}] ->
                             Prefix = ircd_state_send:prefix(Client),
                             Results = [
-                                ircd_links:send(
-                                    Peer, ircd_wire:message(LineTags, Prefix, Command, [Nick], Text)
+                                ircd_links:send(Peer, iolist_to_binary(Line))
+                             || Line <- ircd_state_batch:link_lines(
+                                    Prefix, Command, Nick, Body, Tags
                                 )
-                             || {Text, LineTags} <- wire_lines(Body, Tags)
                             ],
                             case lists:all(fun(R) -> R =:= ok end, Results) of
                                 true ->
@@ -742,24 +740,6 @@ echo(Pid, Prefix, Command, Target, Body, Tags) ->
             end
     end.
 
-%% Server-link form of a body: one line, or the multiline fallback lines with
-%% the message tags on the first.
-wire_lines({multiline, Lines}, Tags) ->
-    NonBlank = [Text || {_, Text} <- Lines, Text =/= <<>>],
-    {Out, _} = lists:mapfoldl(
-        fun(Text, First) ->
-            case First of
-                true -> {{Text, Tags}, false};
-                false -> {{Text, [T || {<<"+", _/binary>>, _} = T <- Tags]}, false}
-            end
-        end,
-        true,
-        NonBlank
-    ),
-    Out;
-wire_lines(Text, Tags) ->
-    [{Text, Tags}].
-
 message_error(<<"NOTICE">>, _, _, _, _, _) ->
     ok;
 message_error(_, Client, Server, Number, Middle, Text) ->
@@ -774,7 +754,8 @@ note_channel_history(Key, Command, Prefix, Text, Tags) when is_binary(Text) ->
     MsgId =
         case lists:keyfind(<<"msgid">>, 1, Tags) of
             {_, Id} when is_binary(Id) -> Id;
-            _ -> ircd_state_send:msgid()
+            %% A line that arrived without a msgid keeps none in history.
+            _ -> undefined
         end,
     Time =
         case lists:keyfind(<<"time">>, 1, Tags) of

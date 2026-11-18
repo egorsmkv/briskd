@@ -166,7 +166,10 @@ initial_user_modes(Mode) ->
         _ ->
             error
     catch
-        error:badarg -> error
+        %% RFC 1459 puts a hostname here and most clients send `*` or `0`.
+        %% A non-numeric value sets no initial modes (RFC 2812 bit mask only
+        %% applies to a number).
+        error:badarg -> {ok, #{}}
     end.
 put_connection_stats(Pid, _Entry) ->
     ets:insert(ircd_connection_stats, {Pid, erlang:monotonic_time(second), 0, 0, 0, 0}).
@@ -219,9 +222,11 @@ disconnect(#client{pid = Pid, channels = Channels} = Client, Reason, Server) ->
     end,
     case ready(Client) of
         true ->
-            ircd_state_send:broadcast(
-                quit_recipients(Client), ircd_state_send:prefix(Client), <<"QUIT">>, [], Reason
-            ),
+            ircd_state_send:with_source(ircd_state_v3:source_info(Client), fun() ->
+                ircd_state_send:broadcast(
+                    quit_recipients(Client), ircd_state_send:prefix(Client), <<"QUIT">>, [], Reason
+                )
+            end),
             ircd_state_history:note_user_event(
                 Channels, <<"QUIT">>, ircd_state_send:prefix(Client), Reason
             );

@@ -8,6 +8,9 @@
     propagate_away/2,
     propagate_channel_kick/4,
     propagate_channel_message/5,
+    propagate_channel_lines/2,
+    receive_remote_batch/4,
+    remote_batch_line/5,
     propagate_channel_mode/4,
     propagate_introduction/2,
     propagate_invite/4,
@@ -910,9 +913,11 @@ broadcast_remote_join(Name, NickKey) ->
                     );
                 false ->
                     Prefix = <<N/binary, "!", U/binary, "@", H/binary>>,
-                    ircd_state_v3:join_broadcast(
-                        maps:keys(Members), Prefix, Canonical, Account, Real
-                    ),
+                    ircd_state_send:with_source(ircd_state_v3:remote_source_info(Prefix), fun() ->
+                        ircd_state_v3:join_broadcast(
+                            maps:keys(Members), Prefix, Canonical, Account, Real
+                        )
+                    end),
                     case maps:is_key($a, Modes) of
                         true ->
                             ircd_state_v3:away_on_join(maps:keys(Members), Prefix, <<"Away">>);
@@ -1311,7 +1316,7 @@ note_remote_direct(#remote_client{account = From}, Prefix, Command, Target, Text
     MsgId =
         case lists:keyfind(<<"msgid">>, 1, Tags) of
             {_, Id} -> Id;
-            false -> ircd_state_send:msgid()
+            false -> undefined
         end,
     ircd_state_history:note_direct(
         From,
@@ -1652,6 +1657,173 @@ propagate_join(Client, Name, Roles) ->
             lists:foreach(
                 fun(Line) -> server_broadcast(Line) end,
                 channel_mode_burst(Name, Flags, Password, Limit, Lists, Server)
+            );
+        [] ->
+            ok
+    end.
+
+%% @doc Send prepared lines to every peer that has members of the channel.
+-spec propagate_channel_lines(binary(), [iodata()]) -> ok.
+propagate_channel_lines(Name, Lines) ->
+    case mnesia:dirty_read(remote_channel, ircd_wire:fold(Name)) of
+        [#remote_channel{members = Members}] ->
+            Peers = lists:usort([Peer || {_Nick, {Peer, _Roles}} <- maps:to_list(Members)]),
+            Bins = [iolist_to_binary(Line) || Line <- Lines],
+            lists:foreach(
+                fun(Peer) ->
+                    lists:foreach(fun(Bin) -> _ = ircd_links:send(Peer, Bin) end, Bins)
+                end,
+                Peers
+            );
+        [] ->
+            ok
+    end.
+
+%% @doc `BATCH +<ref> draft/multiline <target>` or `BATCH -<ref>` from a peer.
+%% Open batches are kept per peer and reference in the state process and are
+%% bounded by the multiline line limit.
+-spec receive_remote_batch(binary(), binary(), [binary()], list()) -> ok | {error, term()}.
+receive_remote_batch(Peer, Prefix, [<<"+", Ref/binary>>, <<"draft/multiline">>, Target | _], Tags) ->
+    case remote_source(Peer, Prefix) of
+        {ok, _} ->
+            put({ircd_peer_batch, Peer, Ref}, #{
+                prefix => Prefix,
+                target => ircd_wire:retain(Target),
+                tags => trusted_server_tags(Tags) ++ ircd_cap:client_tags(Tags),
+                command => undefined,
+                lines => [],
+                count => 0
+            }),
+            ok;
+        error ->
+            {error, unknown_remote_source}
+    end;
+receive_remote_batch(Peer, _Prefix, [<<"-", Ref/binary>> | _], _Tags) ->
+    case erase({ircd_peer_batch, Peer, Ref}) of
+        #{command := Command, lines := [_ | _] = Lines} = Batch when Command =/= undefined ->
+            deliver_remote_multiline(Peer, Batch#{lines := lists:reverse(Lines)});
+        _ ->
+            ok
+    end;
+receive_remote_batch(_Peer, _Prefix, _Params, _Tags) ->
+    {error, invalid_batch}.
+
+%% @doc One PRIVMSG or NOTICE line of an open peer multiline batch.
+-spec remote_batch_line(binary(), binary(), binary(), [binary()], list()) -> ok | {error, term()}.
+remote_batch_line(Peer, Prefix, Command, [_Target, Text | _], Tags) ->
+    {_, Ref} = lists:keyfind(<<"batch">>, 1, Tags),
+    {_, MaxLines} = ircd_cap:multiline_limits(),
+    case get({ircd_peer_batch, Peer, Ref}) of
+        #{prefix := Prefix, count := Count, lines := Lines} = Batch when Count < MaxLines ->
+            Concat = lists:keymember(<<"draft/multiline-concat">>, 1, Tags),
+            put({ircd_peer_batch, Peer, Ref}, Batch#{
+                command => Command,
+                lines => [{Concat, ircd_wire:retain(Text)} | Lines],
+                count => Count + 1
+            }),
+            ok;
+        #{} ->
+            erase({ircd_peer_batch, Peer, Ref}),
+            {error, invalid_multiline};
+        undefined ->
+            {error, unknown_batch}
+    end;
+remote_batch_line(_Peer, _Prefix, _Command, _Params, _Tags) ->
+    {error, invalid_multiline}.
+
+deliver_remote_multiline(
+    Peer, #{prefix := Prefix, target := Target, tags := Tags, command := Command, lines := Lines}
+) ->
+    Body = {multiline, Lines},
+    case ircd_state_client:find_nick(Target) of
+        #client{pid = Pid, nick = Nick} ->
+            ircd_state_batch:deliver_multiline(Pid, Prefix, Command, Nick, Lines, Tags, normal);
+        undefined ->
+            case ircd_wire:channel(Target) of
+                true ->
+                    Key = ircd_wire:fold(Target),
+                    [Nick | _] = binary:split(Prefix, <<"!">>),
+                    case
+                        {
+                            mnesia:dirty_read(remote_channel, Key),
+                            mnesia:dirty_read(channel, Key)
+                        }
+                    of
+                        {[#remote_channel{members = RM}], [#channel{name = Name, members = LM}]} ->
+                            case maps:is_key(ircd_wire:fold(Nick), RM) of
+                                true ->
+                                    lists:foreach(
+                                        fun(P) ->
+                                            ircd_state_batch:deliver_multiline(
+                                                P, Prefix, Command, Name, Lines, Tags, normal
+                                            )
+                                        end,
+                                        maps:keys(LM)
+                                    ),
+                                    MsgId =
+                                        case lists:keyfind(<<"msgid">>, 1, Tags) of
+                                            {_, Id} -> Id;
+                                            false -> undefined
+                                        end,
+                                    ircd_state_history:note_channel(
+                                        Key,
+                                        ircd_state_history:entry(
+                                            Command,
+                                            Prefix,
+                                            Body,
+                                            MsgId,
+                                            erlang:system_time(millisecond),
+                                            ircd_cap:client_tags(Tags),
+                                            ircd_state_v3:remote_account(ircd_wire:fold(Nick))
+                                        )
+                                    );
+                                false ->
+                                    ok
+                            end;
+                        _ ->
+                            ok
+                    end,
+                    forward_lines_channel(
+                        Peer,
+                        Target,
+                        ircd_state_batch:link_lines(Prefix, Command, Target, Body, Tags)
+                    );
+                false ->
+                    case mnesia:dirty_read(remote_client, ircd_wire:fold(Target)) of
+                        [#remote_client{peer = Dest}] ->
+                            case ircd_route:should_forward(Peer, Dest) of
+                                true ->
+                                    lists:foreach(
+                                        fun(Line) ->
+                                            _ = ircd_links:send(Dest, iolist_to_binary(Line))
+                                        end,
+                                        ircd_state_batch:link_lines(
+                                            Prefix, Command, Target, Body, Tags
+                                        )
+                                    );
+                                false ->
+                                    ok
+                            end;
+                        [] ->
+                            ok
+                    end
+            end
+    end,
+    ok.
+
+forward_lines_channel(Ingress, Name, Lines) ->
+    case mnesia:dirty_read(remote_channel, ircd_wire:fold(Name)) of
+        [#remote_channel{members = Members}] ->
+            Bins = [iolist_to_binary(Line) || Line <- Lines],
+            Peers = lists:usort([MemberPeer || {_Nick, {MemberPeer, _}} <- maps:to_list(Members)]),
+            lists:foreach(
+                fun(Dest) ->
+                    case ircd_route:should_forward(Ingress, Dest) of
+                        true -> lists:foreach(fun(Bin) -> _ = ircd_links:send(Dest, Bin) end, Bins);
+                        false -> ok
+                    end
+                end,
+                Peers
             );
         [] ->
             ok

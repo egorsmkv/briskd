@@ -1,5 +1,5 @@
 -module(ircd_state_batch).
--export([batch/4, deliver_multiline/7, in_batch/2, label/1]).
+-export([batch/4, deliver_multiline/7, in_batch/2, label/1, link_lines/5]).
 -include("ircd_state.hrl").
 
 %% @doc Client-initiated batches (IRCv3 client-batch) of type draft/multiline.
@@ -195,6 +195,34 @@ deliver_multiline(Pid, Prefix, Command, Target, Lines, Tags, Mode) ->
             ),
             ok
     end.
+
+%% @doc Server-link lines for a message body. A multiline message travels as
+%% `BATCH +<ref> draft/multiline <target>` (carrying the message tags), its
+%% lines tagged `batch=<ref>`, and `BATCH -<ref>`, so peers deliver it whole.
+-spec link_lines(iodata(), binary(), binary(), term(), list()) -> [iodata()].
+link_lines(Prefix, Command, Target, {multiline, Lines}, Tags) ->
+    Ref = ircd_state_send:batch_ref(),
+    [
+        ircd_wire:message(
+            Tags, Prefix, <<"BATCH">>, [<<"+", Ref/binary>>, <<"draft/multiline">>, Target], none
+        )
+    ] ++
+        [
+            ircd_wire:message(
+                case Concat of
+                    true -> [{<<"batch">>, Ref}, {<<"draft/multiline-concat">>, undefined}];
+                    false -> [{<<"batch">>, Ref}]
+                end,
+                Prefix,
+                Command,
+                [Target],
+                Text
+            )
+         || {Concat, Text} <- Lines
+        ] ++
+        [ircd_wire:message([], Prefix, <<"BATCH">>, [<<"-", Ref/binary>>], none)];
+link_lines(Prefix, Command, Target, Text, Tags) ->
+    [ircd_wire:message(Tags, Prefix, Command, [Target], Text)].
 
 valid_ref(Ref) ->
     byte_size(Ref) > 0 andalso byte_size(Ref) =< 64 andalso

@@ -18,6 +18,7 @@
     send/5,
     send/6,
     set_source/1,
+    with_source/2,
     source_tags/1,
     time_tag/0,
     time_value/1,
@@ -103,7 +104,10 @@ send(Pid, Prefix, Command, Middle, Tail, Tags0) ->
         end,
     case get(ircd_label) of
         {Pid, Label, _Acc} when is_binary(Label) ->
-            case client_echo(Command, Prefix) of
+            %% A batched line (history replay, a multiline copy) belongs to
+            %% the labeled reply even when it looks like a client's message.
+            Batched = lists:keymember(<<"batch">>, 1, Tags),
+            case client_echo(Command, Prefix) andalso not Batched of
                 true -> relay(Pid, Prefix, Command, Middle, Tail, Tags);
                 false -> buffer_label(Prefix, Command, Middle, Tail, Tags)
             end;
@@ -252,6 +256,22 @@ restore_batch(Previous) -> put(ircd_batch, Previous).
 set_source(Info) ->
     put(ircd_source, Info),
     ok.
+
+%% @doc Run Fun with `Info` as the source, then restore the previous source.
+%% Used where a user's own line (QUIT, JOIN, CHGHOST) is sent outside that
+%% user's command, so account-tag and oper-tag still apply.
+-spec with_source(map(), fun(() -> term())) -> term().
+with_source(Info, Fun) ->
+    Previous = get(ircd_source),
+    put(ircd_source, Info),
+    try
+        Fun()
+    after
+        case Previous of
+            undefined -> erase(ircd_source);
+            _ -> put(ircd_source, Previous)
+        end
+    end.
 
 -spec clear_source() -> ok.
 clear_source() ->

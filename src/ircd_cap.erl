@@ -231,9 +231,9 @@ client_tags(Tags) ->
 -spec label(map(), [{binary(), undefined | binary()}]) -> undefined | binary().
 label(State, Tags) ->
     Enabled = effective(State),
+    %% labeled-response depends on `batch`, not on `message-tags`.
     Active =
-        maps:is_key(<<"message-tags">>, Enabled) andalso
-            maps:is_key(<<"batch">>, Enabled) andalso
+        maps:is_key(<<"batch">>, Enabled) andalso
             maps:is_key(<<"labeled-response">>, Enabled),
     case Active of
         true ->

@@ -189,7 +189,7 @@ cap(#client{pid = Pid, nick = Nick} = Client, Server, [Sub | Rest]) ->
             ircd_state_send:numeric(Client, Server, <<"410">>, [Sub], <<"Invalid CAP command">>)
     end;
 cap(Client, Server, []) ->
-    ircd_state_send:numeric(Client, Server, <<"410">>, [<<>>], <<"Invalid CAP command">>).
+    ircd_state_send:numeric(Client, Server, <<"461">>, [<<"CAP">>], <<"Not enough parameters">>).
 
 %% CAP LS tokens. Values are only shown to clients that asked for version 302.
 ls_tokens(Pid) ->
@@ -250,7 +250,15 @@ send_cap_list(Pid, Nick, Server, Sub, Names) ->
         maps:get(version, ircd_cap:state(Pid)) >= 302 andalso
             (Sub =:= <<"LS">> orelse Sub =:= <<"LIST">>),
     Budget = cap_budget(Server, Nick, Sub, Multiline),
-    Bodies = ircd_cap:pack(Names, Budget),
+    Bodies =
+        case Multiline orelse (Sub =/= <<"LS">> andalso Sub =/= <<"LIST">>) of
+            true ->
+                ircd_cap:pack(Names, Budget);
+            false ->
+                %% Before 302 a client reads one LS/LIST line only: names that
+                %% do not fit are left out rather than sent on a second line.
+                [hd(ircd_cap:pack(Names, Budget))]
+        end,
     Last = length(Bodies),
     lists:foldl(
         fun(Body, Index) ->
@@ -509,9 +517,11 @@ lost_client(#remote_client{server = Server, peer = Peer}, Folds) ->
 drop_remote_user(#remote_client{key = Key, nick = Nick, user = User, host = Host}, Reason) ->
     hold(nick, Nick),
     Prefix = <<Nick/binary, "!", User/binary, "@", Host/binary>>,
-    ircd_state_send:broadcast(
-        ircd_state_link:remote_user_local_recipients(Key), Prefix, <<"QUIT">>, [], Reason
-    ),
+    ircd_state_send:with_source(ircd_state_v3:remote_source_info(Prefix), fun() ->
+        ircd_state_send:broadcast(
+            ircd_state_link:remote_user_local_recipients(Key), Prefix, <<"QUIT">>, [], Reason
+        )
+    end),
     mnesia:dirty_delete(remote_client, Key),
     ircd_state_monitor:offline(Nick),
     ircd_state_meta:forget_remote(Key),

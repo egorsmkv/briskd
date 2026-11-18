@@ -627,7 +627,14 @@ valid_host(Host) ->
         re:run(Host, <<"^[A-Za-z0-9.:/-]+$">>, [{capture, none}, dollar_endonly]) =:= match andalso
         binary:first(Host) =/= $:.
 
-apply_chghost(#client{pid = Pid} = Target, User, Host, Server) ->
+apply_chghost(Target, User, Host, Server) ->
+    %% CHGHOST and its fallback lines are the target's own, so they carry the
+    %% target's account and oper tags, not the operator's.
+    ircd_state_send:with_source(source_info(Target), fun() ->
+        apply_chghost_as_target(Target, User, Host, Server)
+    end).
+
+apply_chghost_as_target(#client{pid = Pid} = Target, User, Host, Server) ->
     OldPrefix = iolist_to_binary(ircd_state_send:prefix(Target)),
     Updated = Target#client{user = ircd_wire:retain(User), host = ircd_wire:retain(Host)},
     mnesia:dirty_write(Updated),
@@ -702,7 +709,7 @@ pre_away(Params, #client{pid = Pid} = Client, Server) ->
             ircd_state_send:numeric(Client, Server, <<"451">>, [], <<"You have not registered">>);
         true ->
             case Params of
-                [] ->
+                Back when Back =:= []; Back =:= [<<>>] ->
                     mnesia:dirty_write(Client#client{away = undefined}),
                     ircd_state_send:numeric(
                         Client, Server, <<"305">>, [], <<"You are no longer marked as being away">>
@@ -859,10 +866,16 @@ webirc(
         end,
     case {Fresh, Trusted, inet:parse_address(binary_to_list(Ip))} of
         {true, true, {ok, _}} ->
+            %% A leading ':' would turn a WHO field into the trailing parameter.
+            SafeIp =
+                case Ip of
+                    <<":", _/binary>> -> <<"0", Ip/binary>>;
+                    _ -> Ip
+                end,
             Host =
                 case valid_host(Hostname) of
                     true -> Hostname;
-                    false -> Ip
+                    false -> SafeIp
                 end,
             Options =
                 case Rest of
@@ -878,7 +891,7 @@ webirc(
             %% The gateway's own TLS certificate is not the user's identity.
             %% A `certfp-sha-256=` option from a secure gateway is.
             ircd_cap:set_info(Pid, certfp, webirc_certfp(Options, Secure)),
-            ircd_cap:set_info(Pid, ip, ircd_wire:retain(Ip)),
+            ircd_cap:set_info(Pid, ip, ircd_wire:retain(SafeIp)),
             logger:info(#{event => webirc_accepted, gateway => GatewayHost, host => Host}),
             ok;
         _ ->

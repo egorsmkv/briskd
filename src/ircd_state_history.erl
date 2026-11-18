@@ -99,7 +99,8 @@ store_event(Key, Command, Prefix, Params, Text) ->
                 Command,
                 Prefix,
                 Text,
-                ircd_state_send:msgid(),
+                %% Live event lines carry no msgid, so history has none either.
+                undefined,
                 erlang:system_time(millisecond),
                 [],
                 Account

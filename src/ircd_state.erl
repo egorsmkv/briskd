@@ -456,7 +456,11 @@ handle_call({connect, Host, Info}, {Pid, _}, Server) ->
     logger:info(#{event => client_connected, peer => Host}),
     {reply, ok, Server};
 handle_call({tls_upgraded, Info}, {Pid, _}, Server) ->
+    %% STARTTLS changes what is offered (`tls` goes away, `sts` switches to
+    %% its persistence value): cap-notify clients get CAP DEL and CAP NEW.
+    Before = #{Pid => ircd_cap:advertised(Pid)},
     maps:foreach(fun(Key, Value) -> ircd_cap:set_info(Pid, Key, Value) end, Info),
+    ircd_state_net:notify_cap_changes(Before, Server),
     {reply, ok, Server};
 handle_call(registered, {Pid, _}, Server) ->
     {reply, ircd_state_client:ready(ircd_state_client:client(Pid)), Server};
@@ -503,6 +507,24 @@ burst_command(Command) ->
         <<"AWAY">>
     ]).
 
+server_call({server_command, Peer, Prefix, <<"BATCH">>, Params, Tags}, _, Server) when
+    is_binary(Prefix)
+->
+    {reply, ircd_state_link:receive_remote_batch(Peer, Prefix, Params, Tags), Server};
+server_call({server_command, Peer, Prefix, Command, Params, Tags}, _, Server) when
+    is_binary(Prefix),
+    (Command =:= <<"PRIVMSG">> orelse Command =:= <<"NOTICE">>),
+    is_list(Tags),
+    Tags =/= []
+->
+    case lists:keymember(<<"batch">>, 1, Tags) of
+        true ->
+            {reply, ircd_state_link:remote_batch_line(Peer, Prefix, Command, Params, Tags), Server};
+        false ->
+            other_call(
+                {server_command, Peer, Prefix, Command, Params, Tags}, {self(), make_ref()}, Server
+            )
+    end;
 server_call({server_command, Peer, Prefix, <<"ACCOUNT">>, Params, _Tags}, _, Server) when
     is_binary(Prefix)
 ->

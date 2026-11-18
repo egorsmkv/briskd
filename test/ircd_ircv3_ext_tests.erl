@@ -793,7 +793,47 @@ audit_regressions(Port) ->
     Renamed = collect(Quiet),
     ?assert(has(Renamed, <<"JOIN #auditnew">>)),
     ?assertNot(has(Renamed, <<" 353 ">>)),
-    lists:foreach(fun gen_tcp:close/1, [Held, Asker, Quiet]).
+    %% Second audit pass.
+    %% labeled-response needs only batch, not message-tags.
+    LabelOnly = client(Port, <<"lblonly">>, <<"batch labeled-response">>),
+    send(LabelOnly, <<"@label=w1 WHOIS lblonly">>),
+    LabelReply = collect(LabelOnly),
+    ?assert(has(LabelReply, <<"label=w1">>)),
+    ?assert(has(LabelReply, <<"labeled-response">>)),
+    %% CAP without a subcommand.
+    send(LabelOnly, <<"CAP">>),
+    ?assert(has(collect(LabelOnly), <<" 461 lblonly CAP ">>)),
+    %% An over-long tagged line without CR LF gets 417 and the session lives.
+    ok = gen_tcp:send(LabelOnly, <<"@a=", (binary:copy(<<"x">>, 9000))/binary>>),
+    ok = gen_tcp:send(LabelOnly, <<"yyy\r\nPING alive\r\n">>),
+    Survived = collect(LabelOnly),
+    ?assert(has(Survived, <<" 417 ">>)),
+    ?assert(has(Survived, <<"PONG">>)),
+    %% A labeled CHATHISTORY: the labeled BATCH comes before the history lines.
+    Hist = client(Port, <<"lblhist">>, <<"batch labeled-response message-tags draft/chathistory">>),
+    send(Hist, <<"JOIN #lblhist">>),
+    send(Hist, <<"PRIVMSG #lblhist :first">>),
+    _ = collect(Hist),
+    send(Hist, <<"@label=h1 CHATHISTORY LATEST #lblhist * 5">>),
+    HistReply = collect(Hist),
+    [FirstLine | _] = binary:split(HistReply, <<"\r\n">>),
+    ?assert(has(FirstLine, <<"label=h1">>)),
+    ?assert(has(FirstLine, <<"BATCH +">>)),
+    ?assert(has(HistReply, <<"PRIVMSG #lblhist :first">>)),
+    %% Registration metadata burst uses METADATA, not 761.
+    Meta = connect(Port),
+    send(Meta, <<"CAP LS 302">>),
+    _ = collect(Meta),
+    send(Meta, <<"CAP REQ :batch draft/metadata-2">>),
+    _ = collect(Meta),
+    send(Meta, <<"METADATA * SET color :green">>),
+    _ = collect(Meta),
+    send(Meta, <<"NICK metareg">>),
+    send(Meta, <<"USER metareg 0 * :M">>),
+    send(Meta, <<"CAP END">>),
+    MetaWelcome = collect(Meta),
+    ?assert(has(MetaWelcome, <<"METADATA metareg color * :green">>)),
+    lists:foreach(fun gen_tcp:close/1, [Held, Asker, Quiet, LabelOnly, Hist, Meta]).
 
 netsplit(Port) ->
     Local = client(Port, <<"splitter">>, <<"batch extended-join">>),

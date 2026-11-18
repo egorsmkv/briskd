@@ -273,7 +273,8 @@ handle_server_line(
     Command =:= <<"REDACT">>;
     Command =:= <<"ACCOUNTSYNC">>;
     Command =:= <<"METADATA">>;
-    Command =:= <<"MARKREAD">>
+    Command =:= <<"MARKREAD">>;
+    Command =:= <<"BATCH">>
 ->
     case ircd_state:server_command(PeerName, Prefix, Command, Params, Tags) of
         ok -> {ok, State};

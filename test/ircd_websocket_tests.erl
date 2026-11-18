@@ -26,6 +26,14 @@ subprotocol_preference_test() ->
         request(<<"Sec-WebSocket-Protocol: foo, binary.ircv3.net\r\n">>), null
     ).
 
+repeated_protocol_headers_test() ->
+    {ok, _, binary, _} = ircd_websocket:handshake(
+        request(
+            <<"Sec-WebSocket-Protocol: binary.ircv3.net\r\nSec-WebSocket-Protocol: text.ircv3.net\r\n">>
+        ),
+        null
+    ).
+
 origin_and_partial_request_test() ->
     ?assertEqual(more, ircd_websocket:handshake(<<"GET / HTTP/1.1\r\n">>, null)),
     ?assertMatch({error, _}, ircd_websocket:handshake(request(<<>>), [<<"https://ok">>])),
