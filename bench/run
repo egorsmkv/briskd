@@ -1,0 +1,5 @@
+#!/bin/sh
+# Generate IRC traffic against the running server and write bench/results/.
+set -eu
+cd "$(dirname "$0")/.."
+exec python3 bench/traffic.py "$@"

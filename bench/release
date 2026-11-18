@@ -1,0 +1,67 @@
+#!/bin/sh
+# Build the packaged release, measure it on port 6668, then stop that node.
+# The development server on port 6667 is left running.
+set -eu
+cd "$(dirname "$0")/.."
+
+NAME=ircd-release-bench
+PORT=6668
+REL=/workspace/_build/prod/rel/ircd
+CONFIG="${REL}/etc/ircd.release.json"
+
+cleanup() {
+    docker rm -f "$NAME" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+docker-compose -f docker-compose.dev.yml exec -T ircd-dev just release
+
+docker rm -f "$NAME" >/dev/null 2>&1 || true
+docker-compose -f docker-compose.dev.yml run -d --name "$NAME" --no-deps -T \
+    -p "${PORT}:6668" \
+    -e "IRCD_CONFIG=${CONFIG}" \
+    ircd-dev \
+    "${REL}/bin/ircd" foreground
+
+ready=0
+i=0
+while [ "$i" -lt 40 ]; do
+    if python3 - "$PORT" <<'PY'
+import socket, sys
+port = int(sys.argv[1])
+try:
+    sock = socket.create_connection(("127.0.0.1", port), 1)
+    sock.settimeout(2)
+    sock.sendall(b"NICK bwarmup00\r\nUSER bwarmup00 0 * :bench\r\n")
+    data = b""
+    while b" 001 " not in data:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise EOFError
+        data += chunk
+    sock.sendall(b"QUIT :bench\r\n")
+    sock.close()
+except Exception:
+    sys.exit(1)
+PY
+    then
+        ready=1
+        break
+    fi
+    i=$((i + 1))
+    sleep 0.5
+done
+if [ "$ready" -ne 1 ]; then
+    echo "release did not listen on ${PORT}" >&2
+    docker logs "$NAME" >&2 || true
+    exit 1
+fi
+
+stamp=$(date -u +%F)
+python3 bench/traffic.py \
+    --host 127.0.0.1 \
+    --port "$PORT" \
+    --container "$NAME" \
+    --kind release \
+    --warmup 50 \
+    --output "bench/results/${stamp}-release.md"

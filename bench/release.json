@@ -1,0 +1,8 @@
+{
+  "name": "irc.release",
+  "bind": "0.0.0.0",
+  "tcp_port": 6668,
+  "tls_port": null,
+  "mnesia_dir": "/tmp/ircd-release-mnesia",
+  "max_clients": 10000
+}

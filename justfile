@@ -5,6 +5,10 @@ default:
 build:
     rebar3 compile
 
+# Build a packaged release that includes ERTS.
+release:
+    rebar3 as prod release
+
 # Format Erlang source files with erlfmt.
 format:
     rebar3 fmt
