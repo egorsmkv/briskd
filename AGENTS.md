@@ -159,6 +159,35 @@ Follow that ownership. Choose `one_for_one`, `rest_for_one`, or `one_for_all` fr
 - Mnesia holds durable **WHOWAS** history and **safe-channel** state. Ordinary channels, client sessions, and imported peer state are transient and disappear on restart. ETS remains appropriate for ephemeral indexes if a measured change needs them. `persistent_term` is for rarely replaced immutable configuration, never for nick or membership tables.
 - Load-shed before allocating session state. `max_clients` is the configured cap. Further limits (per-connection line rate, nick-change rate, join rate) need an explicit operator-facing behavior and a numeric or disconnect reason. This protocol has no HTTP 429; do not invent a fake status code.
 
+### 7.1 Allocation, lists, and binary construction
+
+Apply the [Efficiency Guide](https://www.erlang.org/docs/23/efficiency_guide/users_guide.html) as background reading. It describes OTP 23, while this repository targets OTP 29. Verify compiler optimizations, binary representation details, timer implementation, system limits, and profiler availability against the installed OTP 29 documentation and measurements. Do not copy historical memory sizes, speed ratios, or emulator flags into sizing rules.
+
+- `Left ++ Right` copies the left list. Avoid repeatedly appending to a growing accumulator; prepend and reverse once, or use `lists:reverse/2` when attaching a tail. A short, bounded left operand is acceptable; do not ban `++` categorically.
+- Keep nested iodata through APIs that accept it, including socket sends. Avoid `lists:flatten/1` merely to send a line. Use `iolist_size/1` for byte counts and `iolist_to_binary/1` when a contiguous binary is actually required. Preserve the codec's line limits and public return contracts.
+- `length/1` traverses a list. Avoid repeated full traversals of growing member or recipient lists; use an existing count or a bounded traversal when appropriate. Pattern matching for a minimum length must not accidentally admit improper lists previously rejected by validation. Prefer `byte_size/1`, `bit_size/1`, and `tuple_size/1` over ambiguous `size/1`.
+- Use bit syntax for binary decomposition. When optimizing binary builders, examine whether matching, sending, storing, or retaining earlier accumulator versions forces later appends to copy on OTP 29. Do not assume every binary append copies, or that every append is free. Keep the existing receive-buffer cap.
+- Review binary lifetime as well as allocation: small retained slices can retain their backing receive binary. Copy at a long-lived ownership boundary when needed, rather than copying every parsed field.
+- For long scalar reductions over lists, prefer a tail-recursive accumulator to avoid stack growth. Do not replace list subtraction (`--`) with set conversions based on pre-OTP-22 complexity claims; preserve duplicate and ordering semantics and measure on OTP 29.
+- Prefer a single traditional-record update for related field changes over a loop of `setelement/3` calls on a large tuple. Verify compiler behavior before attempting tuple update micro-optimizations; do not adopt historical index-order tricks or tuple/list conversions as a general rule.
+- Keep dispatch clauses explicit and preserve first-match behavior. Do not rearrange overlapping clauses or replace direct calls with dynamic `apply/3` for presumed speed. Compiler diagnostics for binary optimizations may help a focused investigation, but verify OTP 29 support and keep diagnostic flags out of committed build settings.
+- Choose clear body recursion, tail recursion, comprehensions, and funs without blanket speed claims. Long-running custom process loops must be tail-recursive; keep ordinary connection lifecycle handling in OTP behaviours. Do not introduce NIFs or drivers as a presumed speedup: require profiling evidence and account for scheduler blocking and VM-wide failure risk.
+
+### 7.2 Message, timer, and table costs
+
+- Process messaging generally copies ordinary terms; reference-counted binary payloads can be shared within a node. Keep session and link messages small. Pass only needed fields to workers and avoid fun closures that capture entire state records. Channel fan-out still allocates message envelopes and recipient queues even when payload bytes are shared.
+- Selective receives can scan queued messages. Use OTP request/reply mechanisms and fresh correlation references for bounded workers; do not add nested receive loops inside callbacks to wait for unrelated work. Inspect mailbox growth before changing concurrency.
+- Prefer `erlang:send_after/3` or `erlang:start_timer/3` for connection timers, with the stale-timer protections in section 6. Do not apply historical timer-server bottleneck claims to all OTP 29 `timer` functions; `timer:tc` is also suitable for local timing.
+- Prefer keyed ETS/Mnesia lookups and justified indexes to whole-table materialization. When a scan is necessary, consider match specifications that return only required fields and bounded selection batches. Batch size bounds returned data, not necessarily total scan work; preserve query completeness and IRC reply ordering.
+- Reuse records already fetched within a command when ownership guarantees they remain valid. Account for copying and loss of term sharing across ETS and process boundaries. Do not replace Mnesia transactions with dirty operations, change durability, or bypass the state owner solely for speed; preserve existing consistency semantics.
+- Change heap sizes, mailbox storage options, ETS concurrency options, or scheduler settings only after measuring the affected workload. Include aggregate memory at the configured client cap and retained binary memory; fewer GCs alone do not establish an improvement.
+
+### 7.3 Capacity and native boundaries
+
+- More schedulers cannot make a single busy state owner execute commands in parallel. Measure runnable work and scheduler utilization before adding processes; a benchmark with many waiting clients may still exercise a sequential bottleneck. Preserve section 6's ownership and ordering rules.
+- Budget `max_clients` against measured per-session memory, TLS overhead, peer workers, runtime process/port limits, and OS file-descriptor/socket limits, leaving capacity for supervision, logging, and reconnects. Inspect actual deployment limits rather than taking numeric defaults from the old guide. Raising VM or OS limits does not replace admission control.
+- Keep `gen_tcp` and `ssl` as the networking interfaces. If an explicitly scoped task introduces a native driver, review driver/port locking, callback scheduling, binary ownership, reference counts, and cleanup against OTP 29 driver documentation. Iodata support alone does not guarantee zero copying; callback/API choice matters. Splitting one logical operation into multiple port calls requires an owner that prevents interleaving. Do not add a driver solely to apply this guide's C examples.
+
 ## 8. IRC protocol engineering
 
 ### 8.1 Specifications in force
@@ -271,6 +300,14 @@ Add `rebar3 dialyzer`, `rebar3 xref`, Common Test, and a release smoke test when
 - Compare matched before and after runs. Report p99 and error numerics alongside throughput. A faster path that drops memberships, mis-folds nicknames, or leaks sessions is not an improvement.
 - Gate wire changes on malformed-line tests and the 512-octet ceiling. Gate state changes on membership invariants. Gate link changes on prefix checks, loop prevention, and a multi-hop forward that is not echoed to the ingress peer.
 
+### Profiling procedure
+
+- State the bottleneck hypothesis and reproduce it under section 2's matched workload before editing. Start with bounded samples of `erlang:memory/0`, `process_info/2` (memory, reductions, queue length, GC), and `ets:info/2`; inspect the state owner, sessions, and links separately. Avoid dumping mailbox contents or state containing secrets and message bodies.
+- Choose tools by the question: `cprof` for call counts, `eprof` for function time, and `fprof` for detailed call relationships. Verify tool support on the deployed OTP 29 build. Trace only necessary processes/functions for a bounded interval and remove tracing afterward. Profiling overhead changes timing; report final throughput and latency from runs without profiling enabled.
+- Keep benchmark setup, compilation, logging configuration, and warmup comparable. Repeat samples and report variation. Isolated microbenchmarks can explain a hot function, but acceptance requires the full IRC workload and correctness gates above. Diagnose lock contention only with a supported instrumented runtime/tool, and disclose that environment difference.
+- Distinguish elapsed time from VM CPU time: socket I/O and scheduling waits affect client latency even when CPU time is low. Give microbenchmark samples enough duration to exceed clock noise and use fresh processes or equivalent heap/GC starting conditions for alternatives. Report distributions; a best-case sample alone cannot establish service latency.
+- If OS memory and `erlang:memory/0` disagree, investigate allocator retention/fragmentation and native allocations before calling it a leak. Use supported OTP 29 allocator and crash-dump tools when needed, and treat dumps as sensitive data. Do not enable Erlang distribution or expose a remote observer merely to profile this server.
+
 ## 14. Agent completion checklist
 
 A change is done only when the agent can answer **yes**, or explicitly report why not, for each item:
@@ -283,7 +320,7 @@ A change is done only when the agent can answer **yes**, or explicitly report wh
 - Are operator and link secrets, message-body logging, privilege checks, and prefix spoofing reviewed?
 - Are erlfmt, specs, and config defaults maintained?
 - Did I run the applicable `just build`, `just format-check`, and `just test` commands and report the results?
-- Did I measure any performance claim with a stated load and tail latency?
+- Did I measure any performance claim with a stated load and tail latency, and verify historical efficiency advice against OTP 29?
 - Did I note wire compatibility, persistence across restart, and remaining link or RFC gaps?
 
 ## 15. Authoritative references
@@ -297,8 +334,28 @@ This file is engineering policy for the repository. The RFCs and the code win on
 - RFC 2813, IRC server protocol: https://www.rfc-editor.org/rfc/rfc2813
 - RFC 7194, default IRC port: https://www.rfc-editor.org/rfc/rfc7194
 - Repository coverage: [README.md](README.md), [ROADMAP.md](ROADMAP.md)
+- OTP 23 Efficiency Guide (historical background; verify against OTP 29): https://www.erlang.org/docs/23/efficiency_guide/users_guide.html
 - OTP 29 docs: https://www.erlang.org/docs/29/
 - `gen_server` and `gen_statem`: https://www.erlang.org/docs/29/apps/stdlib/gen_server.html and https://www.erlang.org/docs/29/apps/stdlib/gen_statem.html
 - `ssl`: https://www.erlang.org/docs/29/apps/ssl/ssl.html
 - `logger`: https://www.erlang.org/docs/29/apps/kernel/logger.html
 - Rebar3: https://rebar3.org/docs/
+
+### Efficiency Guide review coverage
+
+All twelve chapter pages and their subsections were reviewed. This table records their application, not a claim that historical implementation details were validated on OTP 29.
+
+| Chapter | Application in this standard |
+| --- | --- |
+| [Introduction](https://www.erlang.org/docs/23/efficiency_guide/introduction.html) | Sections 1, 7, 13: clear architecture first; optimize measured bottlenecks. |
+| [Seven Myths](https://www.erlang.org/docs/23/efficiency_guide/myths.html) | Section 7.1: avoid blanket recursion, concatenation, and NIF speed claims; historical DETS and interpreter details are not tuning rules. |
+| [Common Caveats](https://www.erlang.org/docs/23/efficiency_guide/commoncaveats.html) | Sections 3, 7.1–7.2: atom safety, traversal costs, tuple updates, size BIFs, timers. |
+| [Binaries](https://www.erlang.org/docs/23/efficiency_guide/binaryhandling.html) | Section 7.1: construction, matching, diagnostics, and retained buffers. |
+| [List Handling](https://www.erlang.org/docs/23/efficiency_guide/listHandling.html) | Section 7.1: accumulators, iodata, comprehensions, and recursion. |
+| [Functions](https://www.erlang.org/docs/23/efficiency_guide/functions.html) | Section 7.1: clause semantics, direct calls, scalar recursion; old call-cost ratios are not accepted evidence. |
+| [Tables and Databases](https://www.erlang.org/docs/23/efficiency_guide/tablesDatabases.html) | Sections 7.2, 10: keyed access, scan costs, consistency, and durability. |
+| [Processes](https://www.erlang.org/docs/23/efficiency_guide/processes.html) | Sections 6, 7.2–7.3: loops, messages, sharing, heap tuning, and scheduler scaling. |
+| [Drivers](https://www.erlang.org/docs/23/efficiency_guide/drivers.html) | Section 7.3: conditional native-boundary review; retain OTP networking. |
+| [Advanced](https://www.erlang.org/docs/23/efficiency_guide/advanced.html) | Section 7.3: measure memory and deployment limits instead of adopting historical tables. |
+| [Profiling](https://www.erlang.org/docs/23/efficiency_guide/profiling.html) | Section 13: tool selection, memory diagnosis, representative workloads, and fair timing. |
+| [Retired Myths](https://www.erlang.org/docs/23/efficiency_guide/retired_myths.html) | Section 7.1: funs, comprehensions, and list subtraction require no folklore-driven rewrites. |
