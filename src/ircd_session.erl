@@ -284,7 +284,8 @@ process_server_line(Prefix, Command, Params, _Bytes, {_, _, Peer, _, _} = State)
     Command =:= <<"SQUIT">>;
     Command =:= <<"INVITE">>;
     Command =:= <<"SERVICE">>;
-    Command =:= <<"SQUERY">>
+    Command =:= <<"SQUERY">>;
+    Command =:= <<"KILL">>
 ->
     case ircd_state:server_command(Peer, Prefix, Command, Params) of
         ok ->

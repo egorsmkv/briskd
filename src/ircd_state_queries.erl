@@ -182,6 +182,7 @@ remote_who_channel(Name, Client, OperatorsOnly, Server) ->
                                         user = User,
                                         host = Host,
                                         real = Real,
+                                        server = Home,
                                         peer = Peer,
                                         modes = Modes
                                     }
@@ -222,7 +223,14 @@ remote_who_channel(Name, Client, OperatorsOnly, Server) ->
                                                 Client,
                                                 Server,
                                                 <<"352">>,
-                                                [Canonical, User, Host, Peer, Nick, Status],
+                                                [
+                                                    Canonical,
+                                                    User,
+                                                    Host,
+                                                    home_server_name(Home, Peer),
+                                                    Nick,
+                                                    Status
+                                                ],
                                                 [<<"0 ">>, Real]
                                             );
                                         false ->
@@ -254,6 +262,7 @@ remote_who_mask(Mask, OperatorsOnly, Client, Server) ->
                         user = User,
                         host = Host,
                         real = Real,
+                        server = Home,
                         peer = Peer,
                         modes = Modes
                     }
@@ -285,7 +294,7 @@ remote_who_mask(Mask, OperatorsOnly, Client, Server) ->
                                 Client,
                                 Server,
                                 <<"352">>,
-                                [<<"*">>, User, Host, Peer, Nick, Status],
+                                [<<"*">>, User, Host, home_server_name(Home, Peer), Nick, Status],
                                 [<<"0 ">>, Real]
                             );
                         false ->
@@ -407,13 +416,19 @@ whois(Nick, Client, Server) ->
     end,
     ircd_state:numeric(Client, Server, <<"318">>, [Nick], <<"End of WHOIS list">>).
 
+%% WHO and WHOIS name the user's home server. `peer` is only the adjacent link.
+home_server_name(Server, _Peer) when is_binary(Server) ->
+    Server;
+home_server_name(_Server, Peer) ->
+    Peer.
+
 remote_whois(Nick, Client, Server) ->
     case mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) of
         [Remote] ->
             Actual = Remote#remote_client.nick,
             User = Remote#remote_client.user,
             Host = Remote#remote_client.host,
-            Peer = Remote#remote_client.peer,
+            Peer = home_server_name(Remote#remote_client.server, Remote#remote_client.peer),
             Real = Remote#remote_client.real,
             Modes = Remote#remote_client.modes,
             case

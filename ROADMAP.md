@@ -40,8 +40,8 @@ in the referenced RFC.
   advertise no capabilities, `CAP REQ` is `NAK`ed, and an unknown `CAP`
   subcommand returns 410. `SERVICE`, `SERVLIST`, and `SQUERY` register and
   reach services. `CONNECT` and `SQUIT` are operator commands. `SUMMON` and
-  `USERS` stay disabled with numerics 445 and 446. `DIE` and `RESTART` are
-  operator-only and do not stop the node.
+  `USERS` stay disabled with numerics 445 and 446. Operator `DIE` stops the
+  node and operator `RESTART` restarts it; other clients receive numeric 481.
 - [x] Audit parameter limits, error numerics, visibility, and command edge cases
   against the RFCs.
 

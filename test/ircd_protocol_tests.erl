@@ -2,8 +2,8 @@
 -include_lib("eunit/include/eunit.hrl").
 
 %% Live registration, channel limits, restart persistence, and a two-hop link.
-%% The second server is a socket that speaks RFC 2813; one node cannot register
-%% two ircd_state processes.
+%% Two peer sockets speak RFC 2813. One node cannot register two ircd_state
+%% processes, so the leaf server is introduced by the first peer.
 
 protocol_test_() ->
     {timeout, 120, fun protocol/0}.
@@ -71,21 +71,26 @@ protocol() ->
     end.
 
 link_and_restart(Port, Bob, Dir, Config) ->
-    Peer = connect(Port),
-    send(Peer, <<"PASS linksecret 0210 |">>),
-    send(Peer, <<"SERVER peer.test 1 1 :peer">>),
-    Handshake = recv(Peer),
-    ?assert(has(Handshake, <<"SERVER irc.test">>)),
+    Peer = handshake(Port, <<"peer.test">>),
+    Other = handshake(Port, <<"other.test">>),
+    _ = recv(Peer),
+    _ = recv(Other),
     send(Peer, <<"PING peer.test">>),
-    Pong = recv(Peer),
-    ?assert(has(Pong, <<"PONG">>)),
+    ?assert(has(recv(Peer), <<"PONG">>)),
     send(Peer, <<":peer.test SERVER leaf.test 2 2 :leaf">>),
     send(Peer, <<":leaf.test NICK remote 1 user leaf.test 2 + :Remote">>),
+    Introduced = recv(Other),
+    ?assertEqual(1, count(Introduced, <<"NICK remote">>)),
+    ?assert(has(Introduced, <<"SERVER leaf.test">>)),
+    IngressEcho = recv_quiet(Peer),
+    ?assertNot(has(IngressEcho, <<"NICK remote">>)),
+    ?assertNot(has(IngressEcho, <<"SERVER leaf.test">>)),
     send(Peer, <<":peer.test NICK direct 0 user peer.test 1 + :Direct">>),
     send(Peer, <<":peer.test SERVICE helper * *.test 0 * :Help">>),
+    _ = recv(Other),
     timer:sleep(300),
     ?assertEqual(
-        {[<<"direct">>, <<"remote">>], [<<"leaf.test">>, <<"peer.test">>]},
+        {[<<"direct">>, <<"remote">>], [<<"leaf.test">>, <<"other.test">>, <<"peer.test">>]},
         {
             lists:sort(mnesia:dirty_all_keys(remote_client)),
             lists:sort(mnesia:dirty_all_keys(known_server))
@@ -95,12 +100,49 @@ link_and_restart(Port, Bob, Dir, Config) ->
     _ = recv(Bob),
     send(Bob, <<"JOIN #room">>),
     _ = recv(Bob),
+    _ = recv(Peer),
+    _ = recv(Other),
+    send(Peer, <<":remote!user@leaf.test JOIN #room">>),
+    Joined = recv(Other),
+    ?assertEqual(1, count(Joined, <<"JOIN #room">>)),
+    ?assertNot(has(recv_quiet(Peer), <<"JOIN #room">>)),
+    send(Other, <<":other.test NICK side 0 user other.test 3 + :Side">>),
+    SideNick = recv(Peer),
+    ?assertEqual(1, count(SideNick, <<"NICK side">>)),
+    ?assertNot(has(recv_quiet(Other), <<"NICK side">>)),
+    send(Other, <<":side!user@other.test JOIN #room">>),
+    _ = recv(Peer),
+    send(Peer, <<":peer.test MODE #room +o remote">>),
+    Mode = recv(Other),
+    ?assertEqual(1, count(Mode, <<"MODE #room +o remote">>)),
+    ?assertNot(has(recv_quiet(Peer), <<"MODE #room +o remote">>)),
+    send(Peer, <<":remote!user@leaf.test KICK #room side :out">>),
+    Kick = recv(Other),
+    ?assertEqual(1, count(Kick, <<"KICK #room side">>)),
+    ?assertNot(has(recv_quiet(Peer), <<"KICK #room side">>)),
+    send(Bob, <<"WHOIS remote">>),
+    Whois = recv(Bob),
+    ?assert(has(Whois, <<" 312 ">>)),
+    ?assert(has(Whois, <<"remote leaf.test">>)),
+    ?assertNot(has(Whois, <<"remote peer.test">>)),
+    send(Bob, <<"WHO remote">>),
+    Who = recv(Bob),
+    ?assert(has(Who, <<"leaf.test remote">>)),
+    ?assertNot(has(Who, <<"peer.test remote">>)),
+    send(Peer, <<":leaf.test NICK side 1 user leaf.test 2 + :Clash">>),
+    PeerKill = recv(Peer),
+    OtherKill = recv(Other),
+    ?assert(has(PeerKill, <<"KILL side">>)),
+    ?assert(has(OtherKill, <<"KILL side">>)),
+    ?assert(has(OtherKill, <<"QUIT">>)),
     send(Bob, <<"INVITE remote #room">>),
     Invite = recv(Peer),
     ?assert(has(Invite, <<"INVITE remote #room">>)),
+    ?assertNot(has(recv_quiet(Other), <<"INVITE remote #room">>)),
     send(Bob, <<"PRIVMSG remote :hello-hop">>),
     Routed = recv(Peer),
     ?assertEqual(1, count(Routed, <<"hello-hop">>)),
+    ?assertNot(has(recv_quiet(Other), <<"hello-hop">>)),
     send(Peer, <<":remote!user@leaf.test PRIVMSG bob :from-leaf">>),
     ?assert(has(recv(Bob), <<"from-leaf">>)),
     Echo = recv_quiet(Peer),
@@ -109,6 +151,7 @@ link_and_restart(Port, Bob, Dir, Config) ->
     ?assert(has(recv(Bob), <<" 234 ">>)),
     send(Bob, <<"SQUERY helper :ping">>),
     ?assert(has(recv(Peer), <<"SQUERY helper :ping">>)),
+    gen_tcp:close(Other),
     send(Peer, <<":peer.test SQUIT leaf.test :split">>),
     timer:sleep(200),
     send(Bob, <<"WHOIS remote">>),
@@ -153,10 +196,21 @@ config(Db) ->
         list_to_binary(Db),
         <<"\",">>,
         <<"\"operators\":[{\"name\":\"oper\",\"password\":\"opersecret\"}],">>,
-        <<"\"server_links\":[{\"name\":\"peer.test\",\"host\":\"127.0.0.1\",">>,
-        <<"\"port\":1,\"password\":\"linksecret\",\"tls\":false}]">>,
+        <<"\"server_links\":[">>,
+        <<"{\"name\":\"peer.test\",\"host\":\"127.0.0.1\",\"port\":1,">>,
+        <<"\"password\":\"linksecret\",\"tls\":false},">>,
+        <<"{\"name\":\"other.test\",\"host\":\"127.0.0.1\",\"port\":1,">>,
+        <<"\"password\":\"linksecret\",\"tls\":false}]">>,
         <<"}">>
     ]).
+
+handshake(Port, Name) ->
+    Sock = connect(Port),
+    send(Sock, <<"PASS linksecret 0210 |">>),
+    send(Sock, <<"SERVER ", Name/binary, " 1 1 :", Name/binary>>),
+    Hello = recv(Sock),
+    ?assert(has(Hello, <<"SERVER irc.test">>)),
+    Sock.
 
 register_client(Port, Nick, Real) ->
     Sock = connect(Port),

@@ -317,16 +317,14 @@ oper_command_allowed(<<"SERVICE">>, _, Client, Server) ->
     ircd_state_send:numeric(
         Client, Server, <<"461">>, [<<"SERVICE">>], <<"Not enough parameters">>
     );
-oper_command_allowed(Command, _, Client, Server) when
-    Command =:= <<"DIE">>; Command =:= <<"RESTART">>
-->
-    ircd_state_send:send(
-        Client#client.pid,
-        Server,
-        <<"NOTICE">>,
-        [Client#client.nick],
-        <<Command/binary, " is disabled by server policy">>
-    ).
+%% RFC 2812 DIE shuts the node down. RESTART restarts the runtime. Both are
+%% operator-only; a non-operator already received numeric 481.
+oper_command_allowed(<<"DIE">>, _, _Client, _Server) ->
+    erlang:spawn(fun() -> init:stop() end),
+    ok;
+oper_command_allowed(<<"RESTART">>, _, _Client, _Server) ->
+    erlang:spawn(fun() -> init:restart() end),
+    ok.
 
 store_service(Name, Dist, Type, Info, Home, Peer) ->
     Key = ircd_wire:fold(Name),

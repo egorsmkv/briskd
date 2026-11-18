@@ -121,21 +121,26 @@ Implemented client commands include `PASS`, `NICK`, `USER`, `JOIN`, `PART`,
 `SQUIT`, `SERVICE`, `CAP`, `KNOCK`, `SUMMON`, `USERS`, `DIE`, and `RESTART`.
 `CAP LS` and `CAP LIST` report an empty capability set, `CAP REQ` is rejected
 with `NAK`, and an unknown `CAP` subcommand returns numeric 410. `SUMMON` and
-`USERS` stay disabled and return numerics 445 and 446. `DIE` and `RESTART` are
-operator-only and do not stop the node.
+`USERS` stay disabled and return numerics 445 and 446. Operator `DIE` stops
+the node and operator `RESTART` restarts the runtime. Other clients receive
+numeric 481.
 
 A client may join at most ten channels (numeric 405). A nickname or channel
 released by a quit or a netsplit stays unavailable for 60 seconds (numeric
 437). A nickname introduced for an existing local or remote user kills both
-sides. Invisible users are hidden from `WHO`, `WHOIS`, and `NAMES` unless the
-requester shares a channel, including when the other user is on another server.
+sides, and both peers are sent `KILL` and `QUIT`. `WHO` and `WHOIS` name a
+remote user's home server. Invisible users are hidden from `WHO`, `WHOIS`, and
+`NAMES` unless the requester shares a channel, including when the other user
+is on another server.
 
 Server links speak the RFC 2813 `PASS` / `SERVER` handshake and accept further
-`SERVER` introductions in hop order. Messages and invitations are forwarded
-along the adjacent link toward the target and are not sent back to the link
-that delivered them. `SQUIT` and a lost link remove the users, services, and
-channels that were reachable only through the lost server and tell the
-remaining peers. Channel invitations are stored and forwarded after the burst.
+`SERVER` introductions in hop order. Nick introductions, channel membership
+changes, messages, and invitations are forwarded to the other peers and are
+not sent back to the link that delivered them. A newly linked server receives
+the known servers, local and remote users, and channel state. `SQUIT` and a
+lost link remove the users, services, and channels that were reachable only
+through the lost server and tell the remaining peers. Channel invitations are
+stored and forwarded after the burst.
 
 This server does not implement IRCv3 message tags, labeled responses, or
 capability families. `SUMMON` and `USERS` are not available as working

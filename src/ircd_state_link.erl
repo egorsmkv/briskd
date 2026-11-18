@@ -22,8 +22,9 @@
     remote_nick_exists/1,
     remote_user_local_recipients/1,
     remote_user_visible_to_requester/3,
-    remove_remote_channel_member/3,
-    remove_remote_nick/2,
+    receive_remote_kill/3,
+    remove_remote_channel_member/4,
+    remove_remote_nick/3,
     rename_remote_nick/3,
     server_broadcast/1,
     server_burst_lines/1,
@@ -62,7 +63,8 @@ server_burst_lines(Server) ->
             end,
             mnesia:dirty_all_keys(channel)
         ),
-    ServerLines ++ ClientLines ++ ChannelLines.
+    ServerLines ++ ClientLines ++ remote_client_burst_lines() ++ ChannelLines ++
+        remote_channel_burst_lines(Server).
 
 client_burst_lines(
     #client{nick = Nick, user = User, host = Host, real = Real, pid = Pid}, Server
@@ -78,6 +80,78 @@ client_burst_lines(
             )
         )
     ].
+
+remote_client_burst_lines() ->
+    lists:flatmap(
+        fun(Key) ->
+            case mnesia:dirty_read(remote_client, Key) of
+                [#remote_client{server = Home, peer = Peer} = Remote] ->
+                    Prefix =
+                        case Home of
+                            undefined -> Peer;
+                            _ -> Home
+                        end,
+                    [iolist_to_binary(stored_nick_line(Prefix, Remote))];
+                [] ->
+                    []
+            end
+        end,
+        mnesia:dirty_all_keys(remote_client)
+    ).
+
+stored_nick_line(
+    Prefix,
+    #remote_client{
+        nick = Nick, hop = Hop, user = User, host = Host, token = Token, modes = Modes, real = Real
+    }
+) ->
+    remote_nick_line(Prefix, Nick, Hop, User, Host, Token, Modes, Real).
+
+remote_channel_burst_lines(Server) ->
+    lists:flatmap(
+        fun(Key) ->
+            case mnesia:dirty_read(remote_channel, Key) of
+                [Channel] -> remote_channel_lines(Channel, Server);
+                [] -> []
+            end
+        end,
+        mnesia:dirty_all_keys(remote_channel)
+    ).
+
+remote_channel_lines(#remote_channel{name = Name, members = Members, flags = Flags}, Server) ->
+    Tokens = [
+        remote_njoin_token(Remote#remote_client.nick, Roles)
+     || {NickKey, {_Peer, Roles}} <- maps:to_list(Members),
+        [Remote] <- [mnesia:dirty_read(remote_client, NickKey)]
+    ],
+    ModeFlags = maps:from_list([
+        {Key, true}
+     || Key <- maps:keys(Flags), is_integer(Key)
+    ]),
+    TopicLines =
+        case maps:get(topic, Flags, <<>>) of
+            <<>> -> [];
+            Topic -> [ircd_wire:line(Server, <<"TOPIC">>, [Name], Topic)]
+        end,
+    njoin_lines(Name, Tokens, Server) ++
+        channel_mode_burst(
+            Name,
+            ModeFlags,
+            maps:get(key, Flags, undefined),
+            maps:get(limit, Flags, undefined),
+            maps:with([ban, exception, invite], Flags),
+            Server
+        ) ++ TopicLines.
+
+remote_njoin_token(Nick, Roles) ->
+    case
+        {lists:member(creator, Roles), lists:member(operator, Roles), lists:member(voice, Roles)}
+    of
+        {true, _, _} -> <<"@@", Nick/binary>>;
+        {false, true, _} -> <<$@, Nick/binary>>;
+        {false, false, true} -> <<$+, Nick/binary>>;
+        _ -> Nick
+    end.
 
 channel_burst_lines(
     #channel{
@@ -240,35 +314,16 @@ import_remote_nick(Peer, Home, Distance, Nick, _Hop, User, Host, Token, ModeStri
         }
     of
         {true, true, true, match, true, {ok, Modes}, undefined, []} ->
-            mnesia:dirty_write(
-                #remote_client{
-                    key = Key,
-                    peer = Peer,
-                    nick = Nick,
-                    user = User,
-                    host = Host,
-                    token = Token,
-                    modes = Modes,
-                    real = Real,
-                    server = Home,
-                    hop = Distance
-                }
+            write_remote_nick(
+                Peer, Home, Distance, Key, Nick, User, Host, Token, Modes, Real
+            ),
+            relay_except(
+                Peer, remote_nick_line(Home, Nick, Distance, User, Host, Token, Modes, Real)
             ),
             ok;
         {true, true, true, match, true, {ok, Modes}, undefined, [#remote_client{peer = Peer}]} ->
-            mnesia:dirty_write(
-                #remote_client{
-                    key = Key,
-                    peer = Peer,
-                    nick = Nick,
-                    user = User,
-                    host = Host,
-                    token = Token,
-                    modes = Modes,
-                    real = Real,
-                    server = Home,
-                    hop = Distance
-                }
+            write_remote_nick(
+                Peer, Home, Distance, Key, Nick, User, Host, Token, Modes, Real
             ),
             ok;
         {false, _, _, _, _, _, _, _} ->
@@ -319,29 +374,73 @@ home_server(Peer, Prefix, Hop) ->
     end.
 
 collide_nickname(Nick) ->
+    %% RFC 2812 nick collision kills every copy. Both peers must see KILL and QUIT,
+    %% including the server that introduced the second copy.
     case ircd_route:nick_collision(true, true) of
         kill_both ->
-            case ircd_state_client:find_nick(Nick) of
-                #client{} = Client ->
-                    ircd_state_send:send(
-                        Client#client.pid,
-                        local_server(),
-                        <<"KILL">>,
-                        [Client#client.nick],
-                        <<"Nick collision">>
-                    ),
-                    ircd_state_client:disconnect(Client, <<"Nick collision">>, local_server());
+            Server = local_server(),
+            Reason = <<"Nick collision">>,
+            Local = ircd_state_client:find_nick(Nick),
+            Remote =
+                case mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) of
+                    [Row] -> Row;
+                    [] -> undefined
+                end,
+            Actual = collision_nick(Nick, Local, Remote),
+            server_broadcast(ircd_wire:line(Server, <<"KILL">>, [Actual], Reason)),
+            case Local of
+                #client{pid = Pid} = Client ->
+                    ircd_state_send:send(Pid, Server, <<"KILL">>, [Actual], Reason),
+                    ircd_state_client:disconnect(Client, Reason, Server);
                 undefined ->
                     ok
             end,
-            case mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) of
-                [#remote_client{} = Remote] ->
+            case Remote of
+                #remote_client{user = User, host = Host} ->
+                    Prefix = <<Actual/binary, "!", User/binary, "@", Host/binary>>,
+                    server_broadcast(ircd_wire:line(Prefix, <<"QUIT">>, [], Reason)),
                     ircd_state_net:remove_remote_user(Remote);
-                [] ->
+                undefined ->
                     ok
             end,
-            ircd_state_net:hold_nick(Nick)
+            ircd_state_net:hold_nick(Actual)
     end.
+
+collision_nick(_Nick, #client{nick = Actual}, _) ->
+    Actual;
+collision_nick(_Nick, _, #remote_client{nick = Actual}) ->
+    Actual;
+collision_nick(Nick, _, _) ->
+    Nick.
+
+write_remote_nick(Peer, Home, Distance, Key, Nick, User, Host, Token, Modes, Real) ->
+    mnesia:dirty_write(#remote_client{
+        key = Key,
+        peer = Peer,
+        nick = Nick,
+        user = User,
+        host = Host,
+        token = Token,
+        modes = Modes,
+        real = Real,
+        server = Home,
+        hop = Distance
+    }).
+
+remote_nick_line(Prefix, Nick, Hop, User, Host, Token, Modes, Real) ->
+    ircd_wire:line(
+        Prefix,
+        <<"NICK">>,
+        [
+            Nick,
+            integer_to_binary(Hop),
+            User,
+            Host,
+            Token,
+            ircd_state_channel:user_mode_string(Modes)
+        ],
+        Real
+    ).
 
 local_server() ->
     maps:get(name, persistent_term:get({ircd_state, config})).
@@ -362,6 +461,7 @@ rename_remote_nick(Peer, Prefix, Nick) ->
                     mnesia:dirty_delete(remote_client, OldKey),
                     mnesia:dirty_write(Remote#remote_client{key = NewKey, nick = Nick}),
                     rename_remote_memberships(Peer, OldKey, NewKey),
+                    relay_except(Peer, ircd_wire:line(Prefix, <<"NICK">>, [Nick], none)),
                     ok;
                 {true, true, undefined, [#remote_client{key = OldKey, peer = Peer}]} ->
                     mnesia:dirty_write(Remote#remote_client{nick = Nick}),
@@ -379,9 +479,10 @@ rename_remote_nick(Peer, Prefix, Nick) ->
             {error, unknown_remote_nick}
     end.
 
-remove_remote_nick(Peer, Prefix) ->
+remove_remote_nick(Peer, Prefix, Reason) ->
     case remote_source(Peer, Prefix) of
         {ok, #remote_client{key = Key}} ->
+            relay_except(Peer, ircd_wire:line(Prefix, <<"QUIT">>, [], Reason)),
             mnesia:dirty_delete(remote_client, Key),
             remove_remote_memberships(Peer, Key),
             ok;
@@ -398,6 +499,12 @@ set_remote_away(Peer, Prefix, Params) ->
                     [_Message | _] -> (Remote#remote_client.modes)#{$a => true}
                 end,
             mnesia:dirty_write(Remote#remote_client{modes = Modes}),
+            AwayLine =
+                case Params of
+                    [] -> ircd_wire:line(Prefix, <<"AWAY">>, [], none);
+                    [Message | _] -> ircd_wire:line(Prefix, <<"AWAY">>, [], Message)
+                end,
+            relay_except(Peer, AwayLine),
             ok;
         error ->
             {error, unknown_remote_nick}
@@ -425,7 +532,7 @@ update_remote_topic(Peer, Prefix, Name, Topic) ->
         {false, _} ->
             {error, invalid_channel};
         {true, true} ->
-            store_remote_topic(Prefix, Key, Name, Topic);
+            store_remote_topic(Peer, Prefix, Key, Name, Topic);
         {true, false} ->
             case {remote_source(Peer, Prefix), mnesia:dirty_read(remote_channel, Key)} of
                 {{ok, #remote_client{key = NickKey}}, [
@@ -436,7 +543,7 @@ update_remote_topic(Peer, Prefix, Name, Topic) ->
                             Restricted = maps:is_key($t, Flags) orelse local_channel_mode(Key, $t),
                             case Restricted andalso not lists:member(operator, Roles) of
                                 true -> {error, remote_topic_requires_operator};
-                                false -> store_remote_topic(Prefix, Key, Name, Topic)
+                                false -> store_remote_topic(Peer, Prefix, Key, Name, Topic)
                             end;
                         _ ->
                             {error, remote_user_not_on_channel}
@@ -448,7 +555,7 @@ update_remote_topic(Peer, Prefix, Name, Topic) ->
             end
     end.
 
-store_remote_topic(Prefix, Key, Name, Topic) ->
+store_remote_topic(Peer, Prefix, Key, Name, Topic) ->
     Remote =
         case mnesia:dirty_read(remote_channel, Key) of
             [RemoteRecord] -> RemoteRecord;
@@ -473,6 +580,7 @@ store_remote_topic(Prefix, Key, Name, Topic) ->
         [] ->
             ok
     end,
+    relay_except(Peer, ircd_wire:line(Prefix, <<"TOPIC">>, [Name], Topic)),
     ok.
 
 local_channel_mode(Key, Mode) ->
@@ -544,6 +652,9 @@ import_remote_njoin(Peer, Name, Members) ->
                         Parsed
                     ),
                     mnesia:dirty_write(Existing#remote_channel{members = NewMembers}),
+                    relay_except(
+                        Peer, ircd_wire:line(local_server(), <<"NJOIN">>, [Name], Members)
+                    ),
                     ok;
                 {ok, []} ->
                     {error, empty_njoin};
@@ -570,6 +681,7 @@ import_remote_join(Peer, Prefix, Name) ->
                         Channel#remote_channel{members = Members#{NickKey => {Peer, [member]}}}
                     ),
                     broadcast_remote_channel_event(Name, Prefix, <<"JOIN">>, none),
+                    relay_except(Peer, ircd_wire:line(Prefix, <<"JOIN">>, [Name], none)),
                     ok
             end;
         {error, _} ->
@@ -578,17 +690,18 @@ import_remote_join(Peer, Prefix, Name) ->
             {error, invalid_channel}
     end.
 
-remove_remote_channel_member(Peer, Prefix, Name) ->
+remove_remote_channel_member(Peer, Prefix, Name, Reason) ->
     case {remote_source(Peer, Prefix), mnesia:dirty_read(remote_channel, ircd_wire:fold(Name))} of
         {{ok, #remote_client{key = NickKey}}, [#remote_channel{members = Members} = Channel]} ->
             case maps:find(NickKey, Members) of
                 {ok, {Peer, _Roles}} ->
-                    broadcast_remote_channel_event(Name, Prefix, <<"PART">>, none),
+                    broadcast_remote_channel_event(Name, Prefix, <<"PART">>, Reason),
                     Remaining = maps:remove(NickKey, Members),
                     case map_size(Remaining) of
                         0 -> mnesia:dirty_delete(remote_channel, Channel#remote_channel.key);
                         _ -> mnesia:dirty_write(Channel#remote_channel{members = Remaining})
                     end,
+                    relay_except(Peer, ircd_wire:line(Prefix, <<"PART">>, [Name], Reason)),
                     ok;
                 _ ->
                     {error, remote_user_not_on_channel}
@@ -644,7 +757,9 @@ apply_remote_kick(Peer, Prefix, Name, Nick, Reason, RemoteChannel) ->
                     }),
                     remove_remote_channel_member_record(
                         Peer, ircd_wire:fold(Actual), RemoteChannel
-                    );
+                    ),
+                    relay_except(Peer, ircd_wire:line(Prefix, <<"KICK">>, [Name, Actual], Reason)),
+                    ok;
                 _ ->
                     {error, remote_kick_target_not_on_channel}
             end;
@@ -655,7 +770,11 @@ apply_remote_kick(Peer, Prefix, Name, Nick, Reason, RemoteChannel) ->
                     case mnesia:dirty_read(remote_client, TargetKey) of
                         [#remote_client{nick = Actual}] ->
                             broadcast_kick_by_name(Name, Prefix, Actual, Reason),
-                            remove_remote_channel_member_record(Peer, TargetKey, RemoteChannel);
+                            remove_remote_channel_member_record(Peer, TargetKey, RemoteChannel),
+                            relay_except(
+                                Peer, ircd_wire:line(Prefix, <<"KICK">>, [Name, Actual], Reason)
+                            ),
+                            ok;
                         [] ->
                             {error, unknown_remote_kick_target}
                     end;
@@ -769,6 +888,10 @@ update_remote_channel_modes(Peer, Prefix, Name, ModeString, Args) ->
                         {ok, Updated, []} ->
                             mnesia:dirty_write(Updated),
                             synchronize_local_channel(Updated),
+                            relay_except(
+                                Peer,
+                                ircd_wire:line(Prefix, <<"MODE">>, [Name, ModeString | Args], none)
+                            ),
                             case TrustedServer of
                                 true -> ok;
                                 false -> broadcast_remote_mode(Name, Prefix, ModeString, Args)
@@ -924,6 +1047,7 @@ update_remote_user_modes(Peer, Prefix, Nick, ModeString) ->
             ircd_state_send:broadcast(
                 remote_user_local_recipients(Key), Prefix, <<"MODE">>, [Nick, ModeString], none
             ),
+            relay_except(Peer, ircd_wire:line(Prefix, <<"MODE">>, [Nick, ModeString], none)),
             ok;
         {ok, _OtherRemote} ->
             {error, remote_user_mode_source_mismatch};
@@ -1212,11 +1336,35 @@ propagate_quit(Client, Reason) ->
     server_broadcast(ircd_wire:line(ircd_state_send:prefix(Client), <<"QUIT">>, [], Reason)).
 
 server_broadcast(Line) ->
-    try ircd_links:send_except(undefined, iolist_to_binary(Line)) of
+    relay_except(undefined, Line).
+
+%% Forward one server message to every authenticated peer except the ingress link.
+relay_except(Ingress, Line) ->
+    try ircd_links:send_except(Ingress, iolist_to_binary(Line)) of
         _ -> ok
     catch
         exit:_ -> ok
     end.
+
+receive_remote_kill(Peer, Nick, Reason) ->
+    Server = local_server(),
+    relay_except(Peer, ircd_wire:line(Server, <<"KILL">>, [Nick], Reason)),
+    case ircd_state_client:find_nick(Nick) of
+        #client{pid = Pid, nick = Actual} = Client ->
+            ircd_state_send:send(Pid, Server, <<"KILL">>, [Actual], Reason),
+            ircd_state_client:disconnect(Client, Reason, Server);
+        undefined ->
+            ok
+    end,
+    case mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) of
+        [#remote_client{nick = RemoteNick, user = User, host = Host} = Remote] ->
+            Prefix = <<RemoteNick/binary, "!", User/binary, "@", Host/binary>>,
+            relay_except(Peer, ircd_wire:line(Prefix, <<"QUIT">>, [], Reason)),
+            ircd_state_net:remove_remote_user(Remote);
+        [] ->
+            ok
+    end,
+    ircd_state_net:hold_nick(Nick).
 
 propagate_invite(Client, Nick, Name, Peer) ->
     Line = iolist_to_binary(

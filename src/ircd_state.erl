@@ -306,10 +306,15 @@ handle_call({server_command, Peer, Prefix, <<"JOIN">>, [Name | _]}, _, Server) w
     is_binary(Prefix)
 ->
     {reply, ircd_state_link:import_remote_join(Peer, Prefix, Name), Server};
-handle_call({server_command, Peer, Prefix, <<"PART">>, [Name | _]}, _, Server) when
+handle_call({server_command, Peer, Prefix, <<"PART">>, [Name | Rest]}, _, Server) when
     is_binary(Prefix)
 ->
-    {reply, ircd_state_link:remove_remote_channel_member(Peer, Prefix, Name), Server};
+    Reason =
+        case Rest of
+            [Text | _] -> Text;
+            [] -> none
+        end,
+    {reply, ircd_state_link:remove_remote_channel_member(Peer, Prefix, Name, Reason), Server};
 handle_call({server_command, Peer, Prefix, <<"TOPIC">>, [Name, Text]}, _, Server) when
     is_binary(Prefix)
 ->
@@ -327,10 +332,15 @@ handle_call({server_command, Peer, Prefix, <<"NICK">>, [Nick]}, _, Server) when
     is_binary(Prefix)
 ->
     {reply, ircd_state_link:rename_remote_nick(Peer, Prefix, Nick), Server};
-handle_call({server_command, Peer, Prefix, <<"QUIT">>, _Params}, _, Server) when
+handle_call({server_command, Peer, Prefix, <<"QUIT">>, Params}, _, Server) when
     is_binary(Prefix)
 ->
-    {reply, ircd_state_link:remove_remote_nick(Peer, Prefix), Server};
+    Reason =
+        case Params of
+            [Text | _] -> Text;
+            [] -> <<"QUIT">>
+        end,
+    {reply, ircd_state_link:remove_remote_nick(Peer, Prefix, Reason), Server};
 handle_call({server_command, Peer, Prefix, <<"AWAY">>, Params}, _, Server) when
     is_binary(Prefix)
 ->
@@ -363,6 +373,13 @@ handle_call({server_command, Peer, Prefix, <<"SQUERY">>, Params}, _, Server) whe
     is_binary(Prefix)
 ->
     {reply, ircd_state_link:receive_remote_message(Peer, Prefix, <<"SQUERY">>, Params), Server};
+handle_call({server_command, Peer, _Prefix, <<"KILL">>, [Nick | Rest]}, _, Server) ->
+    Reason =
+        case Rest of
+            [Text | _] -> Text;
+            [] -> <<"KILL">>
+        end,
+    {reply, ircd_state_link:receive_remote_kill(Peer, Nick, Reason), Server};
 handle_call({server_command, _Peer, _Prefix, _Command, _Params}, _, Server) ->
     {reply, ok, Server};
 handle_call({server_disconnect, Peer}, _, Server) ->
