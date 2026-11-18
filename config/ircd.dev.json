@@ -1,6 +1,6 @@
 {
   "name": "irc.dev",
-  "log_level": "info",
+  "log_level": "trace",
   "bind": "0.0.0.0",
   "tcp_port": 6667,
   "tls_port": null,

@@ -291,6 +291,8 @@ just format-check
 just test
 ```
 
+GitHub Actions (`.github/workflows/ci.yml`) builds the development image and runs `just format-check` and `just test`. Keep that workflow on the same OTP image as the Dockerfile.
+
 Add `rebar3 dialyzer`, `rebar3 xref`, Common Test, and a release smoke test when those providers exist for the change. `rebar.config` enables `warnings_as_errors` and erlfmt. A new warning or format drift is a defect. Say so when a check is skipped because the container or a plugin is absent.
 
 ## 13. Benchmarking

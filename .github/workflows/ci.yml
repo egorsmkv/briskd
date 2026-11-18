@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: format and eunit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Build the OTP 29 development image
+        run: docker build -t ircd-ci .
+
+      - name: Check formatting and run tests
+        run: >-
+          docker run --rm
+          -v "${GITHUB_WORKSPACE}:/workspace"
+          -w /workspace
+          ircd-ci
+          sh -c "just format-check && just test"

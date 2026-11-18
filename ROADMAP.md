@@ -139,6 +139,8 @@ in the referenced RFC.
   coverage, persistence behavior, and known linking limitations.
 - [x] Erlang source formatting is available through `rebar3 fmt` and the
   `just format`/`just format-check` commands.
+- [x] GitHub Actions builds the development image and runs `just format-check`
+  and `just test`.
 - [x] Maintain this roadmap as implementation and RFC coverage change.
 - [x] Build an RFC-oriented verification matrix and exercise it with automated
   tests and two-server integration scenarios.

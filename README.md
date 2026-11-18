@@ -80,6 +80,12 @@ If `just` is installed, `just --list` shows the available commands:
 | `just deps` | Fetch Rebar3 dependencies |
 | `just clean` | Remove compiled build artifacts |
 
+## Continuous integration
+
+GitHub Actions builds the development image from the [Dockerfile](Dockerfile)
+and runs `just format-check` and `just test` in that image. The image pins the
+same OTP, Rebar3, and `just` versions as local development.
+
 ## Configuration
 
 The default configuration is [`config/ircd.json`](config/ircd.json). Set
