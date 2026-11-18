@@ -475,12 +475,29 @@ links(Params, Client, Server) ->
                         Client,
                         Server,
                         <<"364">>,
-                        [Mask, Server],
+                        [Server, Server],
                         [<<"0 ">>, Server, <<" (Erlang/OTP IRC server)">>]
                     );
                 false ->
                     ok
             end,
+            lists:foreach(
+                fun({Name, Hop, Info}) ->
+                    case ircd_state_channel:wildcard_match(Mask, Name) of
+                        true ->
+                            ircd_state_send:numeric(
+                                Client,
+                                Server,
+                                <<"364">>,
+                                [Name, Server],
+                                [integer_to_binary(Hop), <<" ">>, Info]
+                            );
+                        false ->
+                            ok
+                    end
+                end,
+                ircd_state_net:links_entries()
+            ),
             ircd_state_send:numeric(Client, Server, <<"365">>, [Mask], <<"End of LINKS list">>)
     end.
 
@@ -554,7 +571,9 @@ lusers(Params, Client, Server) ->
                 [
                     <<"There are ">>,
                     integer_to_binary(Users),
-                    <<" users and 0 services on ">>,
+                    <<" users and ">>,
+                    integer_to_binary(ircd_state_net:service_count()),
+                    <<" services on ">>,
                     integer_to_binary(Servers),
                     <<" servers">>
                 ]

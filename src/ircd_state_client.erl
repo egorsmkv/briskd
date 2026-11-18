@@ -199,6 +199,7 @@ disconnect(#client{pid = Pid, channels = Channels} = Client, Reason, Server) ->
     case ready(Client) of
         true ->
             save_whowas(Client, Server),
+            ircd_state_net:hold_nick(Client#client.nick),
             ircd_state_link:propagate_quit(Client, Reason);
         false ->
             ok

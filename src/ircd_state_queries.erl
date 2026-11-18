@@ -409,16 +409,13 @@ whois(Nick, Client, Server) ->
 
 remote_whois(Nick, Client, Server) ->
     case mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) of
-        [
-            #remote_client{
-                nick = Actual,
-                user = User,
-                host = Host,
-                peer = Peer,
-                real = Real,
-                modes = Modes
-            }
-        ] ->
+        [Remote] ->
+            Actual = Remote#remote_client.nick,
+            User = Remote#remote_client.user,
+            Host = Remote#remote_client.host,
+            Peer = Remote#remote_client.peer,
+            Real = Remote#remote_client.real,
+            Modes = Remote#remote_client.modes,
             case
                 ircd_state:remote_user_visible_to_requester(ircd_wire:fold(Actual), Modes, Client)
             of

@@ -1,0 +1,529 @@
+-module(ircd_state_net).
+-export([
+    cap/3,
+    channel_blocked/1,
+    hold_channel/1,
+    hold_nick/1,
+    import_service/3,
+    introduce_server/6,
+    burst_server_lines/1,
+    links_entries/0,
+    nick_blocked/1,
+    oper_command/4,
+    register_adjacent/4,
+    servlist/4,
+    service_count/0,
+    remove_remote_user/1,
+    split/3,
+    squery/3
+]).
+-include("ircd_state.hrl").
+
+%% Topology, services, resource holds, and operator server commands.
+%% Runs only in the state process, which is the single writer.
+
+-define(HOLDS, ircd_holds).
+-define(INBOUND, ircd_inbound_peers).
+
+-spec register_adjacent(binary(), binary(), inbound | outbound, pid()) -> ok.
+register_adjacent(Name, Token, Kind, Pid) ->
+    Local = local_name(),
+    Record = #known_server{
+        key = ircd_wire:fold(Name),
+        name = Name,
+        hop = 1,
+        token = Token,
+        adjacent = Name,
+        parent = Local,
+        info = <<"Direct peer">>
+    },
+    mnesia:dirty_write(Record),
+    case Kind of
+        inbound -> ets:insert(?INBOUND, {ircd_wire:fold(Name), {Pid, Name}});
+        outbound -> ets:insert(ircd_outbound_ready, {ircd_wire:fold(Name), {Pid, Name}})
+    end,
+    ok.
+
+-spec introduce_server(binary(), undefined | binary(), binary(), binary(), binary(), binary()) ->
+    ok | {error, atom()}.
+introduce_server(Ingress, Prefix, Name, HopBin, Token, Info) ->
+    case {valid_decimal(HopBin), valid_token(Token)} of
+        {false, _} ->
+            {error, invalid_server};
+        {_, false} ->
+            {error, invalid_server};
+        {true, true} ->
+            Parent =
+                case Prefix of
+                    undefined -> Ingress;
+                    _ -> Prefix
+                end,
+            Intro = #{
+                name => Name,
+                hop => binary_to_integer(HopBin),
+                token => Token,
+                parent => Parent,
+                info => Info
+            },
+            case ircd_route:accept_server(local_name(), Ingress, Intro, known_maps()) of
+                {ok, Map} ->
+                    store_server(Map),
+                    announce_server(Map, Ingress),
+                    ok;
+                {error, Reason} ->
+                    {error, Reason}
+            end
+    end.
+
+-spec remove_remote_user(#remote_client{}) -> ok.
+remove_remote_user(Remote) ->
+    drop_remote_user(Remote, <<"Nick collision">>).
+
+-spec split(binary(), binary(), undefined | binary()) -> ok.
+split(Lost, Reason, Except) ->
+    Folds = [ircd_wire:fold(Name) || Name <- lost_names(Lost)],
+    lists:foreach(
+        fun(Key) ->
+            case mnesia:dirty_read(remote_client, Key) of
+                [#remote_client{} = Remote] ->
+                    case lost_client(Remote, Folds) of
+                        true -> drop_remote_user(Remote, Reason);
+                        false -> ok
+                    end;
+                _ ->
+                    ok
+            end
+        end,
+        mnesia:dirty_all_keys(remote_client)
+    ),
+    lists:foreach(
+        fun(Key) ->
+            case mnesia:dirty_read(service, Key) of
+                [#service{server = Server}] ->
+                    case lists:member(ircd_wire:fold(Server), Folds) of
+                        true -> mnesia:dirty_delete(service, Key);
+                        false -> ok
+                    end;
+                _ ->
+                    ok
+            end
+        end,
+        mnesia:dirty_all_keys(service)
+    ),
+    lists:foreach(
+        fun(Name) ->
+            mnesia:dirty_delete(known_server, ircd_wire:fold(Name)),
+            Line = ircd_wire:line(local_name(), <<"SQUIT">>, [Name], Reason),
+            _ = ircd_links:send_except(Except, Line),
+            case ircd_wire:fold(Name) =:= ircd_wire:fold(Lost) of
+                true ->
+                    ets:delete(?INBOUND, ircd_wire:fold(Name)),
+                    ets:delete(ircd_outbound_ready, ircd_wire:fold(Name));
+                false ->
+                    ok
+            end
+        end,
+        [Name || Name <- lost_names(Lost)]
+    ),
+    ok.
+
+-spec hold_nick(binary()) -> ok.
+hold_nick(Nick) ->
+    hold(nick, Nick).
+
+-spec hold_channel(binary()) -> ok.
+hold_channel(Name) ->
+    hold(channel, Name).
+
+-spec nick_blocked(binary()) -> boolean().
+nick_blocked(Nick) ->
+    blocked(nick, Nick).
+
+-spec channel_blocked(binary()) -> boolean().
+channel_blocked(Name) ->
+    blocked(channel, Name).
+
+-spec cap(#client{}, binary(), [binary()]) -> ok.
+cap(#client{pid = Pid, nick = Nick} = Client, Server, Params) ->
+    case ircd_route:cap_decision(Params) of
+        {Kind, Text} when Kind =:= ls; Kind =:= list ->
+            Sub =
+                case Kind of
+                    ls -> <<"LS">>;
+                    list -> <<"LIST">>
+                end,
+            ircd_state_send:send(Pid, Server, <<"CAP">>, [Nick, Sub], Text);
+        {nak, Caps} ->
+            ircd_state_send:send(Pid, Server, <<"CAP">>, [Nick, <<"NAK">>], Caps);
+        end_cap ->
+            ok;
+        {numeric, Number, Text} ->
+            ircd_state_send:numeric(Client, Server, Number, [], Text)
+    end.
+
+-spec servlist(binary(), binary(), #client{}, binary()) -> ok.
+servlist(Mask, Type, Client, Server) ->
+    lists:foreach(
+        fun(
+            #service{
+                name = Name, server = Home, distribution = Dist, type = ServiceType, info = Info
+            }
+        ) ->
+            Matches =
+                ircd_state_channel:wildcard_match(Mask, Name) andalso
+                    (Type =:= <<"*">> orelse Type =:= ServiceType),
+            case Matches of
+                true ->
+                    ircd_state_send:numeric(
+                        Client,
+                        Server,
+                        <<"234">>,
+                        [Name, Home, Dist, ServiceType, <<"1">>],
+                        Info
+                    );
+                false ->
+                    ok
+            end
+        end,
+        services()
+    ),
+    ircd_state_send:numeric(Client, Server, <<"235">>, [Mask, Type], <<"End of service listing">>).
+
+-spec squery([binary()], #client{}, binary()) -> ok.
+squery([], Client, Server) ->
+    ircd_state_send:numeric(Client, Server, <<"411">>, [], <<"No recipient given (SQUERY)">>);
+squery([_Service], Client, Server) ->
+    ircd_state_send:numeric(Client, Server, <<"412">>, [], <<"No text to send">>);
+squery([_Service, <<>> | _], Client, Server) ->
+    ircd_state_send:numeric(Client, Server, <<"412">>, [], <<"No text to send">>);
+squery([Name, Text | _], Client, Server) ->
+    case mnesia:dirty_read(service, ircd_wire:fold(Name)) of
+        [] ->
+            ircd_state_send:numeric(Client, Server, <<"401">>, [Name], <<"No such nick/channel">>);
+        [#service{peer = undefined, name = ServiceName}] ->
+            deliver_local_service(ServiceName, Text, Client, Server);
+        [#service{peer = Peer, name = ServiceName}] ->
+            Line = ircd_wire:line(
+                ircd_state_send:prefix(Client), <<"SQUERY">>, [ServiceName], Text
+            ),
+            _ = ircd_links:send(Peer, Line),
+            ok
+    end.
+
+-spec import_service(binary(), undefined | binary(), [binary()]) -> ok | {error, atom()}.
+import_service(Peer, Prefix, Params) ->
+    case service_params(Params) of
+        error ->
+            {error, invalid_service};
+        {Name, Dist, Type, Info} ->
+            Home =
+                case Prefix of
+                    undefined -> Peer;
+                    _ -> Prefix
+                end,
+            case ircd_wire:nickname(Name) of
+                false ->
+                    {error, invalid_service};
+                true ->
+                    store_service(Name, Dist, Type, Info, Home, Peer)
+            end
+    end.
+
+-spec service_count() -> non_neg_integer().
+service_count() ->
+    length(mnesia:dirty_all_keys(service)).
+
+-spec burst_server_lines(binary()) -> [binary()].
+burst_server_lines(Local) ->
+    [iolist_to_binary(intro_line(Local, Server)) || Server <- ircd_route:burst_order(known_maps())].
+
+-spec links_entries() -> [{binary(), non_neg_integer(), binary()}].
+links_entries() ->
+    [
+        {Name, Hop, Info}
+     || #{name := Name, hop := Hop, info := Info} <- ircd_route:burst_order(known_maps())
+    ].
+
+-spec oper_command(binary(), [binary()], #client{}, binary()) -> ok.
+oper_command(Command, Params, #client{pid = Pid} = Client, Server) ->
+    case maps:is_key($o, ircd_state_client:user_modes(Pid)) of
+        false ->
+            ircd_state_send:numeric(Client, Server, <<"481">>, [], <<"Permission Denied">>);
+        true ->
+            oper_command_allowed(Command, Params, Client, Server)
+    end.
+
+oper_command_allowed(<<"SQUIT">>, [Target | Rest], Client, Server) ->
+    Reason =
+        case Rest of
+            [Text | _] -> Text;
+            [] -> <<"SQUIT">>
+        end,
+    case mnesia:dirty_read(known_server, ircd_wire:fold(Target)) of
+        [] ->
+            ircd_state_send:numeric(Client, Server, <<"402">>, [Target], <<"No such server">>);
+        [#known_server{name = Name}] ->
+            split(Name, Reason, undefined),
+            ircd_state_send:send(
+                Client#client.pid,
+                Server,
+                <<"NOTICE">>,
+                [Client#client.nick],
+                <<"SQUIT ", Name/binary>>
+            )
+    end;
+oper_command_allowed(<<"SQUIT">>, _, Client, Server) ->
+    ircd_state_send:numeric(Client, Server, <<"461">>, [<<"SQUIT">>], <<"Not enough parameters">>);
+oper_command_allowed(<<"CONNECT">>, [Target | _], Client, Server) ->
+    case configured_peer(Target) of
+        {ok, Name} ->
+            _ = ircd_links:connect_peer(Name),
+            ircd_state_send:send(
+                Client#client.pid,
+                Server,
+                <<"NOTICE">>,
+                [Client#client.nick],
+                <<"Connect attempt for ", Name/binary>>
+            );
+        error ->
+            ircd_state_send:numeric(Client, Server, <<"402">>, [Target], <<"No such server">>)
+    end;
+oper_command_allowed(<<"CONNECT">>, _, Client, Server) ->
+    ircd_state_send:numeric(
+        Client, Server, <<"461">>, [<<"CONNECT">>], <<"Not enough parameters">>
+    );
+oper_command_allowed(<<"SERVICE">>, [Name, Dist, Type | Rest], Client, Server) ->
+    Info =
+        case Rest of
+            [Text | _] -> Text;
+            [] -> <<"service">>
+        end,
+    case ircd_wire:nickname(Name) of
+        true ->
+            case store_service(Name, Dist, Type, Info, local_name(), undefined) of
+                ok ->
+                    ircd_state_send:numeric(
+                        Client, Server, <<"234">>, [Name, local_name(), Dist, Type, <<"0">>], Info
+                    );
+                {error, nickname_collision} ->
+                    ircd_state_send:numeric(
+                        Client, Server, <<"433">>, [Name], <<"Nickname is already in use">>
+                    )
+            end;
+        false ->
+            ircd_state_send:numeric(Client, Server, <<"432">>, [Name], <<"Erroneous nickname">>)
+    end;
+oper_command_allowed(<<"SERVICE">>, _, Client, Server) ->
+    ircd_state_send:numeric(
+        Client, Server, <<"461">>, [<<"SERVICE">>], <<"Not enough parameters">>
+    );
+oper_command_allowed(Command, _, Client, Server) when
+    Command =:= <<"DIE">>; Command =:= <<"RESTART">>
+->
+    ircd_state_send:send(
+        Client#client.pid,
+        Server,
+        <<"NOTICE">>,
+        [Client#client.nick],
+        <<Command/binary, " is disabled by server policy">>
+    ).
+
+store_service(Name, Dist, Type, Info, Home, Peer) ->
+    Key = ircd_wire:fold(Name),
+    case ircd_state_client:find_nick(Name) =/= undefined orelse remote_nick(Name) of
+        true ->
+            {error, nickname_collision};
+        false ->
+            mnesia:dirty_write(#service{
+                key = Key,
+                name = Name,
+                distribution = Dist,
+                type = Type,
+                info = Info,
+                server = Home,
+                peer = Peer
+            }),
+            ok
+    end.
+
+deliver_local_service(ServiceName, Text, Client, Server) ->
+    Operators = [
+        Pid
+     || Pid <- mnesia:dirty_all_keys(client),
+        maps:is_key($o, ircd_state_client:user_modes(Pid))
+    ],
+    ircd_state_send:broadcast(
+        Operators,
+        ircd_state_send:prefix(Client),
+        <<"NOTICE">>,
+        [ServiceName],
+        Text
+    ),
+    case Operators of
+        [] ->
+            ircd_state_send:numeric(
+                Client, Server, <<"401">>, [ServiceName], <<"No such nick/channel">>
+            );
+        _ ->
+            ok
+    end.
+
+service_params([Name, _Reserved, Dist, Type, _Reserved2, Info | _]) ->
+    {Name, Dist, Type, Info};
+service_params([Name, Dist, Type, Info | _]) ->
+    {Name, Dist, Type, Info};
+service_params(_) ->
+    error.
+
+lost_names(Lost) ->
+    Known = lost_known(Lost),
+    case lists:any(fun(Name) -> ircd_wire:fold(Name) =:= ircd_wire:fold(Lost) end, Known) of
+        true -> Known;
+        false -> [Lost | Known]
+    end.
+
+lost_known(Lost) ->
+    ircd_route:servers_behind(Lost, known_maps()).
+
+lost_client(#remote_client{server = Server, peer = Peer}, Folds) ->
+    Home =
+        case Server of
+            undefined -> Peer;
+            _ -> Server
+        end,
+    lists:member(ircd_wire:fold(Home), Folds).
+
+drop_remote_user(#remote_client{key = Key, nick = Nick, user = User, host = Host}, Reason) ->
+    hold(nick, Nick),
+    Prefix = <<Nick/binary, "!", User/binary, "@", Host/binary>>,
+    ircd_state_send:broadcast(
+        ircd_state_link:remote_user_local_recipients(Key), Prefix, <<"QUIT">>, [], Reason
+    ),
+    mnesia:dirty_delete(remote_client, Key),
+    drop_memberships(Key).
+
+drop_memberships(NickKey) ->
+    lists:foreach(
+        fun(ChannelKey) ->
+            case mnesia:dirty_read(remote_channel, ChannelKey) of
+                [#remote_channel{name = Name, members = Members} = Channel] ->
+                    case maps:is_key(NickKey, Members) of
+                        true ->
+                            Remaining = maps:remove(NickKey, Members),
+                            case map_size(Remaining) of
+                                0 ->
+                                    mnesia:dirty_delete(remote_channel, ChannelKey),
+                                    case mnesia:dirty_read(channel, ChannelKey) of
+                                        [] -> hold(channel, Name);
+                                        _ -> ok
+                                    end;
+                                _ ->
+                                    mnesia:dirty_write(Channel#remote_channel{members = Remaining})
+                            end;
+                        false ->
+                            ok
+                    end;
+                _ ->
+                    ok
+            end
+        end,
+        mnesia:dirty_all_keys(remote_channel)
+    ).
+
+store_server(#{
+    name := Name, hop := Hop, token := Token, adjacent := Adjacent, parent := Parent, info := Info
+}) ->
+    mnesia:dirty_write(#known_server{
+        key = ircd_wire:fold(Name),
+        name = Name,
+        hop = Hop,
+        token = Token,
+        adjacent = Adjacent,
+        parent = Parent,
+        info = Info
+    }).
+
+announce_server(Map, Except) ->
+    _ = ircd_links:send_except(Except, intro_line(local_name(), Map)).
+
+intro_line(Local, #{name := Name, hop := Hop, token := Token, parent := Parent, info := Info}) ->
+    Prefix =
+        case ircd_wire:fold(Parent) =:= ircd_wire:fold(Local) of
+            true -> Local;
+            false -> Parent
+        end,
+    ircd_wire:line(Prefix, <<"SERVER">>, [Name, integer_to_binary(Hop + 1), Token], Info).
+
+known_maps() ->
+    [
+        #{
+            name => Name,
+            hop => Hop,
+            token => Token,
+            adjacent => Adjacent,
+            parent => Parent,
+            info => Info
+        }
+     || Key <- mnesia:dirty_all_keys(known_server),
+        [
+            #known_server{
+                name = Name,
+                hop = Hop,
+                token = Token,
+                adjacent = Adjacent,
+                parent = Parent,
+                info = Info
+            }
+        ] <- [mnesia:dirty_read(known_server, Key)]
+    ].
+
+services() ->
+    [
+        Service
+     || Key <- mnesia:dirty_all_keys(service), [Service] <- [mnesia:dirty_read(service, Key)]
+    ].
+
+hold(Kind, Name) ->
+    Until = erlang:monotonic_time(second) + ircd_route:resource_delay_seconds(),
+    ets:insert(?HOLDS, {{Kind, ircd_wire:fold(Name)}, Until}),
+    ok.
+
+blocked(Kind, Name) ->
+    Key = {Kind, ircd_wire:fold(Name)},
+    Now = erlang:monotonic_time(second),
+    case ets:lookup(?HOLDS, Key) of
+        [{_, Until}] -> ircd_route:nick_delay_blocked(Key, Now, #{Key => Until});
+        [] -> false
+    end.
+
+configured_peer(Target) ->
+    Links = persistent_term:get({ircd_state, server_links}, []),
+    case
+        [
+            maps:get(name, Link)
+         || Link <- Links, ircd_wire:fold(maps:get(name, Link)) =:= ircd_wire:fold(Target)
+        ]
+    of
+        [Name | _] -> {ok, Name};
+        [] -> error
+    end.
+
+remote_nick(Name) ->
+    mnesia:dirty_read(remote_client, ircd_wire:fold(Name)) =/= [].
+
+local_name() ->
+    maps:get(name, persistent_term:get({ircd_state, config})).
+
+valid_decimal(Value) when is_binary(Value) ->
+    try binary_to_integer(Value) of
+        Number -> Number >= 0
+    catch
+        error:badarg -> false
+    end;
+valid_decimal(_) ->
+    false.
+
+valid_token(Token) when is_binary(Token), byte_size(Token) > 0, byte_size(Token) =< 16 ->
+    lists:all(fun(C) -> C >= $0 andalso C =< $9 end, binary_to_list(Token));
+valid_token(_) ->
+    false.

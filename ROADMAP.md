@@ -19,7 +19,7 @@ in the referenced RFC.
 - [x] Mnesia disk-copy tables and configurable `mnesia_dir`.
 - [x] `justfile` commands for build, format, format check, run, run with a
   selected config, dependency fetch, tests, and clean.
-- [ ] Add automated unit and integration coverage for configuration,
+- [x] Add automated unit and integration coverage for configuration,
   registration, protocol behavior, persistence across restart, and peer links.
 
 ## Client protocol (RFC 1459 and RFC 2812)
@@ -36,10 +36,13 @@ in the referenced RFC.
   registration replies.
 - [x] RFC1459 nickname and channel case folding, nickname validation, and
   512-byte message framing.
-- [ ] Complete the RFC command and numeric surface; for example, capability
-  negotiation currently only handles a limited `CAP LS`/`CAP END` path, and
-  service and several optional commands are incomplete or disabled.
-- [ ] Audit parameter limits, error numerics, visibility, and command edge cases
+- [x] Complete the RFC command and numeric surface. `CAP LS` and `CAP LIST`
+  advertise no capabilities, `CAP REQ` is `NAK`ed, and an unknown `CAP`
+  subcommand returns 410. `SERVICE`, `SERVLIST`, and `SQUERY` register and
+  reach services. `CONNECT` and `SQUIT` are operator commands. `SUMMON` and
+  `USERS` stay disabled with numerics 445 and 446. `DIE` and `RESTART` are
+  operator-only and do not stop the node.
+- [x] Audit parameter limits, error numerics, visibility, and command edge cases
   against the RFCs.
 
 ## Channels (RFC 2811)
@@ -51,9 +54,9 @@ in the referenced RFC.
 - [x] Safe `!` channels, creator role, `+r` reop behavior, and configurable
   randomized reop delay.
 - [x] Anonymous `+a` behavior on local `&` and safe `!` channels.
-- [ ] Complete RFC 2811 channel creation and abuse-window rules, nickname
+- [x] Complete RFC 2811 channel creation and abuse-window rules, nickname
   collision handling, and channel lifecycle edge cases.
-- [ ] Expand mode behavior and numeric coverage for all supported channel types
+- [x] Expand mode behavior and numeric coverage for all supported channel types
   and mode combinations.
 
 ## Persistence and state
@@ -62,9 +65,9 @@ in the referenced RFC.
 - [x] The Mnesia database directory is configurable with `mnesia_dir` in JSON.
 - [x] Transient client sessions and peer-imported records are cleared when the
   server restarts; non-safe channels expire on restart.
-- [ ] Define and document backup, restore, and schema migration procedures for
-  long-lived Mnesia data.
-- [ ] Add restart-level verification for each state category that is intended
+- [x] Define and document backup, restore, and schema migration procedures for
+  long-lived Mnesia data in `docs/mnesia.md`.
+- [x] Add restart-level verification for each state category that is intended
   to persist.
 
 ## Server protocol and linking (RFC 2813)
@@ -96,18 +99,18 @@ in the referenced RFC.
 - [x] Route channel `PRIVMSG` and `NOTICE` between local members and directly
   connected peer members; require remote channel membership and apply available
   moderation and ban checks without returning messages to the ingress peer.
-- [ ] Propagate channel invitations to peers after the initial burst.
-- [ ] Route messages across multiple server hops with topology-aware loop
+- [x] Propagate channel invitations to peers after the initial burst.
+- [x] Route messages across multiple server hops with topology-aware loop
   prevention and correct source routing.
-- [ ] Complete channel-state synchronization for invitations and other channel
+- [x] Complete channel-state synchronization for invitations and other channel
   events across the full server topology.
-- [ ] Support remote channel operations and complete visibility behavior across
+- [x] Support remote channel operations and complete visibility behavior across
   servers, including shared-channel checks for invisible users.
-- [ ] Track multiple server hops and tokens, introduce known servers in burst
+- [x] Track multiple server hops and tokens, introduce known servers in burst
   order, and prevent duplicate routes and nickname collisions safely.
-- [ ] Handle `SQUIT`, server-link loss propagation, netsplits, and cleanup of
+- [x] Handle `SQUIT`, server-link loss propagation, netsplits, and cleanup of
   users and channels behind a disconnected server.
-- [ ] Add remote service support and the remaining server-only commands.
+- [x] Add remote service support and the remaining server-only commands.
 
 ## Documentation and verification
 
@@ -115,6 +118,6 @@ in the referenced RFC.
   coverage, persistence behavior, and known linking limitations.
 - [x] Erlang source formatting is available through `rebar3 fmt` and the
   `just format`/`just format-check` commands.
-- [ ] Maintain this roadmap as implementation and RFC coverage change.
-- [ ] Build an RFC-oriented verification matrix and exercise it with automated
+- [x] Maintain this roadmap as implementation and RFC coverage change.
+- [x] Build an RFC-oriented verification matrix and exercise it with automated
   tests and two-server integration scenarios.

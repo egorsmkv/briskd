@@ -1,13 +1,15 @@
 -module(ircd_state_link).
 -export([
     import_remote_join/3,
-    import_remote_nick/2,
+    import_remote_nick/3,
+    receive_remote_invite/4,
     import_remote_njoin/3,
     propagate_away/2,
     propagate_channel_kick/4,
     propagate_channel_message/4,
     propagate_channel_mode/4,
     propagate_introduction/2,
+    propagate_invite/4,
     propagate_join/3,
     propagate_nick_change/2,
     propagate_quit/2,
@@ -18,6 +20,7 @@
     remote_names_entries/3,
     remote_names_listing/3,
     remote_nick_exists/1,
+    remote_user_local_recipients/1,
     remote_user_visible_to_requester/3,
     remove_remote_channel_member/3,
     remove_remote_nick/2,
@@ -33,6 +36,7 @@
 %% @doc Direct server-link burst, import, and propagation.
 
 server_burst_lines(Server) ->
+    ServerLines = ircd_state_net:burst_server_lines(Server),
     ClientLines =
         lists:flatmap(
             fun(Pid) ->
@@ -58,7 +62,7 @@ server_burst_lines(Server) ->
             end,
             mnesia:dirty_all_keys(channel)
         ),
-    ClientLines ++ ChannelLines.
+    ServerLines ++ ClientLines ++ ChannelLines.
 
 client_burst_lines(
     #client{nick = Nick, user = User, host = Host, real = Real, pid = Pid}, Server
@@ -209,16 +213,24 @@ channel_mode_burst(Name, Flags, Password, Limit, Lists, Server) ->
 remote_nick_exists(Nick) ->
     mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) =/= [].
 
-import_remote_nick(
-    Peer,
-    [Nick, Hop, User, Host, Token, ModeString, Real]
-) ->
+import_remote_nick(Peer, Prefix, [Nick, Hop, User, Host, Token, ModeString, Real]) ->
+    case home_server(Peer, Prefix, Hop) of
+        {error, Reason} ->
+            {error, Reason};
+        {ok, Home, Distance} ->
+            import_remote_nick(
+                Peer, Home, Distance, Nick, Hop, User, Host, Token, ModeString, Real
+            )
+    end;
+import_remote_nick(_, _, _) ->
+    {error, invalid_nick_message}.
+
+import_remote_nick(Peer, Home, Distance, Nick, _Hop, User, Host, Token, ModeString, Real) ->
     Key = ircd_wire:fold(Nick),
     case
         {
             ircd_wire:nickname(Nick),
             Key =/= <<"anonymous">>,
-            valid_decimal(Hop),
             valid_decimal(Token),
             re:run(User, <<"^[A-Za-z0-9_.-]{1,32}$">>, [{capture, none}, dollar_endonly]),
             valid_server_host(Host),
@@ -227,7 +239,7 @@ import_remote_nick(
             mnesia:dirty_read(remote_client, Key)
         }
     of
-        {true, true, true, true, match, true, {ok, Modes}, undefined, []} ->
+        {true, true, true, match, true, {ok, Modes}, undefined, []} ->
             mnesia:dirty_write(
                 #remote_client{
                     key = Key,
@@ -237,37 +249,102 @@ import_remote_nick(
                     host = Host,
                     token = Token,
                     modes = Modes,
-                    real = Real
+                    real = Real,
+                    server = Home,
+                    hop = Distance
                 }
             ),
             ok;
-        {true, true, true, true, match, true, {ok, _Modes}, undefined, [
-            #remote_client{peer = Peer}
-        ]} ->
+        {true, true, true, match, true, {ok, Modes}, undefined, [#remote_client{peer = Peer}]} ->
+            mnesia:dirty_write(
+                #remote_client{
+                    key = Key,
+                    peer = Peer,
+                    nick = Nick,
+                    user = User,
+                    host = Host,
+                    token = Token,
+                    modes = Modes,
+                    real = Real,
+                    server = Home,
+                    hop = Distance
+                }
+            ),
             ok;
-        {false, _, _, _, _, _, _, _, _} ->
+        {false, _, _, _, _, _, _, _} ->
             {error, invalid_nickname};
-        {_, false, _, _, _, _, _, _, _} ->
+        {_, false, _, _, _, _, _, _} ->
             {error, reserved_nickname};
-        {_, _, false, _, _, _, _, _, _} ->
-            {error, invalid_hopcount};
-        {_, _, _, false, _, _, _, _, _} ->
+        {_, _, false, _, _, _, _, _} ->
             {error, invalid_server_token};
-        {_, _, _, _, nomatch, _, _, _, _} ->
+        {_, _, _, nomatch, _, _, _, _} ->
             {error, invalid_username};
-        {_, _, _, _, _, false, _, _, _} ->
+        {_, _, _, _, false, _, _, _} ->
             {error, invalid_hostname};
-        {_, _, _, _, _, _, error, _, _} ->
+        {_, _, _, _, _, error, _, _} ->
             {error, invalid_user_modes};
-        {_, _, _, _, _, _, _, #client{}, _} ->
-            {error, nickname_collision};
-        {_, _, _, _, _, _, _, _, [_]} ->
-            {error, nickname_collision};
+        {_, _, _, _, _, _, #client{}, _} ->
+            collide_nickname(Nick),
+            ok;
+        {_, _, _, _, _, _, _, [#remote_client{peer = Other}]} when Other =/= Peer ->
+            collide_nickname(Nick),
+            ok;
         _ ->
             {error, invalid_nick_message}
-    end;
-import_remote_nick(_, _) ->
-    {error, invalid_nick_message}.
+    end.
+
+home_server(Peer, Prefix, Hop) ->
+    case valid_decimal(Hop) of
+        false ->
+            {error, invalid_hopcount};
+        true ->
+            Distance = binary_to_integer(Hop) + 1,
+            case ircd_wire:fold(Prefix) =:= ircd_wire:fold(Peer) of
+                true ->
+                    {ok, Peer, Distance};
+                false ->
+                    case mnesia:dirty_read(known_server, ircd_wire:fold(Prefix)) of
+                        [#known_server{name = Name, hop = HopCount, adjacent = Adjacent}] ->
+                            case
+                                ircd_wire:fold(Adjacent) =:= ircd_wire:fold(Peer) andalso
+                                    Distance =:= HopCount
+                            of
+                                true -> {ok, Name, HopCount};
+                                false -> {error, invalid_introduction_prefix}
+                            end;
+                        [] ->
+                            {error, invalid_introduction_prefix}
+                    end
+            end
+    end.
+
+collide_nickname(Nick) ->
+    case ircd_route:nick_collision(true, true) of
+        kill_both ->
+            case ircd_state_client:find_nick(Nick) of
+                #client{} = Client ->
+                    ircd_state_send:send(
+                        Client#client.pid,
+                        local_server(),
+                        <<"KILL">>,
+                        [Client#client.nick],
+                        <<"Nick collision">>
+                    ),
+                    ircd_state_client:disconnect(Client, <<"Nick collision">>, local_server());
+                undefined ->
+                    ok
+            end,
+            case mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) of
+                [#remote_client{} = Remote] ->
+                    ircd_state_net:remove_remote_user(Remote);
+                [] ->
+                    ok
+            end,
+            ircd_state_net:hold_nick(Nick)
+    end.
+
+local_server() ->
+    maps:get(name, persistent_term:get({ircd_state, config})).
 
 rename_remote_nick(Peer, Prefix, Nick) ->
     NewKey = ircd_wire:fold(Nick),
@@ -926,9 +1003,48 @@ receive_remote_target(Peer, Remote, Prefix, Target, Text, Command) ->
             ok;
         undefined ->
             case ircd_wire:channel(Target) of
-                true -> receive_remote_channel_message(Peer, Remote, Prefix, Target, Text, Command);
-                false -> ok
+                true ->
+                    Result = receive_remote_channel_message(
+                        Peer, Remote, Prefix, Target, Text, Command
+                    ),
+                    forward_channel(Peer, Target, Prefix, Command, Text),
+                    Result;
+                false ->
+                    forward_user(Peer, Prefix, Command, Target, Text)
             end
+    end.
+
+forward_user(Ingress, Prefix, Command, Target, Text) ->
+    case mnesia:dirty_read(remote_client, ircd_wire:fold(Target)) of
+        [#remote_client{peer = Dest, nick = Nick}] ->
+            case ircd_route:should_forward(Ingress, Dest) of
+                true ->
+                    Line = ircd_wire:line(Prefix, Command, [Nick], Text),
+                    _ = ircd_links:send(Dest, Line),
+                    ok;
+                false ->
+                    ok
+            end;
+        [] ->
+            ok
+    end.
+
+forward_channel(Ingress, Name, Prefix, Command, Text) ->
+    case mnesia:dirty_read(remote_channel, ircd_wire:fold(Name)) of
+        [#remote_channel{members = Members}] ->
+            Line = iolist_to_binary(ircd_wire:line(Prefix, Command, [Name], Text)),
+            Peers = lists:usort([MemberPeer || {_Nick, {MemberPeer, _}} <- maps:to_list(Members)]),
+            lists:foreach(
+                fun(Dest) ->
+                    case ircd_route:should_forward(Ingress, Dest) of
+                        true -> _ = ircd_links:send(Dest, Line);
+                        false -> ok
+                    end
+                end,
+                Peers
+            );
+        [] ->
+            ok
     end.
 
 receive_remote_channel_message(Peer, Remote, Prefix, Name, Text, Command) ->
@@ -1096,11 +1212,84 @@ propagate_quit(Client, Reason) ->
     server_broadcast(ircd_wire:line(ircd_state_send:prefix(Client), <<"QUIT">>, [], Reason)).
 
 server_broadcast(Line) ->
-    try ircd_links:send_all(iolist_to_binary(Line)) of
+    try ircd_links:send_except(undefined, iolist_to_binary(Line)) of
         _ -> ok
     catch
         exit:_ -> ok
     end.
+
+propagate_invite(Client, Nick, Name, Peer) ->
+    Line = iolist_to_binary(
+        ircd_wire:line(ircd_state_send:prefix(Client), <<"INVITE">>, [Nick, Name], none)
+    ),
+    _ = ircd_links:send(Peer, Line),
+    case mnesia:dirty_read(remote_channel, ircd_wire:fold(Name)) of
+        [#remote_channel{members = Members}] ->
+            Peers = lists:usort([MemberPeer || {_Nick, {MemberPeer, _}} <- maps:to_list(Members)]),
+            lists:foreach(
+                fun(Other) ->
+                    case ircd_route:should_forward(Peer, Other) of
+                        true -> _ = ircd_links:send(Other, Line);
+                        false -> ok
+                    end
+                end,
+                Peers
+            );
+        [] ->
+            ok
+    end,
+    ok.
+
+receive_remote_invite(Peer, Prefix, Nick, Name) ->
+    case remote_source(Peer, Prefix) of
+        {ok, #remote_client{}} ->
+            case ircd_state_client:find_nick(Nick) of
+                #client{pid = Pid} = Target ->
+                    remember_local_invite(Pid, Name),
+                    ircd_state_send:send(
+                        Pid, Prefix, <<"INVITE">>, [Target#client.nick, Name], none
+                    ),
+                    ok;
+                undefined ->
+                    case mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) of
+                        [#remote_client{peer = Dest, nick = RemoteNick, key = NickKey}] ->
+                            remember_remote_invite_link(NickKey, Name),
+                            case ircd_route:should_forward(Peer, Dest) of
+                                true ->
+                                    Line = ircd_wire:line(
+                                        Prefix, <<"INVITE">>, [RemoteNick, Name], none
+                                    ),
+                                    _ = ircd_links:send(Dest, Line),
+                                    ok;
+                                false ->
+                                    ok
+                            end;
+                        [] ->
+                            ok
+                    end
+            end;
+        error ->
+            {error, unknown_remote_nick}
+    end.
+
+remember_local_invite(Pid, Name) ->
+    case mnesia:dirty_read(channel, ircd_wire:fold(Name)) of
+        [#channel{invited = Invited} = Channel] ->
+            mnesia:dirty_write(Channel#channel{invited = lists:usort([Pid | Invited])});
+        [] ->
+            ok
+    end.
+
+remember_remote_invite_link(NickKey, Name) ->
+    Key = ircd_wire:fold(Name),
+    Channel =
+        case mnesia:dirty_read(remote_channel, Key) of
+            [Existing] -> Existing;
+            [] -> #remote_channel{key = Key, name = Name}
+        end,
+    mnesia:dirty_write(Channel#remote_channel{
+        invited = (Channel#remote_channel.invited)#{NickKey => true}
+    }).
 
 propagate_topic(Client, Name, Topic) ->
     server_broadcast(ircd_wire:line(ircd_state_send:prefix(Client), <<"TOPIC">>, [Name], Topic)).

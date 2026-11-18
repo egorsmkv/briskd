@@ -79,7 +79,9 @@ src/ircd_wire.erl            # line parse/encode, RFC 1459 case fold, nick/chann
 src/ircd_state.erl           # state process, command dispatch, public API
 src/ircd_state_client.erl    # registration, identity, visibility, connection stats
 src/ircd_state_channel.erl   # membership, modes, names, and safe-channel reop
-src/ircd_state_link.erl      # direct-link burst, import, and propagation
+src/ircd_state_link.erl      # burst, import, propagation, and multi-hop delivery
+src/ircd_state_net.erl       # known servers, services, netsplits, and holds
+src/ircd_route.erl           # pure hop, loop, burst-order, and numeric decisions
 src/ircd_state_info.erl      # operator, statistics, and server query commands
 src/ircd_state_send.erl      # numeric replies and client delivery
 src/ircd_state_queries.erl   # WHO/WHOIS/WHOWAS and related numerics

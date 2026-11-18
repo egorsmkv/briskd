@@ -171,7 +171,7 @@ safe_channel_id(Value, Alphabet, Acc) ->
     safe_channel_id(Value div 36, Alphabet, <<Char, Acc/binary>>).
 
 %% Add a client to a channel and grant operator status to the first member.
-add_member(Key, Name, #client{pid = Pid, channels = Channels} = Client, Server, Password) ->
+add_member(Key, Name, #client{pid = Pid} = Client, Server, Password) ->
     {Channel, IsNew} =
         case mnesia:dirty_read(channel, Key) of
             [Existing] ->
@@ -207,6 +207,35 @@ add_member(Key, Name, #client{pid = Pid, channels = Channels} = Client, Server, 
             Roles when is_list(Roles) -> Members#{Pid => Roles};
             _ -> Members#{Pid => [Role]}
         end,
+    Joined = length(Client#client.channels),
+    case ircd_state_net:channel_blocked(Canonical) of
+        true ->
+            ircd_state_send:numeric(
+                Client,
+                Server,
+                <<"437">>,
+                [Canonical],
+                <<"Nick/channel is temporarily unavailable">>
+            );
+        false ->
+            case ircd_route:channel_allowed(Joined, ircd_route:max_channels()) of
+                false ->
+                    ircd_state_send:numeric(
+                        Client,
+                        Server,
+                        <<"405">>,
+                        [Canonical],
+                        <<"You have joined too many channels">>
+                    );
+                true ->
+                    join_checked(Channel, Client, Server, NewMembers, Members, Password)
+            end
+    end.
+
+join_checked(
+    Channel, #client{pid = Pid, channels = Channels} = Client, Server, NewMembers, Members, Password
+) ->
+    Canonical = Channel#channel.name,
     case Channel of
         #channel{password = Required} when Required =/= undefined, Required =/= Password ->
             ircd_state_send:numeric(
@@ -850,7 +879,12 @@ knock(Name, ReasonParams, #client{pid = Pid} = Client, Server) ->
 invite(Nick, Name, #client{pid = Pid} = Client, Server) ->
     case ircd_state_client:find_nick(Nick) of
         undefined ->
-            ircd_state_send:numeric(Client, Server, <<"401">>, [Nick], <<"No such nick">>);
+            case mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) of
+                [#remote_client{} = Remote] ->
+                    invite_remote(Remote, Name, Client, Server);
+                [] ->
+                    ircd_state_send:numeric(Client, Server, <<"401">>, [Nick], <<"No such nick">>)
+            end;
         #client{} = Target ->
             case mnesia:dirty_read(channel, ircd_wire:fold(Name)) of
                 [] ->
@@ -905,6 +939,46 @@ invite(Nick, Name, #client{pid = Pid} = Client, Server) ->
                     end
             end
     end.
+
+invite_remote(
+    #remote_client{key = NickKey, nick = RemoteNick, peer = Dest},
+    Name,
+    #client{pid = Pid} = Client,
+    Server
+) ->
+    case mnesia:dirty_read(channel, ircd_wire:fold(Name)) of
+        [] ->
+            ircd_state_send:numeric(Client, Server, <<"403">>, [Name], <<"No such channel">>);
+        [#channel{name = Canonical, members = Members, flags = Flags}] ->
+            IsMember = maps:is_key(Pid, Members),
+            IsOperator = lists:member(operator, maps:get(Pid, Members, [])),
+            case {IsMember, maps:is_key($i, Flags) andalso not IsOperator} of
+                {false, _} ->
+                    ircd_state_send:numeric(
+                        Client, Server, <<"442">>, [Canonical], <<"You're not on that channel">>
+                    );
+                {true, true} ->
+                    ircd_state_send:numeric(
+                        Client, Server, <<"482">>, [Canonical], <<"You're not channel operator">>
+                    );
+                {true, false} ->
+                    remember_remote_invite(NickKey, Canonical),
+                    ircd_state_send:numeric(
+                        Client, Server, <<"341">>, [RemoteNick, Canonical], none
+                    ),
+                    ircd_state_link:propagate_invite(Client, RemoteNick, Canonical, Dest)
+            end
+    end.
+
+remember_remote_invite(NickKey, Name) ->
+    Key = ircd_wire:fold(Name),
+    Channel =
+        case mnesia:dirty_read(remote_channel, Key) of
+            [Existing] -> Existing;
+            [] -> #remote_channel{key = Key, name = Name}
+        end,
+    Invited = Channel#remote_channel.invited,
+    mnesia:dirty_write(Channel#remote_channel{invited = Invited#{NickKey => true}}).
 
 notify_invite(
     #client{pid = TargetPid, nick = TargetNick, away = Away},

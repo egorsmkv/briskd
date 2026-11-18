@@ -212,6 +212,7 @@ process_line(<<"SERVER">>, [Name, Hop, Token, _Info], _Bytes, State) ->
                         )
                     ],
                     Burst = [iolist_to_binary(Line) || Line <- ircd_state:server_burst()],
+                    ok = ircd_state:register_adjacent(Name, Token, inbound),
                     Module = transport(Kind),
                     case Module:send(Socket, [Reply, Burst]) of
                         ok ->
@@ -278,7 +279,12 @@ process_server_line(Prefix, Command, Params, _Bytes, {_, _, Peer, _, _} = State)
     Command =:= <<"KICK">>;
     Command =:= <<"MODE">>;
     Command =:= <<"PRIVMSG">>;
-    Command =:= <<"NOTICE">>
+    Command =:= <<"NOTICE">>;
+    Command =:= <<"SERVER">>;
+    Command =:= <<"SQUIT">>;
+    Command =:= <<"INVITE">>;
+    Command =:= <<"SERVICE">>;
+    Command =:= <<"SQUERY">>
 ->
     case ircd_state:server_command(Peer, Prefix, Command, Params) of
         ok ->

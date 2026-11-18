@@ -13,6 +13,7 @@
     numeric/5,
     ready/1,
     registered/0,
+    register_adjacent/3,
     remote_channel_flags/1,
     remote_user_visible_to_requester/3,
     server_burst/0,
@@ -48,6 +49,11 @@ registered() -> gen_server:call(?MODULE, registered).
 %% @doc Return the RFC 2813 client and channel burst for an authenticated link.
 -spec server_burst() -> [binary()].
 server_burst() -> gen_server:call(?MODULE, server_burst).
+
+%% @doc Remember a directly connected peer after its handshake succeeds.
+-spec register_adjacent(binary(), binary(), inbound | outbound) -> ok.
+register_adjacent(Name, Token, Kind) ->
+    gen_server:call(?MODULE, {register_adjacent, Name, Token, Kind}).
 
 %% @doc Apply a state message received from an authenticated peer.
 -spec server_command(binary(), undefined | binary(), binary(), [binary()]) -> ok | {error, term()}.
@@ -86,6 +92,9 @@ init(#{name := Name} = Config) ->
     persistent_term:put({?MODULE, started_at}, erlang:monotonic_time(second)),
     ets:new(ircd_command_stats, [named_table, public, set, {write_concurrency, true}]),
     ets:new(ircd_connection_stats, [named_table, public, set, {write_concurrency, true}]),
+    ensure_ets(ircd_inbound_peers),
+    ensure_ets(ircd_outbound_ready),
+    ensure_ets(ircd_holds),
     persistent_term:put({?MODULE, config}, Config),
     persistent_term:put({?MODULE, config_path}, maps:get(config_path, Config)),
     persistent_term:put({?MODULE, motd_file}, maps:get(motd_file, Config, null)),
@@ -101,8 +110,21 @@ init(#{name := Name} = Config) ->
     table(user_modes, record_info(fields, user_modes), []),
     table(remote_client, record_info(fields, remote_client), []),
     table(remote_channel, record_info(fields, remote_channel), []),
+    table(known_server, record_info(fields, known_server), []),
+    table(service, record_info(fields, service), []),
     ok = mnesia:wait_for_tables(
-        [client, channel, activity, whowas, user_modes, remote_client, remote_channel], 5000
+        [
+            client,
+            channel,
+            activity,
+            whowas,
+            user_modes,
+            remote_client,
+            remote_channel,
+            known_server,
+            service
+        ],
+        5000
     ),
     {atomic, ok} = mnesia:clear_table(client),
     reset_channels(),
@@ -110,6 +132,8 @@ init(#{name := Name} = Config) ->
     {atomic, ok} = mnesia:clear_table(user_modes),
     {atomic, ok} = mnesia:clear_table(remote_client),
     {atomic, ok} = mnesia:clear_table(remote_channel),
+    {atomic, ok} = mnesia:clear_table(known_server),
+    {atomic, ok} = mnesia:clear_table(service),
     erlang:send_after(1000, self(), reop_tick),
     {ok, Name}.
 
@@ -118,8 +142,33 @@ table(Table, Fields, Options) ->
         {atomic, ok} ->
             ok;
         {aborted, {already_exists, Table}} ->
+            ok = load_table(Table, Fields, Options),
             ensure_table_shape(Table, Fields),
             ensure_disc_copy(Table)
+    end.
+
+%% An existing schema entry is not readable until its local copy is loaded.
+load_table(Table, Fields, Options) ->
+    case mnesia:force_load_table(Table) of
+        yes ->
+            ok;
+        ok ->
+            ok;
+        Error ->
+            logger:warning("Replacing unloaded Mnesia table ~p after ~p", [Table, Error]),
+            replace_table(Table, Fields, Options)
+    end.
+
+replace_table(Table, Fields, Options) ->
+    case mnesia:delete_table(Table) of
+        {atomic, ok} ->
+            ok;
+        {aborted, Reason} ->
+            logger:warning("Mnesia delete_table ~p returned ~p", [Table, Reason])
+    end,
+    case mnesia:create_table(Table, [{attributes, Fields}, {disc_copies, [node()]} | Options]) of
+        {atomic, ok} -> ok;
+        {aborted, {already_exists, Table}} -> ok
     end.
 
 ensure_disc_copy(Table) ->
@@ -155,19 +204,67 @@ ensure_table_shape(client, Fields) ->
             logger:info("Migrated Mnesia client table from ~p", [OldFields])
     end;
 ensure_table_shape(remote_channel, Fields) ->
-    case mnesia:table_info(remote_channel, attributes) of
+    migrate_appended(remote_channel, Fields, #{});
+ensure_table_shape(remote_client, Fields) ->
+    migrate_appended(remote_client, Fields, undefined);
+ensure_table_shape(Table, Fields) ->
+    case mnesia:table_info(Table, attributes) of
+        Fields -> ok;
+        OldFields -> logger:warning("Leaving Mnesia table ~p unchanged from ~p", [Table, OldFields])
+    end.
+
+%% Append missing record fields. New remote-channel fields default to a map.
+%% A migrated remote client gets `server = undefined` and `hop = 1`.
+migrate_appended(Table, Fields, Default) ->
+    case attributes(Table) of
         Fields ->
             ok;
-        OldFields ->
-            {atomic, ok} = mnesia:transform_table(
-                remote_channel,
-                fun(Old) -> list_to_tuple(tuple_to_list(Old) ++ [#{}]) end,
-                Fields
-            ),
-            logger:info("Migrated remote channel table from ~p", [OldFields])
-    end;
-ensure_table_shape(_, _) ->
-    ok.
+        OldFields when is_list(OldFields) ->
+            Width = length(Fields) + 1,
+            case
+                mnesia:transform_table(
+                    Table,
+                    fun(Old) ->
+                        List = tuple_to_list(Old),
+                        Missing = Width - length(List),
+                        Pads = pads(Table, Missing, Default),
+                        list_to_tuple(List ++ Pads)
+                    end,
+                    Fields
+                )
+            of
+                {atomic, ok} ->
+                    logger:info("Migrated Mnesia ~p table from ~p", [Table, OldFields]);
+                {aborted, Reason} ->
+                    recreate_transient_table(Table, Fields, Reason)
+            end;
+        Other ->
+            recreate_transient_table(Table, Fields, Other)
+    end.
+
+attributes(Table) ->
+    try mnesia:table_info(Table, attributes) of
+        Fields when is_list(Fields) -> Fields;
+        Other -> Other
+    catch
+        exit:Reason -> Reason
+    end.
+
+%% Remote tables are cleared on startup, so a broken disc copy can be replaced.
+recreate_transient_table(Table, Fields, Reason) ->
+    logger:warning("Recreating transient Mnesia table ~p after ~p", [Table, Reason]),
+    replace_table(Table, Fields, []).
+
+pads(remote_client, Missing, _Default) when Missing >= 2 ->
+    [undefined, 1 | lists:duplicate(Missing - 2, undefined)];
+pads(_Table, Missing, Default) ->
+    lists:duplicate(Missing, Default).
+
+ensure_ets(Name) ->
+    case ets:whereis(Name) of
+        undefined -> ets:new(Name, [named_table, public, set]);
+        _ -> ets:delete_all_objects(Name)
+    end.
 
 reset_channels() ->
     lists:foreach(
@@ -198,13 +295,11 @@ handle_call(registered, {Pid, _}, Server) ->
     {reply, ircd_state_client:ready(ircd_state_client:client(Pid)), Server};
 handle_call(server_burst, _, Server) ->
     {reply, ircd_state_link:server_burst_lines(Server), Server};
-handle_call({server_command, Peer, Prefix, <<"NICK">>, Params}, _, Server) when
-    is_binary(Prefix), length(Params) =:= 7
-->
-    case ircd_wire:fold(Prefix) =:= ircd_wire:fold(Peer) of
-        true -> {reply, ircd_state_link:import_remote_nick(Peer, Params), Server};
-        false -> {reply, {error, invalid_introduction_prefix}, Server}
-    end;
+handle_call({register_adjacent, Name, Token, Kind}, {Pid, _}, Server) ->
+    %% Inbound registration records the calling session. Outbound links are
+    %% found through the link supervisor, so the caller pid is not stored.
+    Result = ircd_state_net:register_adjacent(Name, Token, Kind, Pid),
+    {reply, Result, Server};
 handle_call({server_command, Peer, _Prefix, <<"NJOIN">>, [Name, Members]}, _, Server) ->
     {reply, ircd_state_link:import_remote_njoin(Peer, Name, Members), Server};
 handle_call({server_command, Peer, Prefix, <<"JOIN">>, [Name | _]}, _, Server) when
@@ -240,42 +335,38 @@ handle_call({server_command, Peer, Prefix, <<"AWAY">>, Params}, _, Server) when
     is_binary(Prefix)
 ->
     {reply, ircd_state_link:set_remote_away(Peer, Prefix, Params), Server};
+handle_call({server_command, Peer, Prefix, <<"NICK">>, Params}, _, Server) when
+    is_binary(Prefix), length(Params) =:= 7
+->
+    {reply, ircd_state_link:import_remote_nick(Peer, Prefix, Params), Server};
 handle_call({server_command, Peer, Prefix, <<"MODE">>, [Name, Modes | Args]}, _, Server) ->
     {reply, ircd_state_link:update_remote_modes(Peer, Prefix, Name, Modes, Args), Server};
 handle_call({server_command, Peer, Prefix, Command, Params}, _, Server) when
     is_binary(Prefix), (Command =:= <<"PRIVMSG">> orelse Command =:= <<"NOTICE">>)
 ->
     {reply, ircd_state_link:receive_remote_message(Peer, Prefix, Command, Params), Server};
+handle_call({server_command, Peer, Prefix, <<"SERVER">>, [Name, Hop, Token, Info | _]}, _, Server) ->
+    {reply, ircd_state_net:introduce_server(Peer, Prefix, Name, Hop, Token, Info), Server};
+handle_call({server_command, Peer, _Prefix, <<"SQUIT">>, [Target | Rest]}, _, Server) ->
+    Reason =
+        case Rest of
+            [Text | _] -> Text;
+            [] -> <<"SQUIT">>
+        end,
+    ircd_state_net:split(Target, Reason, Peer),
+    {reply, ok, Server};
+handle_call({server_command, Peer, Prefix, <<"INVITE">>, [Nick, Name | _]}, _, Server) ->
+    {reply, ircd_state_link:receive_remote_invite(Peer, Prefix, Nick, Name), Server};
+handle_call({server_command, Peer, Prefix, <<"SERVICE">>, Params}, _, Server) ->
+    {reply, ircd_state_net:import_service(Peer, Prefix, Params), Server};
+handle_call({server_command, Peer, Prefix, <<"SQUERY">>, Params}, _, Server) when
+    is_binary(Prefix)
+->
+    {reply, ircd_state_link:receive_remote_message(Peer, Prefix, <<"SQUERY">>, Params), Server};
 handle_call({server_command, _Peer, _Prefix, _Command, _Params}, _, Server) ->
     {reply, ok, Server};
 handle_call({server_disconnect, Peer}, _, Server) ->
-    lists:foreach(
-        fun(Key) ->
-            case mnesia:dirty_read(remote_client, Key) of
-                [#remote_client{peer = Peer}] -> mnesia:dirty_delete(remote_client, Key);
-                _ -> ok
-            end
-        end,
-        mnesia:dirty_all_keys(remote_client)
-    ),
-    lists:foreach(
-        fun(Key) ->
-            case mnesia:dirty_read(remote_channel, Key) of
-                [#remote_channel{members = Members} = Channel] ->
-                    Remaining = maps:filter(
-                        fun(_NickKey, {MemberPeer, _Roles}) -> MemberPeer =/= Peer end,
-                        Members
-                    ),
-                    case map_size(Remaining) of
-                        0 -> mnesia:dirty_delete(remote_channel, Key);
-                        _ -> mnesia:dirty_write(Channel#remote_channel{members = Remaining})
-                    end;
-                _ ->
-                    ok
-            end
-        end,
-        mnesia:dirty_all_keys(remote_channel)
-    ),
+    ircd_state_net:split(Peer, <<"Netsplit ", Peer/binary>>, Peer),
     {reply, ok, Server};
 handle_call({command, Command, Params, Bytes}, {Pid, _}, Server) ->
     count_command(Pid, Command, Bytes),
@@ -349,46 +440,16 @@ dispatch(<<"PING">>, [], Client, Server) ->
     ircd_state_send:numeric(Client, Server, <<"409">>, [], <<"No origin specified">>);
 dispatch(<<"PONG">>, _, _, _) ->
     ok;
-dispatch(<<"CAP">>, [<<"LS">> | _], Client, Server) ->
-    ircd_state_send:send(
-        Client#client.pid, Server, <<"CAP">>, [Client#client.nick, <<"LS">>], <<>>
-    );
+dispatch(<<"CAP">>, Params, Client, Server) ->
+    ircd_state_net:cap(Client, Server, Params);
 dispatch(<<"NICK">>, [Nick | _], Client, Server) ->
-    case
-        {
-            ircd_wire:nickname(Nick),
-            ircd_wire:fold(Nick),
-            ircd_state_client:find_nick(Nick),
-            ircd_state_link:remote_nick_exists(Nick)
-        }
-    of
-        {_, <<"anonymous">>, _, _} ->
-            ircd_state_send:numeric(Client, Server, <<"432">>, [Nick], <<"Erroneous nickname">>);
-        {false, _, _, _} ->
-            ircd_state_send:numeric(Client, Server, <<"432">>, [Nick], <<"Erroneous nickname">>);
-        {true, _, #client{pid = Pid}, _} when Pid =/= Client#client.pid ->
+    case ircd_state_net:nick_blocked(Nick) of
+        true ->
             ircd_state_send:numeric(
-                Client, Server, <<"433">>, [Nick], <<"Nickname is already in use">>
+                Client, Server, <<"437">>, [Nick], <<"Nick/channel is temporarily unavailable">>
             );
-        {true, _, _, true} ->
-            ircd_state_send:numeric(
-                Client, Server, <<"433">>, [Nick], <<"Nickname is already in use">>
-            );
-        {true, _, _, false} ->
-            case ircd_state_client:ready(Client) of
-                true ->
-                    ircd_state_send:broadcast(
-                        ircd_state_channel:nick_recipients(Client),
-                        ircd_state_send:prefix(Client),
-                        <<"NICK">>,
-                        [],
-                        Nick
-                    ),
-                    ircd_state_link:propagate_nick_change(Client, Nick);
-                false ->
-                    ok
-            end,
-            ircd_state_client:save_identity(Client, Client#client{nick = Nick}, Server)
+        false ->
+            change_nick(Nick, Client, Server)
     end;
 dispatch(<<"NICK">>, [], Client, Server) ->
     ircd_state_send:numeric(Client, Server, <<"431">>, [], <<"No nickname given">>);
@@ -539,6 +600,16 @@ registered_command(<<"OPER">>, _, Client, Server) ->
     ircd_state_send:numeric(Client, Server, <<"461">>, [<<"OPER">>], <<"Not enough parameters">>);
 registered_command(<<"KILL">>, Params, Client, Server) ->
     ircd_state_info:kill(Params, Client, Server);
+registered_command(<<"CONNECT">>, Params, Client, Server) ->
+    ircd_state_net:oper_command(<<"CONNECT">>, Params, Client, Server);
+registered_command(<<"SQUIT">>, Params, Client, Server) ->
+    ircd_state_net:oper_command(<<"SQUIT">>, Params, Client, Server);
+registered_command(<<"DIE">>, Params, Client, Server) ->
+    ircd_state_net:oper_command(<<"DIE">>, Params, Client, Server);
+registered_command(<<"RESTART">>, Params, Client, Server) ->
+    ircd_state_net:oper_command(<<"RESTART">>, Params, Client, Server);
+registered_command(<<"SERVICE">>, Params, Client, Server) ->
+    ircd_state_net:oper_command(<<"SERVICE">>, Params, Client, Server);
 registered_command(<<"WALLOPS">>, _, Client, Server) ->
     ircd_state_send:numeric(
         Client,
@@ -636,9 +707,9 @@ registered_command(<<"SERVLIST">>, Params, Client, Server) ->
             [GivenMask] -> {GivenMask, <<"*">>};
             [] -> {<<"*">>, <<"*">>}
         end,
-    ircd_state_send:numeric(Client, Server, <<"235">>, [Mask, Type], <<"End of service listing">>);
+    ircd_state_net:servlist(Mask, Type, Client, Server);
 registered_command(<<"SQUERY">>, Params, Client, Server) ->
-    ircd_state_info:squery(Params, Client, Server);
+    ircd_state_net:squery(Params, Client, Server);
 registered_command(<<"VERSION">>, Params, Client, Server) ->
     case ircd_state_info:query_local_server(Params, Server) of
         true ->
@@ -714,8 +785,6 @@ registered_command(<<"WHOWAS">>, [NickMasks | Rest], Client, Server) ->
     end;
 registered_command(<<"MOTD">>, Params, Client, Server) ->
     ircd_state_info:motd(Params, Client, Server);
-registered_command(<<"CAP">>, [<<"END">>], _, _) ->
-    ok;
 registered_command(<<"AWAY">>, _, Client, Server) ->
     ircd_state_send:numeric(Client, Server, <<"461">>, [<<"AWAY">>], <<"Not enough parameters">>);
 registered_command(Command, [], Client, Server) when
@@ -729,6 +798,49 @@ registered_command(Command, [], Client, Server) when
     ircd_state_send:numeric(Client, Server, <<"461">>, [Command], <<"Not enough parameters">>);
 registered_command(Command, _, Client, Server) ->
     ircd_state_send:numeric(Client, Server, <<"421">>, [Command], <<"Unknown command">>).
+
+change_nick(Nick, Client, Server) ->
+    case
+        {
+            ircd_wire:nickname(Nick),
+            ircd_wire:fold(Nick),
+            ircd_state_client:find_nick(Nick),
+            ircd_state_link:remote_nick_exists(Nick)
+        }
+    of
+        {_, <<"anonymous">>, _, _} ->
+            ircd_state_send:numeric(Client, Server, <<"432">>, [Nick], <<"Erroneous nickname">>);
+        {false, _, _, _} ->
+            ircd_state_send:numeric(Client, Server, <<"432">>, [Nick], <<"Erroneous nickname">>);
+        {true, _, #client{pid = Pid}, _} when Pid =/= Client#client.pid ->
+            ircd_state_send:numeric(
+                Client, Server, <<"433">>, [Nick], <<"Nickname is already in use">>
+            );
+        {true, _, _, true} ->
+            ircd_state_send:numeric(
+                Client, Server, <<"433">>, [Nick], <<"Nickname is already in use">>
+            );
+        {true, _, _, false} ->
+            case ircd_state_client:ready(Client) of
+                true ->
+                    ircd_state_send:broadcast(
+                        ircd_state_channel:nick_recipients(Client),
+                        ircd_state_send:prefix(Client),
+                        <<"NICK">>,
+                        [],
+                        Nick
+                    ),
+                    ircd_state_link:propagate_nick_change(Client, Nick);
+                false ->
+                    ok
+            end,
+            case ircd_state_client:ready(Client) andalso Client#client.nick =/= <<"*">> of
+                true -> ircd_state_net:hold_nick(Client#client.nick);
+                false -> ok
+            end,
+            ircd_state_client:save_identity(Client, Client#client{nick = Nick}, Server)
+    end.
+
 count_command(Pid, Command, MessageBytes) ->
     case supported_command(Command) of
         true ->
@@ -750,6 +862,8 @@ supported_command(Command) ->
             <<"ADMIN">>,
             <<"AWAY">>,
             <<"CAP">>,
+            <<"CONNECT">>,
+            <<"DIE">>,
             <<"INVITE">>,
             <<"INFO">>,
             <<"ISON">>,
@@ -770,8 +884,11 @@ supported_command(Command) ->
             <<"PRIVMSG">>,
             <<"QUIT">>,
             <<"REHASH">>,
+            <<"RESTART">>,
+            <<"SERVICE">>,
             <<"SERVLIST">>,
             <<"SQUERY">>,
+            <<"SQUIT">>,
             <<"STATS">>,
             <<"SUMMON">>,
             <<"TIME">>,

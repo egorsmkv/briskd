@@ -51,6 +51,10 @@ handle_cast({send, Line}, #{phase := authenticated, kind := Kind, socket := Sock
         ok -> {noreply, State};
         {error, Reason} -> retry(State, {send_failed, Reason})
     end;
+handle_cast(connect_now, #{phase := disconnected, timer_gen := Gen} = State) ->
+    cancel_timer(maps:get(reconnect_timer, State, undefined)),
+    self() ! {reconnect, Gen},
+    {noreply, State#{reconnect_timer => undefined}};
 handle_cast(_, State) ->
     {noreply, State}.
 
@@ -212,6 +216,7 @@ handle_server_line(
             },
             case send_burst(ircd_state:server_burst(), Authenticated) of
                 ok ->
+                    ok = ircd_state:register_adjacent(Name, Token, outbound),
                     logger:notice(#{event => server_link_authenticated, peer => Name}),
                     {ok, arm_liveness(Authenticated#{ping_pending => undefined})};
                 {error, Reason} ->
@@ -243,7 +248,12 @@ handle_server_line(
     Command =:= <<"KICK">>;
     Command =:= <<"MODE">>;
     Command =:= <<"PRIVMSG">>;
-    Command =:= <<"NOTICE">>
+    Command =:= <<"NOTICE">>;
+    Command =:= <<"SERVER">>;
+    Command =:= <<"SQUIT">>;
+    Command =:= <<"INVITE">>;
+    Command =:= <<"SERVICE">>;
+    Command =:= <<"SQUERY">>
 ->
     case ircd_state:server_command(PeerName, Prefix, Command, Params) of
         ok -> {ok, State};
@@ -304,7 +314,12 @@ close(_) -> ok.
 
 retry(State, Reason) ->
     logger:warning(#{event => server_link_retry, peer => peer_name(State), reason => Reason}),
-    ok = ircd_state:server_disconnect(peer_name(State)),
+    %% A connector that never authenticated must not clear an inbound session
+    %% that is using the same peer name.
+    case maps:get(phase, State, disconnected) of
+        authenticated -> ok = ircd_state:server_disconnect(peer_name(State));
+        _ -> ok
+    end,
     cancel_timers(State),
     close(State),
     Gen = maps:get(timer_gen, State) + 1,

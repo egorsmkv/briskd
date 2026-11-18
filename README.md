@@ -108,7 +108,8 @@ ephemeral port, which is reported in the startup log.
 
 `mnesia_dir` should point to writable storage. Mnesia persists WHOWAS history
 and safe-channel state. Client sessions and imported peer state are transient;
-ordinary channels are cleared on restart.
+ordinary channels are cleared on restart. Backup, restore, and schema
+migration are described in [docs/mnesia.md](docs/mnesia.md).
 
 ## IRC support and limitations
 
@@ -116,23 +117,29 @@ Implemented client commands include `PASS`, `NICK`, `USER`, `JOIN`, `PART`,
 `PRIVMSG`, `NOTICE`, `TOPIC`, `NAMES`, `LIST`, `MODE`, `INVITE`, `KICK`,
 `AWAY`, `WHO`, `WHOIS`, `WHOWAS`, `ISON`, `USERHOST`, `LUSERS`, `MOTD`,
 `VERSION`, `TIME`, `INFO`, `ADMIN`, `LINKS`, `TRACE`, `STATS`, `SERVLIST`,
-`SQUERY`, `PING`, `PONG`, `QUIT`, `OPER`, `KILL`, and `REHASH`. Capability
-negotiation is limited to `CAP LS` and `CAP END`.
+`SQUERY`, `PING`, `PONG`, `QUIT`, `OPER`, `KILL`, `REHASH`, `CONNECT`,
+`SQUIT`, `SERVICE`, `CAP`, `KNOCK`, `SUMMON`, `USERS`, `DIE`, and `RESTART`.
+`CAP LS` and `CAP LIST` report an empty capability set, `CAP REQ` is rejected
+with `NAK`, and an unknown `CAP` subcommand returns numeric 410. `SUMMON` and
+`USERS` stay disabled and return numerics 445 and 446. `DIE` and `RESTART` are
+operator-only and do not stop the node.
 
-Channel support includes operator and voice roles, keys, limits, ban/exception/
-invite masks, moderation, member-only messaging, operator-only topics, private
-and secret channels, and safe `!` channels. Anonymous mode is supported on
-local `&` and safe `!` channels. Visibility rules are applied to `WHO`,
-`WHOIS`, and `NAMES`; user mode `+i` hides users from queries unless the
-requester shares a channel.
+A client may join at most ten channels (numeric 405). A nickname or channel
+released by a quit or a netsplit stays unavailable for 60 seconds (numeric
+437). A nickname introduced for an existing local or remote user kills both
+sides. Invisible users are hidden from `WHO`, `WHOIS`, and `NAMES` unless the
+requester shares a channel, including when the other user is on another server.
 
-Automated test coverage is limited. Server linking is limited to directly
-connected peers. Basic bursts, selected user and channel state propagation, and
-direct-peer message routing are implemented. Multi-hop routing, netsplit
-handling, complete synchronization, and several remote-user operations are
-still in progress. Full command, numeric, and edge-case coverage is also
-unfinished; consult the [roadmap](ROADMAP.md) before relying on a specific RFC
-behavior.
+Server links speak the RFC 2813 `PASS` / `SERVER` handshake and accept further
+`SERVER` introductions in hop order. Messages and invitations are forwarded
+along the adjacent link toward the target and are not sent back to the link
+that delivered them. `SQUIT` and a lost link remove the users, services, and
+channels that were reachable only through the lost server and tell the
+remaining peers. Channel invitations are stored and forwarded after the burst.
+
+This server does not implement IRCv3 message tags, labeled responses, or
+capability families. `SUMMON` and `USERS` are not available as working
+features. Consult the [roadmap](ROADMAP.md) for the checked coverage list.
 
 ## Protocol references
 
