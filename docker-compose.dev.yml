@@ -1,0 +1,21 @@
+services:
+  ircd-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /workspace
+    command: ["just", "run-config", "config/ircd.dev.json"]
+    environment:
+      IRCD_CONFIG: config/ircd.dev.json
+    ports:
+      - "6667:6667"
+    volumes:
+      - .:/workspace
+      - rebar3-cache:/root/.cache/rebar3
+      - ircd-mnesia:/var/lib/ircd/mnesia
+    stdin_open: true
+    tty: true
+
+volumes:
+  rebar3-cache:
+  ircd-mnesia:

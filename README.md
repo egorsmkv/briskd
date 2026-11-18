@@ -14,6 +14,20 @@ If `just` is installed, `just --list` shows project commands: `just build`,
 `just run-config path/to/config.json`. The Erlang formatter is `erlfmt`,
 available as `rebar3 fmt` after dependencies are fetched.
 
+## Docker development environment
+
+Build and start the development environment with Docker Compose:
+
+```sh
+docker compose -f docker-compose.dev.yml up --build
+```
+
+The container uses Erlang/OTP 29, `rebar3`, and `just`. It mounts this checkout
+at `/workspace`, starts the server with `config/ircd.dev.json`, and publishes
+IRC on `localhost:6667`. Rebar3's cache and the development Mnesia database use
+separate named volumes. Stop the environment with `docker compose -f
+docker-compose.dev.yml down`; source changes remain in the checkout.
+
 Set `IRCD_CONFIG` to load another JSON file. The default is
 `config/ircd.json`. Set either port to `null` to disable that listener.
 Use `tls_port: 6697` and supply PEM certificate and key paths through

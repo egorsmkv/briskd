@@ -30,6 +30,22 @@ Do not trade off a MUST-level requirement of a protocol for speed. When a task i
 
 Do not perform unrelated refactors. Do not suppress warnings or relax TLS/protocol validation merely to get a green build. Do not change production defaults for timeouts, transport, thread/scheduler counts, or queue sizes without documenting rollout and fallback.
 
+### Repository development environment
+
+- Use the repository's Docker development environment as the standard Erlang setup. It pins the OTP 29 image and provides `rebar3` and `just`; avoid relying on a host Erlang installation.
+- Start it from the repository root with `docker compose -f docker-compose.dev.yml up --build -d`. The checkout is mounted at `/workspace`; the container runs the server with `config/ircd.dev.json` and publishes IRC on host port 6667.
+- Run repository commands in the running container:
+
+  ```sh
+  docker compose -f docker-compose.dev.yml exec -T ircd-dev just build
+  docker compose -f docker-compose.dev.yml exec -T ircd-dev just format-check
+  docker compose -f docker-compose.dev.yml exec -T ircd-dev just test
+  ```
+
+  Use `docker compose -f docker-compose.dev.yml exec ircd-dev sh` for an interactive shell.
+- Stop the environment with `docker compose -f docker-compose.dev.yml down`. Its named Rebar3 cache and Mnesia development database persist across restarts. Use `down -v` only when intentionally deleting both volumes and their contents.
+- Keep development settings in `config/ircd.dev.json`; do not point the dev container at production configuration or host Mnesia data.
+
 ## 3. Erlang/OTP 29 rules
 
 - Support **OTP 29.x**; build and test against the latest *approved, security-patched* 29.x release available to the deployment, not an assumed exact patch version. Keep CI and release version pins aligned. Never use features requiring OTP 30.
