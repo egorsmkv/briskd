@@ -209,10 +209,10 @@ process_line(<<"SERVER">>, [Name, Hop, Token, _Info], _Bytes, State) ->
         _ ->
             error
     end;
-process_line(Command, Params, Bytes, {Kind, Socket, Peer, Buffer, awaiting} = State) ->
+process_line(Command, Params, Bytes, {_, _, _, _, awaiting} = State) ->
     case promote_client(State) of
         {ok, ClientState} ->
-            process_client_line(Command, Params, Bytes, {Kind, Socket, Peer, Buffer, ClientState});
+            process_client_line(Command, Params, Bytes, ClientState);
         error ->
             error
     end;

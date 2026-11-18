@@ -82,8 +82,8 @@ init(#{name := Name} = Config) ->
     Started = calendar:system_time_to_rfc3339(erlang:system_time(second), [{unit, second}]),
     persistent_term:put({?MODULE, started}, Started),
     persistent_term:put({?MODULE, started_at}, erlang:monotonic_time(second)),
-    persistent_term:put({?MODULE, command_stats}, #{}),
-    persistent_term:put({?MODULE, connection_stats}, #{}),
+    ets:new(ircd_command_stats, [named_table, public, set, {write_concurrency, true}]),
+    ets:new(ircd_connection_stats, [named_table, public, set, {write_concurrency, true}]),
     persistent_term:put({?MODULE, config}, Config),
     persistent_term:put({?MODULE, config_path}, maps:get(config_path, Config)),
     persistent_term:put({?MODULE, motd_file}, maps:get(motd_file, Config, null)),
@@ -1797,11 +1797,12 @@ squery([Service | _], Client, Server) ->
 count_command(Pid, Command, MessageBytes) ->
     case supported_command(Command) of
         true ->
-            Stats = persistent_term:get({?MODULE, command_stats}, #{}),
-            {Count, Bytes} = maps:get(Command, Stats, {0, 0}),
-            persistent_term:put({?MODULE, command_stats}, Stats#{
-                Command => {Count + 1, Bytes + MessageBytes}
-            });
+            ets:update_counter(
+                ircd_command_stats,
+                Command,
+                [{2, 1}, {3, MessageBytes}],
+                {Command, 0, 0}
+            );
         false ->
             ok
     end,
@@ -1864,35 +1865,42 @@ supported_command(Command) ->
         ]
     ).
 
-put_connection_stats(Pid, Entry) ->
-    Stats = persistent_term:get({?MODULE, connection_stats}, #{}),
-    persistent_term:put({?MODULE, connection_stats}, Stats#{
-        Pid => Entry#{
-            connected_at => erlang:monotonic_time(second),
-            sent_messages => 0,
-            sent_bytes => 0,
-            recv_messages => 0,
-            recv_bytes => 0
-        }
-    }).
+put_connection_stats(Pid, _Entry) ->
+    ets:insert(ircd_connection_stats, {Pid, erlang:monotonic_time(second), 0, 0, 0, 0}).
 
 remove_connection_stats(Pid) ->
-    Stats = persistent_term:get({?MODULE, connection_stats}, #{}),
-    persistent_term:put({?MODULE, connection_stats}, maps:remove(Pid, Stats)).
+    ets:delete(ircd_connection_stats, Pid).
 
 connection_stats(Pid) ->
-    maps:get(Pid, persistent_term:get({?MODULE, connection_stats}, #{}), #{}).
+    case ets:lookup(ircd_connection_stats, Pid) of
+        [{Pid, ConnectedAt, SentMessages, SentBytes, RecvMessages, RecvBytes}] ->
+            #{
+                connected_at => ConnectedAt,
+                sent_messages => SentMessages,
+                sent_bytes => SentBytes,
+                recv_messages => RecvMessages,
+                recv_bytes => RecvBytes
+            };
+        [] ->
+            #{}
+    end.
 
 update_connection_stats(Pid, MessagesKey, BytesKey, Bytes) ->
-    Stats = persistent_term:get({?MODULE, connection_stats}, #{}),
-    case maps:find(Pid, Stats) of
-        {ok, Entry} ->
-            Updated = Entry#{
-                MessagesKey := maps:get(MessagesKey, Entry) + 1,
-                BytesKey := maps:get(BytesKey, Entry) + Bytes
-            },
-            persistent_term:put({?MODULE, connection_stats}, Stats#{Pid := Updated});
-        error ->
+    case {MessagesKey, BytesKey} of
+        {sent_messages, sent_bytes} -> update_connection_stats_counter(Pid, 3, 4, Bytes);
+        {recv_messages, recv_bytes} -> update_connection_stats_counter(Pid, 5, 6, Bytes);
+        _ -> ok
+    end.
+
+update_connection_stats_counter(Pid, MessagesPosition, BytesPosition, Bytes) ->
+    case ets:member(ircd_connection_stats, Pid) of
+        true ->
+            ets:update_counter(
+                ircd_connection_stats,
+                Pid,
+                [{MessagesPosition, 1}, {BytesPosition, Bytes}]
+            );
+        false ->
             ok
     end.
 
@@ -1934,9 +1942,8 @@ report_stats(<<"u">>, Client, Server) ->
     ),
     numeric(Client, Server, <<"219">>, [<<"u">>], <<"End of STATS report">>);
 report_stats(<<"m">>, Client, Server) ->
-    Stats = persistent_term:get({?MODULE, command_stats}, #{}),
     lists:foreach(
-        fun({Command, {Count, Bytes}}) ->
+        fun({Command, Count, Bytes}) ->
             numeric(
                 Client,
                 Server,
@@ -1945,7 +1952,7 @@ report_stats(<<"m">>, Client, Server) ->
                 none
             )
         end,
-        lists:sort(maps:to_list(Stats))
+        lists:sort(ets:tab2list(ircd_command_stats))
     ),
     numeric(Client, Server, <<"219">>, [<<"m">>], <<"End of STATS report">>);
 report_stats(<<"l">>, Client, Server) ->
