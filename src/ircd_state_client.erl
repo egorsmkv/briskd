@@ -31,46 +31,34 @@ ready(#client{nick = Nick, user = User, pass = Pass}) ->
     HasIdentity andalso Authenticated.
 
 %% Find a registered nickname using the RFC1459 case-folding rules.
+%% `ircd_nicks` is the folded-nick index maintained by the state process.
 find_nick(Nick) ->
-    Key = ircd_wire:fold(Nick),
-    Matches = [
-        Client
-     || Pid <- mnesia:dirty_all_keys(client),
-        [Client] <- [mnesia:dirty_read(client, Pid)],
-        Client#client.nick =/= <<"*">>,
-        ircd_wire:fold(Client#client.nick) =:= Key
-    ],
-    case Matches of
-        [Client] -> Client;
-        [] -> undefined
+    case ets:lookup(ircd_nicks, ircd_wire:fold(Nick)) of
+        [{_, Pid}] ->
+            case mnesia:dirty_read(client, Pid) of
+                [#client{nick = Stored} = Client] when Stored =/= <<"*">> ->
+                    case ircd_wire:fold(Stored) =:= ircd_wire:fold(Nick) of
+                        true -> Client;
+                        false -> undefined
+                    end;
+                _ ->
+                    undefined
+            end;
+        [] ->
+            undefined
     end.
 
 %% Persist nickname or USER changes and send the registration welcome once ready.
 save_identity(Old, New, Server) ->
     Current = client(Old#client.pid),
     Updated = New#client{
-        nick =
-            case New#client.nick of
-                <<"*">> -> Current#client.nick;
-                Value -> Value
-            end,
-        user =
-            case New#client.user of
-                undefined -> Current#client.user;
-                Value -> Value
-            end,
-        real =
-            case New#client.real of
-                undefined -> Current#client.real;
-                Value -> Value
-            end,
-        away =
-            case New#client.away of
-                undefined -> Current#client.away;
-                Value -> Value
-            end,
+        nick = stored_nick(New#client.nick, Current#client.nick),
+        user = stored_field(New#client.user, Current#client.user),
+        real = stored_field(New#client.real, Current#client.real),
+        away = stored_field(New#client.away, Current#client.away),
         channels = Current#client.channels
     },
+    ok = index_nick(Updated#client.pid, Current#client.nick, Updated#client.nick),
     case ready(Current) andalso Current#client.nick =/= Updated#client.nick of
         true -> save_whowas(Current, Server);
         false -> ok
@@ -237,6 +225,7 @@ disconnect(#client{pid = Pid, channels = Channels} = Client, Reason, Server) ->
         end,
         Channels
     ),
+    ok = forget_nick(Pid, Client#client.nick),
     mnesia:dirty_delete(client, Pid),
     mnesia:dirty_delete(activity, Pid),
     mnesia:dirty_delete(user_modes, Pid),
@@ -278,6 +267,52 @@ user_visible(#client{pid = Pid, channels = Channels}, #client{pid = RequesterPid
             end,
             Channels
         ).
+
+%% `<<"*">>` means the caller is not changing the nickname.
+stored_nick(<<"*">>, Current) -> Current;
+stored_nick(Value, Value) -> Value;
+stored_nick(Value, _Current) -> ircd_wire:retain(Value).
+
+%% `undefined` means the caller is not changing this field.
+%% Equal binaries keep the copy already owned by the client record.
+stored_field(undefined, Current) -> Current;
+stored_field(Value, Value) -> Value;
+stored_field(Value, _Current) -> ircd_wire:retain(Value).
+
+index_nick(Pid, OldNick, NewNick) ->
+    OldKey = nick_key(OldNick),
+    NewKey = nick_key(NewNick),
+    case OldKey =:= NewKey of
+        true ->
+            ok;
+        false ->
+            forget_key(OldKey, Pid),
+            remember_key(NewKey, Pid)
+    end.
+
+forget_nick(Pid, Nick) ->
+    forget_key(nick_key(Nick), Pid).
+
+nick_key(<<"*">>) -> undefined;
+nick_key(Nick) when is_binary(Nick) -> ircd_wire:fold(Nick);
+nick_key(_) -> undefined.
+
+forget_key(undefined, _Pid) ->
+    ok;
+forget_key(Key, Pid) ->
+    case ets:lookup(ircd_nicks, Key) of
+        [{_, Pid}] ->
+            ets:delete(ircd_nicks, Key),
+            ok;
+        _ ->
+            ok
+    end.
+
+remember_key(undefined, _Pid) ->
+    ok;
+remember_key(Key, Pid) ->
+    ets:insert(ircd_nicks, {Key, Pid}),
+    ok.
 
 %% Keep the most recent user identity for lookup after a nickname is released.
 save_whowas(#client{nick = Nick, user = User, host = Host, real = Real}, Server) ->

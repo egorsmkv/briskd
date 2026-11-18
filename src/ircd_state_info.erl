@@ -516,49 +516,53 @@ lusers(Params, Client, Server) ->
             {Users, Operators, Unknown, Channels, Clients, Servers} =
                 case Included of
                     true ->
-                        ClientRecords = [
-                            Record
-                         || Pid <- mnesia:dirty_all_keys(client),
-                            [Record] <- [mnesia:dirty_read(client, Pid)]
-                        ],
-                        ReadyCount = length([
-                            ok
-                         || Record <- ClientRecords, ircd_state_client:ready(Record)
-                        ]),
-                        RemoteRecords = [
-                            Record
-                         || Key <- mnesia:dirty_all_keys(remote_client),
-                            [Record] <- [mnesia:dirty_read(remote_client, Key)]
-                        ],
-                        RemoteCount = length(RemoteRecords),
-                        RemoteServers = lists:usort([
-                            Peer
-                         || #remote_client{peer = Peer} <- RemoteRecords
-                        ]),
-                        UnknownCount = length(ClientRecords) - ReadyCount,
-                        LocalOperatorCount = length([
-                            ok
-                         || #client{pid = Pid} = Record <- ClientRecords,
-                            ircd_state_client:ready(Record),
-                            maps:is_key($o, ircd_state_client:user_modes(Pid))
-                        ]),
-                        RemoteOperatorCount = length([
-                            ok
-                         || #remote_client{modes = Modes} <- RemoteRecords,
-                            maps:is_key($o, Modes)
-                        ]),
+                        {ReadyCount, UnknownCount, LocalOperatorCount, LocalCount} =
+                            ets:foldl(
+                                fun(#client{pid = Pid} = Record, {Ready, Unknown, Ops, Total}) ->
+                                    case ircd_state_client:ready(Record) of
+                                        true ->
+                                            Op =
+                                                case
+                                                    maps:is_key(
+                                                        $o, ircd_state_client:user_modes(Pid)
+                                                    )
+                                                of
+                                                    true -> 1;
+                                                    false -> 0
+                                                end,
+                                            {Ready + 1, Unknown, Ops + Op, Total + 1};
+                                        false ->
+                                            {Ready, Unknown + 1, Ops, Total + 1}
+                                    end
+                                end,
+                                {0, 0, 0, 0},
+                                client
+                            ),
+                        {RemoteCount, RemoteOperatorCount, RemoteServers} = ets:foldl(
+                            fun(#remote_client{peer = Peer, modes = Modes}, {Count, Ops, Homes}) ->
+                                Op =
+                                    case maps:is_key($o, Modes) of
+                                        true -> 1;
+                                        false -> 0
+                                    end,
+                                {Count + 1, Ops + Op, Homes#{Peer => true}}
+                            end,
+                            {0, 0, #{}},
+                            remote_client
+                        ),
                         {
                             ReadyCount + RemoteCount,
                             LocalOperatorCount + RemoteOperatorCount,
                             UnknownCount,
-                            length(
-                                lists:usort(
-                                    mnesia:dirty_all_keys(channel) ++
-                                        mnesia:dirty_all_keys(remote_channel)
+                            map_size(
+                                lists:foldl(
+                                    fun(Key, Acc) -> Acc#{Key => true} end,
+                                    maps:from_keys(mnesia:dirty_all_keys(channel), true),
+                                    mnesia:dirty_all_keys(remote_channel)
                                 )
                             ),
-                            length(ClientRecords) + RemoteCount,
-                            1 + length(RemoteServers)
+                            LocalCount + RemoteCount,
+                            1 + map_size(RemoteServers)
                         };
                     false ->
                         {0, 0, 0, 0, 0, 0}

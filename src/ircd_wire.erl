@@ -10,6 +10,7 @@
     parse_client/1,
     parse_server/1,
     partial/1,
+    retain/1,
     safe_channel/1
 ]).
 
@@ -131,17 +132,25 @@ split_tags(Body) ->
         false -> {ok, [], Body}
     end.
 
+%% Last value wins and the first occurrence keeps its position. A map avoids
+%% scanning the accumulated list once per tag.
 decode_tags(Bin) ->
-    lists:foldl(
-        fun(Part, Acc) ->
+    {Order, Values} = lists:foldl(
+        fun(Part, {Keys, Map}) ->
             case tag_pair(Part) of
-                {<<>>, _} -> Acc;
-                {Key, Value} -> lists:keystore(Key, 1, Acc, {Key, Value})
+                {<<>>, _} ->
+                    {Keys, Map};
+                {Key, Value} ->
+                    case maps:is_key(Key, Map) of
+                        true -> {Keys, Map#{Key => Value}};
+                        false -> {[Key | Keys], Map#{Key => Value}}
+                    end
             end
         end,
-        [],
+        {[], #{}},
         binary:split(Bin, <<";">>, [global])
-    ).
+    ),
+    [{Key, map_get(Key, Values)} || Key <- lists:reverse(Order)].
 
 tag_pair(<<>>) ->
     {<<>>, undefined};
@@ -283,6 +292,12 @@ line(Prefix, Command, Middle, Trailing) ->
         _ ->
             []
     end.
+
+%% @doc Copy a binary that will outlive the socket buffer it was sliced from.
+%% Other terms are returned unchanged. Short-lived relay text should not be copied.
+-spec retain(term()) -> term().
+retain(Value) when is_binary(Value) -> binary:copy(Value);
+retain(Value) -> Value.
 
 %% @doc Fold an IRC identifier according to the RFC1459 case mapping.
 -spec fold(binary()) -> binary().

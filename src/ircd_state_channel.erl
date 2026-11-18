@@ -83,18 +83,46 @@ maybe_reop_opless(#channel{opless_since = ReopAt, members = Members} = Channel, 
         false ->
             ok;
         true ->
-            Pids = maps:keys(Members),
-            Pid = lists:nth(rand:uniform(length(Pids)), Pids),
-            Nick =
-                case mnesia:dirty_read(client, Pid) of
-                    [#client{nick = CurrentNick}] -> CurrentNick;
-                    [] -> <<"*">>
+            case pick_member(maps:iterator(Members)) of
+                none ->
+                    ok;
+                {Pid, Pids} ->
+                    Nick =
+                        case mnesia:dirty_read(client, Pid) of
+                            [#client{nick = CurrentNick}] -> CurrentNick;
+                            [] -> <<"*">>
+                        end,
+                    NewMembers = Members#{
+                        Pid := lists:usort([operator | maps:get(Pid, Members)])
+                    },
+                    mnesia:dirty_write(Channel#channel{
+                        members = NewMembers, opless_since = undefined
+                    }),
+                    ircd_state_send:broadcast(
+                        Pids, Server, <<"MODE">>, [Channel#channel.name, <<"+o">>, Nick], none
+                    )
+            end
+    end.
+
+%% One pass over the member map: a uniformly chosen pid and every pid, in map order.
+%% An empty map is not reop'd. `rand:uniform(0)` is not a valid way to observe that.
+pick_member(Iterator) ->
+    pick_member(Iterator, 0, undefined, []).
+
+pick_member(Iterator, Seen, Chosen, Pids) ->
+    case maps:next(Iterator) of
+        none when Seen =:= 0 ->
+            none;
+        none ->
+            {Chosen, lists:reverse(Pids)};
+        {Pid, _Roles, Next} ->
+            Seen1 = Seen + 1,
+            Chosen1 =
+                case rand:uniform(Seen1) =:= 1 of
+                    true -> Pid;
+                    false -> Chosen
                 end,
-            NewMembers = Members#{Pid := lists:usort([operator | maps:get(Pid, Members)])},
-            mnesia:dirty_write(Channel#channel{members = NewMembers, opless_since = undefined}),
-            ircd_state_send:broadcast(
-                Pids, Server, <<"MODE">>, [Channel#channel.name, <<"+o">>, Nick], none
-            )
+            pick_member(Next, Seen1, Chosen1, [Pid | Pids])
     end.
 join_channels([], _, _, _) ->
     ok;
@@ -423,8 +451,9 @@ kick_member(
             end
     end.
 nick_recipients(#client{pid = Pid, channels = Channels}) ->
-    lists:usort(
-        [
+    lists:usort([
+        Pid
+        | [
             Other
          || Key <- Channels,
             [#channel{members = Members, flags = Flags}] <- [mnesia:dirty_read(channel, Key)],
@@ -432,8 +461,8 @@ nick_recipients(#client{pid = Pid, channels = Channels}) ->
             not maps:is_key($q, Flags),
             Other <- maps:keys(Members),
             Other =/= Pid
-        ] ++ [Pid]
-    ).
+        ]
+    ]).
 
 channel_origin_prefix(#channel{flags = Flags}, _Client) when is_map_key($a, Flags) ->
     <<"anonymous!anonymous@anonymous.">>;
@@ -569,7 +598,7 @@ topic(Name, Rest, #client{pid = Pid} = Client, Server) ->
                         Client, Server, <<"482">>, [Canonical], <<"You're not channel operator">>
                     );
                 {false, true, [Text | _]} ->
-                    mnesia:dirty_write(Channel#channel{topic = Text}),
+                    mnesia:dirty_write(Channel#channel{topic = ircd_wire:retain(Text)}),
                     ircd_state_send:broadcast(
                         maps:keys(Members),
                         channel_origin_prefix(Channel, Client),
@@ -1282,9 +1311,10 @@ apply_mode(Mode, Action, Args, #channel{lists = Lists} = Channel) when
     Existing = maps:get(Type, Lists, []),
     case Args of
         [Mask | Tail] ->
+            StoredMask = ircd_wire:retain(Mask),
             NewList =
                 case Action of
-                    add -> lists:usort([Mask | Existing]);
+                    add -> lists:usort([StoredMask | Existing]);
                     remove -> lists:delete(Mask, Existing)
                 end,
             {ok, Channel#channel{lists = Lists#{Type => NewList}}, Tail, [Mask]};
@@ -1349,7 +1379,7 @@ apply_mode($l, add, [Value | Args], Channel) ->
     end;
 apply_mode($k, add, [Key | Args], Channel) when byte_size(Key) > 0, byte_size(Key) =< 64 ->
     case binary:match(Key, [<<" ">>, <<",">>, <<":">>]) of
-        nomatch -> {ok, Channel#channel{password = Key}, Args, [Key]};
+        nomatch -> {ok, Channel#channel{password = ircd_wire:retain(Key)}, Args, [Key]};
         _ -> {error, <<"461">>, [<<"MODE">>], <<"Invalid channel key">>, Args}
     end;
 apply_mode($k, add, [_ | Args], _) ->

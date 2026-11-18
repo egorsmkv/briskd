@@ -114,6 +114,7 @@ init(#{name := Name} = Config) ->
     ets:new(ircd_command_stats, [named_table, public, set, {write_concurrency, true}]),
     ets:new(ircd_connection_stats, [named_table, public, set, {write_concurrency, true}]),
     ensure_ets(ircd_caps),
+    ensure_ets(ircd_nicks),
     ensure_ets(ircd_inbound_peers),
     ensure_ets(ircd_outbound_ready),
     ensure_ets(ircd_holds),
@@ -308,7 +309,7 @@ reset_channels() ->
 %% @doc Handle session registration, registration queries, and client commands.
 handle_call({connect, Host}, {Pid, _}, Server) ->
     monitor(process, Pid),
-    mnesia:dirty_write(#client{pid = Pid, host = Host}),
+    mnesia:dirty_write(#client{pid = Pid, host = ircd_wire:retain(Host)}),
     ircd_cap:connect(Pid),
     ircd_state_client:touch_activity(Pid),
     ircd_state_client:put_connection_stats(Pid, #{}),
@@ -592,7 +593,7 @@ registered_command(<<"AWAY">>, [], #client{} = Client, Server) ->
     end,
     ok;
 registered_command(<<"AWAY">>, [Message | _], #client{} = Client, Server) ->
-    mnesia:dirty_write(Client#client{away = Message}),
+    mnesia:dirty_write(Client#client{away = ircd_wire:retain(Message)}),
     ircd_state_link:propagate_away(Client, Message),
     ircd_state_send:numeric(
         Client, Server, <<"306">>, [], <<"You have been marked as being away">>

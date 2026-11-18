@@ -271,7 +271,7 @@ import_service(Peer, Prefix, Params) ->
 
 -spec service_count() -> non_neg_integer().
 service_count() ->
-    length(mnesia:dirty_all_keys(service)).
+    mnesia:table_info(service, size).
 
 -spec burst_server_lines(binary()) -> [binary()].
 burst_server_lines(Local) ->
