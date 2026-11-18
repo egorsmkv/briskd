@@ -1,0 +1,34 @@
+default:
+    @just --list
+
+# Compile the application and dependencies.
+build:
+    rebar3 compile
+
+# Format Erlang source files with erlfmt.
+format:
+    rebar3 fmt
+
+# Fail if Erlang source files need formatting.
+format-check:
+    rebar3 fmt --check
+
+# Start the server with config/ircd.json or the IRCD_CONFIG override.
+run:
+    rebar3 shell
+
+# Start the server with a selected JSON configuration file.
+run-config config:
+    IRCD_CONFIG={{config}} rebar3 shell
+
+# Run the Erlang unit test suite.
+test:
+    rebar3 eunit
+
+# Fetch dependencies and formatter plugin.
+deps:
+    rebar3 get-deps
+
+# Remove compiled build artifacts.
+clean:
+    rebar3 clean

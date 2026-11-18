@@ -1,0 +1,21 @@
+{
+  "name": "irc.local",
+  "bind": "127.0.0.1",
+  "tcp_port": 6667,
+  "tls_port": null,
+  "certfile": null,
+  "keyfile": null,
+  "log_level": "info",
+  "log_format": "json",
+  "max_clients": 10000,
+  "operators": [],
+  "reop_delay": 30,
+  "motd_file": null,
+  "mnesia_dir": "data/mnesia",
+  "admin_name": "IRC server administrator",
+  "admin_location1": "Not configured",
+  "admin_location2": "Not configured",
+  "admin_email": "Not configured",
+  "client_password": null,
+  "server_links": []
+}

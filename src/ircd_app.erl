@@ -1,0 +1,73 @@
+-module(ircd_app).
+-behaviour(application).
+-export([start/2, stop/1]).
+
+%% @doc Load JSON configuration, configure logging, and start the supervision tree.
+start(_, _) ->
+    Path = os:getenv("IRCD_CONFIG", "config/ircd.json"),
+    case ircd_config:load(Path) of
+        {ok, Config} ->
+            {ok, Previous} = logger:get_handler_config(default),
+            Formatter =
+                case maps:get(log_format, Config) of
+                    <<"json">> -> {ircd_log, #{}};
+                    <<"text">> -> {flatlog, #{template => [time, " ", level, " ", msg]}}
+                end,
+            ok = logger:update_handler_config(default, formatter, Formatter),
+            ok = logger:update_handler_config(default, level, maps:get(level, Config)),
+            case start_mnesia(maps:get(mnesia_dir, Config)) of
+                {ok, StartedMnesia} ->
+                    case ircd_sup:start_link(Config) of
+                        {ok, Pid} ->
+                            {ok, Pid, {Previous, StartedMnesia}};
+                        Error ->
+                            stop({Previous, StartedMnesia}),
+                            Error
+                    end;
+                {error, Reason} ->
+                    logger:update_handler_config(default, Previous),
+                    {error, Reason}
+            end;
+        Error ->
+            Error
+    end.
+
+%% @doc Restore the default logger formatter when the application stops.
+stop({Previous, StartedMnesia}) ->
+    ok = logger:update_handler_config(default, Previous),
+    case StartedMnesia of
+        true -> application:stop(mnesia);
+        false -> ok
+    end.
+
+start_mnesia(Dir) ->
+    case application:which_applications() of
+        Applications when is_list(Applications) ->
+            case lists:keymember(mnesia, 1, Applications) of
+                true ->
+                    case
+                        filename:absname(mnesia:system_info(directory)) =:= filename:absname(Dir)
+                    of
+                        true -> {ok, false};
+                        false -> {error, {mnesia_already_running, mnesia:system_info(directory)}}
+                    end;
+                false ->
+                    ok = application:set_env(mnesia, dir, Dir),
+                    ok = filelib:ensure_dir(filename:join(Dir, "schema.DAT")),
+                    case ensure_mnesia_schema(Dir) of
+                        ok ->
+                            case application:ensure_all_started(mnesia) of
+                                {ok, Started} -> {ok, lists:member(mnesia, Started)};
+                                {error, StartReason} -> {error, {mnesia_start, StartReason}}
+                            end;
+                        {error, SchemaReason} ->
+                            {error, {mnesia_schema, SchemaReason}}
+                    end
+            end
+    end.
+
+ensure_mnesia_schema(Dir) ->
+    case filelib:is_file(filename:join(Dir, "schema.DAT")) of
+        true -> ok;
+        false -> mnesia:create_schema([node()])
+    end.
