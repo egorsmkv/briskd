@@ -3,9 +3,7 @@
     parse/1, parse_server/1, line/4, fold/1, nickname/1, channel/1, safe_channel/1, append_pending/2
 ]).
 
-%% One socket delivery is capped before it is concatenated onto the partial line.
-%% IRC lines themselves remain limited to 512 octets by parse/1 and parse_server/1.
--define(MAX_PENDING_BYTES, 1048576).
+-include("ircd_wire.hrl").
 
 %% @doc Append one socket delivery to the unfinished line, or reject an oversized buffer.
 -spec append_pending(binary(), binary()) -> {ok, binary()} | error.

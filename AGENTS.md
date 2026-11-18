@@ -76,7 +76,12 @@ src/ircd_app.erl             # application callback
 src/ircd_sup.erl             # rest_for_one: state, sessions, links, listeners
 src/ircd_config.erl          # JSON config load and validation (IRCD_CONFIG)
 src/ircd_wire.erl            # line parse/encode, RFC 1459 case fold, nick/channel checks
-src/ircd_state.erl           # shared server state and command effects
+src/ircd_state.erl           # state process, command dispatch, public API
+src/ircd_state_client.erl    # registration, identity, visibility, connection stats
+src/ircd_state_channel.erl   # membership, modes, names, and safe-channel reop
+src/ircd_state_link.erl      # direct-link burst, import, and propagation
+src/ircd_state_info.erl      # operator, statistics, and server query commands
+src/ircd_state_send.erl      # numeric replies and client delivery
 src/ircd_state_queries.erl   # WHO/WHOIS/WHOWAS and related numerics
 src/ircd_listener.erl        # TCP or TLS accept loop
 src/ircd_session.erl         # one client connection
@@ -84,7 +89,11 @@ src/ircd_sessions.erl        # client supervisor and max_clients admission
 src/ircd_link.erl            # one direct server peer
 src/ircd_links.erl           # link supervisor
 src/ircd_log.erl
-include/ircd_state.hrl
+include/ircd_state.hrl       # includes the records below
+include/ircd_client.hrl
+include/ircd_channel.hrl
+include/ircd_remote.hrl
+include/ircd_wire.hrl        # wire buffer limit
 config/ircd.json             # sample/operator config
 config/ircd.dev.json         # development container config
 test/

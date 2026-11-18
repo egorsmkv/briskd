@@ -1,0 +1,1144 @@
+-module(ircd_state_link).
+-export([
+    import_remote_join/3,
+    import_remote_nick/2,
+    import_remote_njoin/3,
+    propagate_away/2,
+    propagate_channel_kick/4,
+    propagate_channel_message/4,
+    propagate_channel_mode/4,
+    propagate_introduction/2,
+    propagate_join/3,
+    propagate_nick_change/2,
+    propagate_quit/2,
+    propagate_topic/3,
+    receive_remote_kick/5,
+    receive_remote_message/4,
+    remote_channel_flags/1,
+    remote_names_entries/3,
+    remote_names_listing/3,
+    remote_nick_exists/1,
+    remote_user_visible_to_requester/3,
+    remove_remote_channel_member/3,
+    remove_remote_nick/2,
+    rename_remote_nick/3,
+    server_broadcast/1,
+    server_burst_lines/1,
+    set_remote_away/3,
+    update_remote_modes/5,
+    update_remote_topic/4
+]).
+-include("ircd_state.hrl").
+
+%% @doc Direct server-link burst, import, and propagation.
+
+server_burst_lines(Server) ->
+    ClientLines =
+        lists:flatmap(
+            fun(Pid) ->
+                case mnesia:dirty_read(client, Pid) of
+                    [Client] ->
+                        case ircd_state_client:ready(Client) of
+                            true -> client_burst_lines(Client, Server);
+                            false -> []
+                        end;
+                    _ ->
+                        []
+                end
+            end,
+            mnesia:dirty_all_keys(client)
+        ),
+    ChannelLines =
+        lists:flatmap(
+            fun(Key) ->
+                case mnesia:dirty_read(channel, Key) of
+                    [Channel] -> channel_burst_lines(Channel, Server);
+                    [] -> []
+                end
+            end,
+            mnesia:dirty_all_keys(channel)
+        ),
+    ClientLines ++ ChannelLines.
+
+client_burst_lines(
+    #client{nick = Nick, user = User, host = Host, real = Real, pid = Pid}, Server
+) ->
+    Modes = ircd_state_channel:user_mode_string(ircd_state_client:user_modes(Pid)),
+    [
+        iolist_to_binary(
+            ircd_wire:line(
+                Server,
+                <<"NICK">>,
+                [Nick, <<"0">>, User, Host, <<"1">>, Modes],
+                Real
+            )
+        )
+    ].
+
+channel_burst_lines(
+    #channel{
+        name = Name,
+        members = Members,
+        flags = Flags,
+        lists = Lists,
+        creator = Creator,
+        password = Password,
+        limit = Limit,
+        topic = Topic
+    },
+    Server
+) ->
+    LiveMembers =
+        [
+            {Pid, Client, Roles}
+         || {Pid, Roles} <- maps:to_list(Members),
+            [Client] <- [mnesia:dirty_read(client, Pid)],
+            ircd_state_client:ready(Client)
+        ],
+    NjoinLines =
+        njoin_lines(
+            Name,
+            [njoin_member(Client, Roles) || {_Pid, Client, Roles} <- LiveMembers],
+            Server
+        ),
+    CreatorLines =
+        case lists:keyfind(Creator, 1, LiveMembers) of
+            {Creator, CreatorClient, _} ->
+                [
+                    ircd_wire:line(
+                        Server,
+                        <<"MODE">>,
+                        [Name, <<"+O">>, CreatorClient#client.nick],
+                        none
+                    )
+                ];
+            false ->
+                []
+        end,
+    TopicLines =
+        case Topic of
+            <<>> -> [];
+            _ -> [ircd_wire:line(Server, <<"TOPIC">>, [Name], Topic)]
+        end,
+    NjoinLines ++ channel_mode_burst(Name, Flags, Password, Limit, Lists, Server) ++
+        CreatorLines ++ TopicLines.
+
+njoin_member(#client{nick = Nick}, Roles) ->
+    case
+        {lists:member(creator, Roles), lists:member(operator, Roles), lists:member(voice, Roles)}
+    of
+        {true, _, _} -> <<"@@", Nick/binary>>;
+        {false, true, _} -> <<$@, Nick/binary>>;
+        {false, false, true} -> <<$+, Nick/binary>>;
+        _ -> Nick
+    end.
+
+njoin_lines(_Name, [], _Server) ->
+    [];
+njoin_lines(Name, Members, Server) ->
+    PrefixSize = byte_size(Server) + byte_size(Name) + 11,
+    MaxMembers = max(1, 510 - PrefixSize),
+    Batches = member_batches(Members, MaxMembers, [], 0, []),
+    [ircd_wire:line(Server, <<"NJOIN">>, [Name], lists:join(<<$,>>, Batch)) || Batch <- Batches].
+
+member_batches([], _Max, [], _Size, Batches) ->
+    lists:reverse(Batches);
+member_batches([], _Max, Current, _Size, Batches) ->
+    lists:reverse([lists:reverse(Current) | Batches]);
+member_batches([Member | Rest], Max, Current, Size, Batches) ->
+    AddedSize =
+        byte_size(Member) +
+            case Current of
+                [] -> 0;
+                _ -> 1
+            end,
+    case Size + AddedSize =< Max of
+        true ->
+            member_batches(Rest, Max, [Member | Current], Size + AddedSize, Batches);
+        false when Current =:= [] ->
+            member_batches(Rest, Max, [Member], byte_size(Member), Batches);
+        false ->
+            member_batches(
+                [Member | Rest], Max, [], 0, [lists:reverse(Current) | Batches]
+            )
+    end.
+
+channel_mode_burst(Name, Flags, Password, Limit, Lists, Server) ->
+    KeyMode =
+        case Password of
+            undefined -> [];
+            _ -> [$k]
+        end,
+    LimitMode =
+        case Limit of
+            undefined -> [];
+            _ -> [$l]
+        end,
+    Modes = lists:sort(maps:keys(Flags)) ++ KeyMode ++ LimitMode,
+    Args =
+        (case Password of
+            undefined -> [];
+            _ -> [Password]
+        end) ++
+            (case Limit of
+                undefined -> [];
+                _ -> [integer_to_binary(Limit)]
+            end),
+    FlagLines =
+        case Modes of
+            [] ->
+                [];
+            _ ->
+                [
+                    ircd_wire:line(
+                        Server, <<"MODE">>, [Name, list_to_binary([$+ | Modes]) | Args], none
+                    )
+                ]
+        end,
+    AccessLines =
+        lists:flatmap(
+            fun({Type, Mode}) ->
+                [
+                    ircd_wire:line(Server, <<"MODE">>, [Name, <<$+, Mode>>, Mask], none)
+                 || Mask <- maps:get(Type, Lists, [])
+                ]
+            end,
+            [{ban, $b}, {exception, $e}, {invite, $I}]
+        ),
+    FlagLines ++ AccessLines.
+remote_nick_exists(Nick) ->
+    mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) =/= [].
+
+import_remote_nick(
+    Peer,
+    [Nick, Hop, User, Host, Token, ModeString, Real]
+) ->
+    Key = ircd_wire:fold(Nick),
+    case
+        {
+            ircd_wire:nickname(Nick),
+            Key =/= <<"anonymous">>,
+            valid_decimal(Hop),
+            valid_decimal(Token),
+            re:run(User, <<"^[A-Za-z0-9_.-]{1,32}$">>, [{capture, none}, dollar_endonly]),
+            valid_server_host(Host),
+            server_user_modes(ModeString),
+            ircd_state_client:find_nick(Nick),
+            mnesia:dirty_read(remote_client, Key)
+        }
+    of
+        {true, true, true, true, match, true, {ok, Modes}, undefined, []} ->
+            mnesia:dirty_write(
+                #remote_client{
+                    key = Key,
+                    peer = Peer,
+                    nick = Nick,
+                    user = User,
+                    host = Host,
+                    token = Token,
+                    modes = Modes,
+                    real = Real
+                }
+            ),
+            ok;
+        {true, true, true, true, match, true, {ok, _Modes}, undefined, [
+            #remote_client{peer = Peer}
+        ]} ->
+            ok;
+        {false, _, _, _, _, _, _, _, _} ->
+            {error, invalid_nickname};
+        {_, false, _, _, _, _, _, _, _} ->
+            {error, reserved_nickname};
+        {_, _, false, _, _, _, _, _, _} ->
+            {error, invalid_hopcount};
+        {_, _, _, false, _, _, _, _, _} ->
+            {error, invalid_server_token};
+        {_, _, _, _, nomatch, _, _, _, _} ->
+            {error, invalid_username};
+        {_, _, _, _, _, false, _, _, _} ->
+            {error, invalid_hostname};
+        {_, _, _, _, _, _, error, _, _} ->
+            {error, invalid_user_modes};
+        {_, _, _, _, _, _, _, #client{}, _} ->
+            {error, nickname_collision};
+        {_, _, _, _, _, _, _, _, [_]} ->
+            {error, nickname_collision};
+        _ ->
+            {error, invalid_nick_message}
+    end;
+import_remote_nick(_, _) ->
+    {error, invalid_nick_message}.
+
+rename_remote_nick(Peer, Prefix, Nick) ->
+    NewKey = ircd_wire:fold(Nick),
+    case remote_source(Peer, Prefix) of
+        {ok, #remote_client{key = OldKey} = Remote} ->
+            case
+                {
+                    ircd_wire:nickname(Nick),
+                    NewKey =/= <<"anonymous">>,
+                    ircd_state_client:find_nick(Nick),
+                    mnesia:dirty_read(remote_client, NewKey)
+                }
+            of
+                {true, true, undefined, []} ->
+                    mnesia:dirty_delete(remote_client, OldKey),
+                    mnesia:dirty_write(Remote#remote_client{key = NewKey, nick = Nick}),
+                    rename_remote_memberships(Peer, OldKey, NewKey),
+                    ok;
+                {true, true, undefined, [#remote_client{key = OldKey, peer = Peer}]} ->
+                    mnesia:dirty_write(Remote#remote_client{nick = Nick}),
+                    ok;
+                {true, true, undefined, [#remote_client{peer = Peer}]} ->
+                    {error, nickname_collision};
+                {false, _, _, _} ->
+                    {error, invalid_nickname};
+                {_, false, _, _} ->
+                    {error, reserved_nickname};
+                _ ->
+                    {error, nickname_collision}
+            end;
+        _ ->
+            {error, unknown_remote_nick}
+    end.
+
+remove_remote_nick(Peer, Prefix) ->
+    case remote_source(Peer, Prefix) of
+        {ok, #remote_client{key = Key}} ->
+            mnesia:dirty_delete(remote_client, Key),
+            remove_remote_memberships(Peer, Key),
+            ok;
+        error ->
+            {error, unknown_remote_nick}
+    end.
+
+set_remote_away(Peer, Prefix, Params) ->
+    case remote_source(Peer, Prefix) of
+        {ok, Remote} ->
+            Modes =
+                case Params of
+                    [] -> maps:remove($a, Remote#remote_client.modes);
+                    [_Message | _] -> (Remote#remote_client.modes)#{$a => true}
+                end,
+            mnesia:dirty_write(Remote#remote_client{modes = Modes}),
+            ok;
+        error ->
+            {error, unknown_remote_nick}
+    end.
+
+remote_source(Peer, Prefix) ->
+    case binary:split(Prefix, <<"!">>) of
+        [Nick, _UserHost] ->
+            case mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) of
+                [#remote_client{peer = Peer, nick = Nick, user = User, host = Host} = Remote] ->
+                    case Prefix =:= <<Nick/binary, "!", User/binary, "@", Host/binary>> of
+                        true -> {ok, Remote};
+                        false -> error
+                    end;
+                _ ->
+                    error
+            end;
+        _ ->
+            error
+    end.
+
+update_remote_topic(Peer, Prefix, Name, Topic) ->
+    Key = ircd_wire:fold(Name),
+    case {ircd_wire:channel(Name), ircd_wire:fold(Prefix) =:= ircd_wire:fold(Peer)} of
+        {false, _} ->
+            {error, invalid_channel};
+        {true, true} ->
+            store_remote_topic(Prefix, Key, Name, Topic);
+        {true, false} ->
+            case {remote_source(Peer, Prefix), mnesia:dirty_read(remote_channel, Key)} of
+                {{ok, #remote_client{key = NickKey}}, [
+                    #remote_channel{members = Members, flags = Flags}
+                ]} ->
+                    case maps:find(NickKey, Members) of
+                        {ok, {Peer, Roles}} ->
+                            Restricted = maps:is_key($t, Flags) orelse local_channel_mode(Key, $t),
+                            case Restricted andalso not lists:member(operator, Roles) of
+                                true -> {error, remote_topic_requires_operator};
+                                false -> store_remote_topic(Prefix, Key, Name, Topic)
+                            end;
+                        _ ->
+                            {error, remote_user_not_on_channel}
+                    end;
+                {{error, _}, _} ->
+                    {error, unknown_remote_source};
+                {_, []} ->
+                    {error, unknown_remote_channel}
+            end
+    end.
+
+store_remote_topic(Prefix, Key, Name, Topic) ->
+    Remote =
+        case mnesia:dirty_read(remote_channel, Key) of
+            [RemoteRecord] -> RemoteRecord;
+            [] -> #remote_channel{key = Key, name = Name}
+        end,
+    Flags = (Remote#remote_channel.flags)#{topic => Topic},
+    mnesia:dirty_write(Remote#remote_channel{flags = Flags}),
+    case mnesia:dirty_read(channel, Key) of
+        [#channel{name = Canonical, members = Members, flags = ChannelFlags} = Channel] ->
+            mnesia:dirty_write(Channel#channel{topic = Topic}),
+            EventPrefix =
+                case
+                    maps:is_key($a, ChannelFlags) orelse
+                        maps:is_key($a, Remote#remote_channel.flags)
+                of
+                    true -> <<"anonymous!anonymous@anonymous.">>;
+                    false -> Prefix
+                end,
+            ircd_state_send:broadcast(
+                maps:keys(Members), EventPrefix, <<"TOPIC">>, [Canonical], Topic
+            );
+        [] ->
+            ok
+    end,
+    ok.
+
+local_channel_mode(Key, Mode) ->
+    case mnesia:dirty_read(channel, Key) of
+        [#channel{flags = Flags}] -> maps:is_key(Mode, Flags);
+        [] -> false
+    end.
+
+rename_remote_memberships(Peer, OldKey, NewKey) ->
+    lists:foreach(
+        fun(ChannelKey) ->
+            case mnesia:dirty_read(remote_channel, ChannelKey) of
+                [#remote_channel{members = Members} = Channel] ->
+                    case maps:take(OldKey, Members) of
+                        {{Peer, Roles}, Remaining} ->
+                            mnesia:dirty_write(
+                                Channel#remote_channel{
+                                    members = Remaining#{NewKey => {Peer, Roles}}
+                                }
+                            );
+                        _ ->
+                            ok
+                    end;
+                _ ->
+                    ok
+            end
+        end,
+        mnesia:dirty_all_keys(remote_channel)
+    ).
+
+remove_remote_memberships(Peer, NickKey) ->
+    lists:foreach(
+        fun(ChannelKey) ->
+            case mnesia:dirty_read(remote_channel, ChannelKey) of
+                [#remote_channel{members = Members} = Channel] ->
+                    case maps:find(NickKey, Members) of
+                        {ok, {Peer, _Roles}} ->
+                            Remaining = maps:remove(NickKey, Members),
+                            case map_size(Remaining) of
+                                0 -> mnesia:dirty_delete(remote_channel, ChannelKey);
+                                _ -> mnesia:dirty_write(Channel#remote_channel{members = Remaining})
+                            end;
+                        _ ->
+                            ok
+                    end;
+                _ ->
+                    ok
+            end
+        end,
+        mnesia:dirty_all_keys(remote_channel)
+    ).
+
+import_remote_njoin(Peer, Name, Members) ->
+    case ircd_wire:channel(Name) of
+        false ->
+            {error, invalid_channel};
+        true ->
+            case parse_remote_members(Peer, binary:split(Members, <<$,>>, [global]), []) of
+                {ok, Parsed} when Parsed =/= [] ->
+                    Key = ircd_wire:fold(Name),
+                    Existing =
+                        case mnesia:dirty_read(remote_channel, Key) of
+                            [Channel] -> Channel;
+                            [] -> #remote_channel{key = Key, name = Name}
+                        end,
+                    NewMembers = lists:foldl(
+                        fun({NickKey, Roles}, Acc) -> Acc#{NickKey => {Peer, Roles}} end,
+                        Existing#remote_channel.members,
+                        Parsed
+                    ),
+                    mnesia:dirty_write(Existing#remote_channel{members = NewMembers}),
+                    ok;
+                {ok, []} ->
+                    {error, empty_njoin};
+                Error ->
+                    Error
+            end
+    end.
+
+import_remote_join(Peer, Prefix, Name) ->
+    case {remote_source(Peer, Prefix), ircd_wire:channel(Name)} of
+        {{ok, #remote_client{key = NickKey}}, true} ->
+            Key = ircd_wire:fold(Name),
+            Channel =
+                case mnesia:dirty_read(remote_channel, Key) of
+                    [Existing] -> Existing;
+                    [] -> #remote_channel{key = Key, name = Name}
+                end,
+            Members = Channel#remote_channel.members,
+            case maps:is_key(NickKey, Members) of
+                true ->
+                    ok;
+                false ->
+                    mnesia:dirty_write(
+                        Channel#remote_channel{members = Members#{NickKey => {Peer, [member]}}}
+                    ),
+                    broadcast_remote_channel_event(Name, Prefix, <<"JOIN">>, none),
+                    ok
+            end;
+        {error, _} ->
+            {error, unknown_remote_source};
+        {_, false} ->
+            {error, invalid_channel}
+    end.
+
+remove_remote_channel_member(Peer, Prefix, Name) ->
+    case {remote_source(Peer, Prefix), mnesia:dirty_read(remote_channel, ircd_wire:fold(Name))} of
+        {{ok, #remote_client{key = NickKey}}, [#remote_channel{members = Members} = Channel]} ->
+            case maps:find(NickKey, Members) of
+                {ok, {Peer, _Roles}} ->
+                    broadcast_remote_channel_event(Name, Prefix, <<"PART">>, none),
+                    Remaining = maps:remove(NickKey, Members),
+                    case map_size(Remaining) of
+                        0 -> mnesia:dirty_delete(remote_channel, Channel#remote_channel.key);
+                        _ -> mnesia:dirty_write(Channel#remote_channel{members = Remaining})
+                    end,
+                    ok;
+                _ ->
+                    {error, remote_user_not_on_channel}
+            end;
+        {{error, _}, _} ->
+            {error, unknown_remote_source};
+        {_, []} ->
+            {error, unknown_remote_channel}
+    end.
+
+receive_remote_kick(Peer, Prefix, Name, Nick, Reason) ->
+    Key = ircd_wire:fold(Name),
+    case {remote_source(Peer, Prefix), mnesia:dirty_read(remote_channel, Key)} of
+        {{ok, #remote_client{key = SourceKey}}, [#remote_channel{members = Members} = Channel]} ->
+            case maps:find(SourceKey, Members) of
+                {ok, {Peer, Roles}} ->
+                    case lists:member(operator, Roles) orelse lists:member(creator, Roles) of
+                        true -> apply_remote_kick(Peer, Prefix, Name, Nick, Reason, Channel);
+                        false -> {error, remote_kick_requires_operator}
+                    end;
+                _ ->
+                    {error, remote_kick_requires_operator}
+            end;
+        {{error, _}, _} ->
+            {error, unknown_remote_source};
+        {_, []} ->
+            {error, unknown_remote_channel}
+    end.
+
+apply_remote_kick(Peer, Prefix, Name, Nick, Reason, RemoteChannel) ->
+    Key = RemoteChannel#remote_channel.key,
+    case ircd_state_client:find_nick(Nick) of
+        #client{pid = TargetPid, nick = Actual} = Target ->
+            case mnesia:dirty_read(channel, Key) of
+                [#channel{members = Members} = Channel] when is_map_key(TargetPid, Members) ->
+                    broadcast_kick(Channel, Prefix, Actual, Reason),
+                    Remaining = maps:remove(TargetPid, Members),
+                    case map_size(Remaining) of
+                        0 ->
+                            case Channel#channel.name of
+                                <<$!, _/binary>> ->
+                                    mnesia:dirty_write(
+                                        ircd_state_channel:track_opless(Channel, Remaining)
+                                    );
+                                _ ->
+                                    mnesia:dirty_delete(channel, Key)
+                            end;
+                        _ ->
+                            mnesia:dirty_write(ircd_state_channel:track_opless(Channel, Remaining))
+                    end,
+                    mnesia:dirty_write(Target#client{
+                        channels = lists:delete(Key, Target#client.channels)
+                    }),
+                    remove_remote_channel_member_record(
+                        Peer, ircd_wire:fold(Actual), RemoteChannel
+                    );
+                _ ->
+                    {error, remote_kick_target_not_on_channel}
+            end;
+        undefined ->
+            TargetKey = ircd_wire:fold(Nick),
+            case maps:find(TargetKey, RemoteChannel#remote_channel.members) of
+                {ok, {_TargetPeer, _TargetRoles}} ->
+                    case mnesia:dirty_read(remote_client, TargetKey) of
+                        [#remote_client{nick = Actual}] ->
+                            broadcast_kick_by_name(Name, Prefix, Actual, Reason),
+                            remove_remote_channel_member_record(Peer, TargetKey, RemoteChannel);
+                        [] ->
+                            {error, unknown_remote_kick_target}
+                    end;
+                error ->
+                    {error, remote_kick_target_not_on_channel}
+            end
+    end.
+
+remove_remote_channel_member_record(_Peer, NickKey, #remote_channel{key = Key} = Channel) ->
+    Members = maps:remove(NickKey, Channel#remote_channel.members),
+    case map_size(Members) of
+        0 -> mnesia:dirty_delete(remote_channel, Key);
+        _ -> mnesia:dirty_write(Channel#remote_channel{members = Members})
+    end,
+    ok.
+
+broadcast_kick(#channel{name = Name, members = Members, flags = Flags}, Prefix, Nick, Reason) ->
+    EventPrefix =
+        case maps:is_key($a, Flags) of
+            true -> <<"anonymous!anonymous@anonymous.">>;
+            false -> Prefix
+        end,
+    ircd_state_send:broadcast(maps:keys(Members), EventPrefix, <<"KICK">>, [Name, Nick], Reason).
+
+broadcast_kick_by_name(Name, Prefix, Nick, Reason) ->
+    case mnesia:dirty_read(channel, ircd_wire:fold(Name)) of
+        [Channel] -> broadcast_kick(Channel, Prefix, Nick, Reason);
+        [] -> ok
+    end.
+
+broadcast_remote_channel_event(Name, Prefix, Command, Reason) ->
+    case mnesia:dirty_read(channel, ircd_wire:fold(Name)) of
+        [#channel{name = Canonical, members = Members, flags = Flags}] ->
+            EventPrefix =
+                case maps:is_key($a, Flags) of
+                    true -> <<"anonymous!anonymous@anonymous.">>;
+                    false -> Prefix
+                end,
+            ircd_state_send:broadcast(
+                maps:keys(Members), EventPrefix, Command, [Canonical], Reason
+            );
+        [] ->
+            ok
+    end.
+
+parse_remote_members(_Peer, [], Acc) ->
+    {ok, lists:reverse(Acc)};
+parse_remote_members(Peer, [RawMember | Rest], Acc) ->
+    {Roles, Nick} = remote_member(RawMember),
+    Key = ircd_wire:fold(Nick),
+    case {ircd_wire:nickname(Nick), mnesia:dirty_read(remote_client, Key)} of
+        {true, [#remote_client{peer = Peer}]} ->
+            parse_remote_members(Peer, Rest, [{Key, Roles} | Acc]);
+        {true, [_]} ->
+            {error, remote_member_from_other_peer};
+        _ ->
+            {error, unknown_remote_member}
+    end.
+
+remote_member(<<"@@", Nick/binary>>) -> {[creator, operator], Nick};
+remote_member(<<$@, Nick/binary>>) -> {[operator], Nick};
+remote_member(<<$+, Nick/binary>>) -> {[voice], Nick};
+remote_member(Nick) -> {[member], Nick}.
+
+update_remote_modes(Peer, Prefix, Name, ModeString, Args) ->
+    case ircd_wire:channel(Name) of
+        false -> update_remote_user_modes(Peer, Prefix, Name, ModeString);
+        true -> update_remote_channel_modes(Peer, Prefix, Name, ModeString, Args)
+    end.
+
+update_remote_channel_modes(Peer, Prefix, Name, ModeString, Args) ->
+    Key = ircd_wire:fold(Name),
+    TrustedServer = ircd_wire:fold(Prefix) =:= ircd_wire:fold(Peer),
+    Channel =
+        case mnesia:dirty_read(remote_channel, Key) of
+            [ExistingRecord] -> ExistingRecord;
+            [] when TrustedServer -> #remote_channel{key = Key, name = Name};
+            [] -> undefined
+        end,
+    case Channel of
+        undefined ->
+            {error, unknown_remote_channel};
+        #remote_channel{members = Members} = ChannelRecord ->
+            Authorized =
+                case TrustedServer of
+                    true ->
+                        true;
+                    false ->
+                        case remote_source(Peer, Prefix) of
+                            {ok, #remote_client{key = NickKey}} ->
+                                case maps:find(NickKey, Members) of
+                                    {ok, {Peer, Roles}} ->
+                                        lists:member(operator, Roles) orelse
+                                            lists:member(creator, Roles);
+                                    _ ->
+                                        false
+                                end;
+                            error ->
+                                false
+                        end
+                end,
+            case Authorized of
+                false ->
+                    {error, remote_mode_requires_operator};
+                true ->
+                    case
+                        apply_remote_modes(
+                            binary_to_list(ModeString), undefined, Args, ChannelRecord
+                        )
+                    of
+                        {ok, Updated, []} ->
+                            mnesia:dirty_write(Updated),
+                            synchronize_local_channel(Updated),
+                            case TrustedServer of
+                                true -> ok;
+                                false -> broadcast_remote_mode(Name, Prefix, ModeString, Args)
+                            end;
+                        {ok, _Updated, Remaining} ->
+                            {error, {extra_mode_arguments, Remaining}};
+                        Error ->
+                            Error
+                    end
+            end
+    end.
+
+synchronize_local_channel(#remote_channel{key = Key, flags = RemoteFlags}) ->
+    case mnesia:dirty_read(channel, Key) of
+        [Channel] ->
+            ModeKeys = [$a, $i, $m, $n, $p, $q, $r, $s, $t, $K],
+            Flags = maps:with(ModeKeys, RemoteFlags),
+            Lists = maps:with([ban, exception, invite], RemoteFlags),
+            mnesia:dirty_write(Channel#channel{
+                flags = Flags,
+                password = maps:get(key, RemoteFlags, undefined),
+                limit = maps:get(limit, RemoteFlags, undefined),
+                lists = Lists
+            });
+        [] ->
+            ok
+    end.
+
+apply_remote_modes([], _Action, Args, Channel) ->
+    {ok, Channel, Args};
+apply_remote_modes([$+ | Rest], _Action, Args, Channel) ->
+    apply_remote_modes(Rest, add, Args, Channel);
+apply_remote_modes([$- | Rest], _Action, Args, Channel) ->
+    apply_remote_modes(Rest, remove, Args, Channel);
+apply_remote_modes([Mode | Rest], Action, Args, #remote_channel{flags = Flags} = Channel) when
+    Mode =:= $a;
+    Mode =:= $i;
+    Mode =:= $m;
+    Mode =:= $n;
+    Mode =:= $p;
+    Mode =:= $s;
+    Mode =:= $t;
+    Mode =:= $r;
+    Mode =:= $K;
+    Mode =:= $q
+->
+    NewFlags =
+        case {Mode, Action} of
+            {$p, add} -> (maps:remove($s, Flags))#{$p => true};
+            {$s, add} -> (maps:remove($p, Flags))#{$s => true};
+            {_, add} -> Flags#{Mode => true};
+            {_, remove} -> maps:remove(Mode, Flags)
+        end,
+    apply_remote_modes(Rest, Action, Args, Channel#remote_channel{flags = NewFlags});
+apply_remote_modes([$k | Rest], Action, [Key | Args], #remote_channel{flags = Flags} = Channel) ->
+    NewFlags =
+        case Action of
+            add -> Flags#{key => Key};
+            remove -> maps:remove(key, Flags)
+        end,
+    apply_remote_modes(Rest, Action, Args, Channel#remote_channel{flags = NewFlags});
+apply_remote_modes([$l | Rest], Action, Args, #remote_channel{flags = Flags} = Channel) ->
+    case {Action, Args} of
+        {add, [Value | Tail]} ->
+            try binary_to_integer(Value) of
+                Limit when Limit > 0 ->
+                    apply_remote_modes(Rest, Action, Tail, Channel#remote_channel{
+                        flags = Flags#{limit => Limit}
+                    });
+                _ ->
+                    {error, invalid_channel_limit}
+            catch
+                error:badarg -> {error, invalid_channel_limit}
+            end;
+        {remove, _} ->
+            apply_remote_modes(Rest, Action, Args, Channel#remote_channel{
+                flags = maps:remove(limit, Flags)
+            });
+        _ ->
+            {error, missing_channel_limit}
+    end;
+apply_remote_modes(
+    [Mode | Rest], Action, [Mask | Args], #remote_channel{flags = Flags} = Channel
+) when
+    Mode =:= $b; Mode =:= $e; Mode =:= $I
+->
+    Type =
+        case Mode of
+            $b -> ban;
+            $e -> exception;
+            $I -> invite
+        end,
+    Existing = maps:get(Type, Flags, []),
+    Updated =
+        case Action of
+            add -> lists:usort([Mask | Existing]);
+            remove -> lists:delete(Mask, Existing)
+        end,
+    apply_remote_modes(Rest, Action, Args, Channel#remote_channel{flags = Flags#{Type => Updated}});
+apply_remote_modes(
+    [Mode | Rest], Action, [Nick | Args], #remote_channel{members = Members} = Channel
+) when
+    Mode =:= $o; Mode =:= $v; Mode =:= $O
+->
+    Key = ircd_wire:fold(Nick),
+    Role =
+        case Mode of
+            $o -> operator;
+            $v -> voice;
+            $O -> creator
+        end,
+    case maps:find(Key, Members) of
+        {ok, {Owner, Roles}} ->
+            NewRoles =
+                case Action of
+                    add -> lists:usort([Role | Roles]);
+                    remove -> lists:delete(Role, Roles)
+                end,
+            apply_remote_modes(Rest, Action, Args, Channel#remote_channel{
+                members = Members#{Key := {Owner, NewRoles}}
+            });
+        error ->
+            {error, unknown_remote_mode_target}
+    end;
+apply_remote_modes([Mode | _], _Action, [], _Channel) when
+    Mode =:= $k; Mode =:= $o; Mode =:= $v; Mode =:= $O; Mode =:= $b; Mode =:= $e; Mode =:= $I
+->
+    {error, missing_mode_argument};
+apply_remote_modes([Mode | _], _Action, _Args, _Channel) ->
+    {error, {unsupported_channel_mode, Mode}}.
+
+broadcast_remote_mode(Name, Prefix, Modes, Args) ->
+    case mnesia:dirty_read(channel, ircd_wire:fold(Name)) of
+        [#channel{name = Canonical, members = Members, flags = Flags}] ->
+            EventPrefix =
+                case maps:is_key($a, Flags) of
+                    true -> <<"anonymous!anonymous@anonymous.">>;
+                    false -> Prefix
+                end,
+            ircd_state_send:broadcast(
+                maps:keys(Members), EventPrefix, <<"MODE">>, [Canonical, Modes | Args], none
+            );
+        [] ->
+            ok
+    end.
+
+update_remote_user_modes(Peer, Prefix, Nick, ModeString) ->
+    Key = ircd_wire:fold(Nick),
+    case remote_source(Peer, Prefix) of
+        {ok, #remote_client{key = Key, modes = Modes} = Remote} ->
+            Updated = apply_remote_user_modes(binary_to_list(ModeString), undefined, Modes),
+            mnesia:dirty_write(Remote#remote_client{modes = Updated}),
+            ircd_state_send:broadcast(
+                remote_user_local_recipients(Key), Prefix, <<"MODE">>, [Nick, ModeString], none
+            ),
+            ok;
+        {ok, _OtherRemote} ->
+            {error, remote_user_mode_source_mismatch};
+        error ->
+            {error, unknown_remote_source}
+    end.
+
+apply_remote_user_modes([], _Action, Modes) ->
+    Modes;
+apply_remote_user_modes([$+ | Rest], _Action, Modes) ->
+    apply_remote_user_modes(Rest, add, Modes);
+apply_remote_user_modes([$- | Rest], _Action, Modes) ->
+    apply_remote_user_modes(Rest, remove, Modes);
+apply_remote_user_modes([Mode | Rest], Action, Modes) when
+    Mode =:= $a; Mode =:= $i; Mode =:= $o; Mode =:= $w
+->
+    NewModes =
+        case Action of
+            add -> Modes#{Mode => true};
+            remove -> maps:remove(Mode, Modes);
+            undefined -> Modes
+        end,
+    apply_remote_user_modes(Rest, Action, NewModes);
+apply_remote_user_modes([_ | Rest], Action, Modes) ->
+    apply_remote_user_modes(Rest, Action, Modes).
+
+valid_decimal(Value) ->
+    try binary_to_integer(Value) of
+        Number -> Number >= 0
+    catch
+        error:badarg -> false
+    end.
+
+valid_server_host(Host) ->
+    byte_size(Host) > 0 andalso byte_size(Host) =< 253 andalso
+        binary:match(Host, [<<0>>, <<" ">>, <<"\r">>, <<"\n">>]) =:= nomatch.
+
+server_user_modes(<<$+, Modes/binary>>) ->
+    case lists:all(fun(Mode) -> lists:member(Mode, "aiow") end, binary_to_list(Modes)) of
+        true -> {ok, maps:from_list([{Mode, true} || Mode <- binary_to_list(Modes)])};
+        false -> error
+    end;
+server_user_modes(_) ->
+    error.
+receive_remote_message(Peer, Prefix, Command, [Target, Text | _]) ->
+    case binary:split(Prefix, <<"!">>) of
+        [Nick, _UserHost] ->
+            case mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) of
+                [
+                    #remote_client{
+                        peer = Peer,
+                        nick = Nick,
+                        user = User,
+                        host = Host
+                    } = Remote
+                ] ->
+                    ExpectedPrefix = <<Nick/binary, "!", User/binary, "@", Host/binary>>,
+                    case Prefix =:= ExpectedPrefix of
+                        true ->
+                            receive_remote_target(Peer, Remote, Prefix, Target, Text, Command);
+                        false ->
+                            {error, remote_prefix_mismatch}
+                    end;
+                _ ->
+                    {error, unknown_remote_source}
+            end;
+        _ ->
+            {error, malformed_remote_prefix}
+    end;
+receive_remote_message(_Peer, _Prefix, _Command, _Params) ->
+    {error, invalid_remote_message}.
+
+receive_remote_target(Peer, Remote, Prefix, Target, Text, Command) ->
+    case ircd_state_client:find_nick(Target) of
+        #client{pid = Pid, nick = LocalNick} ->
+            ircd_state_send:send(Pid, Prefix, Command, [LocalNick], Text),
+            ok;
+        undefined ->
+            case ircd_wire:channel(Target) of
+                true -> receive_remote_channel_message(Peer, Remote, Prefix, Target, Text, Command);
+                false -> ok
+            end
+    end.
+
+receive_remote_channel_message(Peer, Remote, Prefix, Name, Text, Command) ->
+    Key = ircd_wire:fold(Name),
+    case {mnesia:dirty_read(remote_channel, Key), mnesia:dirty_read(channel, Key)} of
+        {[#remote_channel{members = RemoteMembers, flags = RemoteFlags}], [Channel]} ->
+            NickKey = Remote#remote_client.key,
+            case maps:find(NickKey, RemoteMembers) of
+                {ok, {Peer, Roles}} ->
+                    Flags = maps:merge(RemoteFlags, Channel#channel.flags),
+                    RemoteIdentity = #client{
+                        nick = Remote#remote_client.nick,
+                        user = Remote#remote_client.user,
+                        host = Remote#remote_client.host
+                    },
+                    Banned =
+                        ircd_state_channel:mask_matches(Channel, ban, RemoteIdentity) andalso
+                            not ircd_state_channel:mask_matches(Channel, exception, RemoteIdentity),
+                    Allowed =
+                        not maps:is_key($m, Flags) orelse
+                            lists:member(operator, Roles) orelse lists:member(voice, Roles),
+                    case Allowed andalso not Banned of
+                        true ->
+                            Origin =
+                                case maps:is_key($a, Flags) of
+                                    true -> <<"anonymous!anonymous@anonymous.">>;
+                                    false -> Prefix
+                                end,
+                            ircd_state_send:broadcast(
+                                maps:keys(Channel#channel.members), Origin, Command, [Name], Text
+                            );
+                        false ->
+                            ok
+                    end;
+                _ ->
+                    {error, remote_user_not_on_channel}
+            end;
+        {[#remote_channel{members = RemoteMembers}], []} ->
+            case maps:find(Remote#remote_client.key, RemoteMembers) of
+                {ok, {Peer, _Roles}} -> ok;
+                _ -> {error, remote_user_not_on_channel}
+            end;
+        {[], _} ->
+            {error, unknown_remote_channel};
+        {_, []} ->
+            {error, unknown_remote_channel}
+    end.
+
+remote_names_listing(Key, Client, Server) ->
+    case mnesia:dirty_read(remote_channel, Key) of
+        [#remote_channel{name = Name, flags = Flags}] ->
+            LocalMember =
+                case mnesia:dirty_read(channel, Key) of
+                    [#channel{members = Members}] -> maps:is_key(Client#client.pid, Members);
+                    [] -> false
+                end,
+            Hidden =
+                (maps:is_key($p, Flags) orelse maps:is_key($s, Flags)) andalso
+                    not LocalMember,
+            case Hidden orelse maps:is_key($a, Flags) of
+                true ->
+                    ok;
+                false ->
+                    ircd_state_channel:names_lines(
+                        remote_names_entries(Name, Client, LocalMember), [], 0, Name, Client, Server
+                    )
+            end;
+        [] ->
+            ok
+    end.
+
+remote_channel_flags(Name) ->
+    case mnesia:dirty_read(remote_channel, ircd_wire:fold(Name)) of
+        [#remote_channel{flags = Flags}] -> Flags;
+        [] -> #{}
+    end.
+
+remote_names_entries(Name, Client, LocalMember) ->
+    case mnesia:dirty_read(remote_channel, ircd_wire:fold(Name)) of
+        [#remote_channel{members = Members}] ->
+            lists:sort([
+                remote_display_nick(Remote, Roles)
+             || {NickKey, {_Peer, Roles}} <- maps:to_list(Members),
+                [Remote] <- [mnesia:dirty_read(remote_client, NickKey)],
+                remote_visible_in_names(Remote, Client, LocalMember)
+            ]);
+        [] ->
+            []
+    end.
+
+remote_visible_in_names(#remote_client{modes = Modes}, _Client, LocalMember) ->
+    LocalMember orelse not maps:is_key($i, Modes).
+
+remote_user_visible_to_requester(NickKey, Modes, Client) ->
+    not maps:is_key($i, Modes) orelse
+        lists:any(
+            fun(ChannelKey) ->
+                case
+                    {
+                        mnesia:dirty_read(remote_channel, ChannelKey),
+                        mnesia:dirty_read(channel, ChannelKey)
+                    }
+                of
+                    {
+                        [#remote_channel{members = RemoteMembers}],
+                        [#channel{members = LocalMembers}]
+                    } ->
+                        maps:is_key(NickKey, RemoteMembers) andalso
+                            maps:is_key(Client#client.pid, LocalMembers);
+                    _ ->
+                        false
+                end
+            end,
+            mnesia:dirty_all_keys(remote_channel)
+        ).
+
+remote_user_local_recipients(NickKey) ->
+    lists:usort([
+        Pid
+     || ChannelKey <- mnesia:dirty_all_keys(remote_channel),
+        [#remote_channel{members = RemoteMembers, flags = RemoteFlags}] <-
+            [mnesia:dirty_read(remote_channel, ChannelKey)],
+        maps:is_key(NickKey, RemoteMembers),
+        not maps:is_key($a, RemoteFlags),
+        not maps:is_key($q, RemoteFlags),
+        [#channel{members = LocalMembers, flags = LocalFlags}] <-
+            [mnesia:dirty_read(channel, ChannelKey)],
+        not maps:is_key($a, LocalFlags),
+        not maps:is_key($q, LocalFlags),
+        Pid <- maps:keys(LocalMembers)
+    ]).
+
+remote_display_nick(#remote_client{nick = Nick}, Roles) ->
+    case
+        {lists:member(creator, Roles), lists:member(operator, Roles), lists:member(voice, Roles)}
+    of
+        {true, _, _} -> <<$@, Nick/binary>>;
+        {false, true, _} -> <<$@, Nick/binary>>;
+        {false, false, true} -> <<$+, Nick/binary>>;
+        _ -> Nick
+    end.
+
+propagate_introduction(
+    #client{nick = Nick, user = User, host = Host, real = Real, pid = Pid}, Server
+) ->
+    Modes = ircd_state_channel:user_mode_string(ircd_state_client:user_modes(Pid)),
+    server_broadcast(
+        ircd_wire:line(
+            Server,
+            <<"NICK">>,
+            [Nick, <<"0">>, User, Host, <<"1">>, Modes],
+            Real
+        )
+    ).
+
+propagate_nick_change(Client, Nick) ->
+    server_broadcast(ircd_wire:line(ircd_state_send:prefix(Client), <<"NICK">>, [Nick], none)).
+
+propagate_away(Client, none) ->
+    server_broadcast(ircd_wire:line(ircd_state_send:prefix(Client), <<"AWAY">>, [], none));
+propagate_away(Client, Message) ->
+    server_broadcast(ircd_wire:line(ircd_state_send:prefix(Client), <<"AWAY">>, [], Message)).
+
+propagate_quit(Client, Reason) ->
+    server_broadcast(ircd_wire:line(ircd_state_send:prefix(Client), <<"QUIT">>, [], Reason)).
+
+server_broadcast(Line) ->
+    try ircd_links:send_all(iolist_to_binary(Line)) of
+        _ -> ok
+    catch
+        exit:_ -> ok
+    end.
+
+propagate_topic(Client, Name, Topic) ->
+    server_broadcast(ircd_wire:line(ircd_state_send:prefix(Client), <<"TOPIC">>, [Name], Topic)).
+
+propagate_channel_mode(Client, Name, Mode, Args) ->
+    server_broadcast(
+        ircd_wire:line(ircd_state_send:prefix(Client), <<"MODE">>, [Name, Mode | Args], none)
+    ).
+
+propagate_channel_kick(Client, Name, Nick, Reason) ->
+    server_broadcast(
+        ircd_wire:line(ircd_state_send:prefix(Client), <<"KICK">>, [Name, Nick], Reason)
+    ).
+
+propagate_join(Client, Name, Roles) ->
+    Server = maps:get(name, persistent_term:get({ircd_state, config})),
+    server_broadcast(ircd_wire:line(ircd_state_send:prefix(Client), <<"JOIN">>, [Name], none)),
+    Member = iolist_to_binary(njoin_member(Client, Roles)),
+    server_broadcast(ircd_wire:line(Server, <<"NJOIN">>, [Name], Member)),
+    case mnesia:dirty_read(channel, ircd_wire:fold(Name)) of
+        [#channel{flags = Flags, password = Password, limit = Limit, lists = Lists}] ->
+            lists:foreach(
+                fun(Line) -> server_broadcast(Line) end,
+                channel_mode_burst(Name, Flags, Password, Limit, Lists, Server)
+            );
+        [] ->
+            ok
+    end.
+
+propagate_channel_message(Name, Text, Command, Client) ->
+    case mnesia:dirty_read(remote_channel, ircd_wire:fold(Name)) of
+        [#remote_channel{members = Members}] ->
+            Line = iolist_to_binary(
+                ircd_wire:line(ircd_state_send:prefix(Client), Command, [Name], Text)
+            ),
+            Peers = lists:usort([Peer || {_Nick, {Peer, _Roles}} <- maps:to_list(Members)]),
+            lists:foreach(fun(Peer) -> _ = ircd_links:send(Peer, Line) end, Peers),
+            ok;
+        [] ->
+            ok
+    end.
