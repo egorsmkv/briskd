@@ -1,5 +1,22 @@
 -module(ircd_wire).
--export([parse/1, parse_server/1, line/4, fold/1, nickname/1, channel/1, safe_channel/1]).
+-export([
+    parse/1, parse_server/1, line/4, fold/1, nickname/1, channel/1, safe_channel/1, append_pending/2
+]).
+
+%% One socket delivery is capped before it is concatenated onto the partial line.
+%% IRC lines themselves remain limited to 512 octets by parse/1 and parse_server/1.
+-define(MAX_PENDING_BYTES, 1048576).
+
+%% @doc Append one socket delivery to the unfinished line, or reject an oversized buffer.
+-spec append_pending(binary(), binary()) -> {ok, binary()} | error.
+append_pending(Buffer, Packet) when
+    is_binary(Buffer),
+    is_binary(Packet),
+    byte_size(Buffer) + byte_size(Packet) =< ?MAX_PENDING_BYTES
+->
+    {ok, <<Buffer/binary, Packet/binary>>};
+append_pending(Buffer, Packet) when is_binary(Buffer), is_binary(Packet) ->
+    error.
 
 %% @doc Parse one CRLF-terminated IRC line into a command and binary parameters.
 %% Returns `empty' for an empty line and `error' for malformed or oversized input.

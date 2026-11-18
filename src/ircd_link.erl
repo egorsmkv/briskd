@@ -1,12 +1,30 @@
 -module(ircd_link).
 -behaviour(gen_server).
--export([start_link/2, init/1, handle_call/3, handle_cast/2, handle_continue/2, handle_info/2]).
+-export([
+    start_link/2,
+    init/1,
+    handle_call/3,
+    handle_cast/2,
+    handle_continue/2,
+    handle_info/2,
+    format_status/1
+]).
 
 %% @doc Start an outbound RFC 2813 peer connection worker.
+-spec start_link(map(), map()) -> gen_server:start_ret().
 start_link(Config, Peer) -> gen_server:start_link(?MODULE, {Config, Peer}, []).
 
 init({Config, Peer}) ->
-    {ok, #{config => Config, peer => Peer, socket => undefined, buffer => <<>>},
+    {ok,
+        #{
+            config => Config,
+            peer => Peer,
+            socket => undefined,
+            buffer => <<>>,
+            timer_gen => 0,
+            liveness_timer => undefined,
+            ping_timer => undefined
+        },
         {continue, connect}}.
 
 handle_continue(connect, State) ->
@@ -36,34 +54,50 @@ handle_cast({send, Line}, #{phase := authenticated, kind := Kind, socket := Sock
 handle_cast(_, State) ->
     {noreply, State}.
 
-handle_info(reconnect, State) ->
+handle_info({reconnect, Gen}, #{timer_gen := Gen} = State) ->
     {noreply, State, {continue, connect}};
-handle_info(liveness_ping, #{phase := authenticated, ping_pending := undefined} = State) ->
+handle_info({reconnect, _Gen}, State) ->
+    {noreply, State};
+handle_info(
+    {liveness_ping, Gen},
+    #{phase := authenticated, ping_pending := undefined, timer_gen := Gen} = State
+) ->
     Config = maps:get(config, State),
     Token = make_ref(),
     Ping = raw_line(<<"PING">>, [maps:get(name, Config)], none),
     case send(maps:get(kind, State), maps:get(socket, State), Ping) of
         ok ->
-            erlang:send_after(30000, self(), {ping_timeout, Token}),
-            {noreply, State#{ping_pending := Token}};
+            cancel_timer(maps:get(ping_timer, State)),
+            Ref = erlang:send_after(30000, self(), {ping_timeout, Gen, Token}),
+            {noreply, State#{ping_pending := Token, ping_timer => Ref}};
         {error, Reason} ->
             retry(State, {ping_send_failed, Reason})
     end;
-handle_info({ping_timeout, Token}, #{phase := authenticated, ping_pending := Token} = State) ->
+handle_info({liveness_ping, _Gen}, State) ->
+    {noreply, State};
+handle_info(
+    {ping_timeout, Gen, Token},
+    #{phase := authenticated, ping_pending := Token, timer_gen := Gen} = State
+) ->
     retry(State, ping_timeout);
-handle_info({ping_timeout, _}, State) ->
+handle_info({ping_timeout, _Gen, _Token}, State) ->
     {noreply, State};
 handle_info({Tag, Socket, Packet}, #{socket := Socket} = State) when
     Tag =:= tcp; Tag =:= ssl
 ->
-    case consume(<<(maps:get(buffer, State))/binary, Packet/binary>>, State#{buffer := <<>>}) of
-        {ok, Updated} ->
-            case active_once(Updated) of
-                ok -> {noreply, Updated};
-                {error, Reason} -> retry(Updated, {active_once, Reason})
+    case ircd_wire:append_pending(maps:get(buffer, State), Packet) of
+        {ok, Data} ->
+            case consume(Data, State#{buffer := <<>>}) of
+                {ok, Updated} ->
+                    case active_once(Updated) of
+                        ok -> {noreply, Updated};
+                        {error, Reason} -> retry(Updated, {active_once, Reason})
+                    end;
+                {error, Reason, Updated} ->
+                    retry(Updated, Reason)
             end;
-        {error, Reason, Updated} ->
-            retry(Updated, Reason)
+        error ->
+            retry(State, oversized_input)
     end;
 handle_info({Tag, Socket}, #{socket := Socket} = State) when
     Tag =:= tcp_closed; Tag =:= ssl_closed
@@ -73,8 +107,21 @@ handle_info({Tag, Socket, Reason}, #{socket := Socket} = State) when
     Tag =:= tcp_error; Tag =:= ssl_error
 ->
     retry(State, {peer_error, Reason});
+%% Ignore stale timers and socket events from a previous connection generation.
 handle_info(_, State) ->
     {noreply, State}.
+
+%% @doc Remove the configured link password and any password received during handshake.
+-spec format_status(map()) -> map().
+format_status(#{state := State} = Status) ->
+    Status#{state := redact_state(State)};
+format_status(Status) ->
+    Status.
+
+redact_state(#{peer := Peer} = State) ->
+    State#{peer := maps:remove(password, Peer), peer_password => redacted};
+redact_state(State) ->
+    State.
 
 connect(#{peer := #{host := Host, port := Port, tls := true}} = State) ->
     HostName = binary_to_list(Host),
@@ -141,7 +188,7 @@ handle_server_line(
     [Password, Version, _Flags | _],
     #{phase := await_pass, peer := #{password := Expected}} = State
 ) ->
-    case valid_version(Version) andalso Password =:= Expected of
+    case valid_version(Version) andalso ircd_config:secret_match(Password, Expected) of
         true -> {ok, State#{peer_password := Password, phase := await_server}};
         false -> {error, peer_authentication_failed, State}
     end;
@@ -166,8 +213,7 @@ handle_server_line(
             case send_burst(ircd_state:server_burst(), Authenticated) of
                 ok ->
                     logger:notice(#{event => server_link_authenticated, peer => Name}),
-                    erlang:send_after(60000, self(), liveness_ping),
-                    {ok, Authenticated#{ping_pending => undefined}};
+                    {ok, arm_liveness(Authenticated#{ping_pending => undefined})};
                 {error, Reason} ->
                     {error, {state_burst_failed, Reason}, Authenticated}
             end;
@@ -214,8 +260,7 @@ handle_server_line(
         config := #{name := ExpectedLocal}
     } = State
 ) when Token =/= undefined, PeerName =:= ExpectedPeer, LocalName =:= ExpectedLocal ->
-    erlang:send_after(60000, self(), liveness_ping),
-    {ok, State#{ping_pending := undefined}};
+    {ok, arm_liveness(State#{ping_pending := undefined})};
 handle_server_line(_Prefix, <<"ERROR">>, [Reason | _], #{phase := authenticated} = State) ->
     {error, {peer_fatal_error, Reason}, State};
 handle_server_line(_Prefix, _Command, _Params, #{phase := authenticated} = State) ->
@@ -259,22 +304,41 @@ close(_) -> ok.
 
 retry(State, Reason) ->
     logger:warning(#{event => server_link_retry, peer => peer_name(State), reason => Reason}),
-    _ =
-        try
-            ircd_state:server_disconnect(peer_name(State))
-        catch
-            _:_ -> ok
-        end,
+    ok = ircd_state:server_disconnect(peer_name(State)),
+    cancel_timers(State),
     close(State),
-    erlang:send_after(5000, self(), reconnect),
+    Gen = maps:get(timer_gen, State) + 1,
+    Reconnect = erlang:send_after(5000, self(), {reconnect, Gen}),
     {noreply, State#{
         socket := undefined,
         kind => undefined,
         phase => disconnected,
         buffer := <<>>,
         peer_password => undefined,
-        ping_pending => undefined
+        ping_pending => undefined,
+        timer_gen => Gen,
+        liveness_timer => undefined,
+        ping_timer => undefined,
+        reconnect_timer => Reconnect
     }}.
+
+arm_liveness(State) ->
+    cancel_timer(maps:get(liveness_timer, State, undefined)),
+    cancel_timer(maps:get(ping_timer, State, undefined)),
+    Gen = maps:get(timer_gen, State),
+    Ref = erlang:send_after(60000, self(), {liveness_ping, Gen}),
+    State#{liveness_timer => Ref, ping_timer => undefined, ping_pending => undefined}.
+
+cancel_timers(State) ->
+    cancel_timer(maps:get(reconnect_timer, State, undefined)),
+    cancel_timer(maps:get(liveness_timer, State, undefined)),
+    cancel_timer(maps:get(ping_timer, State, undefined)).
+
+cancel_timer(undefined) ->
+    ok;
+cancel_timer(Ref) when is_reference(Ref) ->
+    erlang:cancel_timer(Ref),
+    ok.
 
 peer_name(#{peer := Peer}) -> maps:get(name, Peer, <<"unknown">>).
 

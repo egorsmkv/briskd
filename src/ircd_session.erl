@@ -1,6 +1,14 @@
 -module(ircd_session).
 -behaviour(gen_server).
--export([start_link/3, init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
+-export([
+    start_link/3,
+    init/1,
+    handle_call/3,
+    handle_cast/2,
+    handle_info/2,
+    format_status/1,
+    terminate/2
+]).
 
 %% @doc Start a temporary process for one accepted TCP or TLS client socket.
 -spec start_link(tcp | tls, port(), binary()) -> gen_server:start_ret().
@@ -33,10 +41,15 @@ handle_info({irc_close, Line}, {Kind, Socket, _, _, _} = State) ->
 handle_info({Tag, Socket, Packet}, {Kind, Socket, Peer, Buffer, Role}) when
     Tag =:= tcp; Tag =:= ssl
 ->
-    case consume(<<Buffer/binary, Packet/binary>>, {Kind, Socket, Peer, <<>>, Role}) of
-        {ok, State} -> active(State);
-        quit -> {stop, normal, {Kind, Socket, Peer, <<>>}};
-        error -> {stop, normal, {Kind, Socket, Peer, <<>>}}
+    case ircd_wire:append_pending(Buffer, Packet) of
+        {ok, Data} ->
+            case consume(Data, {Kind, Socket, Peer, <<>>, Role}) of
+                {ok, State} -> active(State);
+                quit -> {stop, normal, {Kind, Socket, Peer, <<>>}};
+                error -> {stop, normal, {Kind, Socket, Peer, <<>>}}
+            end;
+        error ->
+            {stop, normal, {Kind, Socket, Peer, <<>>}}
     end;
 handle_info(registration_timeout, {_, _, _, _, Role} = State) ->
     case Role of
@@ -76,17 +89,24 @@ handle_info({Tag, Socket, _}, {_, Socket, _, _, _} = State) when
     Tag =:= tcp_error; Tag =:= ssl_error
 ->
     {stop, normal, State};
+%% Ignore socket traffic and timers that belong to a previous connection state.
 handle_info(_, State) ->
     {noreply, State}.
 
+%% @doc Redact an inbound server link password held during the handshake.
+-spec format_status(map()) -> map().
+format_status(#{state := State} = Status) ->
+    Status#{state := redact_state(State)};
+format_status(Status) ->
+    Status.
+
+redact_state({Kind, Socket, Peer, Buffer, {server_pass, _Password}}) ->
+    {Kind, Socket, Peer, Buffer, {server_pass, redacted}};
+redact_state(State) ->
+    State.
+
 terminate(_, {_, _, Peer, _, {server, _}}) ->
-    _ =
-        try
-            ircd_state:server_disconnect(Peer)
-        catch
-            _:_ -> ok
-        end,
-    ok;
+    ok = ircd_state:server_disconnect(Peer);
 terminate(_, _) ->
     ok.
 

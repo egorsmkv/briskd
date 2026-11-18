@@ -1,5 +1,14 @@
 -module(ircd_config).
--export([load/1]).
+-export([load/1, secret_match/2]).
+
+%% @doc Compare two secrets without leaking their contents through early exit.
+%% Both sides are hashed, then the digests are compared in constant time, so a
+%% length mismatch does not return before the secret has been fully read.
+-spec secret_match(binary(), binary()) -> boolean().
+secret_match(Left, Right) when is_binary(Left), is_binary(Right) ->
+    crypto:hash_equals(crypto:hash(sha256, Left), crypto:hash(sha256, Right));
+secret_match(_, _) ->
+    false.
 
 %% @doc Read and validate the JSON configuration file.
 %% Returns a normalized map used by the application supervision tree.

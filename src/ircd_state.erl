@@ -13,6 +13,7 @@
     handle_call/3,
     handle_cast/2,
     handle_info/2,
+    format_status/1,
     find_nick/1,
     user_modes/1,
     user_visible/2,
@@ -53,8 +54,16 @@ server_command(Peer, Prefix, Command, Params) ->
     gen_server:call(?MODULE, {server_command, Peer, Prefix, Command, Params}).
 
 %% @doc Drop imported client state when a server link closes.
+%% A missing state process during shutdown is ignored. Other failures propagate.
 -spec server_disconnect(binary()) -> ok.
-server_disconnect(Peer) -> gen_server:call(?MODULE, {server_disconnect, Peer}).
+server_disconnect(Peer) ->
+    try gen_server:call(?MODULE, {server_disconnect, Peer}) of
+        ok -> ok
+    catch
+        exit:{noproc, _} -> ok;
+        exit:shutdown -> ok;
+        exit:{shutdown, _} -> ok
+    end.
 
 %% @doc Check an inbound server's name and shared password against configured peers.
 -spec authenticate_server_link(binary(), binary()) -> boolean().
@@ -62,7 +71,8 @@ authenticate_server_link(Name, Password) ->
     Links = persistent_term:get({?MODULE, server_links}, []),
     lists:any(
         fun(#{name := Expected, password := Secret}) ->
-            ircd_wire:fold(Name) =:= ircd_wire:fold(Expected) andalso Password =:= Secret
+            ircd_wire:fold(Name) =:= ircd_wire:fold(Expected) andalso
+                ircd_config:secret_match(Password, Secret)
         end,
         Links
     ).
@@ -188,9 +198,11 @@ track_opless(#channel{} = Channel, Remaining) ->
         end,
     Channel#channel{members = Remaining, opless_since = ReopAt}.
 
+%% Deadline is monotonic seconds plus the configured delay and jitter.
+%% Startup clears opless_since, so a persisted row never keeps a previous VM's clock.
 next_reop_time() ->
     Delay = persistent_term:get({?MODULE, reop_delay}, 30),
-    erlang:system_time(second) + Delay + rand:uniform(Delay).
+    erlang:monotonic_time(second) + Delay + rand:uniform(Delay).
 
 reop_channels(Server) ->
     lists:foreach(
@@ -226,7 +238,7 @@ maybe_reop(#channel{members = Members} = Channel, Server) ->
 maybe_reop_opless(#channel{opless_since = undefined} = Channel, _Server) ->
     mnesia:dirty_write(Channel#channel{opless_since = next_reop_time()});
 maybe_reop_opless(#channel{opless_since = ReopAt, members = Members} = Channel, Server) ->
-    case erlang:system_time(second) >= ReopAt of
+    case erlang:monotonic_time(second) >= ReopAt of
         false ->
             ok;
         true ->
@@ -531,8 +543,37 @@ handle_info(reop_tick, Server) ->
     reop_channels(Server),
     erlang:send_after(1000, self(), reop_tick),
     {noreply, Server};
+%% Ignore unknown messages. Reop and session DOWN are the only expected info events.
 handle_info(_, State) ->
     {noreply, State}.
+
+%% @doc Hide PASS and OPER secrets if a crash report includes the current message.
+-spec format_status(map()) -> map().
+format_status(Status) ->
+    maps:map(fun redact_status/2, Status).
+
+redact_status(message, Message) ->
+    redact_command(Message);
+redact_status(log, Log) when is_list(Log) ->
+    [redact_log_event(Event) || Event <- Log];
+redact_status(_, Value) ->
+    Value.
+
+redact_log_event({Type, Message}) ->
+    {Type, redact_command(Message)};
+redact_log_event({Type, Message, Extra}) ->
+    {Type, redact_command(Message), Extra};
+redact_log_event(Event) ->
+    Event.
+
+redact_command({'$gen_call', From, Request}) ->
+    {'$gen_call', From, redact_command(Request)};
+redact_command({command, <<"PASS">>, [_Password | Rest], Bytes}) ->
+    {command, <<"PASS">>, [redacted | Rest], Bytes};
+redact_command({command, <<"OPER">>, [Name, _Password | Rest], Bytes}) ->
+    {command, <<"OPER">>, [Name, redacted | Rest], Bytes};
+redact_command(Message) ->
+    Message.
 
 %% Retrieve the Mnesia record associated with a live session process.
 client(Pid) ->
@@ -1398,7 +1439,7 @@ pass_unregistered(_, #client{pass = Pass} = Client, Server) when Pass =/= undefi
     numeric(Client, Server, <<"462">>, [], <<"You may not reregister">>);
 pass_unregistered([Given | _], Client, Server) ->
     Expected = persistent_term:get({?MODULE, client_password}, null),
-    case Expected =:= null orelse Given =:= Expected of
+    case Expected =:= null orelse ircd_config:secret_match(Given, Expected) of
         true ->
             save_identity(Client, Client#client{pass = true}, Server);
         false ->
@@ -2000,15 +2041,20 @@ oper(Name, Password, #client{pid = Pid} = Client, Server) ->
     case lists:keyfind(ircd_wire:fold(Name), 1, Credentials) of
         false ->
             numeric(Client, Server, <<"491">>, [], <<"No O-lines for your host">>);
-        {_, Password} ->
-            Modes = (user_modes(Pid))#{$o => true},
-            mnesia:dirty_write(#user_modes{pid = Pid, modes = Modes}),
-            server_broadcast(
-                ircd_wire:line(prefix(Client), <<"MODE">>, [Client#client.nick, <<"+o">>], none)
-            ),
-            numeric(Client, Server, <<"381">>, [], <<"You are now an IRC operator">>);
-        _ ->
-            numeric(Client, Server, <<"464">>, [], <<"Password incorrect">>)
+        {_, Expected} ->
+            case ircd_config:secret_match(Password, Expected) of
+                true ->
+                    Modes = (user_modes(Pid))#{$o => true},
+                    mnesia:dirty_write(#user_modes{pid = Pid, modes = Modes}),
+                    server_broadcast(
+                        ircd_wire:line(
+                            prefix(Client), <<"MODE">>, [Client#client.nick, <<"+o">>], none
+                        )
+                    ),
+                    numeric(Client, Server, <<"381">>, [], <<"You are now an IRC operator">>);
+                false ->
+                    numeric(Client, Server, <<"464">>, [], <<"Password incorrect">>)
+            end
     end.
 
 kill(Params, #client{pid = Pid} = Client, Server) ->
