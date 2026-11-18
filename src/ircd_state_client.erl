@@ -80,7 +80,8 @@ save_identity(Old, New, Server) ->
 
 %% @doc Send the numeric burst that completes registration.
 %% The caller marks the connection welcomed before this runs.
-send_welcome(Client, Server) ->
+send_welcome(#client{nick = Nick, user = User, host = Host} = Client, Server) ->
+    logger:info(#{event => client_registered, nick => Nick, user => User, host => Host}),
     ircd_state_send:numeric(Client, Server, <<"001">>, [], [
         <<"Welcome to IRC ">>, ircd_state_send:prefix(Client)
     ]),
@@ -234,7 +235,12 @@ disconnect(#client{pid = Pid, channels = Channels} = Client, Reason, Server) ->
         _ -> ets:delete(ircd_admins, Pid)
     end,
     ircd_cap:disconnect(Pid),
-    remove_connection_stats(Pid).
+    remove_connection_stats(Pid),
+    logger:info(#{
+        event => client_disconnected,
+        nick => Client#client.nick,
+        host => Client#client.host
+    }).
 
 quit_recipients(#client{pid = Pid, channels = Channels}) ->
     lists:usort([

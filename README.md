@@ -18,7 +18,9 @@ message tags, and labeled responses. The other specifications on
 - Server-to-server links, including bursts, multi-hop routing, invitations,
   and netsplit cleanup.
 - Mnesia disk-copy tables, with persistence for WHOWAS history and safe-channel state.
-- JSON logging by default, with text logging available in configuration.
+- JSON logging by default, with text logging available in configuration. At
+  `debug` or `trace`, each client and peer command is logged with the nick,
+  command, and target. Message text, passwords, and channel keys are omitted.
 
 ## Quick start
 

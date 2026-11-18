@@ -85,6 +85,7 @@ server_command(Peer, Prefix, Command, Params) ->
 ) ->
     ok | {error, term()}.
 server_command(Peer, Prefix, Command, Params, Tags) ->
+    ircd_log:server_command(Peer, Command, Params),
     gen_server:call(?MODULE, {server_command, Peer, Prefix, Command, Params, Tags}).
 
 %% @doc Drop imported client state when a server link closes.
@@ -418,6 +419,7 @@ handle_call({connect, Host}, {Pid, _}, Server) ->
     ircd_state_client:touch_activity(Pid),
     ircd_state_client:put_connection_stats(Pid, #{}),
     mnesia:dirty_write(#user_modes{pid = Pid}),
+    logger:info(#{event => client_connected, peer => Host}),
     {reply, ok, Server};
 handle_call(registered, {Pid, _}, Server) ->
     {reply, ircd_state_client:ready(ircd_state_client:client(Pid)), Server};
@@ -533,6 +535,7 @@ handle_call({input_too_long, Tags}, {Pid, _}, Server) ->
 handle_call({command, Command, Params, Bytes, Tags}, {Pid, _}, Server) ->
     count_command(Pid, Command, Bytes),
     Client = ircd_state_client:client(Pid),
+    ircd_log:client_command(Client#client.nick, Command, Params),
     Label =
         case welcomed_cap_end(Client, Command, Params) of
             true -> undefined;

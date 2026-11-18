@@ -25,14 +25,18 @@ handle_info(activate, {Kind, Socket, Peer} = State) ->
         ok ->
             erlang:send_after(30000, self(), registration_timeout),
             active({Kind, Socket, Peer, <<>>, awaiting});
-        {error, _} ->
+        {error, Reason} ->
+            logger:warning(#{event => tls_handshake_failed, peer => Peer, reason => Reason}),
             {stop, normal, State}
     end;
 handle_info({irc, Line}, {Kind, Socket, _, _, _} = State) ->
     Module = transport(Kind),
     case Module:send(Socket, Line) of
-        ok -> {noreply, State};
-        {error, _} -> {stop, normal, State}
+        ok ->
+            {noreply, State};
+        {error, Reason} ->
+            logger:debug(#{event => send_failed, peer => peer_of(State), reason => Reason}),
+            {stop, normal, State}
     end;
 handle_info({irc_close, Line}, {Kind, Socket, _, _, _} = State) ->
     Module = transport(Kind),
@@ -59,10 +63,14 @@ handle_info(registration_timeout, {_, _, _, _, Role} = State) ->
             {stop, normal, State};
         client ->
             case ircd_state:registered() of
-                true -> {noreply, State};
-                false -> {stop, normal, State}
+                true ->
+                    {noreply, State};
+                false ->
+                    logger:info(#{event => registration_timeout, peer => peer_of(State)}),
+                    {stop, normal, State}
             end;
         awaiting ->
+            logger:info(#{event => registration_timeout, peer => peer_of(State)}),
             {stop, normal, State}
     end;
 handle_info(liveness_ping, {Kind, Socket, _, _, {server, undefined}} = State) ->
@@ -74,20 +82,24 @@ handle_info(liveness_ping, {Kind, Socket, _, _, {server, undefined}} = State) ->
         ok ->
             erlang:send_after(30000, self(), {link_ping_timeout, Token}),
             {noreply, set_role(State, {server, Token})};
-        {error, _} ->
+        {error, Reason} ->
+            logger:warning(#{event => link_ping_failed, peer => peer_of(State), reason => Reason}),
             {stop, normal, State}
     end;
 handle_info({link_ping_timeout, Token}, {_, _, _, _, {server, Token}} = State) ->
+    logger:warning(#{event => link_ping_timeout, peer => peer_of(State)}),
     {stop, normal, State};
 handle_info({link_ping_timeout, _}, State) ->
     {noreply, State};
 handle_info({Tag, Socket}, {_, Socket, _, _, _} = State) when
     Tag =:= tcp_closed; Tag =:= ssl_closed
 ->
+    logger:debug(#{event => socket_closed, peer => peer_of(State), reason => Tag}),
     {stop, normal, State};
-handle_info({Tag, Socket, _}, {_, Socket, _, _, _} = State) when
+handle_info({Tag, Socket, Reason}, {_, Socket, _, _, _} = State) when
     Tag =:= tcp_error; Tag =:= ssl_error
 ->
+    logger:warning(#{event => socket_error, peer => peer_of(State), reason => Reason}),
     {stop, normal, State};
 %% Ignore socket traffic and timers that belong to a previous connection state.
 handle_info(_, State) ->
@@ -344,6 +356,10 @@ set_role({Kind, Socket, Peer, Buffer, _}, Role) ->
 
 set_peer_and_role({Kind, Socket, _Peer, Buffer, _}, Peer, Role) ->
     {Kind, Socket, Peer, Buffer, Role}.
+
+peer_of({_, _, Peer, _, _}) -> Peer;
+peer_of({_, _, Peer}) -> Peer;
+peer_of(_) -> <<"unknown">>.
 
 valid_server_version(<<A, B, C, D, _/binary>> = Version) ->
     byte_size(Version) =< 14 andalso A >= $0 andalso A =< $9 andalso B >= $0 andalso B =< $9 andalso

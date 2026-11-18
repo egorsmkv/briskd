@@ -216,6 +216,12 @@ oper(Name, Password, #client{pid = Pid} = Client, Server) ->
     Fold = ircd_wire:fold(Name),
     case lists:keyfind(Fold, 1, Credentials) of
         false ->
+            logger:warning(#{
+                event => oper_rejected,
+                nick => Client#client.nick,
+                account => Name,
+                reason => unknown
+            }),
             ircd_state_send:numeric(Client, Server, <<"491">>, [], <<"No O-lines for your host">>);
         {_, Expected} ->
             case ircd_config:secret_match(Password, Expected) of
@@ -237,10 +243,19 @@ oper(Name, Password, #client{pid = Pid} = Client, Server) ->
                             none
                         )
                     ),
+                    logger:info(#{
+                        event => oper_accepted, nick => Client#client.nick, account => Name
+                    }),
                     ircd_state_send:numeric(
                         Client, Server, <<"381">>, [], <<"You are now an IRC operator">>
                     );
                 false ->
+                    logger:warning(#{
+                        event => oper_rejected,
+                        nick => Client#client.nick,
+                        account => Name,
+                        reason => password
+                    }),
                     ircd_state_send:numeric(Client, Server, <<"464">>, [], <<"Password incorrect">>)
             end
     end.

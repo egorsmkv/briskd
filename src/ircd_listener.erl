@@ -47,6 +47,7 @@ accept(Kind, Listener) ->
             handoff(Kind, Socket),
             accept(Kind, Listener);
         {error, Reason} ->
+            logger:error(#{event => accept_failed, transport => Kind, reason => Reason}),
             exit({accept_failed, Reason})
     end.
 
@@ -69,10 +70,17 @@ handoff(Kind, Socket) ->
             case Module:controlling_process(Socket, Pid) of
                 ok ->
                     Pid ! activate;
-                {error, _} ->
+                {error, Reason} ->
+                    logger:warning(#{
+                        event => session_handoff_failed, peer => Peer, reason => Reason
+                    }),
                     exit(Pid, shutdown),
                     Module:close(Socket)
             end;
-        {error, _} ->
+        {error, max_clients} ->
+            logger:warning(#{event => session_rejected, peer => Peer, reason => max_clients}),
+            Module:close(Socket);
+        {error, Reason} ->
+            logger:warning(#{event => session_rejected, peer => Peer, reason => Reason}),
             Module:close(Socket)
     end.

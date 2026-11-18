@@ -128,6 +128,13 @@ redact_state(State) ->
     State.
 
 connect(#{peer := #{host := Host, port := Port, tls := true}} = State) ->
+    logger:debug(#{
+        event => server_link_connecting,
+        peer => peer_name(State),
+        host => Host,
+        port => Port,
+        tls => true
+    }),
     HostName = binary_to_list(Host),
     Options = [
         binary,
@@ -145,6 +152,13 @@ connect(#{peer := #{host := Host, port := Port, tls := true}} = State) ->
         {error, Reason} -> {error, Reason}
     end;
 connect(#{peer := #{host := Host, port := Port}} = State) ->
+    logger:debug(#{
+        event => server_link_connecting,
+        peer => peer_name(State),
+        host => Host,
+        port => Port,
+        tls => false
+    }),
     Options = [binary, {packet, raw}, {active, false}, {nodelay, true}, {keepalive, true}],
     case gen_tcp:connect(binary_to_list(Host), Port, Options, 10000) of
         {ok, Socket} -> {ok, State#{kind => tcp, socket => Socket}};

@@ -20,6 +20,11 @@ start(_, _) ->
                 {ok, StartedMnesia} ->
                     case ircd_sup:start_link(Config) of
                         {ok, Pid} ->
+                            logger:notice(#{
+                                event => started,
+                                name => maps:get(name, Config),
+                                log_level => maps:get(level, Config)
+                            }),
                             {ok, Pid, {Previous, Primary, StartedMnesia}};
                         Error ->
                             stop({Previous, Primary, StartedMnesia}),
