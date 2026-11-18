@@ -98,6 +98,8 @@ to the process working directory unless they are absolute.
 | `max_clients` | `10000` | Maximum active client sessions |
 | `client_password` | `null` | Optional password required with IRC `PASS` before registration |
 | `operators` | `[]` | Operator accounts, each with `name` and `password` |
+| `administrators` | `[]` | Operator accounts, each with `nick` and `password`. `OPER` uses `nick`. A successful login also grants channel operator on predefined channels |
+| `channels` | `[]` | Channels created at startup when absent. Each entry has `name` and optional `topic`, `key`, `limit`, and `modes` |
 | `motd_file` | `null` | Text file served by `MOTD` |
 | `admin_name`, `admin_location1`, `admin_location2`, `admin_email` | See config | Values returned by `ADMIN` |
 | `reop_delay` | `30` | Base delay in seconds before re-opping an operatorless safe channel |
@@ -118,6 +120,28 @@ history (`history_limit` lines, default 100). A joining client receives that
 history after the restart. Client sessions, operator status, and imported peer
 state are cleared on restart in both modes. Message bodies are not written to
 the log. An invalid `retention` or `history_limit` is rejected at startup.
+
+`administrators` are additional `OPER` accounts. `nick` is the name passed to
+`OPER` and is a nickname under this server's nickname rules. It is compared
+with RFC 1459 case folding and does not need to equal the client's current
+nickname. These accounts can use the same operator commands as `operators`.
+After a successful `OPER`, and when they later join, they are channel
+operators on channels listed in `channels`. An ordinary operator account is
+not. The same folded name cannot appear in both lists. `ADMIN` contact
+strings are unrelated.
+
+`channels` entries use a `#`, `&`, or `+` name. Optional `topic` is at most
+390 bytes. Optional `key` follows channel-key rules. Optional `limit` is an
+integer from 1 to 2147483647. Optional `modes` is a set of `i`, `m`, `n`,
+`p`, `s`, `t`, `q`, and `K` flags (`a` is allowed on `&` only). `p` and `s`
+cannot both be set. A `+` channel always has `t`. Startup creates a missing
+channel with no members. A channel row that already exists, including one
+kept by `channels` retention, is not overwritten. With `transient` retention
+the row is still removed and created again from this list on the next start,
+so later topic and mode changes do not survive that restart. The channel
+stays when its last member leaves. `REHASH` adds newly configured channels
+and does not delete a channel that was removed from the list. Invalid
+entries are rejected at startup.
 Backup, restore, and schema migration are described in
 [docs/mnesia.md](docs/mnesia.md). A restored directory follows the same
 retention policy as a normal start.

@@ -367,6 +367,19 @@ who_reply(
         [<<"0 ">>, Real]
     ).
 
+whois_operator(Nick, Pid, Client, Server) ->
+    case maps:is_key($o, ircd_state:user_modes(Pid)) of
+        false ->
+            ok;
+        true ->
+            Text =
+                case ircd_state:administrator(Pid) of
+                    true -> <<"is an IRC administrator">>;
+                    false -> <<"is an IRC operator">>
+                end,
+            ircd_state:numeric(Client, Server, <<"313">>, [Nick], Text)
+    end.
+
 %% Produce the local server's WHOIS numerics for one nickname mask.
 whois(Nick, Client, Server) ->
     case ircd_state:find_nick(Nick) of
@@ -392,6 +405,7 @@ whois(Nick, Client, Server) ->
                     ircd_state:numeric(
                         Client, Server, <<"312">>, [Actual, Server], <<"IRC server">>
                     ),
+                    whois_operator(Actual, TargetPid, Client, Server),
                     Idle =
                         case mnesia:dirty_read(activity, TargetPid) of
                             [#activity{last = Last}] ->

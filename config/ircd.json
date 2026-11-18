@@ -9,6 +9,8 @@
   "log_format": "json",
   "max_clients": 10000,
   "operators": [],
+  "administrators": [],
+  "channels": [],
   "reop_delay": 30,
   "motd_file": null,
   "mnesia_dir": "data/mnesia",

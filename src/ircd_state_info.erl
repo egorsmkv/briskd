@@ -213,14 +213,22 @@ two_digits(Value) -> integer_to_binary(Value).
 
 oper(Name, Password, #client{pid = Pid} = Client, Server) ->
     Credentials = persistent_term:get({ircd_state, operators}, []),
-    case lists:keyfind(ircd_wire:fold(Name), 1, Credentials) of
+    Fold = ircd_wire:fold(Name),
+    case lists:keyfind(Fold, 1, Credentials) of
         false ->
             ircd_state_send:numeric(Client, Server, <<"491">>, [], <<"No O-lines for your host">>);
         {_, Expected} ->
             case ircd_config:secret_match(Password, Expected) of
                 true ->
+                    case
+                        lists:member(Fold, persistent_term:get({ircd_state, administrators}, []))
+                    of
+                        true -> ets:insert(ircd_admins, {Pid});
+                        false -> ok
+                    end,
                     Modes = (ircd_state_client:user_modes(Pid))#{$o => true},
                     mnesia:dirty_write(#user_modes{pid = Pid, modes = Modes}),
+                    ircd_state_channel:grant_predefined_operator(Client, Server),
                     ircd_state_link:server_broadcast(
                         ircd_wire:line(
                             ircd_state_send:prefix(Client),
@@ -320,7 +328,8 @@ rehash_config(NewConfig, Path, Client, Server) ->
 
 apply_rehash(Config) ->
     persistent_term:put({ircd_state, config}, Config),
-    persistent_term:put({ircd_state, operators}, maps:get(operators, Config)),
+    ircd_state:store_accounts(Config),
+    ircd_state:seed_channels(),
     persistent_term:put({ircd_state, motd_file}, maps:get(motd_file, Config)),
     persistent_term:put({ircd_state, admin}, maps:get(admin, Config)),
     persistent_term:put({ircd_state, reop_delay}, maps:get(reop_delay, Config)),

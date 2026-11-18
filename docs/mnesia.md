@@ -43,6 +43,15 @@ An empty ordinary channel is removed when its last member leaves under
 `transient` retention. Under `channels` retention the empty channel and its
 history stay, so a later restart can still restore them.
 
+Channels listed in the JSON `channels` setting are an exception. Startup
+creates one when no row exists, after the retention policy has cleared or
+kept existing rows. An existing row is not replaced, so a topic or mode
+change kept by `channels` retention survives the next start. `transient`
+deletes that ordinary row and then creates it again from the configuration,
+which restores the configured topic, modes, key, and limit. Either policy
+keeps the channel when its last member leaves. Membership is still cleared
+on restart.
+
 ## Backup
 
 Stop the server, or at least stop writes, before copying the directory. From a

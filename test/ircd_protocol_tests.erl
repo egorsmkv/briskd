@@ -14,6 +14,9 @@ retention_test_() ->
 rejected_retention_test_() ->
     {timeout, 30, fun rejected_retention/0}.
 
+predefined_test_() ->
+    {timeout, 60, fun predefined/0}.
+
 protocol() ->
     Dir = filename:join(
         "/tmp", "ircd-protocol-" ++ integer_to_list(erlang:unique_integer([positive]))
@@ -339,6 +342,103 @@ retention() ->
         gen_tcp:close(Dave)
     after
         logger:remove_primary_filter(retention_bodies),
+        _ = application:stop(ircd),
+        os:unsetenv("IRCD_CONFIG")
+    end.
+
+%% Configured channels exist before anyone joins. An administrator who is
+%% already there becomes a channel operator on OPER. A normal operator does
+%% not. `channels` retention keeps a later topic instead of the configured one.
+predefined() ->
+    Dir = filename:join(
+        "/tmp", "ircd-predefined-" ++ integer_to_list(erlang:unique_integer([positive]))
+    ),
+    ok = filelib:ensure_dir(filename:join(Dir, "db")),
+    Db = filename:join(Dir, "db"),
+    Config = filename:join(Dir, "ircd.json"),
+    Extra = <<
+        "\"retention\":\"channels\",\"history_limit\":2,",
+        "\"administrators\":[{\"nick\":\"admin\",\"password\":\"adminsecret\"}],",
+        "\"channels\":[{\"name\":\"#Lobby\",\"topic\":\"hello topic\",\"key\":\"roomkey\",",
+        "\"limit\":5,\"modes\":\"nt\"}],"
+    >>,
+    ok = file:write_file(Config, config(Db, Extra)),
+    os:putenv("IRCD_CONFIG", Config),
+    {ok, _} = application:ensure_all_started(ircd),
+    try
+        Port = listener_port(),
+        Bob = register_client(Port, <<"bob">>, <<"Bob">>),
+        ?assert(has(recv(Bob), <<" 001 ">>)),
+        send(Bob, <<"LIST">>),
+        Listed = recv(Bob),
+        ?assert(has(Listed, <<" 322 ">>)),
+        ?assert(has(Listed, <<"#Lobby 0 :hello topic">>)),
+        send(Bob, <<"JOIN #lobby">>),
+        ?assert(has(recv(Bob), <<" 475 ">>)),
+        send(Bob, <<"JOIN #Lobby roomkey">>),
+        Joined = recv(Bob),
+        ?assert(has(Joined, <<"= #Lobby :bob">>)),
+        ?assertNot(has(Joined, <<"@bob">>)),
+        send(Bob, <<"TOPIC #Lobby :nope">>),
+        ?assert(has(recv(Bob), <<" 482 ">>)),
+        Alice = register_client(Port, <<"alice">>, <<"Alice">>),
+        ?assert(has(recv(Alice), <<" 001 ">>)),
+        send(Alice, <<"WHOIS alice">>),
+        ?assertNot(has(recv(Alice), <<" 313 ">>)),
+        send(Alice, <<"JOIN #Lobby roomkey">>),
+        AliceJoin = recv(Alice),
+        ?assert(has(AliceJoin, <<"JOIN #Lobby">>)),
+        ?assertNot(has(AliceJoin, <<"@alice">>)),
+        send(Alice, <<"OPER admin adminsecret">>),
+        Operated = recv(Alice),
+        ?assert(has(Operated, <<" 381 ">>)),
+        ?assert(has(Operated, <<"MODE #Lobby +o alice">>)),
+        send(Alice, <<"WHOIS alice">>),
+        ?assert(has(recv(Alice), <<"is an IRC administrator">>)),
+        send(Alice, <<"TOPIC #Lobby :changed-topic">>),
+        ?assert(has(recv(Alice), <<"TOPIC #Lobby :changed-topic">>)),
+        Carol = register_client(Port, <<"carol">>, <<"Carol">>),
+        ?assert(has(recv(Carol), <<" 001 ">>)),
+        send(Carol, <<"OPER oper opersecret">>),
+        ?assert(has(recv(Carol), <<" 381 ">>)),
+        send(Carol, <<"WHOIS carol">>),
+        CarolWhois = recv(Carol),
+        ?assert(has(CarolWhois, <<"is an IRC operator">>)),
+        ?assertNot(has(CarolWhois, <<"is an IRC administrator">>)),
+        send(Carol, <<"JOIN #Lobby roomkey">>),
+        CarolJoin = recv(Carol),
+        ?assert(has(CarolJoin, <<":carol">>)),
+        ?assertNot(has(CarolJoin, <<"@carol">>)),
+        send(Bob, <<"PART #Lobby">>),
+        _ = recv(Bob),
+        send(Alice, <<"PART #Lobby">>),
+        _ = recv(Alice),
+        send(Carol, <<"PART #Lobby">>),
+        _ = recv(Carol),
+        send(Bob, <<"LIST">>),
+        ?assert(has(recv(Bob), <<"#Lobby 0 :changed-topic">>)),
+        gen_tcp:close(Bob),
+        gen_tcp:close(Alice),
+        gen_tcp:close(Carol),
+        ok = application:stop(ircd),
+        {ok, _} = application:ensure_all_started(ircd),
+        Again = listener_port(),
+        Dave = register_client(Again, <<"dave">>, <<"Dave">>),
+        ?assert(has(recv(Dave), <<" 001 ">>)),
+        send(Dave, <<"LIST">>),
+        Restored = recv(Dave),
+        ?assert(has(Restored, <<"#Lobby 0 :changed-topic">>)),
+        send(Dave, <<"JOIN #Lobby roomkey">>),
+        DaveJoin = recv(Dave),
+        ?assert(has(DaveJoin, <<"= #Lobby :dave">>)),
+        ?assertNot(has(DaveJoin, <<"@dave">>)),
+        send(Dave, <<"MODE #Lobby">>),
+        Modes = recv(Dave),
+        ?assert(has(Modes, <<" 324 ">>)),
+        ?assert(has(Modes, <<"+ntkl">>)),
+        ?assert(has(Modes, <<"roomkey 5">>)),
+        gen_tcp:close(Dave)
+    after
         _ = application:stop(ircd),
         os:unsetenv("IRCD_CONFIG")
     end.

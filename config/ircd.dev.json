@@ -5,5 +5,15 @@
   "tls_port": null,
   "mnesia_dir": "/var/lib/ircd/mnesia",
   "retention": "transient",
-  "history_limit": 100
+  "history_limit": 100,
+  "administrators": [
+    {"nick": "yehor", "password": "devpass"},
+    {"nick": "admin", "password": "devpass"},
+    {"nick": "ops", "password": "devpass"}
+  ],
+  "channels": [
+    {"name": "#lobby", "topic": "Lobby", "modes": "nt"},
+    {"name": "#dev", "topic": "Development", "modes": "nt"},
+    {"name": "#random", "topic": "Random", "modes": "n"}
+  ]
 }

@@ -13,6 +13,9 @@ in the referenced RFC.
 - [x] Configurable server name, bind address, TCP/TLS ports, TLS certificate and
   key, log level and format, client limit, operator accounts, client password,
   MOTD, admin replies, reop delay, Mnesia directory, and peer links.
+- [x] Predefined `administrators` and `channels` in JSON. Administrator
+  accounts log in with `OPER` and receive channel operator on the configured
+  channels. Those channels are created at startup when no row exists.
 - [x] Flatlog JSON logging by default, with text logging as a configuration
   option.
 - [x] Direct TLS listener using TLS 1.2 and 1.3.

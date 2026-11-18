@@ -39,6 +39,9 @@ load(Path) ->
         Retention = retention(maps:get(<<"retention">>, Json, <<"transient">>)),
         HistoryLimit = history_limit(maps:get(<<"history_limit">>, Json, 100)),
         Operators = operators(maps:get(<<"operators">>, Json, [])),
+        Administrators = administrators(maps:get(<<"administrators">>, Json, [])),
+        ok = distinct_accounts(Operators, Administrators),
+        Channels = channels(maps:get(<<"channels">>, Json, [])),
         ServerLinks = server_links(maps:get(<<"server_links">>, Json, []), Name),
         Admin = admin_info(Json),
         {ok, #{
@@ -58,6 +61,8 @@ load(Path) ->
             retention => Retention,
             history_limit => HistoryLimit,
             operators => Operators,
+            administrators => Administrators,
+            channels => Channels,
             server_links => ServerLinks,
             admin => Admin
         }}
@@ -160,3 +165,159 @@ operators(Entries) when is_list(Entries) ->
     Keys = [Name || {Name, _} <- Parsed],
     true = length(Keys) =:= length(lists:usort(Keys)),
     Parsed.
+
+%% Administrator accounts use OPER. `nick` is the OPER parameter, folded with
+%% RFC 1459 rules. It does not have to equal the client's current nickname.
+%% The same folded name cannot appear twice or also appear in `operators`.
+administrators(Entries) when is_list(Entries) ->
+    administrators(Entries, [], []);
+administrators(Value) ->
+    erlang:error({invalid_administrators, Value}).
+
+administrators([], _Seen, Acc) ->
+    lists:reverse(Acc);
+administrators([Entry | Rest], Seen, Acc) ->
+    Account = administrator(Entry),
+    {Nick, _Password} = Account,
+    case lists:member(Nick, Seen) of
+        true -> erlang:error({duplicate_administrator, Nick});
+        false -> administrators(Rest, [Nick | Seen], [Account | Acc])
+    end.
+
+administrator(Entry) when is_map(Entry) ->
+    Nick = maps:get(<<"nick">>, Entry, undefined),
+    Password = maps:get(<<"password">>, Entry, undefined),
+    case ircd_wire:nickname(Nick) of
+        true -> ok;
+        false -> erlang:error({invalid_administrator, Nick})
+    end,
+    case is_binary(Password) andalso byte_size(Password) > 0 andalso byte_size(Password) =< 400 of
+        true -> {ircd_wire:fold(Nick), Password};
+        false -> erlang:error({invalid_administrator, Nick})
+    end;
+administrator(_) ->
+    erlang:error({invalid_administrator, invalid}).
+
+distinct_accounts(Operators, Administrators) ->
+    OperatorNames = [Name || {Name, _} <- Operators],
+    case [Nick || {Nick, _} <- Administrators, lists:member(Nick, OperatorNames)] of
+        [] -> ok;
+        [Nick | _] -> erlang:error({duplicate_administrator, Nick})
+    end.
+
+%% Predefined channels are created when no row exists. Safe `!` names are
+%% rejected because their identifier is assigned by the server.
+channels(Entries) when is_list(Entries) ->
+    channels(Entries, [], []);
+channels(Value) ->
+    erlang:error({invalid_channels, Value}).
+
+channels([], _Seen, Acc) ->
+    lists:reverse(Acc);
+channels([Entry | Rest], Seen, Acc) ->
+    Channel = channel_entry(Entry),
+    Key = maps:get(key, Channel),
+    case lists:member(Key, Seen) of
+        true -> erlang:error({duplicate_channel, maps:get(name, Channel)});
+        false -> channels(Rest, [Key | Seen], [Channel | Acc])
+    end.
+
+channel_entry(Entry) when is_map(Entry) ->
+    Name = maps:get(<<"name">>, Entry, undefined),
+    case is_binary(Name) andalso ircd_wire:channel(Name) andalso binary:first(Name) =/= $! of
+        true -> ok;
+        false -> erlang:error({invalid_channel, channel_label(Name)})
+    end,
+    Topic = channel_topic(maps:get(<<"topic">>, Entry, <<>>)),
+    Password = channel_key(maps:get(<<"key">>, Entry, null)),
+    Limit = channel_limit(maps:get(<<"limit">>, Entry, null)),
+    Flags = channel_flags(Name, maps:get(<<"modes">>, Entry, <<>>)),
+    #{
+        key => ircd_wire:fold(Name),
+        name => ircd_wire:retain(Name),
+        topic => ircd_wire:retain(Topic),
+        password => retain_secret(Password),
+        limit => Limit,
+        flags => Flags
+    };
+channel_entry(_) ->
+    erlang:error({invalid_channel, invalid}).
+
+channel_label(Name) when is_binary(Name), byte_size(Name) =< 50 -> Name;
+channel_label(_) -> invalid.
+
+channel_topic(<<>>) ->
+    <<>>;
+channel_topic(Topic) when is_binary(Topic), byte_size(Topic) =< 390 ->
+    case binary:match(Topic, [<<0>>, <<"\r">>, <<"\n">>]) of
+        nomatch -> Topic;
+        _ -> erlang:error({invalid_channel_topic, invalid})
+    end;
+channel_topic(_) ->
+    erlang:error({invalid_channel_topic, invalid}).
+
+channel_key(null) ->
+    undefined;
+channel_key(Key) when is_binary(Key), byte_size(Key) > 0, byte_size(Key) =< 64 ->
+    case binary:match(Key, [<<0>>, <<" ">>, <<",">>, <<":">>, <<"\r">>, <<"\n">>]) of
+        nomatch -> Key;
+        _ -> erlang:error({invalid_channel_key, invalid})
+    end;
+channel_key(_) ->
+    erlang:error({invalid_channel_key, invalid}).
+
+channel_limit(null) ->
+    undefined;
+channel_limit(Limit) when is_integer(Limit), Limit >= 1, Limit =< 2147483647 ->
+    Limit;
+channel_limit(Limit) ->
+    erlang:error({invalid_channel_limit, Limit}).
+
+channel_flags(Name, <<$+, Modes/binary>>) ->
+    channel_flags(Name, Modes);
+channel_flags(_Name, <<$-, _/binary>> = Modes) ->
+    erlang:error({invalid_channel_modes, Modes});
+channel_flags(Name, Modes) when is_binary(Modes), byte_size(Modes) =< 16 ->
+    Flags = mode_letters(Modes, binary:first(Name), #{}),
+    case binary:first(Name) of
+        $+ -> Flags#{$t => true};
+        _ -> Flags
+    end;
+channel_flags(_Name, _Modes) ->
+    erlang:error({invalid_channel_modes, invalid}).
+
+mode_letters(<<>>, _Type, Flags) ->
+    Flags;
+mode_letters(<<Letter, Rest/binary>>, Type, Flags) ->
+    case allowed_channel_mode(Letter, Type) andalso not is_map_key(Letter, Flags) of
+        true ->
+            case exclusive_mode(Letter, Flags) of
+                true -> mode_letters(Rest, Type, Flags#{Letter => true});
+                false -> erlang:error({invalid_channel_modes, Letter})
+            end;
+        false ->
+            erlang:error({invalid_channel_modes, Letter})
+    end.
+
+allowed_channel_mode($a, $&) ->
+    true;
+allowed_channel_mode($a, _) ->
+    false;
+allowed_channel_mode(Letter, Type) when
+    Type =:= $# orelse Type =:= $& orelse Type =:= $+,
+    Letter =:= $i orelse Letter =:= $m orelse Letter =:= $n orelse Letter =:= $p orelse
+        Letter =:= $s orelse Letter =:= $t orelse Letter =:= $q orelse Letter =:= $K
+->
+    true;
+allowed_channel_mode(_, _) ->
+    false.
+
+exclusive_mode($p, Flags) ->
+    not is_map_key($s, Flags);
+exclusive_mode($s, Flags) ->
+    not is_map_key($p, Flags);
+exclusive_mode(_, _) ->
+    true.
+
+retain_secret(undefined) -> undefined;
+retain_secret(Secret) -> ircd_wire:retain(Secret).

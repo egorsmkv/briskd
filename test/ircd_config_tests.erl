@@ -31,6 +31,8 @@ retention_setting_test() ->
     {ok, Transient} = ircd_config:load(Default),
     ?assertEqual(transient, maps:get(retention, Transient)),
     ?assertEqual(100, maps:get(history_limit, Transient)),
+    ?assertEqual([], maps:get(administrators, Transient)),
+    ?assertEqual([], maps:get(channels, Transient)),
     Bad = filename:join(Dir, "bad.json"),
     ok = file:write_file(Bad, <<"{\"retention\":\"forever\"}">>),
     ?assertMatch(
@@ -45,3 +47,93 @@ retention_setting_test() ->
     ok = file:write_file(Explicit, <<"{\"retention\":\"transient\"}">>),
     {ok, Named} = ircd_config:load(Explicit),
     ?assertEqual(transient, maps:get(retention, Named)).
+
+predefined_lists_test() ->
+    Dir = filename:join(
+        "/tmp", "ircd-config-lists-" ++ integer_to_list(erlang:unique_integer([positive]))
+    ),
+    ok = filelib:ensure_dir(filename:join(Dir, "x")),
+    Path = filename:join(Dir, "lists.json"),
+    ok = file:write_file(Path, <<
+        "{\"operators\":[{\"name\":\"oper\",\"password\":\"opersecret\"}],",
+        "\"administrators\":[{\"nick\":\"Admin\",\"password\":\"adminsecret\"}],",
+        "\"channels\":[{\"name\":\"#Lobby\",\"topic\":\"hello topic\",\"key\":\"roomkey\",",
+        "\"limit\":5,\"modes\":\"+nt\"},{\"name\":\"&local\",\"modes\":\"a\"},",
+        "{\"name\":\"+notes\"}]}"
+    >>),
+    {ok, Config} = ircd_config:load(Path),
+    ?assertEqual([{<<"admin">>, <<"adminsecret">>}], maps:get(administrators, Config)),
+    [Lobby, Local, Notes] = maps:get(channels, Config),
+    ?assertEqual(<<"#Lobby">>, maps:get(name, Lobby)),
+    ?assertEqual(<<"#lobby">>, maps:get(key, Lobby)),
+    ?assertEqual(<<"hello topic">>, maps:get(topic, Lobby)),
+    ?assertEqual(<<"roomkey">>, maps:get(password, Lobby)),
+    ?assertEqual(5, maps:get(limit, Lobby)),
+    ?assertEqual(#{$n => true, $t => true}, maps:get(flags, Lobby)),
+    ?assertEqual(#{$a => true}, maps:get(flags, Local)),
+    ?assertEqual(#{$t => true}, maps:get(flags, Notes)),
+    DuplicateAdmin = filename:join(Dir, "dup-admin.json"),
+    ok = file:write_file(DuplicateAdmin, <<
+        "{\"administrators\":[",
+        "{\"nick\":\"Admin\",\"password\":\"one\"},",
+        "{\"nick\":\"admin\",\"password\":\"two\"}]}"
+    >>),
+    ?assertMatch(
+        {error, {invalid_config, _, {duplicate_administrator, <<"admin">>}}},
+        ircd_config:load(DuplicateAdmin)
+    ),
+    Shared = filename:join(Dir, "shared.json"),
+    ok = file:write_file(Shared, <<
+        "{\"operators\":[{\"name\":\"admin\",\"password\":\"opersecret\"}],",
+        "\"administrators\":[{\"nick\":\"admin\",\"password\":\"adminsecret\"}]}"
+    >>),
+    ?assertMatch(
+        {error, {invalid_config, _, {duplicate_administrator, <<"admin">>}}},
+        ircd_config:load(Shared)
+    ),
+    BadNick = filename:join(Dir, "bad-nick.json"),
+    ok = file:write_file(BadNick, <<
+        "{\"administrators\":[{\"nick\":\"123\",\"password\":\"secret\"}]}"
+    >>),
+    ?assertMatch(
+        {error, {invalid_config, _, {invalid_administrator, <<"123">>}}},
+        ircd_config:load(BadNick)
+    ),
+    DuplicateChannel = filename:join(Dir, "dup-channel.json"),
+    ok = file:write_file(DuplicateChannel, <<
+        "{\"channels\":[{\"name\":\"#Lobby\"},{\"name\":\"#lobby\"}]}"
+    >>),
+    ?assertMatch(
+        {error, {invalid_config, _, {duplicate_channel, <<"#lobby">>}}},
+        ircd_config:load(DuplicateChannel)
+    ),
+    BadChannel = filename:join(Dir, "bad-channel.json"),
+    ok = file:write_file(BadChannel, <<"{\"channels\":[{\"name\":\"lobby\"}]}">>),
+    ?assertMatch(
+        {error, {invalid_config, _, {invalid_channel, <<"lobby">>}}},
+        ircd_config:load(BadChannel)
+    ),
+    Safe = filename:join(Dir, "safe.json"),
+    ok = file:write_file(Safe, <<"{\"channels\":[{\"name\":\"!ABCDERoom\"}]}">>),
+    ?assertMatch(
+        {error, {invalid_config, _, {invalid_channel, <<"!ABCDERoom">>}}},
+        ircd_config:load(Safe)
+    ),
+    BadModes = filename:join(Dir, "modes.json"),
+    ok = file:write_file(BadModes, <<"{\"channels\":[{\"name\":\"#room\",\"modes\":\"ps\"}]}">>),
+    ?assertMatch(
+        {error, {invalid_config, _, {invalid_channel_modes, $s}}},
+        ircd_config:load(BadModes)
+    ),
+    Anonymous = filename:join(Dir, "anon.json"),
+    ok = file:write_file(Anonymous, <<"{\"channels\":[{\"name\":\"#room\",\"modes\":\"a\"}]}">>),
+    ?assertMatch(
+        {error, {invalid_config, _, {invalid_channel_modes, $a}}},
+        ircd_config:load(Anonymous)
+    ),
+    BadLimit = filename:join(Dir, "bad-limit.json"),
+    ok = file:write_file(BadLimit, <<"{\"channels\":[{\"name\":\"#room\",\"limit\":0}]}">>),
+    ?assertMatch(
+        {error, {invalid_config, _, {invalid_channel_limit, 0}}},
+        ircd_config:load(BadLimit)
+    ).

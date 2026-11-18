@@ -18,6 +18,7 @@
     split/1,
     topic/4,
     note_channel_history/4,
+    grant_predefined_operator/2,
     release_if_empty/2,
     track_opless/2,
     user_mode_string/1,
@@ -29,16 +30,61 @@
 %% @doc Local channel membership, modes, names, and reop.
 
 %% Last local member left. Safe channels always remain. Ordinary channels remain
-%% only when retention is `channels`, so a later restart can restore them.
+%% when retention is `channels` or the channel is in the configured list, so
+%% a predefined channel stays available after the last member leaves.
 release_if_empty(#channel{name = <<$!, _/binary>>} = Channel, Remaining) ->
     mnesia:dirty_write(track_opless(Channel, Remaining));
 release_if_empty(#channel{key = Key} = Channel, Remaining) ->
-    case ircd_state:retention() of
-        channels ->
+    case ircd_state:retention() =:= channels orelse ircd_state:predefined_channel(Key) of
+        true ->
             mnesia:dirty_write(Channel#channel{members = Remaining});
-        transient ->
+        false ->
             mnesia:dirty_delete(channel, Key),
             mnesia:dirty_delete(channel_history, Key)
+    end.
+
+%% An administrator who is already on a predefined channel becomes its
+%% channel operator when OPER succeeds. `+` channels stay modeless.
+grant_predefined_operator(#client{pid = Pid}, Server) ->
+    case ircd_state:administrator(Pid) of
+        false ->
+            ok;
+        true ->
+            Client = ircd_state_client:client(Pid),
+            lists:foreach(
+                fun(Key) -> grant_predefined_one(Key, Client, Server) end,
+                Client#client.channels
+            )
+    end.
+
+grant_predefined_one(Key, Client, Server) ->
+    case ircd_state:predefined_channel(Key) of
+        false -> ok;
+        true -> grant_predefined_row(mnesia:dirty_read(channel, Key), Client, Server)
+    end.
+
+grant_predefined_row([], _Client, _Server) ->
+    ok;
+grant_predefined_row([#channel{name = <<$+, _/binary>>}], _Client, _Server) ->
+    ok;
+grant_predefined_row(
+    [#channel{members = Members} = Channel], #client{pid = Pid, nick = Nick} = Client, _Server
+) ->
+    Roles = maps:get(Pid, Members, []),
+    case is_map_key(Pid, Members) andalso not lists:member(operator, Roles) of
+        false ->
+            ok;
+        true ->
+            Updated = Channel#channel{members = Members#{Pid => lists:usort([operator | Roles])}},
+            mnesia:dirty_write(Updated),
+            ircd_state_send:broadcast(
+                maps:keys(Members),
+                ircd_state_send:prefix(Client),
+                <<"MODE">>,
+                [Channel#channel.name, <<"+o">>, Nick],
+                none
+            ),
+            ircd_state_link:propagate_channel_mode(Client, Channel#channel.name, <<"+o">>, [Nick])
     end.
 
 track_opless(#channel{} = Channel, Remaining) ->
@@ -239,10 +285,13 @@ add_member(Key, Name, #client{pid = Pid} = Client, Server, Password) ->
                 }
         end,
     #channel{name = Canonical, members = Members} = Channel,
+    Admin = ircd_state:administrator(Pid) andalso ircd_state:predefined_channel(Key),
     Role =
-        case {IsNew, binary:first(Canonical)} of
-            {true, $!} -> [operator, creator];
-            {true, Prefix} when Prefix =/= $+ -> [operator];
+        case {IsNew, binary:first(Canonical), Admin} of
+            {true, $!, _} -> [operator, creator];
+            {_, $+, _} -> [member];
+            {true, _, _} -> [operator];
+            {false, _, true} -> [operator];
             _ -> [member]
         end,
     NewMembers =

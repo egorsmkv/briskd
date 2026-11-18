@@ -229,6 +229,10 @@ disconnect(#client{pid = Pid, channels = Channels} = Client, Reason, Server) ->
     mnesia:dirty_delete(client, Pid),
     mnesia:dirty_delete(activity, Pid),
     mnesia:dirty_delete(user_modes, Pid),
+    case ets:whereis(ircd_admins) of
+        undefined -> ok;
+        _ -> ets:delete(ircd_admins, Pid)
+    end,
     ircd_cap:disconnect(Pid),
     remove_connection_stats(Pid).
 

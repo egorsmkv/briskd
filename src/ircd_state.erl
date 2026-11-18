@@ -27,6 +27,10 @@
     user_visible/2,
     history_limit/0,
     retention/0,
+    administrator/1,
+    predefined_channel/1,
+    store_accounts/1,
+    seed_channels/0,
     visible_member/3,
     wildcard_match/2
 ]).
@@ -120,13 +124,14 @@ init(#{name := Name} = Config) ->
     ensure_ets(ircd_inbound_peers),
     ensure_ets(ircd_outbound_ready),
     ensure_ets(ircd_holds),
+    ensure_ets(ircd_admins),
     persistent_term:put({?MODULE, config}, Config),
     persistent_term:put({?MODULE, config_path}, maps:get(config_path, Config)),
     persistent_term:put({?MODULE, motd_file}, maps:get(motd_file, Config, null)),
     persistent_term:put({?MODULE, client_password}, maps:get(client_password, Config, null)),
     persistent_term:put({?MODULE, server_links}, maps:get(server_links, Config, [])),
     persistent_term:put({?MODULE, admin}, maps:get(admin, Config, #{})),
-    persistent_term:put({?MODULE, operators}, maps:get(operators, Config, [])),
+    store_accounts(Config),
     persistent_term:put({?MODULE, reop_delay}, maps:get(reop_delay, Config, 30)),
     table(client, record_info(fields, client), [{index, [nick]}]),
     table(channel, record_info(fields, channel), []),
@@ -155,6 +160,7 @@ init(#{name := Name} = Config) ->
     ),
     {atomic, ok} = mnesia:clear_table(client),
     reset_channels(),
+    seed_channels(),
     {atomic, ok} = mnesia:clear_table(activity),
     {atomic, ok} = mnesia:clear_table(user_modes),
     {atomic, ok} = mnesia:clear_table(remote_client),
@@ -335,6 +341,64 @@ reset_channels() ->
 
 cleared_membership(Channel) ->
     Channel#channel{members = #{}, invited = [], opless_since = undefined}.
+
+%% Publish OPER credentials and the predefined-channel keys. Administrator
+%% passwords join the operator list so OPER and STATS o accept them. Their
+%% folded nicks stay separate so a successful OPER can be told from an
+%% ordinary operator account.
+-spec store_accounts(map()) -> ok.
+store_accounts(Config) ->
+    Operators = maps:get(operators, Config, []),
+    Administrators = maps:get(administrators, Config, []),
+    persistent_term:put({?MODULE, operators}, Operators ++ Administrators),
+    persistent_term:put({?MODULE, administrators}, [Nick || {Nick, _} <- Administrators]),
+    persistent_term:put(
+        {?MODULE, predefined_channels},
+        [maps:get(key, Channel) || Channel <- maps:get(channels, Config, [])]
+    ),
+    ok.
+
+%% Create each configured channel that has no row. An existing row, including
+%% one kept by `channels` retention, keeps its topic, modes, key, and limit.
+-spec seed_channels() -> ok.
+seed_channels() ->
+    Config = persistent_term:get({?MODULE, config}, #{}),
+    lists:foreach(fun seed_channel/1, maps:get(channels, Config, [])).
+
+seed_channel(#{
+    key := Key, name := Name, topic := Topic, flags := Flags, limit := Limit, password := Password
+}) ->
+    case mnesia:dirty_read(channel, Key) of
+        [_] ->
+            ok;
+        [] ->
+            mnesia:dirty_write(#channel{
+                key = Key,
+                name = Name,
+                topic = Topic,
+                flags = Flags,
+                lists = #{},
+                members = #{},
+                invited = [],
+                limit = Limit,
+                password = Password,
+                creator = undefined,
+                opless_since = undefined
+            })
+    end.
+
+%% @doc True after this session's OPER matched an `administrators` entry.
+-spec administrator(pid()) -> boolean().
+administrator(Pid) when is_pid(Pid) ->
+    case ets:whereis(ircd_admins) of
+        undefined -> false;
+        _ -> ets:lookup(ircd_admins, Pid) =/= []
+    end.
+
+%% @doc True when the folded channel key is in the configured channel list.
+-spec predefined_channel(binary()) -> boolean().
+predefined_channel(Key) when is_binary(Key) ->
+    lists:member(Key, persistent_term:get({?MODULE, predefined_channels}, [])).
 
 %% @doc Restart policy loaded from JSON. `transient` drops ordinary channels.
 -spec retention() -> transient | channels.
