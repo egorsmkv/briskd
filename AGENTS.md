@@ -19,7 +19,7 @@ Do not trade off a MUST-level requirement of the implemented IRC specifications 
 
 This tree implements **selected parts** of RFC 1459 and RFC 2810–2813. It is not a complete IRC daemon. `ROADMAP.md` is the coverage record: a checked item is present, and it does not mean every edge case in the cited RFC is done. Extend behavior only when the task asks for it, and update the roadmap and README when coverage changes.
 
-Where RFC 1459 and RFC 2812 disagree, keep the choice already encoded in this server and name it in the change. Identity comparison uses the **RFC 1459** case mapping in `ircd_wire:fold/1` (`[\]^` fold to `{|}~`). IRCv3 message tags, capability negotiation beyond the existing limited `CAP LS` / `CAP END` path, and labeled responses are outside the current protocol surface. Add them only when the task explicitly requires them.
+Where RFC 1459 and RFC 2812 disagree, keep the choice already encoded in this server and name it in the change. Identity comparison uses the **RFC 1459** case mapping in `ircd_wire:fold/1` (`[\]^` fold to `{|}~`). IRCv3 message tags, labeled responses, and capability families are outside the current protocol surface. `CAP LS` and `CAP LIST` are empty, `CAP REQ` is `NAK`, and an unknown subcommand returns 410. Add IRCv3 only when the task explicitly requires it.
 
 ## 2. Working protocol for the agent
 
@@ -168,7 +168,7 @@ Follow that ownership. Choose `one_for_one`, `rest_for_one`, or `one_for_all` fr
 | Architecture | RFC 2810 | Clients, channels, and directly connected servers |
 | Channel management | RFC 2811 | Implemented subset: membership, modes, masks, safe `!` channels, local `&` channels |
 | Client protocol | RFC 2812 | Implemented commands and numerics listed in the README |
-| Server protocol | RFC 2813 | Direct peers, `PASS`/`SERVER`, burst, and the propagation the roadmap marks done |
+| Server protocol | RFC 2813 | Direct and multi-hop peers, `PASS`/`SERVER`, burst, routing, and netsplit cleanup |
 | Default port | RFC 7194 | TCP `6667` unless configured otherwise |
 
 Check errata and IANA IRC numeric/mode assignments before adding a numeric or a mode letter. Update `ROADMAP.md` and the README command list in the same change. Interoperability with a second `ircd` (or another RFC 2813 peer) is a separate gate from unit tests.
@@ -188,19 +188,20 @@ Parsers accept the grammar they claim and reject the rest with `error` or the RF
 
 - Apply membership, key, limit, invite, ban, exception, moderation, and member-only checks in the order the existing command handlers use, and extend that order only with the RFC rule cited in the change.
 - Channel types in this tree: `#` standard, `&` local (not sent to peers as a shared channel), `+` modeless where accepted by `ircd_wire`, `!` safe channels with the five-character id and creator/`+r` reop behavior. Anonymous `+a` is defined for local `&` and safe `!` channels. Preserve those visibility rules in `NAMES`, `WHO`, `WHOIS`, `PRIVMSG`, and `NOTICE`.
-- User mode `+i` hides a user from queries unless the requester shares a channel, including the shared-channel check still listed as unfinished for remote users. Do not widen visibility while that gap remains; record the limitation if a command starts returning remote invisible users.
+- User mode `+i` hides a user from queries unless the requester shares a channel. That shared-channel check includes remote members. Do not show an invisible remote user who does not share a channel with the requester.
 - Op, voice, and creator privileges are per-channel membership. A mode change, kick, topic, or invite from a peer still requires the remote member to hold the privilege the local handler enforces.
 - Reop delay for an operatorless safe channel comes from `reop_delay` (seconds, with the implemented jitter). Use a monotonic timer and cancel it when an operator returns or the channel is destroyed.
 
 ### 8.4 Server links
 
-Linking is **direct peers only**. The roadmap still excludes multi-hop routing, `SQUIT` netsplit cleanup, hop counts and tokens, and full invitation sync. Implement those only when the task asks, and then update loop prevention, burst order, and nickname-collision behavior together.
+Linking is RFC 2813 over configured direct peers, with introductions of servers behind those peers. Loop prevention, burst order, hop counts, and nickname collision live in `ircd_route` and `ircd_state_net`. Do not send a routed message back to the ingress link.
 
 - Handshake is RFC 2813 `PASS` / `SERVER` with the configured name and password, on TCP or TLS as the peer entry says. Inbound links accept the same class of check. A failed handshake closes the link and does not import state.
-- Bursts and later events use the server message forms already produced for extended `NICK` and `NJOIN`. Source prefixes on ingress must name a user or server the link is allowed to speak for. Drop or reject a prefix that would let a peer impersonate a local user.
-- Propagate a change on the paths the roadmap marks done (registrations, nick changes, quits, away, joins, parts, topics, modes, kicks, direct `PRIVMSG`/`NOTICE`). Channel traffic is delivered to local members and to directly connected peers that have members, and it is not sent back to the peer that sent it.
-- On link loss, follow the cleanup the code actually performs today, and do not claim users behind that server disappear from the wider topology until netsplit handling exists. Imported records are transient across local restart.
-- Peer reconnect uses the link worker's backoff. Backoff is bounded and logged at a low rate.
+- Bursts include known servers in hop order, local and remote users, and channel state. Later `NICK`, membership, mode, topic, kick, and message events are forwarded to the other peers. Source prefixes on ingress must name a user or server the link is allowed to speak for. Drop or reject a prefix that would let a peer impersonate a local user.
+- A nickname collision kills both copies and sends `KILL` and `QUIT` to the peers. `WHO` and `WHOIS` name the user's home server, not the adjacent link.
+- `SQUIT` and link loss remove users, services, and channels reachable only through the lost server, and tell the remaining peers. Imported records are transient across local restart.
+- Operator `DIE` calls `init:stop/0`. Operator `RESTART` calls `init:restart/0`. Other clients receive numeric 481. `SUMMON` and `USERS` stay disabled with numerics 445 and 446.
+- Peer reconnect uses the link worker's backoff. Backoff is bounded and logged at a low rate. A connector that has not authenticated must not clear an inbound session that uses the same peer name.
 
 ### 8.5 Numerics and compatibility
 
@@ -224,11 +225,11 @@ Linking is **direct peers only**. The roadmap still excludes multi-hop routing, 
 
 - Runtime configuration is JSON, selected with `IRCD_CONFIG`, loaded by `ircd_config`. Reject invalid configuration at startup. Paths are relative to the process working directory unless absolute. Defaults and keys are documented in the README table (`name`, `bind`, `tcp_port`, `tls_port`, certificates, log level and format, `max_clients`, `client_password`, `operators`, MOTD, admin fields, `reop_delay`, `mnesia_dir`, `server_links`).
 - At least one of `tcp_port` and `tls_port` is set. Port `0` means an ephemeral port reported in the startup log. The development container uses `config/ircd.dev.json`.
-- Mnesia disk copies store WHOWAS history and safe-channel state under `mnesia_dir`. Document any new persisted record with its durability, what restart does to it, and how an operator backs it up. Do not treat Mnesia as a complete disaster-recovery design; backup and schema migration are still open roadmap items.
+- Mnesia disk copies store WHOWAS history and safe-channel state under `mnesia_dir`. Ordinary channels, client sessions, and imported peer state are cleared on startup. Backup, restore, and schema migration are documented in `docs/mnesia.md`. Document any new persisted record with its durability and what restart does to it.
 - Shutdown stops listeners, closes client and link sockets, and leaves durable Mnesia data consistent. Do not drop safe-channel rows on a normal stop.
 - Readiness means the configured listeners are bound and state is initialized. A down peer link is a degraded link, not by itself a dead process. Liveness stays up while a configured peer is disconnected and the link worker is retrying.
 - Hot upgrade is unsupported unless `.appup` files, `code_change` callbacks, and Mnesia schema migration are added and tested. Prefer a restart, and state in the change notes that ordinary channels and sessions do not survive it.
-- Distributed Erlang is not the clustering mechanism. Topology, when implemented, is IRC server links (RFC 2813), with the current one-hop limit.
+- Distributed Erlang is not the clustering mechanism. Topology is IRC server links (RFC 2813), including servers introduced behind a direct peer.
 
 ## 11. Observability
 
@@ -247,7 +248,7 @@ Linking is **direct peers only**. The roadmap still excludes multi-hop routing, 
 - Cover registration order (`PASS`, `NICK`, `USER`), bad nicknames, collisions under RFC 1459 case folding, the registration timeout, and commands issued before registration.
 - Cover channel key, limit, ban, exception, invite-only, moderation, op and voice, safe-channel id syntax, and anonymous-channel visibility for the modes the change touches.
 - Cover TCP partial lines and several lines in one recv, TLS handshake failure when the TLS listener is enabled, client disconnect mid-registration, and peer disconnect after a burst.
-- For link changes, drive a direct peer through `PASS`/`SERVER`, a burst, and one propagated command. Assert the message is not echoed to the ingress peer. Leave multi-hop assertions out until multi-hop routing exists.
+- For link changes, drive a peer through `PASS`/`SERVER`, a burst, and one propagated command. Assert a multi-hop nick or membership event is forwarded once and is not echoed to the ingress peer. Cover `SQUIT` or link loss for a user who exists only behind the lost server.
 - Timer tests inject a monotonic deadline or a controllable timer where the code allows it. Avoid `timer:sleep` as the only synchronization.
 
 ### Commands
@@ -267,7 +268,7 @@ Add `rebar3 dialyzer`, `rebar3 xref`, Common Test, and a release smoke test when
 - Define the load before tuning: concurrent clients, joins per second, `PRIVMSG` fan-out (channel size times message rate), average line size, TLS fraction, and number of direct peers.
 - Measure a packaged or release-mode node after warmup. Record OTP/ERTS, CPU, and the load generator. The generator must not be the bottleneck being reported.
 - Compare matched before and after runs. Report p99 and error numerics alongside throughput. A faster path that drops memberships, mis-folds nicknames, or leaks sessions is not an improvement.
-- Gate wire changes on malformed-line tests and the 512-octet ceiling. Gate state changes on membership invariants. Gate link changes on prefix checks and one-hop routing tests.
+- Gate wire changes on malformed-line tests and the 512-octet ceiling. Gate state changes on membership invariants. Gate link changes on prefix checks, loop prevention, and a multi-hop forward that is not echoed to the ingress peer.
 
 ## 14. Agent completion checklist
 

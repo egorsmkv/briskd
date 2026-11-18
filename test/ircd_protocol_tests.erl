@@ -70,7 +70,7 @@ protocol() ->
         os:unsetenv("IRCD_CONFIG")
     end.
 
-link_and_restart(Port, Bob, Dir, Config) ->
+link_and_restart(Port, Bob, Dir, _Config) ->
     Peer = handshake(Port, <<"peer.test">>),
     Other = handshake(Port, <<"other.test">>),
     _ = recv(Peer),
@@ -151,9 +151,19 @@ link_and_restart(Port, Bob, Dir, Config) ->
     ?assert(has(recv(Bob), <<" 234 ">>)),
     send(Bob, <<"SQUERY helper :ping">>),
     ?assert(has(recv(Peer), <<"SQUERY helper :ping">>)),
-    gen_tcp:close(Other),
+    send(Peer, <<":remote!user@leaf.test JOIN #leafonly">>),
+    LeafJoin = recv(Other),
+    ?assertEqual(1, count(LeafJoin, <<"JOIN #leafonly">>)),
+    ?assertNot(has(recv_quiet(Peer), <<"JOIN #leafonly">>)),
+    _ = recv_quiet(Other),
     send(Peer, <<":peer.test SQUIT leaf.test :split">>),
+    Split = recv(Other),
+    ?assertEqual(1, count(Split, <<"SQUIT leaf.test">>)),
+    ?assertNot(has(recv_quiet(Peer), <<"SQUIT leaf.test">>)),
     timer:sleep(200),
+    ?assertNot(lists:member(<<"remote">>, mnesia:dirty_all_keys(remote_client))),
+    ?assertNot(lists:member(<<"leaf.test">>, mnesia:dirty_all_keys(known_server))),
+    ?assertNot(lists:member(<<"#leafonly">>, mnesia:dirty_all_keys(remote_channel))),
     send(Bob, <<"WHOIS remote">>),
     ?assert(has(recv(Bob), <<" 401 ">>)),
     send(Bob, <<"WHOIS direct">>),
@@ -162,6 +172,7 @@ link_and_restart(Port, Bob, Dir, Config) ->
     timer:sleep(300),
     send(Bob, <<"WHOIS direct">>),
     ?assert(has(recv(Bob), <<" 401 ">>)),
+    gen_tcp:close(Other),
     gen_tcp:close(Bob),
     ok = application:stop(ircd),
     {ok, _} = application:ensure_all_started(ircd),
@@ -180,8 +191,39 @@ link_and_restart(Port, Bob, Dir, Config) ->
     ?assert(has(Ordinary, <<" 331 ">>)),
     ?assertNot(has(Ordinary, <<"temp">>)),
     gen_tcp:close(Carol),
-    _ = Dir,
-    _ = Config.
+    restore_from_backup(Dir).
+
+%% Exercise the operator backup and restore procedure, then the normal startup
+%% rules: WHOWAS and the safe channel come back, and the ordinary channel does not.
+restore_from_backup(Dir) ->
+    Backup = filename:join(Dir, "state.bak"),
+    ok = mnesia:backup(Backup),
+    ok = application:stop(ircd),
+    Restored = filename:join(Dir, "restored"),
+    ok = filelib:ensure_dir(filename:join(Restored, "schema.DAT")),
+    ok = application:set_env(mnesia, dir, Restored),
+    ok = mnesia:create_schema([node()]),
+    {ok, _} = application:ensure_all_started(mnesia),
+    {atomic, _} = mnesia:restore(Backup, [{default_op, recreate_tables}]),
+    ok = application:stop(mnesia),
+    RestoredConfig = filename:join(Dir, "restored.json"),
+    ok = file:write_file(RestoredConfig, config(Restored)),
+    os:putenv("IRCD_CONFIG", RestoredConfig),
+    {ok, _} = application:ensure_all_started(ircd),
+    Port = listener_port(),
+    Dave = register_client(Port, <<"dave">>, <<"Dave">>),
+    ?assert(has(recv(Dave), <<" 001 ">>)),
+    send(Dave, <<"WHOWAS alice">>),
+    ?assert(has(recv(Dave), <<" 314 ">>)),
+    send(Dave, <<"JOIN !room">>),
+    Rejoined = recv(Dave),
+    ?assert(has(Rejoined, <<" 332 ">>)),
+    ?assert(has(Rejoined, <<"kept">>)),
+    send(Dave, <<"JOIN #ordinary">>),
+    Ordinary = recv(Dave),
+    ?assert(has(Ordinary, <<" 331 ">>)),
+    ?assertNot(has(Ordinary, <<"temp">>)),
+    gen_tcp:close(Dave).
 
 config(Db) ->
     iolist_to_binary([
