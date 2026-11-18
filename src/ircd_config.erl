@@ -53,6 +53,8 @@ load(Path) ->
             network => Network,
             network_icon => network_icon(maps:get(<<"network_icon">>, Json, null)),
             sts => sts(maps:get(<<"sts">>, Json, null)),
+            nicklen => nicklen(maps:get(<<"nicklen">>, Json, 9)),
+            resource_delay => resource_delay(maps:get(<<"resource_delay">>, Json, 60)),
             account_password_min => password_min(maps:get(<<"account_password_min">>, Json, 8)),
             account_registration => boolean_setting(
                 account_registration, maps:get(<<"account_registration">>, Json, true)
@@ -155,6 +157,15 @@ sni_hosts(Entries) when is_list(Entries) ->
          || Entry <- Entries
         ]}
     ].
+
+%% Longest nickname. RFC 1459 uses 9; larger values are an operator choice
+%% and must match every linked server.
+nicklen(Value) when is_integer(Value), Value >= 9, Value =< 30 -> Value;
+nicklen(Value) -> erlang:error({invalid_nicklen, Value}).
+
+%% Seconds a released nickname or channel name stays unavailable (437).
+resource_delay(Value) when is_integer(Value), Value >= 0, Value =< 86400 -> Value;
+resource_delay(Value) -> erlang:error({invalid_resource_delay, Value}).
 
 password_min(Value) when is_integer(Value), Value >= 1, Value =< 300 -> Value;
 password_min(Value) -> erlang:error({invalid_account_password_min, Value}).

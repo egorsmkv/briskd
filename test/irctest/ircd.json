@@ -9,6 +9,8 @@
   "retention": "transient",
   "history_limit": 100,
   "account_password_min": 4,
+  "resource_delay": 0,
+  "nicklen": 30,
   "operators": [{"name": "operuser", "password": "operpassword"}],
   "max_clients": 10000
 }

@@ -32,7 +32,7 @@ tokens() ->
         <<"MSGREFTYPES=timestamp,msgid">>,
         <<"NAMELEN=200">>,
         <<"NETWORK=", (maps:get(network, Config, <<"IRC">>))/binary>>,
-        <<"NICKLEN=9">>,
+        <<"NICKLEN=", (integer_to_binary(ircd_state:nicklen()))/binary>>,
         <<"PREFIX=(ov)@+">>,
         <<"TOPICLEN=390">>,
         <<"USERLEN=32">>,

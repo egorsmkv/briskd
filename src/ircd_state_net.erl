@@ -344,7 +344,7 @@ import_service(Peer, Prefix, Params) ->
                     undefined -> Peer;
                     _ -> Prefix
                 end,
-            case ircd_wire:nickname(Name) of
+            case ircd_wire:nickname(Name, ircd_state:nicklen()) of
                 false ->
                     {error, invalid_service};
                 true ->
@@ -421,7 +421,7 @@ oper_command_allowed(<<"SERVICE">>, [Name, Dist, Type | Rest], Client, Server) -
             [Text | _] -> Text;
             [] -> <<"service">>
         end,
-    case ircd_wire:nickname(Name) of
+    case ircd_wire:nickname(Name, ircd_state:nicklen()) of
         true ->
             case store_service(Name, Dist, Type, Info, local_name(), undefined) of
                 ok ->
@@ -608,10 +608,21 @@ services() ->
      || Key <- mnesia:dirty_all_keys(service), [Service] <- [mnesia:dirty_read(service, Key)]
     ].
 
+%% `resource_delay` (seconds) overrides the default delay; 0 disables holds.
 hold(Kind, Name) ->
-    Until = erlang:monotonic_time(second) + ircd_route:resource_delay_seconds(),
-    ets:insert(?HOLDS, {{Kind, ircd_wire:fold(Name)}, Until}),
-    ok.
+    Delay = maps:get(
+        resource_delay,
+        persistent_term:get({ircd_state, config}, #{}),
+        ircd_route:resource_delay_seconds()
+    ),
+    case Delay of
+        0 ->
+            ok;
+        _ ->
+            Until = erlang:monotonic_time(second) + Delay,
+            ets:insert(?HOLDS, {{Kind, ircd_wire:fold(Name)}, Until}),
+            ok
+    end.
 
 blocked(Kind, Name) ->
     Key = {Kind, ircd_wire:fold(Name)},

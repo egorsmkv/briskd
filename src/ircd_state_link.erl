@@ -310,7 +310,7 @@ import_remote_nick(Peer, Home, Distance, Nick, _Hop, User, Host, Token, ModeStri
     Key = ircd_wire:fold(Nick),
     case
         {
-            ircd_wire:nickname(Nick),
+            ircd_wire:nickname(Nick, ircd_state:nicklen()),
             Key =/= <<"anonymous">>,
             valid_decimal(Token),
             re:run(User, <<"^[A-Za-z0-9_.-]{1,32}$">>, [{capture, none}, dollar_endonly]),
@@ -460,7 +460,7 @@ rename_remote_nick(Peer, Prefix, Nick) ->
         {ok, #remote_client{key = OldKey} = Remote} ->
             case
                 {
-                    ircd_wire:nickname(Nick),
+                    ircd_wire:nickname(Nick, ircd_state:nicklen()),
                     NewKey =/= <<"anonymous">>,
                     ircd_state_client:find_nick(Nick),
                     mnesia:dirty_read(remote_client, NewKey)
@@ -949,7 +949,7 @@ parse_remote_members(_Peer, [], Acc) ->
 parse_remote_members(Peer, [RawMember | Rest], Acc) ->
     {Roles, Nick} = remote_member(RawMember),
     Key = ircd_wire:fold(Nick),
-    case {ircd_wire:nickname(Nick), mnesia:dirty_read(remote_client, Key)} of
+    case {ircd_wire:nickname(Nick, ircd_state:nicklen()), mnesia:dirty_read(remote_client, Key)} of
         {true, [#remote_client{peer = Peer}]} ->
             parse_remote_members(Peer, Rest, [{Key, Roles} | Acc]);
         {true, [_]} ->

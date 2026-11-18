@@ -28,6 +28,7 @@
     user_modes/1,
     user_visible/2,
     history_limit/0,
+    nicklen/0,
     retention/0,
     administrator/1,
     predefined_channel/1,
@@ -437,6 +438,11 @@ predefined_channel(Key) when is_binary(Key) ->
 -spec retention() -> transient | channels.
 retention() ->
     maps:get(retention, persistent_term:get({?MODULE, config}), transient).
+
+%% @doc Longest accepted nickname (`nicklen`, default 9 from RFC 1459).
+-spec nicklen() -> pos_integer().
+nicklen() ->
+    maps:get(nicklen, persistent_term:get({?MODULE, config}, #{}), 9).
 
 %% @doc Maximum channel PRIVMSG/NOTICE lines stored for one channel.
 -spec history_limit() -> pos_integer().
@@ -1219,7 +1225,7 @@ registered_command(Command, _, Client, Server) ->
 change_nick(Nick, Client, Server) ->
     case
         {
-            ircd_wire:nickname(Nick),
+            ircd_wire:nickname(Nick, ircd_state:nicklen()),
             ircd_wire:fold(Nick),
             ircd_state_client:find_nick(Nick),
             ircd_state_link:remote_nick_exists(Nick)

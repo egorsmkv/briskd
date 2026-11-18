@@ -6,6 +6,7 @@
     line/4,
     message/5,
     nickname/1,
+    nickname/2,
     parse/1,
     parse_client/1,
     parse_server/1,
@@ -312,11 +313,19 @@ lower(C) -> C.
 %% @doc Check whether a nickname uses the server's supported RFC character set.
 -spec nickname(binary()) -> boolean().
 nickname(Nick) ->
+    nickname(Nick, 9).
+
+%% @doc Like nickname/1 with an operator-configured maximum length (`nicklen`).
+%% RFC 1459 sets 9; the character set is the same at any length.
+-spec nickname(binary(), pos_integer()) -> boolean().
+nickname(Nick, Max) when is_binary(Nick), byte_size(Nick) =< Max ->
     re:run(
         Nick,
-        <<"^[A-Za-z\\x5b-\\x60\\x7b-\\x7d][A-Za-z0-9\\x5b-\\x60\\x7b-\\x7d-]{0,8}$">>,
+        <<"^[A-Za-z\\x5b-\\x60\\x7b-\\x7d][A-Za-z0-9\\x5b-\\x60\\x7b-\\x7d-]*$">>,
         [{capture, none}, dollar_endonly]
-    ) =:= match.
+    ) =:= match;
+nickname(_Nick, _Max) ->
+    false.
 
 %% @doc Validate a regular or safe channel name accepted by this server.
 -spec channel(binary()) -> boolean().

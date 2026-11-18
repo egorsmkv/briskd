@@ -105,7 +105,7 @@ add([], _Pid, _Limit, On, Off, Rejected) ->
 add([Target | Rest], Pid, Limit, On, Off, Rejected) ->
     Current = ircd_conn:get(Pid, monitor, #{}),
     Key = ircd_wire:fold(Target),
-    case {ircd_wire:nickname(Target), maps:is_key(Key, Current)} of
+    case {ircd_wire:nickname(Target, ircd_state:nicklen()), maps:is_key(Key, Current)} of
         {false, _} ->
             add(Rest, Pid, Limit, On, Off, Rejected);
         {true, true} ->

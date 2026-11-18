@@ -117,6 +117,9 @@ to the process working directory unless they are absolute.
 | `motd_file` | `null` | Text file served by `MOTD` |
 | `admin_name`, `admin_location1`, `admin_location2`, `admin_email` | See config | Values returned by `ADMIN` |
 | `reop_delay` | `30` | Base delay in seconds before re-opping an operatorless safe channel |
+| `resource_delay` | `60` | Seconds a nickname or channel released by a quit or netsplit stays unavailable (437); `0` disables |
+| `account_password_min` | `8` | Shortest password `REGISTER` accepts, in bytes |
+| `nicklen` | `9` | Longest nickname (9 to 30). RFC 1459 uses 9; every linked server must use the same value |
 | `mnesia_dir` | `data/mnesia` | Mnesia database directory |
 | `retention` | `transient` | `transient` or `channels`. `channels` keeps ordinary channel state and channel message history across a restart |
 | `history_limit` | `100` | Channel `PRIVMSG`/`NOTICE` lines kept per channel when `retention` is `channels` (1..10000) |

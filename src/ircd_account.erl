@@ -35,7 +35,7 @@ min_password() ->
 %% @doc Account names follow the nickname rules of `ircd_wire:nickname/1`.
 -spec valid_name(binary()) -> boolean().
 valid_name(Name) when is_binary(Name) ->
-    ircd_wire:nickname(Name) andalso ircd_wire:fold(Name) =/= <<"anonymous">>;
+    ircd_wire:nickname(Name, ircd_state:nicklen()) andalso ircd_wire:fold(Name) =/= <<"anonymous">>;
 valid_name(_) ->
     false.
 
