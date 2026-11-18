@@ -35,13 +35,13 @@ in the referenced RFC.
 - [x] Numerics for implemented commands, including local `WHOIS` idle time and
   registration replies.
 - [x] RFC1459 nickname and channel case folding, nickname validation, and
-  512-byte message framing.
-- [x] Complete the RFC command and numeric surface. `CAP LS` and `CAP LIST`
-  advertise no capabilities, `CAP REQ` is `NAK`ed, and an unknown `CAP`
-  subcommand returns 410. `SERVICE`, `SERVLIST`, and `SQUERY` register and
-  reach services. `CONNECT` and `SQUIT` are operator commands. `SUMMON` and
-  `USERS` stay disabled with numerics 445 and 446. Operator `DIE` stops the
-  node and operator `RESTART` restarts it; other clients receive numeric 481.
+  512-byte framing for lines that do not carry message tags.
+- [x] Complete the RFC command and numeric surface. `SERVICE`, `SERVLIST`, and
+  `SQUERY` register and reach services. `CONNECT` and `SQUIT` are operator
+  commands. `SUMMON` and `USERS` stay disabled with numerics 445 and 446.
+  Operator `DIE` stops the node and operator `RESTART` restarts it; other
+  clients receive numeric 481. Capability negotiation is the IRCv3 subset
+  below.
 - [x] Audit parameter limits, error numerics, visibility, and command edge cases
   against the RFCs.
 
@@ -111,6 +111,22 @@ in the referenced RFC.
 - [x] Handle `SQUIT`, server-link loss propagation, netsplits, and cleanup of
   users and channels behind a disconnected server.
 - [x] Add remote service support and the remaining server-only commands.
+
+## IRCv3
+
+- [x] Capability negotiation for `batch`, `cap-notify`, `labeled-response`, and
+  `message-tags` only. `CAP REQ` is atomic. `CAP LS 302` or any higher version
+  keeps version 302 for the connection, including implicit `cap-notify` that
+  cannot be disabled. Clients that never send 302 may disable `cap-notify`.
+  Registration waits for `CAP END` after `CAP LS` or `CAP REQ`. The other
+  specifications listed at <https://ircv3.net/irc/> are not implemented.
+- [x] Message tags and `TAGMSG`. Client-only `+` tags on `PRIVMSG`, `NOTICE`,
+  and `TAGMSG` are relayed to clients that negotiated `message-tags` and across
+  a direct server link. Other client or peer tags are removed. Tag data over
+  4094 bytes, or a tag section over 8191 bytes, returns numeric 417.
+- [x] Labeled responses while `labeled-response`, `batch`, and `message-tags`
+  are enabled: one labeled reply line, one `labeled-response` batch, or one
+  labeled `ACK`.
 
 ## Documentation and verification
 

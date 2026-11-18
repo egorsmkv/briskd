@@ -6,7 +6,7 @@
     import_remote_njoin/3,
     propagate_away/2,
     propagate_channel_kick/4,
-    propagate_channel_message/4,
+    propagate_channel_message/5,
     propagate_channel_mode/4,
     propagate_introduction/2,
     propagate_invite/4,
@@ -16,6 +16,7 @@
     propagate_topic/3,
     receive_remote_kick/5,
     receive_remote_message/4,
+    receive_remote_message/5,
     remote_channel_flags/1,
     remote_names_entries/3,
     remote_names_listing/3,
@@ -1108,7 +1109,18 @@ server_user_modes(<<$+, Modes/binary>>) ->
     end;
 server_user_modes(_) ->
     error.
-receive_remote_message(Peer, Prefix, Command, [Target, Text | _]) ->
+receive_remote_message(Peer, Prefix, Command, Params) ->
+    receive_remote_message(Peer, Prefix, Command, Params, []).
+
+receive_remote_message(Peer, Prefix, <<"TAGMSG">>, [Target | _], Tags) ->
+    relay_remote_message(Peer, Prefix, <<"TAGMSG">>, Target, none, Tags);
+receive_remote_message(Peer, Prefix, Command, [Target, Text | _], Tags) ->
+    relay_remote_message(Peer, Prefix, Command, Target, Text, Tags);
+receive_remote_message(_Peer, _Prefix, _Command, _Params, _Tags) ->
+    {error, invalid_remote_message}.
+
+relay_remote_message(Peer, Prefix, Command, Target, Text, Tags) ->
+    ClientTags = ircd_cap:client_tags(Tags),
     case binary:split(Prefix, <<"!">>) of
         [Nick, _UserHost] ->
             case mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) of
@@ -1123,7 +1135,9 @@ receive_remote_message(Peer, Prefix, Command, [Target, Text | _]) ->
                     ExpectedPrefix = <<Nick/binary, "!", User/binary, "@", Host/binary>>,
                     case Prefix =:= ExpectedPrefix of
                         true ->
-                            receive_remote_target(Peer, Remote, Prefix, Target, Text, Command);
+                            receive_remote_target(
+                                Peer, Remote, Prefix, Target, Text, Command, ClientTags
+                            );
                         false ->
                             {error, remote_prefix_mismatch}
                     end;
@@ -1132,34 +1146,32 @@ receive_remote_message(Peer, Prefix, Command, [Target, Text | _]) ->
             end;
         _ ->
             {error, malformed_remote_prefix}
-    end;
-receive_remote_message(_Peer, _Prefix, _Command, _Params) ->
-    {error, invalid_remote_message}.
+    end.
 
-receive_remote_target(Peer, Remote, Prefix, Target, Text, Command) ->
+receive_remote_target(Peer, Remote, Prefix, Target, Text, Command, Tags) ->
     case ircd_state_client:find_nick(Target) of
         #client{pid = Pid, nick = LocalNick} ->
-            ircd_state_send:send(Pid, Prefix, Command, [LocalNick], Text),
+            ircd_state_send:send(Pid, Prefix, Command, [LocalNick], Text, Tags),
             ok;
         undefined ->
             case ircd_wire:channel(Target) of
                 true ->
                     Result = receive_remote_channel_message(
-                        Peer, Remote, Prefix, Target, Text, Command
+                        Peer, Remote, Prefix, Target, Text, Command, Tags
                     ),
-                    forward_channel(Peer, Target, Prefix, Command, Text),
+                    forward_channel(Peer, Target, Prefix, Command, Text, Tags),
                     Result;
                 false ->
-                    forward_user(Peer, Prefix, Command, Target, Text)
+                    forward_user(Peer, Prefix, Command, Target, Text, Tags)
             end
     end.
 
-forward_user(Ingress, Prefix, Command, Target, Text) ->
+forward_user(Ingress, Prefix, Command, Target, Text, Tags) ->
     case mnesia:dirty_read(remote_client, ircd_wire:fold(Target)) of
         [#remote_client{peer = Dest, nick = Nick}] ->
             case ircd_route:should_forward(Ingress, Dest) of
                 true ->
-                    Line = ircd_wire:line(Prefix, Command, [Nick], Text),
+                    Line = ircd_wire:message(Tags, Prefix, Command, [Nick], Text),
                     _ = ircd_links:send(Dest, Line),
                     ok;
                 false ->
@@ -1169,10 +1181,10 @@ forward_user(Ingress, Prefix, Command, Target, Text) ->
             ok
     end.
 
-forward_channel(Ingress, Name, Prefix, Command, Text) ->
+forward_channel(Ingress, Name, Prefix, Command, Text, Tags) ->
     case mnesia:dirty_read(remote_channel, ircd_wire:fold(Name)) of
         [#remote_channel{members = Members}] ->
-            Line = iolist_to_binary(ircd_wire:line(Prefix, Command, [Name], Text)),
+            Line = iolist_to_binary(ircd_wire:message(Tags, Prefix, Command, [Name], Text)),
             Peers = lists:usort([MemberPeer || {_Nick, {MemberPeer, _}} <- maps:to_list(Members)]),
             lists:foreach(
                 fun(Dest) ->
@@ -1187,7 +1199,7 @@ forward_channel(Ingress, Name, Prefix, Command, Text) ->
             ok
     end.
 
-receive_remote_channel_message(Peer, Remote, Prefix, Name, Text, Command) ->
+receive_remote_channel_message(Peer, Remote, Prefix, Name, Text, Command, Tags) ->
     Key = ircd_wire:fold(Name),
     case {mnesia:dirty_read(remote_channel, Key), mnesia:dirty_read(channel, Key)} of
         {[#remote_channel{members = RemoteMembers, flags = RemoteFlags}], [Channel]} ->
@@ -1214,7 +1226,12 @@ receive_remote_channel_message(Peer, Remote, Prefix, Name, Text, Command) ->
                                     false -> Prefix
                                 end,
                             ircd_state_send:broadcast(
-                                maps:keys(Channel#channel.members), Origin, Command, [Name], Text
+                                maps:keys(Channel#channel.members),
+                                Origin,
+                                Command,
+                                [Name],
+                                Text,
+                                Tags
                             );
                         false ->
                             ok
@@ -1483,11 +1500,11 @@ propagate_join(Client, Name, Roles) ->
             ok
     end.
 
-propagate_channel_message(Name, Text, Command, Client) ->
+propagate_channel_message(Name, Text, Command, Client, Tags) ->
     case mnesia:dirty_read(remote_channel, ircd_wire:fold(Name)) of
         [#remote_channel{members = Members}] ->
             Line = iolist_to_binary(
-                ircd_wire:line(ircd_state_send:prefix(Client), Command, [Name], Text)
+                ircd_wire:message(Tags, ircd_state_send:prefix(Client), Command, [Name], Text)
             ),
             Peers = lists:usort([Peer || {_Nick, {Peer, _Roles}} <- maps:to_list(Members)]),
             lists:foreach(fun(Peer) -> _ = ircd_links:send(Peer, Line) end, Peers),

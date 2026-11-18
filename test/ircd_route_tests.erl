@@ -3,14 +3,7 @@
 
 %% RFC-oriented decisions that do not need a live listener.
 
-cap_and_channel_limits_test() ->
-    ?assertEqual({ls, <<>>}, ircd_route:cap_decision([<<"LS">>])),
-    ?assertEqual({list, <<>>}, ircd_route:cap_decision([<<"LIST">>])),
-    ?assertEqual({nak, <<"sasl">>}, ircd_route:cap_decision([<<"REQ">>, <<"sasl">>])),
-    ?assertEqual(end_cap, ircd_route:cap_decision([<<"END">>])),
-    ?assertEqual(
-        {numeric, <<"410">>, <<"Invalid CAP command">>}, ircd_route:cap_decision([<<"NOPE">>])
-    ),
+channel_limits_test() ->
     ?assertEqual(10, ircd_route:max_channels()),
     ?assert(ircd_route:channel_allowed(9, 10)),
     ?assertNot(ircd_route:channel_allowed(10, 10)).

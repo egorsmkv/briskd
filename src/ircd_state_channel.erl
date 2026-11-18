@@ -1,6 +1,6 @@
 -module(ircd_state_channel).
 -export([
-    deliver/4,
+    deliver/5,
     invite/4,
     join_channels/4,
     kick/5,
@@ -440,20 +440,36 @@ channel_origin_prefix(#channel{flags = Flags}, _Client) when is_map_key($a, Flag
 channel_origin_prefix(_, Client) ->
     ircd_state_send:prefix(Client).
 
-%% Route PRIVMSG/NOTICE to nicknames and channels, applying channel restrictions.
-deliver(Command, [], Client, Server) ->
-    message_error(Command, Client, Server, <<"411">>, [], <<"No recipient given">>);
-deliver(Command, [_], Client, Server) ->
-    message_error(Command, Client, Server, <<"412">>, [], <<"No text to send">>);
-deliver(Command, [_, <<>> | _], Client, Server) ->
-    message_error(Command, Client, Server, <<"412">>, [], <<"No text to send">>);
-deliver(Command, [Targets, Text | _], Client, Server) ->
+%% Route PRIVMSG/NOTICE/TAGMSG to nicknames and channels, applying channel restrictions.
+%% Only client-only tags are relayed. TAGMSG has no text body.
+deliver(Command, Params, #client{pid = Pid} = Client, Server, Tags) ->
+    ClientTags =
+        case ircd_cap:enabled(Pid, <<"message-tags">>) of
+            true -> ircd_cap:client_tags(Tags);
+            false -> []
+        end,
+    case {Command, Params} of
+        {<<"TAGMSG">>, []} ->
+            message_error(Command, Client, Server, <<"411">>, [], <<"No recipient given">>);
+        {<<"TAGMSG">>, [Targets | _]} ->
+            deliver_targets(Targets, none, Command, Client, Server, ClientTags);
+        {_, []} ->
+            message_error(Command, Client, Server, <<"411">>, [], <<"No recipient given">>);
+        {_, [_]} ->
+            message_error(Command, Client, Server, <<"412">>, [], <<"No text to send">>);
+        {_, [_, <<>> | _]} ->
+            message_error(Command, Client, Server, <<"412">>, [], <<"No text to send">>);
+        {_, [Targets, Text | _]} ->
+            deliver_targets(Targets, Text, Command, Client, Server, ClientTags)
+    end.
+
+deliver_targets(Targets, Text, Command, Client, Server, Tags) ->
     lists:foreach(
-        fun(Target) -> deliver_to(Target, Text, Command, Client, Server) end,
+        fun(Target) -> deliver_to(Target, Text, Command, Client, Server, Tags) end,
         lists:uniq(split(Targets))
     ).
 
-deliver_to(Target, Text, Command, #client{pid = Pid} = Client, Server) ->
+deliver_to(Target, Text, Command, #client{pid = Pid} = Client, Server, Tags) ->
     case mnesia:dirty_read(channel, ircd_wire:fold(Target)) of
         [#channel{name = Name, members = Members, flags = Flags} = Channel] ->
             Roles = maps:get(Pid, Members, []),
@@ -478,15 +494,16 @@ deliver_to(Target, Text, Command, #client{pid = Pid} = Client, Server) ->
                         channel_origin_prefix(Channel, Client),
                         Command,
                         [Name],
-                        Text
+                        Text,
+                        Tags
                     ),
-                    ircd_state_link:propagate_channel_message(Name, Text, Command, Client)
+                    ircd_state_link:propagate_channel_message(Name, Text, Command, Client, Tags)
             end;
         [] ->
             case ircd_state_client:find_nick(Target) of
                 #client{pid = Other, nick = Nick, away = Away} ->
                     ircd_state_send:send(
-                        Other, ircd_state_send:prefix(Client), Command, [Nick], Text
+                        Other, ircd_state_send:prefix(Client), Command, [Nick], Text, Tags
                     ),
                     case {Command, Away} of
                         {<<"PRIVMSG">>, Message} when Message =/= undefined ->
@@ -497,8 +514,8 @@ deliver_to(Target, Text, Command, #client{pid = Pid} = Client, Server) ->
                 undefined ->
                     case mnesia:dirty_read(remote_client, ircd_wire:fold(Target)) of
                         [#remote_client{peer = Peer, nick = Nick}] ->
-                            Line = ircd_wire:line(
-                                ircd_state_send:prefix(Client), Command, [Nick], Text
+                            Line = ircd_wire:message(
+                                Tags, ircd_state_send:prefix(Client), Command, [Nick], Text
                             ),
                             case ircd_links:send(Peer, Line) of
                                 ok ->

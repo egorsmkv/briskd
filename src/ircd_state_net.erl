@@ -144,22 +144,62 @@ channel_blocked(Name) ->
     blocked(channel, Name).
 
 -spec cap(#client{}, binary(), [binary()]) -> ok.
-cap(#client{pid = Pid, nick = Nick} = Client, Server, Params) ->
-    case ircd_route:cap_decision(Params) of
-        {Kind, Text} when Kind =:= ls; Kind =:= list ->
-            Sub =
+cap(#client{pid = Pid, nick = Nick} = Client, Server, [Sub | Rest]) ->
+    case Sub of
+        <<"LS">> ->
+            ircd_cap:note_ls(Pid, [Sub | Rest]),
+            ircd_cap:hold(Pid),
+            send_cap_list(Pid, Nick, Server, <<"LS">>, ircd_cap:offered());
+        <<"LIST">> ->
+            send_cap_list(Pid, Nick, Server, <<"LIST">>, ircd_cap:list_names(Pid));
+        <<"REQ">> ->
+            ircd_cap:hold(Pid),
+            {Kind, Text} = ircd_cap:request(Pid, Rest),
+            Reply =
                 case Kind of
-                    ls -> <<"LS">>;
-                    list -> <<"LIST">>
+                    ack -> <<"ACK">>;
+                    nak -> <<"NAK">>
                 end,
-            ircd_state_send:send(Pid, Server, <<"CAP">>, [Nick, Sub], Text);
-        {nak, Caps} ->
-            ircd_state_send:send(Pid, Server, <<"CAP">>, [Nick, <<"NAK">>], Caps);
-        end_cap ->
-            ok;
-        {numeric, Number, Text} ->
-            ircd_state_send:numeric(Client, Server, Number, [], Text)
-    end.
+            ircd_state_send:send(Pid, Server, <<"CAP">>, [Nick, Reply], Text);
+        <<"END">> ->
+            case ircd_cap:finish(Pid, ircd_state_client:ready(Client)) of
+                welcome -> ircd_state_client:send_welcome(ircd_state_client:client(Pid), Server);
+                _ -> ok
+            end;
+        _ ->
+            ircd_state_send:numeric(Client, Server, <<"410">>, [Sub], <<"Invalid CAP command">>)
+    end;
+cap(Client, Server, []) ->
+    ircd_state_send:numeric(Client, Server, <<"410">>, [<<>>], <<"Invalid CAP command">>).
+
+send_cap_list(Pid, Nick, Server, Sub, Names) ->
+    Multiline = maps:get(version, ircd_cap:state(Pid)) >= 302,
+    Budget = cap_budget(Server, Nick, Sub, Multiline),
+    Bodies = ircd_cap:pack(Names, Budget),
+    Last = length(Bodies),
+    lists:foldl(
+        fun(Body, Index) ->
+            Middle =
+                case Multiline andalso Index < Last of
+                    true -> [Nick, Sub, <<"*">>];
+                    false -> [Nick, Sub]
+                end,
+            ircd_state_send:send(Pid, Server, <<"CAP">>, Middle, Body),
+            Index + 1
+        end,
+        1,
+        Bodies
+    ),
+    ok.
+
+%% Bytes left for the capability list after `:server CAP nick SUB [* ] :`.
+cap_budget(Server, Nick, Sub, Multiline) ->
+    Star =
+        case Multiline of
+            true -> 2;
+            false -> 0
+        end,
+    512 - (11 + Star + byte_size(Server) + byte_size(Nick) + byte_size(Sub)).
 
 -spec servlist(binary(), binary(), #client{}, binary()) -> ok.
 servlist(Mask, Type, Client, Server) ->

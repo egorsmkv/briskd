@@ -2,7 +2,6 @@
 -export([
     accept_server/4,
     burst_order/1,
-    cap_decision/1,
     channel_allowed/2,
     max_channels/0,
     nick_collision/2,
@@ -98,15 +97,6 @@ accept_server(Local, Ingress, Intro, Servers) when
                     end
             end
     end.
-
-%% CAP subcommands this server implements. No capability families are offered.
--spec cap_decision([binary()]) ->
-    {ls | list, binary()} | {nak, binary()} | end_cap | {numeric, binary(), binary()}.
-cap_decision([<<"LS">> | _]) -> {ls, <<>>};
-cap_decision([<<"LIST">> | _]) -> {list, <<>>};
-cap_decision([<<"REQ">>, Caps | _]) when is_binary(Caps) -> {nak, Caps};
-cap_decision([<<"END">> | _]) -> end_cap;
-cap_decision(_) -> {numeric, <<"410">>, <<"Invalid CAP command">>}.
 
 place_server(Local, Ingress, ParentName, Hop, Name, Token, Info, Servers) ->
     case ircd_wire:fold(ParentName) =:= ircd_wire:fold(Local) of

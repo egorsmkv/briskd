@@ -18,12 +18,13 @@ link_status_redacts_peer_password_test() ->
 state_status_redacts_pass_and_oper_test() ->
     Status = ircd_state:format_status(#{
         state => <<"irc.local">>,
-        message => {'$gen_call', from, {command, <<"OPER">>, [<<"admin">>, <<"secret">>], 20}},
-        log => [{in, {command, <<"PASS">>, [<<"secret">>], 12}}]
+        message =>
+            {'$gen_call', from, {command, <<"OPER">>, [<<"admin">>, <<"secret">>], 20, []}},
+        log => [{in, {command, <<"PASS">>, [<<"secret">>], 12, []}}]
     }),
     ?assertEqual(
-        {'$gen_call', from, {command, <<"OPER">>, [<<"admin">>, redacted], 20}},
+        {'$gen_call', from, {command, <<"OPER">>, [<<"admin">>, redacted], 20, []}},
         maps:get(message, Status)
     ),
-    ?assertEqual([{in, {command, <<"PASS">>, [redacted], 12}}], maps:get(log, Status)),
+    ?assertEqual([{in, {command, <<"PASS">>, [redacted], 12, []}}], maps:get(log, Status)),
     ?assertEqual(<<"irc.local">>, maps:get(state, Status)).

@@ -5,8 +5,9 @@ Mnesia-backed state, and server links that carry bursts, multi-hop routing,
 and netsplit cleanup.
 
 This is an implementation of the RFC 1459 and RFC 2810–2813 behavior listed in
-the [roadmap](ROADMAP.md). It does not implement IRCv3 message tags, labeled
-responses, or capability families.
+the [roadmap](ROADMAP.md), plus a small IRCv3 subset: capability negotiation,
+message tags, and labeled responses. The other specifications on
+<https://ircv3.net/irc/> are not implemented.
 
 ## Features
 
@@ -119,12 +120,10 @@ Implemented client commands include `PASS`, `NICK`, `USER`, `JOIN`, `PART`,
 `AWAY`, `WHO`, `WHOIS`, `WHOWAS`, `ISON`, `USERHOST`, `LUSERS`, `MOTD`,
 `VERSION`, `TIME`, `INFO`, `ADMIN`, `LINKS`, `TRACE`, `STATS`, `SERVLIST`,
 `SQUERY`, `PING`, `PONG`, `QUIT`, `OPER`, `KILL`, `REHASH`, `CONNECT`,
-`SQUIT`, `SERVICE`, `CAP`, `KNOCK`, `SUMMON`, `USERS`, `DIE`, and `RESTART`.
-`CAP LS` and `CAP LIST` report an empty capability set, `CAP REQ` is rejected
-with `NAK`, and an unknown `CAP` subcommand returns numeric 410. `SUMMON` and
-`USERS` stay disabled and return numerics 445 and 446. Operator `DIE` stops
-the node and operator `RESTART` restarts the runtime. Other clients receive
-numeric 481.
+`SQUIT`, `SERVICE`, `CAP`, `TAGMSG`, `KNOCK`, `SUMMON`, `USERS`, `DIE`, and
+`RESTART`. `SUMMON` and `USERS` stay disabled and return numerics 445 and 446.
+Operator `DIE` stops the node and operator `RESTART` restarts the runtime.
+Other clients receive numeric 481.
 
 A client may join at most ten channels (numeric 405). A nickname or channel
 released by a quit or a netsplit stays unavailable for 60 seconds (numeric
@@ -143,9 +142,33 @@ lost link remove the users, services, and channels that were reachable only
 through the lost server and tell the remaining peers. Channel invitations are
 stored and forwarded after the burst.
 
-This server does not implement IRCv3 message tags, labeled responses, or
-capability families. `SUMMON` and `USERS` are not available as working
-features. Consult the [roadmap](ROADMAP.md) for the checked coverage list.
+IRCv3 support is limited to capability negotiation, message tags, and labeled
+responses. `CAP LS` and `CAP LIST` advertise only `batch`, `cap-notify`,
+`labeled-response`, and `message-tags`. `CAP LS 302` (or any higher version)
+keeps version 302 for the rest of the connection: `cap-notify` is implicit and
+cannot be disabled, and a long list uses a `*` continuation. Clients that never
+send version 302 may disable `cap-notify`. `CAP REQ` is atomic. An unknown
+capability, including `sasl`, is `NAK`, and an unknown subcommand returns
+numeric 410. `CAP LS` or `CAP REQ` during registration holds the welcome
+numerics until `CAP END`.
+
+A client that has negotiated `message-tags` may send client-only tags (keys
+that begin with `+`) on `PRIVMSG`, `NOTICE`, and `TAGMSG`. Those tags are
+relayed to other clients who also negotiated `message-tags`, including across
+a direct server link. Tags without `+`, including `label`, are not relayed.
+`TAGMSG` follows the same channel membership and mode rules as `PRIVMSG` and
+is not sent to a client that did not negotiate `message-tags`. Tag data longer
+than 4094 bytes, or a tag section longer than 8191 bytes, is rejected with
+numeric 417 and is not delivered. Untagged lines stay at most 512 octets
+including CRLF. A client that has `labeled-response`, `batch`, and
+`message-tags` enabled can put a `label` tag of 1 to 64 bytes on a command.
+One reply line carries that label; several reply lines are one
+`labeled-response` batch; a command with no reply gets one labeled `ACK`.
+
+`SUMMON` and `USERS` are not available as working features. SASL, accounts,
+`server-time`, `echo-message`, and the other specifications on
+<https://ircv3.net/irc/> are not implemented. Consult the
+[roadmap](ROADMAP.md) for the checked coverage list.
 
 ## Protocol references
 
@@ -155,6 +178,9 @@ features. Consult the [roadmap](ROADMAP.md) for the checked coverage list.
 - [RFC 2812 — Internet Relay Chat: Client Protocol](https://www.rfc-editor.org/rfc/rfc2812)
 - [RFC 2813 — Internet Relay Chat: Server Protocol](https://www.rfc-editor.org/rfc/rfc2813)
 - [RFC 7194 — Default Port for Internet Relay Chat](https://www.rfc-editor.org/rfc/rfc7194)
+- [IRCv3 Capability Negotiation](https://ircv3.net/specs/extensions/capability-negotiation.html)
+- [IRCv3 Message Tags](https://ircv3.net/specs/extensions/message-tags.html)
+- [IRCv3 Labeled Responses](https://ircv3.net/specs/extensions/labeled-response.html)
 
 ## License
 

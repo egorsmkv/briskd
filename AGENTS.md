@@ -19,7 +19,7 @@ Do not trade off a MUST-level requirement of the implemented IRC specifications 
 
 This tree implements **selected parts** of RFC 1459 and RFC 2810–2813. It is not a complete IRC daemon. `ROADMAP.md` is the coverage record: a checked item is present, and it does not mean every edge case in the cited RFC is done. Extend behavior only when the task asks for it, and update the roadmap and README when coverage changes.
 
-Where RFC 1459 and RFC 2812 disagree, keep the choice already encoded in this server and name it in the change. Identity comparison uses the **RFC 1459** case mapping in `ircd_wire:fold/1` (`[\]^` fold to `{|}~`). IRCv3 message tags, labeled responses, and capability families are outside the current protocol surface. `CAP LS` and `CAP LIST` are empty, `CAP REQ` is `NAK`, and an unknown subcommand returns 410. Add IRCv3 only when the task explicitly requires it.
+Where RFC 1459 and RFC 2812 disagree, keep the choice already encoded in this server and name it in the change. Identity comparison uses the **RFC 1459** case mapping in `ircd_wire:fold/1` (`[\]^` fold to `{|}~`). The implemented IRCv3 subset is capability negotiation, message tags, and labeled responses for `batch`, `cap-notify`, `labeled-response`, and `message-tags` only. Do not add the other specifications on <https://ircv3.net/irc/> unless the task explicitly requires them. `CAP LS` advertises that set, `CAP REQ` is atomic, and an unknown subcommand returns 410.
 
 ## 2. Working protocol for the agent
 
@@ -75,7 +75,8 @@ src/ircd.app.src
 src/ircd_app.erl             # application callback
 src/ircd_sup.erl             # rest_for_one: state, sessions, links, listeners
 src/ircd_config.erl          # JSON config load and validation (IRCD_CONFIG)
-src/ircd_wire.erl            # line parse/encode, RFC 1459 case fold, nick/channel checks
+src/ircd_wire.erl            # line parse/encode, message tags, RFC 1459 case fold
+src/ircd_cap.erl             # per-connection capability negotiation
 src/ircd_state.erl           # state process, command dispatch, public API
 src/ircd_state_client.erl    # registration, identity, visibility, connection stats
 src/ircd_state_channel.erl   # membership, modes, names, and safe-channel reop
@@ -148,8 +149,8 @@ Follow that ownership. Choose `one_for_one`, `rest_for_one`, or `one_for_all` fr
 ## 7. Networking, binaries, and hot-path performance
 
 - Clients and server links are **TCP or TLS streams**. Frame by IRC lines, not by read size. A read may contain a partial line, one line, or many lines. Buffer the remainder, cap the buffer, and close the connection that exceeds it (slow senders, missing CRLF).
-- An IRC line is at most **512 octets including the trailing CRLF** (at most 510 octets of content). `ircd_wire:parse/1` and `parse_server/1` enforce that. NUL, bare CR, or bare LF inside the line is malformed. Encoding goes through `ircd_wire:line/4`, which drops a line that cannot fit rather than splitting one logical message across illegal extra lines.
-- Client input uses `parse/1` and is rejected when a prefix is present. Server-link input uses `parse_server/1` and may carry a source prefix. Keep that split: a client must not inject a nick or server prefix.
+- An untagged IRC line is at most **512 octets including the trailing CRLF** (at most 510 octets of content). A tagged line may add a tag section of at most 8191 bytes (`@`, tag data, and the separating space) and still keeps the non-tag portion at 512 octets. Tag data over 4094 bytes is numeric 417 on a client socket and a dropped link for a peer. The absolute read cap is `?MAX_WIRE_LINE` in `include/ircd_wire.hrl`. NUL, bare CR, or bare LF inside the line is malformed. Encoding goes through `ircd_wire:line/4` and `ircd_wire:message/5`. `line/4` drops a line that cannot fit rather than splitting one logical message across illegal extra lines.
+- Client input uses `parse_client/1`. A client-supplied prefix is rejected. `parse/1` is the untagged client helper and rejects tags. Server-link input uses `parse_server/1` and may carry a source prefix and client-only tags. Keep that split: a client must not inject a nick or server prefix.
 - Commands are a letter run or a three-digit numeric. Parameters stop at 15. A colon introduces the trailing parameter, which may contain spaces. Preserve trailing-parameter semantics when echoing text into `PRIVMSG`, `NOTICE`, `TOPIC`, `KICK`, or a numeric.
 - Configure listen sockets with explicit active mode, backlog, and timeouts. `{active, once}` (or an equivalently bounded active-N loop) rearms only after the current lines are accepted. Set `nodelay` on interactive client sockets when measuring shows it helps, and document the choice.
 - Prefer binaries and iodata for lines and nick/channel names. Avoid `binary_to_list` and repeated concatenation on the send path. Copy a sub-binary when retaining a small nick or topic would pin a large receive buffer.
@@ -212,7 +213,7 @@ Linking is RFC 2813 over configured direct peers, with introductions of servers 
 
 ## 9. Security, privacy, and abuse resistance
 
-- Every client line and every server-link line is untrusted. Enforce the 512-octet cap, parameter count, nickname and channel syntax, mode-argument counts, and mask length before joining a channel or inserting Mnesia rows.
+- Every client line and every server-link line is untrusted. Enforce the untagged 512-octet cap, the message-tag 4094/8191 caps, parameter count, nickname and channel syntax, mode-argument counts, and mask length before joining a channel or inserting Mnesia rows.
 - Bound unauthenticated work: registration timeout, `max_clients`, and a capped read buffer. Connection floods, nick cycling, join/part floods, and `PRIVMSG` fan-out to large channels are the abuse cases to account for when touching those paths.
 - Privileged commands (`OPER`, `KILL`, `REHASH`, and any new operator command) check the operator flag on the **local** session after registration. A prefix on a client socket never grants privilege.
 - Server-link passwords and the optional client `PASS` secret come from configuration, not from source. Never commit live passwords, private keys, or real user traffic. TLS private keys stay in the paths `certfile` and `keyfile` point at.

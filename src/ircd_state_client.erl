@@ -9,6 +9,7 @@
     put_connection_stats/2,
     ready/1,
     save_identity/3,
+    send_welcome/2,
     touch_activity/1,
     update_connection_stats/4,
     user_modes/1,
@@ -78,37 +79,48 @@ save_identity(Old, New, Server) ->
     case not ready(Old) andalso ready(Updated) of
         true ->
             ircd_state_link:propagate_introduction(Updated, Server),
-            ircd_state_send:numeric(Updated, Server, <<"001">>, [], [
-                <<"Welcome to IRC ">>, ircd_state_send:prefix(New)
-            ]),
-            ircd_state_send:numeric(
-                Updated,
-                Server,
-                <<"002">>,
-                [],
-                [<<"Your host is ">>, Server, <<", running version 0.1.0">>]
-            ),
-            ircd_state_send:numeric(
-                Updated,
-                Server,
-                <<"003">>,
-                [],
-                [
-                    <<"This server was created ">>,
-                    persistent_term:get({ircd_state, started})
-                ]
-            ),
-            ircd_state_send:numeric(
-                Updated,
-                Server,
-                <<"004">>,
-                [Server, <<"0.1.0">>, <<"iow">>, <<"abeIimnpsqrKltkov">>],
-                none
-            ),
-            ircd_state_info:motd([], Updated, Server);
+            case maps:get(negotiating, ircd_cap:state(Updated#client.pid)) of
+                true ->
+                    ok;
+                false ->
+                    welcome = ircd_cap:finish(Updated#client.pid, true),
+                    send_welcome(Updated, Server)
+            end;
         false ->
             ok
     end.
+
+%% @doc Send the numeric burst that completes registration.
+%% The caller marks the connection welcomed before this runs.
+send_welcome(Client, Server) ->
+    ircd_state_send:numeric(Client, Server, <<"001">>, [], [
+        <<"Welcome to IRC ">>, ircd_state_send:prefix(Client)
+    ]),
+    ircd_state_send:numeric(
+        Client,
+        Server,
+        <<"002">>,
+        [],
+        [<<"Your host is ">>, Server, <<", running version 0.1.0">>]
+    ),
+    ircd_state_send:numeric(
+        Client,
+        Server,
+        <<"003">>,
+        [],
+        [
+            <<"This server was created ">>,
+            persistent_term:get({ircd_state, started})
+        ]
+    ),
+    ircd_state_send:numeric(
+        Client,
+        Server,
+        <<"004">>,
+        [Server, <<"0.1.0">>, <<"iow">>, <<"abeIimnpsqrKltkov">>],
+        none
+    ),
+    ircd_state_info:motd([], Client, Server).
 
 pass(Params, Client, Server) ->
     case identity_ready(Client) of
@@ -228,6 +240,7 @@ disconnect(#client{pid = Pid, channels = Channels} = Client, Reason, Server) ->
     mnesia:dirty_delete(client, Pid),
     mnesia:dirty_delete(activity, Pid),
     mnesia:dirty_delete(user_modes, Pid),
+    ircd_cap:disconnect(Pid),
     remove_connection_stats(Pid).
 
 quit_recipients(#client{pid = Pid, channels = Channels}) ->

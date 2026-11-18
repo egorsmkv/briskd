@@ -3,6 +3,8 @@
 -export([
     authenticate_server_link/2,
     command/3,
+    command/4,
+    input_too_long/1,
     connect/1,
     find_nick/1,
     format_status/1,
@@ -18,6 +20,7 @@
     remote_user_visible_to_requester/3,
     server_burst/0,
     server_command/4,
+    server_command/5,
     server_disconnect/1,
     start_link/1,
     user_modes/1,
@@ -40,7 +43,17 @@ connect(Host) -> gen_server:call(?MODULE, {connect, Host}).
 %% @doc Apply a parsed IRC command on behalf of the calling session.
 %% Params contains the command's tokenized parameters and Bytes is the wire line size.
 -spec command(binary(), [binary()], non_neg_integer()) -> ok | quit.
-command(Command, Params, Bytes) -> gen_server:call(?MODULE, {command, Command, Params, Bytes}).
+command(Command, Params, Bytes) -> command(Command, Params, Bytes, []).
+
+%% @doc Apply a client command that may carry IRCv3 message tags.
+-spec command(binary(), [binary()], non_neg_integer(), [{binary(), undefined | binary()}]) ->
+    ok | quit.
+command(Command, Params, Bytes, Tags) ->
+    gen_server:call(?MODULE, {command, Command, Params, Bytes, Tags}).
+
+%% @doc Reject an over-long tagged line with numeric 417 and do not relay it.
+-spec input_too_long([{binary(), undefined | binary()}]) -> ok.
+input_too_long(Tags) -> gen_server:call(?MODULE, {input_too_long, Tags}).
 
 %% @doc Return whether the calling session has completed NICK and USER registration.
 -spec registered() -> boolean().
@@ -58,7 +71,15 @@ register_adjacent(Name, Token, Kind) ->
 %% @doc Apply a state message received from an authenticated peer.
 -spec server_command(binary(), undefined | binary(), binary(), [binary()]) -> ok | {error, term()}.
 server_command(Peer, Prefix, Command, Params) ->
-    gen_server:call(?MODULE, {server_command, Peer, Prefix, Command, Params}).
+    server_command(Peer, Prefix, Command, Params, []).
+
+%% @doc Apply a peer message, keeping only client-only tags for later relay.
+-spec server_command(
+    binary(), undefined | binary(), binary(), [binary()], [{binary(), undefined | binary()}]
+) ->
+    ok | {error, term()}.
+server_command(Peer, Prefix, Command, Params, Tags) ->
+    gen_server:call(?MODULE, {server_command, Peer, Prefix, Command, Params, Tags}).
 
 %% @doc Drop imported client state when a server link closes.
 %% A missing state process during shutdown is ignored. Other failures propagate.
@@ -92,6 +113,7 @@ init(#{name := Name} = Config) ->
     persistent_term:put({?MODULE, started_at}, erlang:monotonic_time(second)),
     ets:new(ircd_command_stats, [named_table, public, set, {write_concurrency, true}]),
     ets:new(ircd_connection_stats, [named_table, public, set, {write_concurrency, true}]),
+    ensure_ets(ircd_caps),
     ensure_ets(ircd_inbound_peers),
     ensure_ets(ircd_outbound_ready),
     ensure_ets(ircd_holds),
@@ -287,6 +309,7 @@ reset_channels() ->
 handle_call({connect, Host}, {Pid, _}, Server) ->
     monitor(process, Pid),
     mnesia:dirty_write(#client{pid = Pid, host = Host}),
+    ircd_cap:connect(Pid),
     ircd_state_client:touch_activity(Pid),
     ircd_state_client:put_connection_stats(Pid, #{}),
     mnesia:dirty_write(#user_modes{pid = Pid}),
@@ -351,10 +374,17 @@ handle_call({server_command, Peer, Prefix, <<"NICK">>, Params}, _, Server) when
     {reply, ircd_state_link:import_remote_nick(Peer, Prefix, Params), Server};
 handle_call({server_command, Peer, Prefix, <<"MODE">>, [Name, Modes | Args]}, _, Server) ->
     {reply, ircd_state_link:update_remote_modes(Peer, Prefix, Name, Modes, Args), Server};
+handle_call({server_command, Peer, Prefix, Command, Params, Tags}, _, Server) when
+    is_binary(Prefix),
+    (Command =:= <<"PRIVMSG">> orelse Command =:= <<"NOTICE">> orelse Command =:= <<"TAGMSG">>)
+->
+    {reply, ircd_state_link:receive_remote_message(Peer, Prefix, Command, Params, Tags), Server};
+handle_call({server_command, Peer, Prefix, Command, Params, _Tags}, From, Server) ->
+    handle_call({server_command, Peer, Prefix, Command, Params}, From, Server);
 handle_call({server_command, Peer, Prefix, Command, Params}, _, Server) when
     is_binary(Prefix), (Command =:= <<"PRIVMSG">> orelse Command =:= <<"NOTICE">>)
 ->
-    {reply, ircd_state_link:receive_remote_message(Peer, Prefix, Command, Params), Server};
+    {reply, ircd_state_link:receive_remote_message(Peer, Prefix, Command, Params, []), Server};
 handle_call({server_command, Peer, Prefix, <<"SERVER">>, [Name, Hop, Token, Info | _]}, _, Server) ->
     {reply, ircd_state_net:introduce_server(Peer, Prefix, Name, Hop, Token, Info), Server};
 handle_call({server_command, Peer, _Prefix, <<"SQUIT">>, [Target | Rest]}, _, Server) ->
@@ -385,9 +415,31 @@ handle_call({server_command, _Peer, _Prefix, _Command, _Params}, _, Server) ->
 handle_call({server_disconnect, Peer}, _, Server) ->
     ircd_state_net:split(Peer, <<"Netsplit ", Peer/binary>>, Peer),
     {reply, ok, Server};
-handle_call({command, Command, Params, Bytes}, {Pid, _}, Server) ->
+handle_call({input_too_long, Tags}, {Pid, _}, Server) ->
+    Client = ircd_state_client:client(Pid),
+    Label = ircd_cap:label(ircd_cap:state(Pid), Tags),
+    ok = ircd_state_send:begin_label(Pid, Label),
+    try
+        ircd_state_send:numeric(Client, Server, <<"417">>, [], <<"Input line was too long">>)
+    after
+        ircd_state_send:end_label(Server)
+    end,
+    {reply, ok, Server};
+handle_call({command, Command, Params, Bytes, Tags}, {Pid, _}, Server) ->
     count_command(Pid, Command, Bytes),
-    Reply = dispatch(Command, Params, ircd_state_client:client(Pid), Server),
+    Client = ircd_state_client:client(Pid),
+    Label =
+        case welcomed_cap_end(Client, Command, Params) of
+            true -> undefined;
+            false -> ircd_cap:label(ircd_cap:state(Pid), Tags)
+        end,
+    ok = ircd_state_send:begin_label(Pid, Label),
+    Reply =
+        try
+            dispatch(Command, Params, Client, Server, Tags)
+        after
+            ircd_state_send:end_label(Server)
+        end,
     case Reply of
         quit -> ok;
         _ -> ircd_state_client:touch_activity(Pid)
@@ -433,15 +485,24 @@ redact_log_event(Event) ->
 
 redact_command({'$gen_call', From, Request}) ->
     {'$gen_call', From, redact_command(Request)};
+redact_command({command, <<"PASS">>, [_Password | Rest], Bytes, Tags}) ->
+    {command, <<"PASS">>, [redacted | Rest], Bytes, Tags};
 redact_command({command, <<"PASS">>, [_Password | Rest], Bytes}) ->
     {command, <<"PASS">>, [redacted | Rest], Bytes};
+redact_command({command, <<"OPER">>, [Name, _Password | Rest], Bytes, Tags}) ->
+    {command, <<"OPER">>, [Name, redacted | Rest], Bytes, Tags};
 redact_command({command, <<"OPER">>, [Name, _Password | Rest], Bytes}) ->
     {command, <<"OPER">>, [Name, redacted | Rest], Bytes};
 redact_command(Message) ->
     Message.
 
+welcomed_cap_end(Client, <<"CAP">>, [<<"END">> | _]) ->
+    ircd_cap:welcomed(Client#client.pid);
+welcomed_cap_end(_, _, _) ->
+    false.
+
 %% Route commands accepted before registration and enforce registration for the rest.
-dispatch(<<"QUIT">>, Params, Client, Server) ->
+dispatch(<<"QUIT">>, Params, Client, Server, _Tags) ->
     Reason =
         case Params of
             [Text | _] -> Text;
@@ -449,17 +510,17 @@ dispatch(<<"QUIT">>, Params, Client, Server) ->
         end,
     ircd_state_client:disconnect(Client, Reason, Server),
     quit;
-dispatch(<<"PASS">>, Params, Client, Server) ->
+dispatch(<<"PASS">>, Params, Client, Server, _Tags) ->
     ircd_state_client:pass(Params, Client, Server);
-dispatch(<<"PING">>, [Token | _], Client, Server) ->
+dispatch(<<"PING">>, [Token | _], Client, Server, _Tags) ->
     ircd_state_send:send(Client#client.pid, Server, <<"PONG">>, [Server], Token);
-dispatch(<<"PING">>, [], Client, Server) ->
+dispatch(<<"PING">>, [], Client, Server, _Tags) ->
     ircd_state_send:numeric(Client, Server, <<"409">>, [], <<"No origin specified">>);
-dispatch(<<"PONG">>, _, _, _) ->
+dispatch(<<"PONG">>, _, _, _, _Tags) ->
     ok;
-dispatch(<<"CAP">>, Params, Client, Server) ->
+dispatch(<<"CAP">>, Params, Client, Server, _Tags) ->
     ircd_state_net:cap(Client, Server, Params);
-dispatch(<<"NICK">>, [Nick | _], Client, Server) ->
+dispatch(<<"NICK">>, [Nick | _], Client, Server, _Tags) ->
     case ircd_state_net:nick_blocked(Nick) of
         true ->
             ircd_state_send:numeric(
@@ -468,9 +529,9 @@ dispatch(<<"NICK">>, [Nick | _], Client, Server) ->
         false ->
             change_nick(Nick, Client, Server)
     end;
-dispatch(<<"NICK">>, [], Client, Server) ->
+dispatch(<<"NICK">>, [], Client, Server, _Tags) ->
     ircd_state_send:numeric(Client, Server, <<"431">>, [], <<"No nickname given">>);
-dispatch(<<"USER">>, [User, Mode, _, Real], #client{user = undefined} = Client, Server) ->
+dispatch(<<"USER">>, [User, Mode, _, Real], #client{user = undefined} = Client, Server, _Tags) ->
     case
         {
             re:run(User, <<"^[A-Za-z0-9_.-]{1,32}$">>, [{capture, none}, dollar_endonly]),
@@ -491,7 +552,7 @@ dispatch(<<"USER">>, [User, Mode, _, Real], #client{user = undefined} = Client, 
                 Client, Server, <<"461">>, [<<"USER">>], <<"Invalid user mode mask">>
             )
     end;
-dispatch(<<"USER">>, _, Client, Server) ->
+dispatch(<<"USER">>, _, Client, Server, _Tags) ->
     case Client#client.user of
         undefined ->
             ircd_state_send:numeric(
@@ -500,15 +561,22 @@ dispatch(<<"USER">>, _, Client, Server) ->
         _ ->
             ircd_state_send:numeric(Client, Server, <<"462">>, [], <<"You may not reregister">>)
     end;
-dispatch(Command, Params, Client, Server) ->
+dispatch(Command, Params, Client, Server, Tags) ->
     case ircd_state_client:ready(Client) of
         true ->
-            registered_command(Command, Params, Client, Server);
+            registered_command(Command, Params, Client, Server, Tags);
         false ->
             ircd_state_send:numeric(Client, Server, <<"451">>, [], <<"You have not registered">>)
     end.
 
 %% Implement commands that require a fully registered client.
+registered_command(Command, Params, Client, Server, Tags) when
+    Command =:= <<"PRIVMSG">>; Command =:= <<"NOTICE">>; Command =:= <<"TAGMSG">>
+->
+    ircd_state_channel:deliver(Command, Params, Client, Server, Tags);
+registered_command(Command, Params, Client, Server, _Tags) ->
+    registered_command(Command, Params, Client, Server).
+
 registered_command(<<"AWAY">>, [], #client{} = Client, Server) ->
     case Client#client.away of
         undefined ->
@@ -597,10 +665,6 @@ registered_command(<<"KICK">>, [Name, Nicks | Rest], Client, Server) ->
     end;
 registered_command(<<"KICK">>, _, Client, Server) ->
     ircd_state_send:numeric(Client, Server, <<"461">>, [<<"KICK">>], <<"Not enough parameters">>);
-registered_command(Command, Params, Client, Server) when
-    Command =:= <<"PRIVMSG">>; Command =:= <<"NOTICE">>
-->
-    ircd_state_channel:deliver(Command, Params, Client, Server);
 registered_command(<<"KNOCK">>, [Name | Rest], Client, Server) ->
     ircd_state_channel:knock(Name, Rest, Client, Server);
 registered_command(<<"KNOCK">>, [], Client, Server) ->
@@ -908,6 +972,7 @@ supported_command(Command) ->
             <<"SQUIT">>,
             <<"STATS">>,
             <<"SUMMON">>,
+            <<"TAGMSG">>,
             <<"TIME">>,
             <<"TOPIC">>,
             <<"TRACE">>,

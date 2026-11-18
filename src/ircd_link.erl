@@ -163,8 +163,8 @@ consume(Data, State) ->
             Line = binary:part(Data, 0, Offset + 2),
             Rest = binary:part(Data, Offset + 2, byte_size(Data) - Offset - 2),
             case ircd_wire:parse_server(Line) of
-                {ok, Prefix, Command, Params} ->
-                    case handle_server_line(Prefix, Command, Params, State) of
+                {ok, Tags, Prefix, Command, Params} ->
+                    case handle_server_line(Tags, Prefix, Command, Params, State) of
                         {ok, Updated} -> consume(Rest, Updated);
                         {error, Reason, Updated} -> {error, Reason, Updated}
                     end;
@@ -173,20 +173,15 @@ consume(Data, State) ->
                 error ->
                     {error, malformed_server_message, State}
             end;
-        nomatch when byte_size(Data) =< 511 ->
-            case
-                binary:match(Data, <<"\n">>) =:= nomatch andalso
-                    (binary:match(Data, <<"\r">>) =:= nomatch orelse
-                        binary:match(Data, <<"\r">>) =:= {byte_size(Data) - 1, 1})
-            of
-                true -> {ok, State#{buffer := Data}};
-                false -> {error, malformed_server_frame, State}
-            end;
         nomatch ->
-            {error, oversized_server_frame, State}
+            case ircd_wire:partial(Data) of
+                ok -> {ok, State#{buffer := Data}};
+                error -> {error, malformed_server_frame, State}
+            end
     end.
 
 handle_server_line(
+    _Tags,
     undefined,
     <<"PASS">>,
     [Password, Version, _Flags | _],
@@ -197,6 +192,7 @@ handle_server_line(
         false -> {error, peer_authentication_failed, State}
     end;
 handle_server_line(
+    _Tags,
     undefined,
     <<"SERVER">>,
     [Name, Hop, Token, _Info],
@@ -225,7 +221,7 @@ handle_server_line(
         false ->
             {error, peer_server_identity_mismatch, State}
     end;
-handle_server_line(_Prefix, <<"PING">>, [Origin | _], #{phase := authenticated} = State) ->
+handle_server_line(_Tags, _Prefix, <<"PING">>, [Origin | _], #{phase := authenticated} = State) ->
     Config = maps:get(config, State),
     Reply = raw_line(<<"PONG">>, [maps:get(name, Config), Origin], none),
     case send(maps:get(kind, State), maps:get(socket, State), Reply) of
@@ -233,6 +229,7 @@ handle_server_line(_Prefix, <<"PING">>, [Origin | _], #{phase := authenticated} 
         {error, Reason} -> {error, {pong_send_failed, Reason}, State}
     end;
 handle_server_line(
+    Tags,
     Prefix,
     Command,
     Params,
@@ -249,6 +246,7 @@ handle_server_line(
     Command =:= <<"MODE">>;
     Command =:= <<"PRIVMSG">>;
     Command =:= <<"NOTICE">>;
+    Command =:= <<"TAGMSG">>;
     Command =:= <<"SERVER">>;
     Command =:= <<"SQUIT">>;
     Command =:= <<"INVITE">>;
@@ -256,11 +254,12 @@ handle_server_line(
     Command =:= <<"SQUERY">>;
     Command =:= <<"KILL">>
 ->
-    case ircd_state:server_command(PeerName, Prefix, Command, Params) of
+    case ircd_state:server_command(PeerName, Prefix, Command, Params, Tags) of
         ok -> {ok, State};
         {error, Reason} -> {error, {invalid_remote_state, Reason}, State}
     end;
 handle_server_line(
+    _Tags,
     _Prefix,
     <<"PONG">>,
     [PeerName, LocalName | _],
@@ -272,12 +271,12 @@ handle_server_line(
     } = State
 ) when Token =/= undefined, PeerName =:= ExpectedPeer, LocalName =:= ExpectedLocal ->
     {ok, arm_liveness(State#{ping_pending := undefined})};
-handle_server_line(_Prefix, <<"ERROR">>, [Reason | _], #{phase := authenticated} = State) ->
+handle_server_line(_Tags, _Prefix, <<"ERROR">>, [Reason | _], #{phase := authenticated} = State) ->
     {error, {peer_fatal_error, Reason}, State};
-handle_server_line(_Prefix, _Command, _Params, #{phase := authenticated} = State) ->
+handle_server_line(_Tags, _Prefix, _Command, _Params, #{phase := authenticated} = State) ->
     %% Incoming state bursts and routed commands are not synchronized yet.
     {ok, State};
-handle_server_line(_, _, _, State) ->
+handle_server_line(_, _, _, _, State) ->
     {error, unexpected_handshake_message, State}.
 
 valid_version(<<A, B, C, D, _/binary>> = Version) when

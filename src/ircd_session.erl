@@ -127,19 +127,24 @@ consume(Data, State) ->
             Line = binary:part(Data, 0, Offset + 2),
             Rest = binary:part(Data, Offset + 2, byte_size(Data) - Offset - 2),
             case parse_line(Line, State) of
-                {ok, Prefix, Command, Params} ->
+                {ok, Tags, Prefix, Command, Params} ->
                     Result =
                         case element(5, State) of
                             {server, _} ->
                                 process_server_line(
-                                    Prefix, Command, Params, byte_size(Line), State
+                                    Tags, Prefix, Command, Params, byte_size(Line), State
                                 );
                             _ ->
-                                process_line(Command, Params, byte_size(Line), State)
+                                process_line(Tags, Command, Params, byte_size(Line), State)
                         end,
                     case Result of
                         {ok, Updated} -> consume(Rest, Updated);
                         quit -> quit;
+                        error -> error
+                    end;
+                {error, input_too_long, Tags} ->
+                    case reject_long_line(Tags, State) of
+                        {ok, Updated} -> consume(Rest, Updated);
                         error -> error
                     end;
                 empty ->
@@ -148,31 +153,35 @@ consume(Data, State) ->
                     error
             end;
         nomatch ->
-            case valid_partial(Data) of
-                true -> {ok, set_buffer(State, Data)};
-                false -> error
+            case ircd_wire:partial(Data) of
+                ok -> {ok, set_buffer(State, Data)};
+                error -> error
             end
     end.
 
 parse_line(Line, {_, _, _, _, {server, _}}) ->
-    case ircd_wire:parse_server(Line) of
-        {ok, Prefix, Command, Params} -> {ok, Prefix, Command, Params};
-        Other -> Other
-    end;
+    ircd_wire:parse_server(Line);
 parse_line(Line, _) ->
-    case ircd_wire:parse(Line) of
-        {ok, Command, Params} -> {ok, undefined, Command, Params};
+    case ircd_wire:parse_client(Line) of
+        {ok, Tags, Command, Params} -> {ok, Tags, undefined, Command, Params};
         Other -> Other
     end.
 
-valid_partial(Data) when byte_size(Data) =< 511 ->
-    case {binary:match(Data, <<"\n">>), binary:match(Data, <<"\r">>)} of
-        {nomatch, nomatch} -> true;
-        {nomatch, {Offset, 1}} -> Offset =:= byte_size(Data) - 1;
-        _ -> false
+reject_long_line(_Tags, {_, _, _, _, {server, _}}) ->
+    error;
+reject_long_line(_Tags, {_, _, _, _, {server_pass, _}}) ->
+    error;
+reject_long_line(Tags, {_, _, _, _, awaiting} = State) ->
+    case promote_client(State) of
+        {ok, ClientState} ->
+            ok = ircd_state:input_too_long(Tags),
+            {ok, ClientState};
+        error ->
+            error
     end;
-valid_partial(_) ->
-    false.
+reject_long_line(Tags, {_, _, _, _, client} = State) ->
+    ok = ircd_state:input_too_long(Tags),
+    {ok, State}.
 
 set_buffer({Kind, Socket, Peer, _, Role}, Buffer) ->
     {Kind, Socket, Peer, Buffer, Role}.
@@ -188,12 +197,37 @@ active({Kind, Socket, _, _, _} = State) ->
         {error, _} -> {stop, normal, State}
     end.
 
-process_line(<<"PASS">>, [Password, Version, _Flags | _], _Bytes, {_, _, _, _, awaiting} = State) ->
+process_line(
+    Tags, <<"PASS">>, [Password, Version, _Flags | _], _Bytes, {_, _, _, _, awaiting} = State
+) ->
+    case Tags of
+        [] -> process_server_pass(Password, Version, State);
+        _ -> error
+    end;
+process_line(Tags, <<"SERVER">>, [Name, Hop, Token, _Info], _Bytes, State) ->
+    case Tags of
+        [] -> process_server_intro(Name, Hop, Token, State);
+        _ -> error
+    end;
+process_line(Tags, Command, Params, Bytes, {_, _, _, _, awaiting} = State) ->
+    case promote_client(State) of
+        {ok, ClientState} ->
+            process_client_line(Tags, Command, Params, Bytes, ClientState);
+        error ->
+            error
+    end;
+process_line(_Tags, _Command, _Params, _Bytes, {_, _, _, _, {server_pass, _}}) ->
+    error;
+process_line(Tags, Command, Params, Bytes, {_, _, _, _, client} = State) ->
+    process_client_line(Tags, Command, Params, Bytes, State).
+
+process_server_pass(Password, Version, State) ->
     case valid_server_version(Version) of
         true -> {ok, set_link_password(State, Password)};
         false -> error
-    end;
-process_line(<<"SERVER">>, [Name, Hop, Token, _Info], _Bytes, State) ->
+    end.
+
+process_server_intro(Name, Hop, Token, State) ->
     case State of
         {Kind, Socket, _Peer, _Buffer, {server_pass, Password}} ->
             case
@@ -229,20 +263,11 @@ process_line(<<"SERVER">>, [Name, Hop, Token, _Info], _Bytes, State) ->
             end;
         _ ->
             error
-    end;
-process_line(Command, Params, Bytes, {_, _, _, _, awaiting} = State) ->
-    case promote_client(State) of
-        {ok, ClientState} ->
-            process_client_line(Command, Params, Bytes, ClientState);
-        error ->
-            error
-    end;
-process_line(_Command, _Params, _Bytes, {_, _, _, _, {server_pass, _}}) ->
-    error;
-process_line(Command, Params, Bytes, {_, _, _, _, client} = State) ->
-    process_client_line(Command, Params, Bytes, State).
+    end.
 
-process_server_line(_Prefix, <<"PING">>, [Origin | _], _Bytes, {Kind, Socket, _, _, _} = State) ->
+process_server_line(
+    _Tags, _Prefix, <<"PING">>, [Origin | _], _Bytes, {Kind, Socket, _, _, _} = State
+) ->
     Config = persistent_term:get({ircd_state, config}),
     Reply = raw_line(<<"PONG">>, [maps:get(name, Config), Origin], none),
     Module = transport(Kind),
@@ -251,6 +276,7 @@ process_server_line(_Prefix, <<"PING">>, [Origin | _], _Bytes, {Kind, Socket, _,
         {error, _} -> error
     end;
 process_server_line(
+    _Tags,
     _Prefix,
     <<"PONG">>,
     [Responder, Origin | _],
@@ -265,10 +291,10 @@ process_server_line(
         false ->
             {ok, State}
     end;
-process_server_line(_Prefix, <<"ERROR">>, [Reason | _], _Bytes, _State) ->
+process_server_line(_Tags, _Prefix, <<"ERROR">>, [Reason | _], _Bytes, _State) ->
     logger:warning(#{event => inbound_server_link_error, reason => Reason}),
     quit;
-process_server_line(Prefix, Command, Params, _Bytes, {_, _, Peer, _, _} = State) when
+process_server_line(Tags, Prefix, Command, Params, _Bytes, {_, _, Peer, _, _} = State) when
     Command =:= <<"NICK">>;
     Command =:= <<"QUIT">>;
     Command =:= <<"AWAY">>;
@@ -280,6 +306,7 @@ process_server_line(Prefix, Command, Params, _Bytes, {_, _, Peer, _, _} = State)
     Command =:= <<"MODE">>;
     Command =:= <<"PRIVMSG">>;
     Command =:= <<"NOTICE">>;
+    Command =:= <<"TAGMSG">>;
     Command =:= <<"SERVER">>;
     Command =:= <<"SQUIT">>;
     Command =:= <<"INVITE">>;
@@ -287,18 +314,18 @@ process_server_line(Prefix, Command, Params, _Bytes, {_, _, Peer, _, _} = State)
     Command =:= <<"SQUERY">>;
     Command =:= <<"KILL">>
 ->
-    case ircd_state:server_command(Peer, Prefix, Command, Params) of
+    case ircd_state:server_command(Peer, Prefix, Command, Params, Tags) of
         ok ->
             {ok, State};
         {error, Reason} ->
             logger:warning(#{event => invalid_remote_state, peer => Peer, reason => Reason}),
             error
     end;
-process_server_line(_Prefix, _Command, _Params, _Bytes, State) ->
+process_server_line(_Tags, _Prefix, _Command, _Params, _Bytes, State) ->
     {ok, State}.
 
-process_client_line(Command, Params, Bytes, {_, _, _, _, client} = State) ->
-    case ircd_state:command(Command, Params, Bytes) of
+process_client_line(Tags, Command, Params, Bytes, {_, _, _, _, client} = State) ->
+    case ircd_state:command(Command, Params, Bytes, Tags) of
         quit -> quit;
         ok -> {ok, State}
     end.
