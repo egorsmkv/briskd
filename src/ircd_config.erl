@@ -94,6 +94,7 @@ load(Path) ->
             shutdown_grace => shutdown_grace(maps:get(<<"shutdown_grace">>, Json, 5)),
             max_sendq => max_sendq(maps:get(<<"max_sendq">>, Json, 10000)),
             flood => flood(maps:get(<<"flood">>, Json, #{})),
+            dronebl => dronebl(maps:get(<<"dronebl">>, Json, false)),
             e2ee => e2ee(maps:get(<<"e2ee">>, Json, null)),
             max_accounts => positive_limit(maps:get(<<"max_accounts">>, Json, 100000)),
             max_empty_channels => positive_limit(maps:get(<<"max_empty_channels">>, Json, 1000)),
@@ -645,3 +646,56 @@ exclusive_mode(_, _) ->
 
 retain_secret(undefined) -> undefined;
 retain_secret(Secret) -> ircd_wire:retain(Secret).
+
+%% DroneBL DNSBL lookup and temporary IP banning. Accepts a boolean shorthand
+%% (`false` / `true`) or an object with fine-grained options.
+dronebl(false) ->
+    dronebl(#{<<"enabled">> => false});
+dronebl(true) ->
+    dronebl(#{<<"enabled">> => true});
+dronebl(Map) when is_map(Map) ->
+    Enabled = boolean_setting(dronebl_enabled, maps:get(<<"enabled">>, Map, false)),
+    Zone = dronebl_zone(maps:get(<<"zone">>, Map, <<"dnsbl.dronebl.org">>)),
+    TimeoutMs = dronebl_int(timeout_ms, maps:get(<<"timeout_ms">>, Map, 3000), 100, 30000),
+    BanTtl = dronebl_int(ban_ttl, maps:get(<<"ban_ttl">>, Map, 3600), 60, 604800),
+    CacheTtl = dronebl_int(cache_ttl, maps:get(<<"cache_ttl">>, Map, 300), 0, 86400),
+    Types = dronebl_types(maps:get(<<"types">>, Map, <<"all">>)),
+    SkipPrivate = boolean_setting(
+        dronebl_skip_private, maps:get(<<"skip_private">>, Map, true)
+    ),
+    MaxEntries = dronebl_int(max_entries, maps:get(<<"max_entries">>, Map, 10000), 100, 1000000),
+    MaxInFlight = dronebl_int(max_in_flight, maps:get(<<"max_in_flight">>, Map, 64), 1, 1024),
+    #{
+        enabled => Enabled,
+        zone => Zone,
+        timeout_ms => TimeoutMs,
+        ban_ttl => BanTtl,
+        cache_ttl => CacheTtl,
+        types => Types,
+        skip_private => SkipPrivate,
+        max_entries => MaxEntries,
+        max_in_flight => MaxInFlight
+    };
+dronebl(Value) ->
+    erlang:error({invalid_dronebl, Value}).
+
+dronebl_zone(Zone) when is_binary(Zone), byte_size(Zone) > 0, byte_size(Zone) =< 253 ->
+    case re:run(Zone, <<"^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$">>, [{capture, none}]) of
+        match -> Zone;
+        nomatch -> erlang:error({invalid_dronebl_zone, Zone})
+    end;
+dronebl_zone(Zone) ->
+    erlang:error({invalid_dronebl_zone, Zone}).
+
+dronebl_int(_Key, Value, Min, Max) when is_integer(Value, Min, Max) ->
+    Value;
+dronebl_int(Key, Value, _Min, _Max) ->
+    erlang:error({invalid_dronebl, Key, Value}).
+
+dronebl_types(<<"all">>) ->
+    all;
+dronebl_types(List) when is_list(List), List =/= [] ->
+    true = lists:all(fun(Code) -> is_integer(Code, 2, 255) end, List),
+    lists:usort(List);
+dronebl_types(Value) ->
+    erlang:error({invalid_dronebl_types, Value}).

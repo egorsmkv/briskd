@@ -75,17 +75,34 @@ handle_cast(_, State) -> {noreply, State}.
 handle_info(activate, {Kind, Socket, Peer} = State) ->
     case handshake(Kind, Socket) of
         ok ->
-            erlang:send_after(30000, self(), registration_timeout),
-            case Kind of
-                ws -> put(ircd_ws, #{phase => handshake, buffer => <<>>});
-                wss -> put(ircd_ws, #{phase => handshake, buffer => <<>>});
-                _ -> ok
-            end,
-            active({Kind, Socket, Peer, <<>>, awaiting});
+            case ircd_dronebl:check_sync(Peer) of
+                {banned, Reason} ->
+                    logger:warning(#{event => dronebl_banned, peer => Peer, reason => Reason}),
+                    send_ban_close(Kind, Socket, Reason),
+                    {stop, normal, State};
+                Check ->
+                    case Check of
+                        lookup -> ircd_dronebl:check_async(Peer, self());
+                        clean -> ok
+                    end,
+                    erlang:send_after(30000, self(), registration_timeout),
+                    case Kind of
+                        ws -> put(ircd_ws, #{phase => handshake, buffer => <<>>});
+                        wss -> put(ircd_ws, #{phase => handshake, buffer => <<>>});
+                        _ -> ok
+                    end,
+                    active({Kind, Socket, Peer, <<>>, awaiting})
+            end;
         {error, Reason} ->
             logger:warning(#{event => tls_handshake_failed, peer => Peer, reason => Reason}),
             {stop, normal, State}
     end;
+handle_info({dronebl_banned, _Reason}, {_, _, _, _, {server, _}} = State) ->
+    {noreply, State};
+handle_info({dronebl_banned, Reason}, {Kind, Socket, Peer, _, _} = State) ->
+    logger:warning(#{event => dronebl_banned, peer => Peer, reason => Reason}),
+    send_ban_close(Kind, Socket, Reason),
+    {stop, normal, State};
 handle_info({irc, Line}, {Kind, Socket, _, _, _} = State) ->
     Module = transport(Kind),
     case sendq_exceeded() of
@@ -250,6 +267,20 @@ closing_link(Reason) ->
             ])
         )
     ).
+
+send_ban_close(Kind, Socket, Reason) ->
+    Module = transport(Kind),
+    case {Kind, get(ircd_ws)} of
+        {K, #{phase := open}} when K =:= ws; K =:= wss ->
+            _ = Module:send(Socket, closing_link(Reason)),
+            ok;
+        {K, _} when K =:= ws; K =:= wss ->
+            _ = Module:send(Socket, <<"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n">>),
+            ok;
+        _ ->
+            _ = Module:send(Socket, closing_link(Reason)),
+            ok
+    end.
 
 -doc false.
 terminate(_, {_, _, Peer, _, {server, _}}) ->

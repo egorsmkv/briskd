@@ -31,5 +31,6 @@
     "nick_burst": 50,
     "nick_per_minute": 60,
     "register_per_minute": 30
-  }
+  },
+  "dronebl": false
 }
