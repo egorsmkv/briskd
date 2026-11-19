@@ -16,7 +16,7 @@ await esbuild.build({
   bundle: true,
   minify: true,
   format: "iife",
-  target: ["es2022"],
+  target: ["es2019", "chrome80", "firefox78", "safari13", "edge80"],
   sourcemap: false,
 });
 

@@ -22,6 +22,9 @@ interface StatusData {
   services?: number;
   accounts?: number;
   retention?: string;
+  db_disk_bytes?: number;
+  db_memory_bytes?: number;
+  db_tables?: number;
   memory_bytes?: number;
   erlang_processes?: number;
   log_level?: string;
@@ -117,8 +120,11 @@ function fmtUptime(s: number): string {
   return (d ? `${d}d ` : "") + `${h}h ${m}m ${sec}s`;
 }
 
-function fmtMem(bytes: number): string {
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+function fmtBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${bytes} B`;
 }
 
 async function postAction(action: string, args: string[] = []): Promise<void> {
@@ -207,7 +213,11 @@ function render(data: OverviewPayload): void {
     ? `clean cache: ${dblStats.cached_clean ?? 0}, in-flight: ${dblStats.in_flight ?? 0}`
     : "enable in config";
 
-  $("st-memory").textContent = fmtMem(st.memory_bytes || 0);
+  $("st-db").textContent = fmtBytes(st.db_disk_bytes || 0);
+  $("st-db-sub").textContent =
+    `RAM: ${fmtBytes(st.db_memory_bytes || 0)} | ${st.db_tables ?? 0} tables`;
+
+  $("st-memory").textContent = fmtBytes(st.memory_bytes || 0);
   $("st-procs").textContent = `${st.erlang_processes ?? 0} processes`;
 
   const selLvl = $<HTMLSelectElement>("sel-log-level");

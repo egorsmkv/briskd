@@ -274,9 +274,31 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
   if (atBottom) wrap.scrollTop = wrap.scrollHeight;
 }
 
+function closeDrawers(): void {
+  $("sidebar-left").classList.remove("open");
+  $("sidebar-right").classList.remove("open");
+  $("drawer-backdrop").classList.remove("open");
+}
+
+function toggleDrawer(side: "left" | "right"): void {
+  const el = $(side === "left" ? "sidebar-left" : "sidebar-right");
+  const other = $(side === "left" ? "sidebar-right" : "sidebar-left");
+  other.classList.remove("open");
+  const next = !el.classList.contains("open");
+  el.classList.toggle("open", next);
+  $("drawer-backdrop").classList.toggle("open", next);
+}
+
+$("btn-menu").onclick = () => toggleDrawer("left");
+$("btn-members").onclick = () => toggleDrawer("right");
+$("btn-close-left").onclick = closeDrawers;
+$("btn-close-right").onclick = closeDrawers;
+$("drawer-backdrop").onclick = closeDrawers;
+
 function switchBuf(key: string): void {
   const buf = buffers.get(key);
   if (!buf) return;
+  closeDrawers();
   activeBuf = key;
   buf.unread = 0;
   buf.mentions = 0;

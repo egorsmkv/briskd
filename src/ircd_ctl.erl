@@ -69,7 +69,10 @@ without a socket while `run/1` and `cli/1` remain usable in-process.
 """.
 -spec start_link(map()) -> gen_server:start_ret().
 start_link(Config) ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, Config, []).
+    gen_server:start_link({local, ?MODULE}, ?MODULE, Config, [
+        {hibernate_after, 15000},
+        {spawn_opt, [{fullsweep_after, 20}]}
+    ]).
 
 -doc """
 Return the Unix domain socket path used by `bin/ircdctl` for `Config`.
@@ -641,6 +644,9 @@ cmd_status(Format) ->
                 known_servers => mnesia:table_info(known_server, size),
                 services => mnesia:table_info(service, size),
                 accounts => length(ircd_account:list()),
+                db_disk_bytes => mnesia_disk_bytes(),
+                db_memory_bytes => mnesia_memory_bytes(),
+                db_tables => length(mnesia:system_info(tables)),
                 memory_bytes => erlang:memory(total),
                 erlang_processes => erlang:system_info(process_count)
             },
@@ -689,6 +695,13 @@ cmd_status(Format) ->
                 <<"Accounts:         ">>,
                 integer_to_binary(maps:get(accounts, Map)),
                 <<"\n">>,
+                <<"Database:         ">>,
+                integer_to_binary(maps:get(db_disk_bytes, Map) div 1024),
+                <<" KiB disk, ">>,
+                integer_to_binary(maps:get(db_memory_bytes, Map) div 1024),
+                <<" KiB RAM (">>,
+                integer_to_binary(maps:get(db_tables, Map)),
+                <<" tables)\n">>,
                 <<"VM Memory / Pids: ">>,
                 integer_to_binary(maps:get(memory_bytes, Map) div 1024),
                 <<" KiB / ">>,
@@ -1089,6 +1102,40 @@ cmd_state_call(Action, Format, TextFun) ->
     end.
 
 %%% Helpers
+
+mnesia_disk_bytes() ->
+    Dir = mnesia:system_info(directory),
+    case file:list_dir(Dir) of
+        {ok, Files} ->
+            lists:foldl(
+                fun(Name, Acc) ->
+                    Path = filename:join(Dir, Name),
+                    case filelib:is_regular(Path) of
+                        true -> Acc + filelib:file_size(Path);
+                        false -> Acc
+                    end
+                end,
+                0,
+                Files
+            );
+        {error, _} ->
+            0
+    end.
+
+mnesia_memory_bytes() ->
+    WordSize = erlang:system_info(wordsize),
+    lists:foldl(
+        fun(Table, Acc) ->
+            try mnesia:table_info(Table, memory) of
+                Words when is_integer(Words) -> Acc + Words * WordSize;
+                _ -> Acc
+            catch
+                _:_ -> Acc
+            end
+        end,
+        0,
+        mnesia:system_info(tables)
+    ).
 
 active_listeners() ->
     case whereis(ircd_sup) of

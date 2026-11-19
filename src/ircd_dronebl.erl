@@ -66,7 +66,10 @@ Start the DroneBL lookup and ban cache manager, registered as `ircd_dronebl`.
 """.
 -spec start_link(map()) -> gen_server:start_ret().
 start_link(Config) ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, Config, []).
+    gen_server:start_link({local, ?MODULE}, ?MODULE, Config, [
+        {hibernate_after, 15000},
+        {spawn_opt, [{fullsweep_after, 20}]}
+    ]).
 
 -doc """
 Return `true` when DroneBL checking is enabled in the active configuration.

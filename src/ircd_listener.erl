@@ -30,7 +30,8 @@ Starting fails when the socket cannot be opened, for example when the port is
 in use.
 """.
 -spec start_link(tcp | tls | ws | wss, inet:port_number(), map()) -> gen_server:start_ret().
-start_link(Kind, Port, Config) -> gen_server:start_link(?MODULE, {Kind, Port, Config}, []).
+start_link(Kind, Port, Config) ->
+    gen_server:start_link(?MODULE, {Kind, Port, Config}, [{hibernate_after, 15000}]).
 
 -doc false.
 init({Kind, Port, #{ip := IP, tls_options := TLSOptions}}) ->

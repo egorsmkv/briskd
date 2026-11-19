@@ -84,6 +84,8 @@ body {
 #chat-view {
   display: none;
   height: 100vh;
+  height: 100dvh;
+  position: relative;
   grid-template-columns: 236px 1fr 220px;
   grid-template-rows: 52px 1fr 60px;
   grid-template-areas:
@@ -92,6 +94,22 @@ body {
     "left input right";
   &.active {
     display: grid;
+  }
+}
+
+.mobile-only,
+.tablet-only {
+  display: none;
+}
+
+.drawer-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 20;
+  &.open {
+    display: block;
   }
 }
 
@@ -396,13 +414,19 @@ body {
 .members-head {
   padding: 10px 10px 8px;
   border-bottom: 1px solid var(--border);
+  .members-head-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
   .members-title {
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--muted);
     font-weight: 700;
-    margin-bottom: 6px;
   }
   input {
     width: 100%;
@@ -454,15 +478,90 @@ body {
   display: none;
 }
 
-@media (max-width: 860px) {
+@media (max-width: 960px) {
   #chat-view {
-    grid-template-columns: 180px 1fr;
+    grid-template-columns: 210px 1fr;
     grid-template-areas:
       "left head"
       "left main"
       "left input";
   }
+  .tablet-only {
+    display: inline-flex;
+  }
   .sidebar-right {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(260px, 82vw);
+    z-index: 30;
+    transform: translateX(100%);
+    transition: transform 0.18s ease;
+    box-shadow: var(--shadow);
+    &.open {
+      transform: translateX(0);
+    }
+  }
+}
+
+@media (max-width: 680px) {
+  #chat-view {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "head"
+      "main"
+      "input";
+  }
+  .mobile-only {
+    display: inline-flex;
+  }
+  .sidebar-left {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(270px, 84vw);
+    z-index: 30;
+    transform: translateX(-100%);
+    transition: transform 0.18s ease;
+    box-shadow: var(--shadow);
+    &.open {
+      transform: translateX(0);
+    }
+  }
+  .buf-close {
+    opacity: 0.85;
+  }
+  .head-topic,
+  .my-nick {
     display: none;
+  }
+  .chat-head {
+    padding: 0 10px;
+  }
+  .messages {
+    padding: 10px 10px;
+  }
+  .input-bar {
+    padding: 8px 10px;
+    input {
+      font-size: 16px;
+    }
+  }
+}
+
+@media (max-width: 520px) {
+  #connect-view {
+    padding: 14px;
+  }
+  .connect-card {
+    padding: 18px 16px;
+  }
+  .row-2 {
+    grid-template-columns: 1fr;
+  }
+  .field input {
+    font-size: 16px;
   }
 }

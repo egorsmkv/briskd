@@ -115,7 +115,10 @@ Start and register the `ircd_state` process with the validated configuration
 map from `m:ircd_config`. Called by `m:ircd_sup`.
 """.
 -spec start_link(map()) -> gen_server:start_ret().
-start_link(Config) -> gen_server:start_link({local, ?MODULE}, ?MODULE, Config, []).
+start_link(Config) ->
+    gen_server:start_link({local, ?MODULE}, ?MODULE, Config, [
+        {spawn_opt, [{message_queue_data, off_heap}, {fullsweep_after, 200}]}
+    ]).
 
 -doc """
 Register the calling session as a connected, unregistered client.

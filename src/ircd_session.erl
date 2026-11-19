@@ -61,7 +61,11 @@ made it the socket's controlling process and sent it `activate`. Called by
 """.
 -spec start_link(tcp | tls | ws | wss, port() | ssl:sslsocket(), binary()) ->
     gen_server:start_ret().
-start_link(Kind, Socket, Peer) -> gen_server:start_link(?MODULE, {Kind, Socket, Peer}, []).
+start_link(Kind, Socket, Peer) ->
+    gen_server:start_link(?MODULE, {Kind, Socket, Peer}, [
+        {hibernate_after, 15000},
+        {spawn_opt, [{fullsweep_after, 20}]}
+    ]).
 
 -doc false.
 init(State) -> {ok, State}.

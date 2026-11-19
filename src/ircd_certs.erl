@@ -48,7 +48,7 @@ calls `ircd_state`.
 -doc "Start the watcher for the TLS files in `Config` (see the moduledoc).".
 -spec start_link(map()) -> gen_server:start_ret().
 start_link(Config) ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, Config, []).
+    gen_server:start_link({local, ?MODULE}, ?MODULE, Config, [{hibernate_after, 15000}]).
 
 -doc """
 Check the files now and reload when they changed. Returns `unchanged`,

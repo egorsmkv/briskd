@@ -65,16 +65,16 @@ live_webui() ->
         GoodAuth = basic_auth(<<"admin">>, <<"topsecret">>),
         BadAuth = basic_auth(<<"admin">>, <<"wrong">>),
 
-        %% Unauthenticated and wrong credentials are rejected.
-        {401, Headers401, _} = http_req(Port, <<"GET">>, <<"/">>, [], <<>>),
+        %% Unauthenticated and wrong credentials on /admin and /api/overview are rejected.
+        {401, Headers401, _} = http_req(Port, <<"GET">>, <<"/admin">>, [], <<>>),
         ?assert(maps:is_key(<<"www-authenticate">>, Headers401)),
         {401, _, _} = http_req(
             Port, <<"GET">>, <<"/api/overview">>, [{<<"Authorization">>, BadAuth}], <<>>
         ),
 
-        %% Authenticated GET / serves the HTML dashboard with strict nonce CSP.
+        %% Authenticated GET /admin serves the HTML dashboard with strict CSP.
         {200, HtmlHeaders, HtmlBody} = http_req(
-            Port, <<"GET">>, <<"/">>, [{<<"Authorization">>, GoodAuth}], <<>>
+            Port, <<"GET">>, <<"/admin">>, [{<<"Authorization">>, GoodAuth}], <<>>
         ),
         ?assertEqual(<<"DENY">>, maps:get(<<"x-frame-options">>, HtmlHeaders)),
         ?assertEqual(<<"nosniff">>, maps:get(<<"x-content-type-options">>, HtmlHeaders)),
@@ -86,9 +86,9 @@ live_webui() ->
         ?assertEqual(nomatch, binary:match(HtmlBody, <<"__CSP_NONCE__">>)),
         ?assert(binary:match(HtmlBody, <<"<title>ircd admin</title>">>) =/= nomatch),
 
-        %% Second GET / issues a fresh per-request CSP nonce.
+        %% Second GET /admin issues a fresh per-request CSP nonce.
         {200, HtmlHeaders2, _} = http_req(
-            Port, <<"GET">>, <<"/">>, [{<<"Authorization">>, GoodAuth}], <<>>
+            Port, <<"GET">>, <<"/admin">>, [{<<"Authorization">>, GoodAuth}], <<>>
         ),
         ?assertNotEqual(Csp, maps:get(<<"content-security-policy">>, HtmlHeaders2)),
 
@@ -103,7 +103,12 @@ live_webui() ->
         Overview = json:decode(OverviewBody),
         ?assertMatch(
             #{
-                <<"status">> := #{<<"name">> := <<"irc.test">>, <<"status">> := <<"running">>},
+                <<"status">> := #{
+                    <<"name">> := <<"irc.test">>,
+                    <<"status">> := <<"running">>,
+                    <<"db_disk_bytes">> := _,
+                    <<"db_memory_bytes">> := _
+                },
                 <<"clients">> := #{<<"clients">> := []},
                 <<"channels">> := #{<<"channels">> := []},
                 <<"links">> := #{<<"connected">> := []},
@@ -112,6 +117,10 @@ live_webui() ->
             },
             Overview
         ),
+        #{<<"status">> := #{<<"db_disk_bytes">> := DbDisk, <<"db_memory_bytes">> := DbMem}} =
+            Overview,
+        ?assert(is_integer(DbDisk) andalso DbDisk >= 0),
+        ?assert(is_integer(DbMem) andalso DbMem > 0),
 
         %% POST /api/action without CSRF header is rejected (403).
         {403, _, _} = http_req(
@@ -368,14 +377,15 @@ live_webui() ->
         {400, _, AlreadyBody} = post_action(Port, GoodAuth, <<"verify-account">>, [<<"penduser">>]),
         ?assertMatch(#{<<"error">> := <<"already_verified">>}, json:decode(AlreadyBody)),
 
-        %% Public GET /webirc serves the browser IRC client with ws/wss CSP when ws_port is enabled.
-        {200, WebircHdrs, WebircHtml} = http_req(Port, <<"GET">>, <<"/webirc">>, [], <<>>),
+        %% Public GET / (and /webirc) serves the browser IRC client with ws/wss CSP.
+        {200, WebircHdrs, WebircHtml} = http_req(Port, <<"GET">>, <<"/">>, [], <<>>),
         WebircCsp = maps:get(<<"content-security-policy">>, WebircHdrs),
         ?assert(binary:match(WebircCsp, <<"connect-src 'self' ws: wss:">>) =/= nomatch),
         ?assert(binary:match(WebircCsp, <<"script-src 'self' 'nonce-">>) =/= nomatch),
         ?assert(binary:match(WebircHtml, <<"WebIRC">>) =/= nomatch),
         ?assertEqual(nomatch, binary:match(WebircHtml, <<"__NETWORK_NAME__">>)),
         ?assertEqual(nomatch, binary:match(WebircHtml, <<"__WS_PORT__">>)),
+        {200, _, _} = http_req(Port, <<"GET">>, <<"/webirc">>, [], <<>>),
 
         %% 404 for unknown path.
         {404, _, _} = http_req(

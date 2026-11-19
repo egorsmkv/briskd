@@ -7,21 +7,22 @@ Opt-in via the `"webui"` configuration object (`bind`, `port`, `username`,
 `127.0.0.1`) serving a self-contained single-page dashboard from
 `priv/webui/index.html` and two JSON endpoints:
 
-- `GET /` — serves the HTML administration dashboard (no external assets).
+- `GET /` (and `GET /webirc`) — public (unauthenticated) browser IRC client
+  over the configured `ws` / `wss` IRCv3 WebSocket listener.
+- `GET /admin` — serves the HTML administration dashboard (HTTP Basic auth).
 - `GET /api/overview` — returns combined server stats, clients, channels,
-  server links, accounts, and DroneBL status/bans as JSON.
+  server links, accounts, and DroneBL status/bans as JSON (HTTP Basic auth).
 - `POST /api/action` — executes an explicitly whitelisted `m:ircd_ctl`
-  management action (`rehash`, `reload-certs`, `log-level`, `kick-client`,
-  `connect`, `squit`, `create-account`, `delete-account`, `backup`,
-  `dronebl-unban`, `drain`, `stop`).
-- `GET /verify?account=<name>&code=<code>` — public (unauthenticated)
-  account verification landing page, active when `account_verification` is
-  configured.
+  management action (`rehash`, `check-config`, `reload-certs`, `log-level`,
+  `kick-client`, `notice-all`, `set-topic`, `connect`, `squit`,
+  `create-account`, `verify-account`, `delete-account`, `backup`,
+  `dronebl-ban`, `dronebl-unban`, `drain`, `stop`).
+- `GET /verify` and `POST /api/verify` — public (unauthenticated) account
+  verification page and JSON endpoint (with ALTCHA), active when
+  `account_verification` is configured.
 - `GET /signup` and `POST /api/signup` — public (unauthenticated) user
-  self-registration page and JSON endpoint, active when `account_registration`
-  is `true` (rate-limited per IP and protected with CSRF header + CSP nonce).
-- `GET /webirc` — public (unauthenticated) browser IRC client over the
-  configured `ws` / `wss` IRCv3 WebSocket listener.
+  self-registration page and JSON endpoint (with ALTCHA), active when
+  `account_registration` is `true`.
 
 Security controls:
 
@@ -57,7 +58,10 @@ Start the admin WebUI HTTP server, registered as `ircd_webui`.
 """.
 -spec start_link(map()) -> gen_server:start_ret().
 start_link(Config) ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, Config, []).
+    gen_server:start_link({local, ?MODULE}, ?MODULE, Config, [
+        {hibernate_after, 15000},
+        {spawn_opt, [{fullsweep_after, 20}]}
+    ]).
 
 -doc """
 Return the TCP port the WebUI listener is currently bound to.
@@ -211,7 +215,9 @@ handle_connection(
             handle_static(Socket, Name, Static);
         {ok, <<"GET">>, {<<"/api/altcha">>, _Query}, _Headers, _Body} ->
             send_json(Socket, 200, <<"OK">>, ircd_altcha:create_challenge());
-        {ok, <<"GET">>, {<<"/webirc">>, _Query}, _Headers, _Body} ->
+        {ok, <<"GET">>, {Path, _Query}, _Headers, _Body} when
+            Path =:= <<"/">>; Path =:= <<"/webirc">>
+        ->
             handle_webirc_page(Socket, WebircHtml);
         {ok, <<"GET">>, {<<"/verify">>, Query}, _Headers, _Body} ->
             handle_verify_page(Socket, VerifyHtml, Query);
@@ -539,7 +545,7 @@ escape_html(Bin) ->
     B4 = binary:replace(B3, <<"\"">>, <<"&quot;">>, [global]),
     binary:replace(B4, <<"'">>, <<"&#39;">>, [global]).
 
-route(Socket, <<"GET">>, <<"/">>, _Headers, _Body, Html) ->
+route(Socket, <<"GET">>, <<"/admin">>, _Headers, _Body, Html) ->
     send_nonce_html(Socket, Html);
 route(Socket, <<"GET">>, <<"/api/overview">>, _Headers, _Body, _Html) ->
     Payload = #{

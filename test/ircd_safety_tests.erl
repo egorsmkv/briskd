@@ -128,12 +128,34 @@ live() ->
         markread_targets(Port),
         holds_expire(),
         roadmap_memory_bounds(Port),
+        gc_process_options(Port),
         safelist_avoids_sendq_kill(Port),
         flood_control_disconnects_spammer(Port),
         sendq_limit(Port)
     after
         _ = application:stop(ircd),
         os:unsetenv("IRCD_CONFIG")
+    end.
+
+%% Verify OTP GC and mailbox tuning on core processes.
+gc_process_options(Port) ->
+    StatePid = whereis(ircd_state),
+    {message_queue_data, off_heap} = erlang:process_info(StatePid, message_queue_data),
+    {garbage_collection, StateGc} = erlang:process_info(StatePid, garbage_collection),
+    ?assertEqual(200, proplists:get_value(fullsweep_after, StateGc)),
+    Client = register_client(Port, <<"gctest">>),
+    try
+        SessionPids = [P || {_, P, _, _} <- supervisor:which_children(ircd_sessions), is_pid(P)],
+        ?assert(SessionPids =/= []),
+        lists:foreach(
+            fun(Pid) ->
+                {garbage_collection, SessGc} = erlang:process_info(Pid, garbage_collection),
+                ?assertEqual(20, proplists:get_value(fullsweep_after, SessGc))
+            end,
+            SessionPids
+        )
+    after
+        gen_tcp:close(Client)
     end.
 
 %% SAFELIST: 005 advertises SAFELIST, and a LIST returning more channels than

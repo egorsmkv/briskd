@@ -68,7 +68,11 @@ start-up, so this returns before the peer is reached; a failed
 connection is retried rather than failing the start.
 """.
 -spec start_link(map(), map()) -> gen_server:start_ret().
-start_link(Config, Peer) -> gen_server:start_link(?MODULE, {Config, Peer}, []).
+start_link(Config, Peer) ->
+    gen_server:start_link(?MODULE, {Config, Peer}, [
+        {hibernate_after, 30000},
+        {spawn_opt, [{fullsweep_after, 20}]}
+    ]).
 
 -doc false.
 init({Config, Peer}) ->
