@@ -21,6 +21,13 @@ init({Kind, Port, #{ip := IP, tls_options := TLSOptions}}) ->
         {active, false},
         {packet, raw},
         {reuseaddr, true},
+        %% Interactive sessions: a reply usually spans several small sends
+        %% (numerics, then the next line). Without nodelay, Nagle holds each
+        %% later send until the client ACKs the first, and delayed ACK makes
+        %% that ~40 ms per multi-line reply. bench/traffic.py's command matrix
+        %% measured median p50 41.98 ms without it and 0.85 ms with it
+        %% (bench/results/2026-11-19-commands.md).
+        {nodelay, true},
         {send_timeout, 5000}
     ],
     case listen(Kind, Port, Options, TLSOptions) of

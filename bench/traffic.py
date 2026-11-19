@@ -5,6 +5,13 @@ Usage, from the repository root, while the server is listening:
 
     python3 bench/traffic.py
     python3 bench/traffic.py --host 127.0.0.1 --port 6667
+    python3 bench/traffic.py --oper yehor:devpass --json bench/results/run.json
+
+Phases: sequential and pipelined PING, a registration burst, channel fan-out,
+and a per-command matrix (see bench/commands.py) that times every client
+command family. The report also carries the server's own statistics for the
+run: the `STATS m` per-command delta, uptime, LUSERS, and container CPU and
+memory sampled once per second. `--oper` adds operator-only commands.
 
 The default target is the development listener on port 6667. `bench/release`
 starts a packaged release on port 6668 and passes `--kind release`. Each run
@@ -13,12 +20,15 @@ uses a fresh nick prefix because a quit holds that nick for 60 seconds.
 
 import argparse
 import asyncio
+import json
 import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+import commands as bench_commands  # noqa: E402  (bench/commands.py, same directory)
 
 
 def percentile(samples, pct):
@@ -334,12 +344,86 @@ def write_report(path, report):
     ]
     if regs["errors"]:
         lines.extend(["## Registration errors", "", "```", *regs["errors"][:8], "```", ""])
+    lines.extend(command_section(report))
+    lines.extend(server_section(report))
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def command_section(report):
+    rows = report.get("commands") or []
+    if not rows:
+        return []
+    out = [
+        "## Commands",
+        "",
+        f"Each family runs {report['iterations']} times on one client, each followed by",
+        "`PING <marker>`; latency is the time until that PONG, so it covers the whole",
+        "reply. Errors count 4xx/5xx numerics, `FAIL` replies, and timeouts.",
+        "",
+        "| Command | Runs | ops/s | p50 | p95 | p99 | max | Errors |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for row in rows:
+        out.append(
+            f"| {row['command']} | {row['iterations']} | {row['ops_per_s']:.1f} | "
+            f"{fmt_ms(row['p50'])} | {fmt_ms(row['p95'])} | {fmt_ms(row['p99'])} | "
+            f"{fmt_ms(row['max'])} | {row['errors']} |"
+        )
+    failing = [row for row in rows if row["examples"]]
+    if failing:
+        out.extend(["", "Error examples:", ""])
+        for row in failing:
+            for example in row["examples"]:
+                out.append(f"- {row['command']}: `{example}`")
+    out.append("")
+    return out
+
+
+def server_section(report):
+    server = report.get("server")
+    if not server:
+        return []
+    out = ["## Server statistics", ""]
+    if server.get("uptime"):
+        out.append(f"- Uptime (`STATS u`): {server['uptime']}.")
+    for line in server.get("lusers", []):
+        out.append(f"- LUSERS {line}")
+    container = server.get("container", {})
+    if container.get("samples"):
+        out.append(
+            f"- Container over the run ({container['samples']} samples): CPU "
+            f"avg {container['cpu_avg']:.1f}%, max {container['cpu_max']:.1f}%; memory "
+            f"min {container['mem_min_mib']:.1f} MiB, max {container['mem_max_mib']:.1f} MiB; "
+            f"processes max {container['pids_max']}; network I/O at end {container['net_last']}."
+        )
+    delta = server.get("delta", {})
+    if delta:
+        total = sum(v["count"] for v in delta.values())
+        total_bytes = sum(v["bytes"] for v in delta.values())
+        out.extend(
+            [
+                "",
+                f"`STATS m` delta for this run: {total} commands, {total_bytes} bytes received.",
+                "",
+                "| Command | Count | Bytes | Avg bytes |",
+                "| --- | ---: | ---: | ---: |",
+            ]
+        )
+        for command, values in sorted(delta.items(), key=lambda kv: -kv[1]["count"]):
+            avg = values["bytes"] / values["count"] if values["count"] else 0
+            out.append(f"| {command} | {values['count']} | {values['bytes']} | {avg:.1f} |")
+    out.append("")
+    return out
 
 
 async def main_async(args):
     # Step well clear of nicks a previous run may still be holding.
     base = (int(time.time()) + 20_000) % 40_000_000
+    oper = tuple(args.oper.split(":", 1)) if args.oper else None
+    sampler = bench_commands.Sampler(args.container).start()
+    stats_before = await bench_commands.server_stats(
+        args.host, args.port, nick_for(base, 91_000_000), oper
+    )
     if args.warmup:
         _warm_delays, warm_errors, _warm_elapsed = await registration_burst(
             args.host,
@@ -373,6 +457,20 @@ async def main_async(args):
     channel = await channel_fanout(
         args.host, args.port, base, args.members, args.each, args.timeout
     )
+    matrix = []
+    if args.commands:
+        matrix = await bench_commands.command_matrix(
+            args.host,
+            args.port,
+            lambda index: nick_for(base, 80_000_000 + index),
+            args.commands,
+            oper,
+            args.timeout,
+        )
+    stats_after = await bench_commands.server_stats(
+        args.host, args.port, nick_for(base, 92_000_000), oper
+    )
+    container = await asyncio.to_thread(sampler.stop)
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     out = Path(args.output) if args.output else ROOT / "bench" / "results" / f"{stamp}.md"
     report = {
@@ -394,9 +492,21 @@ async def main_async(args):
             "elapsed": reg_elapsed,
         },
         "channel": channel,
+        "commands": matrix,
+        "iterations": args.commands,
+        "server": {
+            "uptime": stats_after["uptime"],
+            "lusers": stats_after["lusers"],
+            "delta": bench_commands.stats_delta(stats_before, stats_after),
+            "container": container,
+        },
     }
     write_report(out, report)
     print(out)
+    if args.json:
+        Path(args.json).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.json).write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+        print(args.json)
 
 
 def main():
@@ -414,6 +524,18 @@ def main():
     parser.add_argument("--container", default="irc-server_ircd-dev_1")
     parser.add_argument("--kind", choices=("development", "release"), default="development")
     parser.add_argument("--warmup", type=int, default=0)
+    parser.add_argument(
+        "--commands",
+        type=int,
+        default=30,
+        help="iterations per command family in the command matrix (0 skips it)",
+    )
+    parser.add_argument(
+        "--oper",
+        default="",
+        help="NAME:PASSWORD for OPER; adds operator commands and operator-only stats",
+    )
+    parser.add_argument("--json", default="", help="also write the full report as JSON")
     args = parser.parse_args()
     asyncio.run(main_async(args))
 

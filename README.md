@@ -318,6 +318,13 @@ TCP connection before registration; prefer `tls_port` and STS.
 `SUMMON` and `USERS` are not available as working features. Consult the
 [roadmap](ROADMAP.md) for the checked coverage list.
 
+## Benchmarks
+
+`python3 bench/traffic.py --oper <name>:<password>` measures latency and
+throughput for every client command family and reports the server's own
+statistics for the run (`STATS m` per-command counts and bytes, uptime,
+LUSERS, container CPU and memory). See [bench/README.md](bench/README.md).
+
 ## IRCv3 conformance with irctest
 
 `test/irctest/ircd_controller.py` runs [irctest](https://github.com/progval/irctest)
