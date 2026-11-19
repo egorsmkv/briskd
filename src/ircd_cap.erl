@@ -68,6 +68,7 @@ cannot be removed.
     <<"draft/pre-away">>,
     <<"draft/read-marker">>,
     <<"echo-message">>,
+    <<"egorsmkv.github.io/e2ee">>,
     <<"extended-join">>,
     <<"extended-monitor">>,
     <<"invite-notify">>,
@@ -420,6 +421,12 @@ value(<<"draft/account-registration">>, _Info) ->
                     ",max-password-length=300">>};
         false ->
             error
+    end;
+%% End-to-end encryption broker (ircd_e2ee): offered only when configured.
+value(<<"egorsmkv.github.io/e2ee">>, _Info) ->
+    case ircd_e2ee:enabled() of
+        true -> {ok, ircd_e2ee:cap_value()};
+        false -> error
     end;
 value(_Name, _Info) ->
     {ok, undefined}.

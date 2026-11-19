@@ -92,6 +92,7 @@ load(Path) ->
             server_info => ServerInfo,
             shutdown_grace => shutdown_grace(maps:get(<<"shutdown_grace">>, Json, 5)),
             max_sendq => max_sendq(maps:get(<<"max_sendq">>, Json, 10000)),
+            e2ee => e2ee(maps:get(<<"e2ee">>, Json, null)),
             tls_reload_interval => tls_reload_interval(
                 maps:get(<<"tls_reload_interval">>, Json, 60)
             ),
@@ -225,6 +226,34 @@ shutdown_grace(Value) -> erlang:error({invalid_shutdown_grace, Value}).
 %% Lines queued for one client before it is disconnected (Max SendQ exceeded).
 max_sendq(Value) when is_integer(Value, 100, 1000000) -> Value;
 max_sendq(Value) -> erlang:error({invalid_max_sendq, Value}).
+
+%% End-to-end encryption broker (ircd_e2ee). `null` (the default) turns it
+%% off. Unknown keys are rejected so a typo does not silently drop a limit.
+-define(E2EE_KEYS, [
+    <<"max_devices">>, <<"max_prekeys">>, <<"queue_limit">>, <<"queue_ttl">>, <<"fetch_rate">>
+]).
+e2ee(null) ->
+    null;
+e2ee(Map) when is_map(Map) ->
+    case maps:keys(Map) -- ?E2EE_KEYS of
+        [] -> ok;
+        Unknown -> erlang:error({invalid_e2ee, {unknown_keys, Unknown}})
+    end,
+    #{
+        max_devices => e2ee_int(Map, <<"max_devices">>, 8, 1, 32),
+        max_prekeys => e2ee_int(Map, <<"max_prekeys">>, 100, 1, 1000),
+        queue_limit => e2ee_int(Map, <<"queue_limit">>, 500, 0, 10000),
+        queue_ttl => e2ee_int(Map, <<"queue_ttl">>, 1209600, 60, 7776000),
+        fetch_rate => e2ee_int(Map, <<"fetch_rate">>, 30, 1, 1000)
+    };
+e2ee(Value) ->
+    erlang:error({invalid_e2ee, Value}).
+
+e2ee_int(Map, Key, Default, Min, Max) ->
+    case maps:get(Key, Map, Default) of
+        Value when is_integer(Value, Min, Max) -> Value;
+        Value -> erlang:error({invalid_e2ee, {Key, Value}})
+    end.
 
 %% Seconds between TLS certificate file checks (ircd_certs); 0 disables.
 tls_reload_interval(0) -> 0;

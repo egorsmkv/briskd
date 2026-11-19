@@ -60,6 +60,7 @@ For the Docker development environment, project commands, and CI, see
 | [Configuration](docs/configuration.md) | Every JSON setting, TLS, retention, operators, and predefined channels |
 | [IRC support](docs/irc-support.md) | Implemented commands, implementation policies, limits, and server links |
 | [IRCv3](docs/ircv3.md) | Capabilities, tags, accounts, history, metadata, and WebSocket support |
+| [End-to-end encryption](docs/e2ee.md) | Optional blind broker for Double Ratchet / OMEMO clients: key directory and offline queue |
 | [Deployment](docs/deployment.md) | Production image and Compose file, and graceful shutdown |
 | [Development](docs/development.md) | Docker environment, `just` commands, CI, and building these docs |
 | [Mnesia operations](docs/mnesia.md) | Persistence, backup, restore, and schema migration |

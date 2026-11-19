@@ -40,6 +40,7 @@
 ]).
 -include("ircd_state.hrl").
 -include("ircd_account.hrl").
+-include("ircd_e2ee.hrl").
 
 -moduledoc """
 Single-writer owner of this server's IRC protocol state, and the entry point
@@ -284,6 +285,7 @@ init(#{name := Name} = Config) ->
     ensure_ets(ircd_attached),
     ensure_ets(ircd_account_channels),
     ensure_ets(ircd_remote_meta),
+    ensure_ets(ircd_e2ee_bound),
     persistent_term:put({?MODULE, config}, Config),
     persistent_term:put({?MODULE, config_path}, maps:get(config_path, Config)),
     persistent_term:put({?MODULE, motd_file}, maps:get(motd_file, Config, null)),
@@ -304,6 +306,10 @@ init(#{name := Name} = Config) ->
     table(service, record_info(fields, service), []),
     table(account, record_info(fields, account), []),
     table(read_marker, record_info(fields, read_marker), []),
+    %% End-to-end encryption broker (ircd_e2ee): device bundles and the
+    %% per-device offline queue, durable under every retention policy.
+    table(e2ee_device, record_info(fields, e2ee_device), []),
+    table(e2ee_queue, record_info(fields, e2ee_queue), [{type, ordered_set}]),
     table(direct_history, record_info(fields, direct_history), []),
     ok = mnesia:wait_for_tables(
         [
@@ -956,6 +962,7 @@ handle_info({flush_netjoin, Peer}, Server) ->
 handle_info(reop_tick, Server) ->
     ircd_state_channel:reop_channels(Server),
     ok = ircd_state_net:expire_holds(),
+    ok = ircd_e2ee:expire(),
     erlang:send_after(1000, self(), reop_tick),
     {noreply, Server};
 %% Ignore unknown messages. Session and worker DOWN, `reop_tick`, and
@@ -966,6 +973,7 @@ handle_info(_, State) ->
 %% A session process ended: drop its attachment and client state.
 session_down(Pid, State) ->
     ets:delete(ircd_attached, Pid),
+    ok = ircd_e2ee:session_down(Pid),
     case mnesia:dirty_read(client, Pid) of
         [Client] -> ircd_state_client:disconnect(Client, <<"Connection closed">>, State);
         [] -> ok
@@ -1287,6 +1295,13 @@ registered_command(<<"MARKREAD">>, Params, Client, Server) ->
     ircd_state_history:markread(Params, Client, Server);
 registered_command(<<"REDACT">>, Params, Client, Server) ->
     ircd_state_history:redact(Params, Client, Server);
+registered_command(<<"E2EE">>, Params, Client, Server) ->
+    case ircd_e2ee:enabled() of
+        true ->
+            ircd_e2ee:command(Params, Client, Server);
+        false ->
+            ircd_state_send:numeric(Client, Server, <<"421">>, [<<"E2EE">>], <<"Unknown command">>)
+    end;
 registered_command(<<"METADATA">>, Params, Client, Server) ->
     ircd_state_meta:metadata(Params, Client, Server);
 registered_command(<<"RENAME">>, Params, Client, Server) ->
@@ -1680,6 +1695,7 @@ supported_command(Command) ->
             <<"CAP">>,
             <<"CHATHISTORY">>,
             <<"CHGHOST">>,
+            <<"E2EE">>,
             <<"ISUPPORT">>,
             <<"MARKREAD">>,
             <<"METADATA">>,

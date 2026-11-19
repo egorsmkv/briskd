@@ -893,73 +893,88 @@ deliver_body(Command, Target, Body, #client{pid = Pid} = Client, Server, ClientT
                     )
             end;
         [] ->
-            Recipient =
-                case ircd_state_client:find_nick(Target) of
-                    #client{} = Found ->
-                        case ircd_state_client:ready(Found) of
-                            true -> Found;
-                            false -> held
-                        end;
-                    undefined ->
-                        undefined
-                end,
-            case Recipient of
-                held ->
-                    message_error(
-                        Command, Client, Server, <<"401">>, [Target], <<"No such nick/channel">>
-                    );
-                #client{pid = Other, nick = Nick, away = Away} ->
+            %% End-to-end encryption: queue an envelope for an offline device;
+            %% a target that is wholly offline needs no other delivery.
+            case ircd_e2ee:route(Target, Body, Client, {ClientTags, Tags, Command}) of
+                handled ->
+                    ok;
+                pass ->
+                    deliver_direct(
+                        Command,
+                        Target,
+                        Body,
+                        Client,
+                        Server,
+                        {ClientTags, Tags, MsgId, Now, Account}
+                    )
+            end
+    end.
+
+deliver_direct(
+    Command,
+    Target,
+    Body,
+    #client{pid = Pid} = Client,
+    Server,
+    {ClientTags, Tags, MsgId, Now, Account}
+) ->
+    Recipient =
+        case ircd_state_client:find_nick(Target) of
+            #client{} = Found ->
+                case ircd_state_client:ready(Found) of
+                    true -> Found;
+                    false -> held
+                end;
+            undefined ->
+                undefined
+        end,
+    case Recipient of
+        held ->
+            message_error(
+                Command, Client, Server, <<"401">>, [Target], <<"No such nick/channel">>
+            );
+        #client{pid = Other, nick = Nick, away = Away} ->
+            Prefix = ircd_state_send:prefix(Client),
+            %% A message to oneself is delivered and, with
+            %% echo-message, also echoed: two copies, one labeled.
+            fan_out([Other], Prefix, Command, Nick, Body, Tags),
+            echo(Pid, Prefix, Command, Nick, Body, Tags),
+            ircd_state_history:note_direct(
+                {Account, Client#client.nick},
+                {ircd_state_v3:account(Other), Nick},
+                Nick,
+                ircd_state_history:entry(
+                    Command, Prefix, Body, MsgId, Now, ClientTags, Account
+                )
+            ),
+            case {Command, Away} of
+                {<<"PRIVMSG">>, Message} when Message =/= undefined ->
+                    ircd_state_send:numeric(Client, Server, <<"301">>, [Nick], Message);
+                _ ->
+                    ok
+            end;
+        undefined ->
+            case mnesia:dirty_read(remote_client, ircd_wire:fold(Target)) of
+                [#remote_client{peer = Peer, nick = Nick, account = Theirs}] ->
                     Prefix = ircd_state_send:prefix(Client),
-                    %% A message to oneself is delivered and, with
-                    %% echo-message, also echoed: two copies, one labeled.
-                    fan_out([Other], Prefix, Command, Nick, Body, Tags),
-                    echo(Pid, Prefix, Command, Nick, Body, Tags),
-                    ircd_state_history:note_direct(
-                        {Account, Client#client.nick},
-                        {ircd_state_v3:account(Other), Nick},
-                        Nick,
-                        ircd_state_history:entry(
-                            Command, Prefix, Body, MsgId, Now, ClientTags, Account
+                    Results = [
+                        ircd_links:send(Peer, iolist_to_binary(Line))
+                     || Line <- ircd_state_batch:link_lines(
+                            Prefix, Command, Nick, Body, Tags
                         )
-                    ),
-                    case {Command, Away} of
-                        {<<"PRIVMSG">>, Message} when Message =/= undefined ->
-                            ircd_state_send:numeric(Client, Server, <<"301">>, [Nick], Message);
-                        _ ->
-                            ok
-                    end;
-                undefined ->
-                    case mnesia:dirty_read(remote_client, ircd_wire:fold(Target)) of
-                        [#remote_client{peer = Peer, nick = Nick, account = Theirs}] ->
-                            Prefix = ircd_state_send:prefix(Client),
-                            Results = [
-                                ircd_links:send(Peer, iolist_to_binary(Line))
-                             || Line <- ircd_state_batch:link_lines(
-                                    Prefix, Command, Nick, Body, Tags
+                    ],
+                    case lists:all(fun(R) -> R =:= ok end, Results) of
+                        true ->
+                            echo(Pid, Prefix, Command, Nick, Body, Tags),
+                            ircd_state_history:note_direct(
+                                {Account, Client#client.nick},
+                                {Theirs, Nick},
+                                Nick,
+                                ircd_state_history:entry(
+                                    Command, Prefix, Body, MsgId, Now, ClientTags, Account
                                 )
-                            ],
-                            case lists:all(fun(R) -> R =:= ok end, Results) of
-                                true ->
-                                    echo(Pid, Prefix, Command, Nick, Body, Tags),
-                                    ircd_state_history:note_direct(
-                                        {Account, Client#client.nick},
-                                        {Theirs, Nick},
-                                        Nick,
-                                        ircd_state_history:entry(
-                                            Command, Prefix, Body, MsgId, Now, ClientTags, Account
-                                        )
-                                    );
-                                false ->
-                                    message_error(
-                                        Command,
-                                        Client,
-                                        Server,
-                                        <<"401">>,
-                                        [Target],
-                                        <<"No such nick/channel">>
-                                    )
-                            end;
-                        [] ->
+                            );
+                        false ->
                             message_error(
                                 Command,
                                 Client,
@@ -968,7 +983,16 @@ deliver_body(Command, Target, Body, #client{pid = Pid} = Client, Server, ClientT
                                 [Target],
                                 <<"No such nick/channel">>
                             )
-                    end
+                    end;
+                [] ->
+                    message_error(
+                        Command,
+                        Client,
+                        Server,
+                        <<"401">>,
+                        [Target],
+                        <<"No such nick/channel">>
+                    )
             end
     end.
 

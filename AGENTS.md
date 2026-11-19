@@ -93,6 +93,7 @@ src/ircd_state_send.erl      # numeric replies, tag filtering, batches, client d
 src/ircd_deferred.erl        # deferred replies: PBKDF2 and other slow work in bounded workers
 src/ircd_state_v3.erl        # IRCv3 accounts, SASL, identity, and notifications
 src/ircd_state_monitor.erl   # MONITOR and extended-monitor
+src/ircd_e2ee.erl            # optional E2EE broker: prekey directory, device binding, offline queue
 src/ircd_state_history.erl   # chathistory, read markers, redaction
 src/ircd_state_batch.erl     # client batches and draft/multiline
 src/ircd_state_meta.erl      # draft/metadata-2

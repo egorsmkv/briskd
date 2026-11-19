@@ -266,6 +266,17 @@ always-on bouncer details, and Sable's PostgreSQL history server.
   (a second connection of the same account shares the nickname) and
   `account_rejoin` (an account is rejoined to its channels on login).
 
+## End-to-end encryption (server-specific extension)
+
+- [x] Optional blind broker for Signal-style clients (`e2ee` configuration,
+  `ircd_e2ee`, [guide](docs/e2ee.md)): vendor capability
+  `egorsmkv.github.io/e2ee`, X3DH prekey directory bound to SASL accounts
+  (`E2EE PUBLISH`, `PREKEYS`, `DEVICES`, `FETCH`, `REMOVE`), device binding
+  (`BIND`), per-device offline queue with acknowledgement (`ACK`), and limits
+  on devices, prekeys, queue size and age, and fetch rate.
+- [ ] Replicate bundles and queued envelopes across server links.
+- [ ] Queue `draft/multiline` envelopes for offline devices.
+
 ## Documentation and verification
 
 - [x] README documents run instructions and links the guides in `docs/`:

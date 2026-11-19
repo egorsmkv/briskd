@@ -25,6 +25,8 @@ decided by the setting loaded at that start.
 | Imported peers, remote users, remote channels, and services | Deleted | Deleted |
 | Accounts (`account`: SCRAM-SHA-256 verifiers, email, client certificate fingerprints, pending verification) | Kept | Kept |
 | Read markers (`read_marker`, per account and target) | Kept | Kept |
+| End-to-end encryption device bundles (`e2ee_device`, public keys only) | Kept | Kept |
+| End-to-end encryption offline queue (`e2ee_queue`, ciphertext until acknowledged or `queue_ttl`) | Kept | Kept |
 | IRCv3 connection state: capabilities, MONITOR lists, metadata, SASL progress | Deleted | Deleted |
 | Direct-message history between accounts (`direct_history`) | Deleted | Kept, newest `history_limit` entries per pair |
 
