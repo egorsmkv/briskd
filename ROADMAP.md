@@ -105,12 +105,22 @@ in the referenced RFC.
     keeps serving other clients while a password is checked.
   - Peer-supplied identities, topics, keys, and masks are copied before they
     are stored, so they do not keep receive buffers alive.
-- [ ] Remaining bounds from the memory audit: an expiry or cap for empty safe
-  and retained channels (and a short-name index for safe JOIN), REGISTER rate
-  limits and an account cap, a per-account read-marker cap, pruning of
-  disconnected pids from `invited`, a cap and cleanup for open peer batches,
-  per-account direct-history conversation caps, and per-peer caps on
-  introduced users, servers, services, and metadata.
+  - Client flood and spam control (`ircd_flood`, `flood` setting): per-client
+    token buckets for lines (`lines_burst`, `lines_per_second`), messages
+    (`messages_burst`, `messages_per_second`), channel joins (`join_burst`,
+    `join_per_minute`), and nickname changes (`nick_burst`,
+    `nick_per_minute`), disconnecting flooded sessions with `Excess Flood`
+    (operators are exempt), plus a per-host `REGISTER` rate limit
+    (`register_per_minute`).
+- [x] Remaining bounds from the memory audit: an expiry (`empty_channel_ttl`)
+  and cap (`max_empty_channels`) for empty safe and retained channels (with the
+  `ircd_safe_channels` ETS short-name index for safe `JOIN`), `REGISTER` rate
+  limits and an account cap (`max_accounts`), a per-account read-marker cap
+  (`max_read_markers`), pruning of disconnected pids from `invited`, a cap,
+  byte/target validation, and TTL cleanup for open peer batches, per-account
+  direct-history conversation caps (`max_direct_conversations`), and per-peer
+  caps on introduced users (`max_peer_users`), servers (`max_peer_servers`),
+  services (`max_peer_services`), and metadata.
 
 ## Server protocol and linking (RFC 2813)
 

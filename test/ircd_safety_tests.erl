@@ -61,7 +61,24 @@ max_sendq_config_test() ->
     ?assertMatch({ok, #{max_sendq := 1000000}}, Load(<<",\"max_sendq\":1000000">>)),
     ?assertMatch({error, _}, Load(<<",\"max_sendq\":99">>)),
     ?assertMatch({error, _}, Load(<<",\"max_sendq\":1000001">>)),
-    ?assertMatch({error, _}, Load(<<",\"max_sendq\":\"10\"">>)).
+    ?assertMatch({error, _}, Load(<<",\"max_sendq\":\"10\"">>)),
+    ?assertMatch({ok, #{flood := null}}, Load(<<",\"flood\":null">>)),
+    ?assertMatch(
+        {ok, #{flood := #{messages_burst := 5}}},
+        Load(<<",\"flood\":{\"messages_burst\":5}">>)
+    ),
+    ?assertMatch({error, _}, Load(<<",\"flood\":{\"unknown_key\":1}">>)),
+    ?assertMatch({error, _}, Load(<<",\"flood\":{\"lines_burst\":0}">>)).
+
+flood_bucket_pure_test() ->
+    %% Burst of 3, refill 1 per 1000 ms.
+    {allow, U1, 100} = ircd_flood:consume_bucket(3000, 100, 100, 3, 1, 1000, 2),
+    ?assertEqual(1000, U1),
+    {allow, U2, 100} = ircd_flood:consume_bucket(U1, 100, 100, 3, 1, 1000, 1),
+    ?assertEqual(0, U2),
+    ?assertEqual(deny, ircd_flood:consume_bucket(U2, 100, 100, 3, 1, 1000, 1)),
+    %% After 1000 ms, 1 token is restored.
+    {allow, 0, 1100} = ircd_flood:consume_bucket(U2, 100, 1100, 3, 1, 1000, 1).
 
 format_status_redacts_secrets_test() ->
     Calls = [
@@ -104,6 +121,8 @@ live() ->
         list_modes_are_bounded(Port),
         markread_targets(Port),
         holds_expire(),
+        roadmap_memory_bounds(Port),
+        flood_control_disconnects_spammer(Port),
         sendq_limit(Port)
     after
         _ = application:stop(ircd),
@@ -239,6 +258,161 @@ holds_expire() ->
     ?assertNot(ircd_state_net:nick_blocked(<<"stale">>)),
     ?assertEqual([], ets:lookup(ircd_holds, {nick, <<"stale">>})),
     true = ets:delete(ircd_holds, {nick, <<"kept">>}).
+
+roadmap_memory_bounds(Port) ->
+    %% 1. Disconnected pids are pruned from channel `invited` lists.
+    Host = register_client(Port, <<"invhost">>),
+    Guest = register_client(Port, <<"invguest">>),
+    send(Host, <<"JOIN #invprune">>),
+    _ = sync(Host),
+    send(Host, <<"INVITE invguest #invprune">>),
+    _ = sync(Host),
+    [Chan1] = mnesia:dirty_read(channel, <<"#invprune">>),
+    ?assertEqual(1, length(element(8, Chan1))),
+    send(Guest, <<"QUIT">>),
+    close(Guest),
+    _ = sync(Host),
+    [Chan2] = mnesia:dirty_read(channel, <<"#invprune">>),
+    ?assertEqual([], element(8, Chan2)),
+    %% 2. Safe channel short-name index and empty safe channel cap.
+    send(Host, <<"JOIN !safecap1">>),
+    send(Host, <<"JOIN !safecap2">>),
+    _ = sync(Host),
+    ?assertMatch([{<<"safecap1">>, _}], ets:lookup(ircd_safe_channels, <<"safecap1">>)),
+    ?assertMatch([{<<"safecap2">>, _}], ets:lookup(ircd_safe_channels, <<"safecap2">>)),
+    [{_, FullSafe1}] = ets:lookup(ircd_safe_channels, <<"safecap1">>),
+    [{_, FullSafe2}] = ets:lookup(ircd_safe_channels, <<"safecap2">>),
+    send(Host, <<"PART ", FullSafe1/binary>>),
+    send(Host, <<"PART ", FullSafe2/binary>>),
+    _ = sync(Host),
+    OldCfg = persistent_term:get({ircd_state, config}),
+    try
+        persistent_term:put(
+            {ircd_state, config},
+            OldCfg#{
+                max_empty_channels => 1,
+                max_read_markers => 2,
+                max_direct_conversations => 2,
+                max_accounts => 2,
+                max_peer_users => 1,
+                max_peer_servers => 1,
+                max_peer_services => 1
+            }
+        ),
+        ok = ircd_state_channel:prune_empty_channels(),
+        RemainingSafe =
+            ets:lookup(ircd_safe_channels, <<"safecap1">>) ++
+                ets:lookup(ircd_safe_channels, <<"safecap2">>),
+        ?assertEqual(1, length(RemainingSafe)),
+        %% 3. Per-account read-marker cap (max_read_markers = 2).
+        updated = ircd_state_history:remote_marker(<<"capuser">>, <<"#m1">>, 100),
+        updated = ircd_state_history:remote_marker(<<"capuser">>, <<"#m2">>, 200),
+        updated = ircd_state_history:remote_marker(<<"capuser">>, <<"#m3">>, 300),
+        Markers = [
+            T
+         || {A, T} <- mnesia:dirty_all_keys(read_marker), A =:= <<"capuser">>
+        ],
+        ?assertEqual([<<"#m2">>, <<"#m3">>], lists:sort(Markers)),
+        %% 4. Per-account direct-history conversation cap (max_direct_conversations = 2).
+        E1 = ircd_state_history:entry(
+            <<"PRIVMSG">>, <<"a!u@h">>, <<"1">>, <<"id1">>, 10, [], <<"capuser">>
+        ),
+        E2 = ircd_state_history:entry(
+            <<"PRIVMSG">>, <<"a!u@h">>, <<"2">>, <<"id2">>, 20, [], <<"capuser">>
+        ),
+        E3 = ircd_state_history:entry(
+            <<"PRIVMSG">>, <<"a!u@h">>, <<"3">>, <<"id3">>, 30, [], <<"capuser">>
+        ),
+        ok = ircd_state_history:note_direct(
+            {<<"capuser">>, <<"a">>}, {<<"u1">>, <<"u1">>}, <<"u1">>, E1
+        ),
+        ok = ircd_state_history:note_direct(
+            {<<"capuser">>, <<"a">>}, {<<"u2">>, <<"u2">>}, <<"u2">>, E2
+        ),
+        ok = ircd_state_history:note_direct(
+            {<<"capuser">>, <<"a">>}, {<<"u3">>, <<"u3">>}, <<"u3">>, E3
+        ),
+        Convos = [
+            K
+         || K <- mnesia:dirty_all_keys(direct_history),
+            element(1, K) =:= {account, <<"capuser">>} orelse
+                element(2, K) =:= {account, <<"capuser">>}
+        ],
+        ?assertEqual(2, length(Convos)),
+        %% 5. Account cap (max_accounts = 2).
+        {ok, _} = ircd_account:create(<<"acct1">>, undefined, <<"password123">>, [], undefined),
+        {ok, _} = ircd_account:create(<<"acct2">>, undefined, <<"password123">>, [], undefined),
+        ?assertEqual(
+            {error, account_limit_reached},
+            ircd_account:validate_new(<<"acct3">>, <<"password123">>)
+        ),
+        %% 6. Per-peer caps on introduced users, servers, and services.
+        ok = ircd_state_net:register_adjacent(<<"peer.test">>, <<"1">>, inbound, self()),
+        ok = ircd_state_link:import_remote_nick(
+            <<"peer.test">>,
+            <<"peer.test">>,
+            [<<"rem1">>, <<"1">>, <<"u">>, <<"h.test">>, <<"1">>, <<"+">>, <<"R">>]
+        ),
+        ?assertEqual(
+            {error, too_many_remote_users},
+            ircd_state_link:import_remote_nick(
+                <<"peer.test">>,
+                <<"peer.test">>,
+                [<<"rem2">>, <<"1">>, <<"u">>, <<"h.test">>, <<"1">>, <<"+">>, <<"R">>]
+            )
+        ),
+        ok = ircd_state_net:introduce_server(
+            <<"peer.test">>, <<"peer.test">>, <<"leaf1.test">>, <<"2">>, <<"2">>, <<"L1">>
+        ),
+        ?assertEqual(
+            {error, too_many_remote_servers},
+            ircd_state_net:introduce_server(
+                <<"peer.test">>, <<"peer.test">>, <<"leaf2.test">>, <<"2">>, <<"3">>, <<"L2">>
+            )
+        ),
+        ok = ircd_state_net:import_service(
+            <<"peer.test">>, <<"peer.test">>, [<<"svc1">>, <<"*">>, <<"t">>, <<"S1">>]
+        ),
+        ?assertEqual(
+            {error, too_many_remote_services},
+            ircd_state_net:import_service(
+                <<"peer.test">>, <<"peer.test">>, [<<"svc2">>, <<"*">>, <<"t">>, <<"S2">>]
+            )
+        ),
+        ircd_state_net:split(<<"peer.test">>, <<"done">>, undefined)
+    after
+        persistent_term:put({ircd_state, config}, OldCfg)
+    end,
+    close(Host).
+
+flood_control_disconnects_spammer(Port) ->
+    OldCfg = persistent_term:get({ircd_state, config}),
+    FloodCfg = (ircd_flood:default_config())#{
+        messages_burst => 3,
+        messages_per_second => 1,
+        register_per_minute => 1
+    },
+    try
+        persistent_term:put({ircd_state, config}, OldCfg#{flood => FloodCfg}),
+        %% Per-host REGISTER rate limit (1 per minute).
+        Reg = register_client(Port, <<"reglim">>),
+        send(Reg, <<"CAP REQ draft/account-registration">>),
+        _ = sync(Reg),
+        ?assert(ircd_flood:allow_register(<<"198.51.100.9">>)),
+        ?assertNot(ircd_flood:allow_register(<<"198.51.100.9">>)),
+        close(Reg),
+        %% Message flood closes the connection with Excess Flood.
+        Spam = register_client(Port, <<"spammer">>),
+        send(Spam, <<"PRIVMSG spammer :m1">>),
+        send(Spam, <<"PRIVMSG spammer :m2">>),
+        send(Spam, <<"PRIVMSG spammer :m3">>),
+        send(Spam, <<"PRIVMSG spammer :m4">>),
+        Data = read_all(Spam, <<>>),
+        ?assert(has(Data, <<"ERROR :Closing Link: 127.0.0.1 (Excess Flood)">>)),
+        close(Spam)
+    after
+        persistent_term:put({ircd_state, config}, OldCfg)
+    end.
 
 sendq_limit(Port) ->
     %% Lines that pile up for a session past max_sendq (100 here) close the

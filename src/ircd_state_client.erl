@@ -450,6 +450,8 @@ disconnect(#client{pid = Pid, channels = Channels} = Client, Reason, Server) ->
     end,
     ircd_state_v3:disconnect(Client),
     ircd_cap:disconnect(Pid),
+    ok = ircd_flood:disconnect(Pid),
+    ok = ircd_state_channel:prune_invited(Pid),
     remove_connection_stats(Pid),
     logger:info(#{
         event => client_disconnected,

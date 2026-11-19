@@ -25,6 +25,11 @@ Implementation policies on queries and channel lists:
   another server; the change is propagated to the peers.
 - Successful `KILL` and `REHASH` are logged as `oper_kill` and `oper_rehash`
   audit events (actor and target, never the reason text or secrets).
+- Client flood and spam control (`ircd_flood`) enforces per-connection token
+  buckets for lines, messages (counting multi-target fan-out), channel joins,
+  and nickname changes, disconnecting offending non-operator clients with
+  `ERROR :Closing Link: <host> (Excess Flood)`, and rate-limits `REGISTER`
+  attempts per client host.
 
 A client may join at most ten channels (numeric 405). A nickname or channel
 released by a quit or a netsplit stays unavailable for 60 seconds (numeric

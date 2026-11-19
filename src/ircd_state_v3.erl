@@ -564,16 +564,26 @@ register([Requested, Email, Password | _], #client{pid = Pid, nick = Current} = 
                 end,
             case ircd_account:validate_new(Name, Password) of
                 ok ->
-                    %% The SCRAM verifier (PBKDF2) is derived in a worker
-                    %% (ircd_deferred); the account is written when it is done.
-                    ircd_deferred:request(
-                        fun() -> ircd_account:new_verifier(Password) end,
-                        fun(Result) ->
-                            register_derived(
-                                Result, Pid, Name, Stored, CertFps, Verification, Server
+                    case ircd_flood:allow_register(Client#client.host) of
+                        false ->
+                            reg_fail(
+                                Pid,
+                                <<"TEMPORARILY_UNAVAILABLE">>,
+                                Name,
+                                <<"Registration rate limit exceeded, try again">>
+                            );
+                        true ->
+                            %% The SCRAM verifier (PBKDF2) is derived in a worker
+                            %% (ircd_deferred); the account is written when it is done.
+                            ircd_deferred:request(
+                                fun() -> ircd_account:new_verifier(Password) end,
+                                fun(Result) ->
+                                    register_derived(
+                                        Result, Pid, Name, Stored, CertFps, Verification, Server
+                                    )
+                                end
                             )
-                        end
-                    );
+                    end;
                 {error, _} = Invalid ->
                     register_result(Invalid, Pid, Name, Stored, Verification, undefined, Server)
             end
@@ -626,7 +636,9 @@ register_result(Result, Pid, Name, Stored, Verification, Pending, Server) ->
         {error, weak_password} ->
             reg_fail(Pid, <<"WEAK_PASSWORD">>, Name, <<"Password is too short">>);
         {error, unacceptable_password} ->
-            reg_fail(Pid, <<"UNACCEPTABLE_PASSWORD">>, Name, <<"Password is too long">>)
+            reg_fail(Pid, <<"UNACCEPTABLE_PASSWORD">>, Name, <<"Password is too long">>);
+        {error, account_limit_reached} ->
+            reg_fail(Pid, <<"TEMPORARILY_UNAVAILABLE">>, Name, <<"Account limit reached">>)
     end.
 
 %% True when another local or remote client currently uses the nickname.
@@ -1252,6 +1264,7 @@ finish_attach(#client{pid = Pid, nick = Nick}, Holder) ->
     mnesia:dirty_delete(user_modes, Pid),
     ircd_cap:disconnect(Pid),
     ircd_conn:delete(Pid),
+    ok = ircd_flood:disconnect(Pid),
     ircd_state_client:remove_connection_stats(Pid),
     %% The holder learns of the new connection first: replies to lines the new
     %% connection already pipelined (run as the holder) are then mirrored to it.

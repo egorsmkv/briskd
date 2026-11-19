@@ -15,6 +15,13 @@ to the process working directory unless they are absolute.
 | `log_format` | `json` | `json` (one object per line: `level`, `time` in microseconds, and the event's fields, or `message` for plain text) or `text` |
 | `max_clients` | `10000` | Maximum active client sessions |
 | `max_sendq` | `10000` | Lines queued for one client before it is disconnected with `ERROR :Closing Link: <server> (Max SendQ exceeded)` (100..1000000) |
+| `flood` | See below | Client flood and spam token buckets (`lines_burst`, `lines_per_second`, `messages_burst`, `messages_per_second`, `join_burst`, `join_per_minute`, `nick_burst`, `nick_per_minute`, `register_per_minute`); `null` disables |
+| `max_accounts` | `100000` | Maximum stored accounts (`REGISTER` and `ACCOUNTSYNC`) |
+| `max_empty_channels` | `1000` | Maximum empty non-predefined safe or retained channels kept at once |
+| `empty_channel_ttl` | `86400` | Seconds before an empty non-predefined safe or retained channel expires; `0` disables TTL expiry |
+| `max_read_markers` | `500` | Maximum `MARKREAD` targets stored per account (or per unauthenticated connection) |
+| `max_direct_conversations` | `200` | Maximum direct-message history conversations kept per account |
+| `max_peer_users`, `max_peer_servers`, `max_peer_services` | `10000`, `100`, `100` | Maximum remote users, servers, and services accepted per peer link |
 | `client_password` | `null` | Optional password required with IRC `PASS` before registration |
 | `operators` | `[]` | Operator accounts, each with `name` and `password` |
 | `administrators` | `[]` | Operator accounts, each with `nick` and `password`. `OPER` uses `nick`. A successful login also grants channel operator on predefined channels |

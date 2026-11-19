@@ -92,7 +92,18 @@ load(Path) ->
             server_info => ServerInfo,
             shutdown_grace => shutdown_grace(maps:get(<<"shutdown_grace">>, Json, 5)),
             max_sendq => max_sendq(maps:get(<<"max_sendq">>, Json, 10000)),
+            flood => flood(maps:get(<<"flood">>, Json, #{})),
             e2ee => e2ee(maps:get(<<"e2ee">>, Json, null)),
+            max_accounts => positive_limit(maps:get(<<"max_accounts">>, Json, 100000)),
+            max_empty_channels => positive_limit(maps:get(<<"max_empty_channels">>, Json, 1000)),
+            empty_channel_ttl => empty_channel_ttl(maps:get(<<"empty_channel_ttl">>, Json, 86400)),
+            max_read_markers => positive_limit(maps:get(<<"max_read_markers">>, Json, 500)),
+            max_direct_conversations => positive_limit(
+                maps:get(<<"max_direct_conversations">>, Json, 200)
+            ),
+            max_peer_users => positive_limit(maps:get(<<"max_peer_users">>, Json, 10000)),
+            max_peer_servers => positive_limit(maps:get(<<"max_peer_servers">>, Json, 100)),
+            max_peer_services => positive_limit(maps:get(<<"max_peer_services">>, Json, 100)),
             tls_reload_interval => tls_reload_interval(
                 maps:get(<<"tls_reload_interval">>, Json, 60)
             ),
@@ -226,6 +237,49 @@ shutdown_grace(Value) -> erlang:error({invalid_shutdown_grace, Value}).
 %% Lines queued for one client before it is disconnected (Max SendQ exceeded).
 max_sendq(Value) when is_integer(Value, 100, 1000000) -> Value;
 max_sendq(Value) -> erlang:error({invalid_max_sendq, Value}).
+
+%%Seconds before an empty non-predefined channel is expired; 0 disables TTL expiry.
+empty_channel_ttl(Value) when is_integer(Value, 0, 2592000) -> Value;
+empty_channel_ttl(Value) -> erlang:error({invalid_empty_channel_ttl, Value}).
+
+%% Client flood and spam control (ircd_flood). `null` turns it off.
+-define(FLOOD_KEYS, [
+    <<"lines_burst">>,
+    <<"lines_per_second">>,
+    <<"messages_burst">>,
+    <<"messages_per_second">>,
+    <<"join_burst">>,
+    <<"join_per_minute">>,
+    <<"nick_burst">>,
+    <<"nick_per_minute">>,
+    <<"register_per_minute">>
+]).
+flood(null) ->
+    null;
+flood(Map) when is_map(Map) ->
+    case maps:keys(Map) -- ?FLOOD_KEYS of
+        [] -> ok;
+        Unknown -> erlang:error({invalid_flood, {unknown_keys, Unknown}})
+    end,
+    #{
+        lines_burst => flood_int(Map, <<"lines_burst">>, 500, 1, 100000),
+        lines_per_second => flood_int(Map, <<"lines_per_second">>, 50, 1, 10000),
+        messages_burst => flood_int(Map, <<"messages_burst">>, 200, 1, 100000),
+        messages_per_second => flood_int(Map, <<"messages_per_second">>, 20, 1, 10000),
+        join_burst => flood_int(Map, <<"join_burst">>, 50, 1, 10000),
+        join_per_minute => flood_int(Map, <<"join_per_minute">>, 60, 1, 100000),
+        nick_burst => flood_int(Map, <<"nick_burst">>, 50, 1, 10000),
+        nick_per_minute => flood_int(Map, <<"nick_per_minute">>, 60, 1, 100000),
+        register_per_minute => flood_int(Map, <<"register_per_minute">>, 30, 1, 10000)
+    };
+flood(Value) ->
+    erlang:error({invalid_flood, Value}).
+
+flood_int(Map, Key, Default, Min, Max) ->
+    case maps:get(Key, Map, Default) of
+        Value when is_integer(Value, Min, Max) -> Value;
+        Value -> erlang:error({invalid_flood, {Key, Value}})
+    end.
 
 %% End-to-end encryption broker (ircd_e2ee). `null` (the default) turns it
 %% off. Unknown keys are rejected so a typo does not silently drop a limit.

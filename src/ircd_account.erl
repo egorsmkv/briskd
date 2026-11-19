@@ -1,5 +1,6 @@
 -module(ircd_account).
 -export([
+    max_accounts/0,
     min_password/0,
     import/1,
     list/0,
@@ -50,6 +51,17 @@ secret comparisons use `crypto:hash_equals/2`.
 %% Default shortest password; `account_password_min` in configuration overrides it.
 -define(MIN_PASSWORD, 8).
 -define(MAX_PASSWORD, 300).
+-define(DEFAULT_MAX_ACCOUNTS, 100000).
+
+-doc """
+Maximum number of stored accounts: `max_accounts` from the configuration,
+default 100000.
+""".
+-spec max_accounts() -> pos_integer().
+max_accounts() ->
+    maps:get(
+        max_accounts, persistent_term:get({ircd_state, config}, #{}), ?DEFAULT_MAX_ACCOUNTS
+    ).
 
 -doc """
 Shortest accepted password in bytes: `account_password_min` from the
@@ -123,9 +135,17 @@ import(#account{key = Key, created = Created} = Incoming) ->
     case mnesia:dirty_read(account, Key) of
         [#account{pending = undefined, created = Existing}] when Existing =< Created ->
             kept;
-        _ ->
+        [_] ->
             mnesia:dirty_write(Incoming#account{pending = undefined}),
-            stored
+            stored;
+        [] ->
+            case room_available() of
+                true ->
+                    mnesia:dirty_write(Incoming#account{pending = undefined}),
+                    stored;
+                false ->
+                    kept
+            end
     end.
 
 -doc """
@@ -169,7 +189,12 @@ Errors: `bad_account_name` (`valid_name/1`), `weak_password` (shorter than
     binary(), undefined | binary(), binary(), [binary()], undefined | {binary(), pos_integer()}
 ) ->
     {ok, #account{}}
-    | {error, bad_account_name | account_exists | weak_password | unacceptable_password}.
+    | {error,
+        account_limit_reached
+        | bad_account_name
+        | account_exists
+        | weak_password
+        | unacceptable_password}.
 create(Name, Email, Password, CertFps, Pending) ->
     case validate_new(Name, Password) of
         ok -> store_new(Name, Email, new_verifier(Password), CertFps, Pending);
@@ -178,10 +203,17 @@ create(Name, Email, Password, CertFps, Pending) ->
 
 -doc """
 Cheap checks for a new account, done before any PBKDF2 work: the name is
-valid (`valid_name/1`) and free, and the password length is acceptable.
+valid (`valid_name/1`) and free, the password length is acceptable, and the
+account table is below `max_accounts/0`.
 """.
 -spec validate_new(binary(), binary()) ->
-    ok | {error, bad_account_name | account_exists | weak_password | unacceptable_password}.
+    ok
+    | {error,
+        account_limit_reached
+        | bad_account_name
+        | account_exists
+        | weak_password
+        | unacceptable_password}.
 validate_new(Name, Password) ->
     case
         {
@@ -191,12 +223,44 @@ validate_new(Name, Password) ->
             lookup(Name)
         }
     of
-        {false, _, _, _} -> {error, bad_account_name};
-        {_, false, _, _} -> {error, weak_password};
-        {_, _, false, _} -> {error, unacceptable_password};
-        {_, _, _, {ok, _}} -> {error, account_exists};
-        {true, true, true, error} -> ok
+        {false, _, _, _} ->
+            {error, bad_account_name};
+        {_, false, _, _} ->
+            {error, weak_password};
+        {_, _, false, _} ->
+            {error, unacceptable_password};
+        {_, _, _, {ok, _}} ->
+            {error, account_exists};
+        {true, true, true, error} ->
+            case room_available() of
+                true -> ok;
+                false -> {error, account_limit_reached}
+            end
     end.
+
+room_available() ->
+    Max = max_accounts(),
+    case mnesia:table_info(account, size) < Max of
+        true ->
+            true;
+        false ->
+            prune_expired_pending(),
+            mnesia:table_info(account, size) < Max
+    end.
+
+prune_expired_pending() ->
+    Now = erlang:system_time(millisecond),
+    lists:foreach(
+        fun(Key) ->
+            case mnesia:dirty_read(account, Key) of
+                [#account{pending = {_, Expires}}] when Now > Expires ->
+                    mnesia:dirty_delete(account, Key);
+                _ ->
+                    ok
+            end
+        end,
+        mnesia:dirty_all_keys(account)
+    ).
 
 -doc """
 A fresh SCRAM-SHA-256 verifier for `Password`: a random 16-byte salt, the
@@ -211,21 +275,23 @@ new_verifier(Password) ->
     #{salt => Salt, iterations => ?ITERATIONS, stored_key => StoredKey, server_key => ServerKey}.
 
 -doc """
-Write a new account from a verifier made by `new_verifier/1`. The name is
-checked again because another client may have registered it while the
-verifier was being derived; that case returns `{error, account_exists}`.
+Write a new account from a verifier made by `new_verifier/1`. The name and
+table cap are checked again because another client may have registered while
+the verifier was being derived.
 """.
 -spec store_new(
     binary(), undefined | binary(), verifier(), [binary()], undefined | {binary(), pos_integer()}
 ) ->
-    {ok, #account{}} | {error, bad_account_name | account_exists}.
+    {ok, #account{}} | {error, account_limit_reached | bad_account_name | account_exists}.
 store_new(Name, Email, Verifier, CertFps, Pending) ->
-    case {valid_name(Name), lookup(Name)} of
-        {false, _} ->
+    case {valid_name(Name), lookup(Name), room_available()} of
+        {false, _, _} ->
             {error, bad_account_name};
-        {_, {ok, _}} ->
+        {_, {ok, _}, _} ->
             {error, account_exists};
-        {true, error} ->
+        {true, error, false} ->
+            {error, account_limit_reached};
+        {true, error, true} ->
             #{
                 salt := Salt,
                 iterations := Iterations,

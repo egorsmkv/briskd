@@ -105,9 +105,14 @@ introduce_server(Ingress, Prefix, Name, HopBin, Token, Info) ->
             },
             case ircd_route:accept_server(local_name(), Ingress, Intro, known_maps()) of
                 {ok, Map} ->
-                    store_server(Map),
-                    announce_server(Map, Ingress),
-                    ok;
+                    case peer_server_room(Ingress, Name) of
+                        false ->
+                            {error, too_many_remote_servers};
+                        true ->
+                            store_server(Map),
+                            announce_server(Map, Ingress),
+                            ok
+                    end;
                 {error, Reason} ->
                     {error, Reason}
             end
@@ -529,7 +534,10 @@ import_service(Peer, Prefix, Params) ->
                 false ->
                     {error, invalid_service};
                 true ->
-                    store_service(Name, Dist, Type, Info, Home, Peer)
+                    case peer_service_room(Peer, Name) of
+                        false -> {error, too_many_remote_services};
+                        true -> store_service(Name, Dist, Type, Info, Home, Peer)
+                    end
             end
     end.
 
@@ -889,6 +897,46 @@ configured_peer(Target) ->
 
 remote_nick(Name) ->
     mnesia:dirty_read(remote_client, ircd_wire:fold(Name)) =/= [].
+
+peer_server_room(Peer, Name) ->
+    Key = ircd_wire:fold(Name),
+    case mnesia:dirty_read(known_server, Key) of
+        [_] ->
+            true;
+        [] ->
+            Max = maps:get(
+                max_peer_servers, persistent_term:get({ircd_state, config}, #{}), 100
+            ),
+            FoldedPeer = ircd_wire:fold(Peer),
+            Count = length([
+                K
+             || K <- mnesia:dirty_all_keys(known_server),
+                K =/= FoldedPeer,
+                [#known_server{adjacent = Adjacent}] <- [mnesia:dirty_read(known_server, K)],
+                ircd_wire:fold(Adjacent) =:= FoldedPeer
+            ]),
+            Count < Max
+    end.
+
+peer_service_room(Peer, Name) ->
+    Key = ircd_wire:fold(Name),
+    case mnesia:dirty_read(service, Key) of
+        [#service{peer = Peer}] ->
+            true;
+        _ ->
+            Max = maps:get(
+                max_peer_services, persistent_term:get({ircd_state, config}, #{}), 100
+            ),
+            FoldedPeer = ircd_wire:fold(Peer),
+            Count = length([
+                K
+             || K <- mnesia:dirty_all_keys(service),
+                [#service{peer = P}] <- [mnesia:dirty_read(service, K)],
+                is_binary(P),
+                ircd_wire:fold(P) =:= FoldedPeer
+            ]),
+            Count < Max
+    end.
 
 local_name() ->
     maps:get(name, persistent_term:get({ircd_state, config})).

@@ -49,6 +49,7 @@ when it is a configured channel.
 -export([
     deliver/5,
     deliver_body/6,
+    index_safe_channels/0,
     invite/4,
     join_channels/4,
     kick/5,
@@ -62,6 +63,8 @@ when it is a configured channel.
     names_listing/3,
     names_unattached/2,
     nick_recipients/1,
+    prune_empty_channels/0,
+    prune_invited/1,
     reop_channels/1,
     rename/3,
     role_prefix/2,
@@ -89,16 +92,129 @@ channel row, its message history, and its metadata are deleted.
 """.
 -spec release_if_empty(#channel{}, term()) -> ok.
 release_if_empty(#channel{name = <<$!, _/binary>>} = Channel, Remaining) ->
-    mnesia:dirty_write(track_opless(Channel, Remaining));
+    mnesia:dirty_write(track_opless(Channel, Remaining)),
+    prune_empty_channels();
 release_if_empty(#channel{key = Key} = Channel, Remaining) ->
     case ircd_state:retention() =:= channels orelse ircd_state:predefined_channel(Key) of
         true ->
-            mnesia:dirty_write(Channel#channel{members = Remaining});
+            mnesia:dirty_write(Channel#channel{members = Remaining}),
+            prune_empty_channels();
         false ->
-            ircd_state_meta:drop_channel(Key),
-            mnesia:dirty_delete(channel, Key),
-            mnesia:dirty_delete(channel_history, Key)
+            drop_channel_row(Channel)
     end.
+
+drop_channel_row(#channel{key = Key, name = Name}) ->
+    unindex_safe_channel(Name),
+    ircd_state_meta:drop_channel(Key),
+    mnesia:dirty_delete(channel, Key),
+    mnesia:dirty_delete(channel_history, Key),
+    ok.
+
+-doc """
+Populate the `ircd_safe_channels` ETS short-name index from the stored
+`channel` table. Called by `m:ircd_state` at startup.
+""".
+-spec index_safe_channels() -> ok.
+index_safe_channels() ->
+    case ets:whereis(ircd_safe_channels) of
+        undefined ->
+            ok;
+        _ ->
+            true = ets:delete_all_objects(ircd_safe_channels),
+            lists:foreach(
+                fun(Key) ->
+                    case mnesia:dirty_read(channel, Key) of
+                        [#channel{name = Name}] -> index_safe_channel(Name);
+                        [] -> ok
+                    end
+                end,
+                mnesia:dirty_all_keys(channel)
+            )
+    end.
+
+index_safe_channel(<<$!, _Id:5/binary, Short/binary>> = Name) when Short =/= <<>> ->
+    case ets:whereis(ircd_safe_channels) of
+        undefined ->
+            ok;
+        _ ->
+            ets:insert(ircd_safe_channels, {ircd_wire:fold(Short), ircd_wire:retain(Name)}),
+            ok
+    end;
+index_safe_channel(_) ->
+    ok.
+
+unindex_safe_channel(<<$!, _Id:5/binary, Short/binary>> = Name) when Short =/= <<>> ->
+    case ets:whereis(ircd_safe_channels) of
+        undefined ->
+            ok;
+        _ ->
+            Folded = ircd_wire:fold(Short),
+            case ets:lookup(ircd_safe_channels, Folded) of
+                [{Folded, Stored}] ->
+                    case ircd_wire:fold(Stored) =:= ircd_wire:fold(Name) of
+                        true -> ets:delete(ircd_safe_channels, Folded);
+                        false -> ok
+                    end;
+                [] ->
+                    ok
+            end,
+            ok
+    end;
+unindex_safe_channel(_) ->
+    ok.
+
+-doc """
+Evict the oldest empty non-predefined channels (without remote members) when
+their count exceeds `max_empty_channels` (default 1000).
+""".
+-spec prune_empty_channels() -> ok.
+prune_empty_channels() ->
+    Max = maps:get(
+        max_empty_channels, persistent_term:get({ircd_state, config}, #{}), 1000
+    ),
+    Empty = [
+        {channel_age_key(Created), Key, Channel}
+     || Key <- mnesia:dirty_all_keys(channel),
+        [#channel{members = Members, created = Created} = Channel] <- [
+            mnesia:dirty_read(channel, Key)
+        ],
+        map_size(Members) =:= 0,
+        not ircd_state:predefined_channel(Key),
+        mnesia:dirty_read(remote_channel, Key) =:= []
+    ],
+    Excess = length(Empty) - Max,
+    case Excess > 0 of
+        true ->
+            Oldest = lists:sublist(lists:sort(Empty), Excess),
+            lists:foreach(fun({_, _, C}) -> drop_channel_row(C) end, Oldest);
+        false ->
+            ok
+    end.
+
+channel_age_key(Created) when is_integer(Created) -> Created;
+channel_age_key(_) -> 0.
+
+-doc """
+Remove a disconnecting session `Pid` (and any dead pids) from every channel's
+`invited` list.
+""".
+-spec prune_invited(pid()) -> ok.
+prune_invited(Pid) when is_pid(Pid) ->
+    lists:foreach(
+        fun(Key) ->
+            case mnesia:dirty_read(channel, Key) of
+                [#channel{invited = [_ | _] = Invited} = Channel] ->
+                    Cleaned = [P || P <- Invited, P =/= Pid, is_process_alive(P)],
+                    case Cleaned =:= Invited of
+                        true -> ok;
+                        false -> mnesia:dirty_write(Channel#channel{invited = Cleaned})
+                    end;
+                _ ->
+                    ok
+            end
+        end,
+        mnesia:dirty_all_keys(channel)
+    ).
 
 -doc """
 Give channel operator to an administrator on the predefined channels it is in.
@@ -192,20 +308,43 @@ monotonic deadline passes a uniformly chosen local member is given
 """.
 -spec reop_channels(binary()) -> ok.
 reop_channels(Server) ->
+    Now = erlang:system_time(second),
+    Ttl = maps:get(
+        empty_channel_ttl, persistent_term:get({ircd_state, config}, #{}), 86400
+    ),
     lists:foreach(
         fun(Key) ->
             case mnesia:dirty_read(channel, Key) of
-                [#channel{flags = Flags, members = Members} = Channel] ->
-                    case maps:is_key($r, Flags) andalso map_size(Members) > 0 of
+                [#channel{flags = Flags, members = Members} = Channel] when
+                    map_size(Members) > 0
+                ->
+                    case maps:is_key($r, Flags) of
                         true -> maybe_reop(Channel, Server);
                         false -> ok
                     end;
+                [#channel{members = Members} = Channel] when map_size(Members) =:= 0 ->
+                    maybe_expire_empty(Channel, Now, Ttl);
                 [] ->
                     ok
             end
         end,
         mnesia:dirty_all_keys(channel)
     ).
+
+maybe_expire_empty(_Channel, _Now, 0) ->
+    ok;
+maybe_expire_empty(#channel{key = Key, created = Created} = Channel, Now, Ttl) when
+    is_integer(Created)
+->
+    case
+        Now - Created >= Ttl andalso not ircd_state:predefined_channel(Key) andalso
+            mnesia:dirty_read(remote_channel, Key) =:= []
+    of
+        true -> drop_channel_row(Channel);
+        false -> ok
+    end;
+maybe_expire_empty(_, _, _) ->
+    ok.
 
 maybe_reop(#channel{members = Members} = Channel, Server) ->
     HasOperator = lists:any(
@@ -343,6 +482,25 @@ resolve_channel(Name) ->
 
 find_safe_short(Short) ->
     Wanted = ircd_wire:fold(Short),
+    case ets:whereis(ircd_safe_channels) of
+        undefined ->
+            scan_safe_short(Wanted);
+        _ ->
+            case ets:lookup(ircd_safe_channels, Wanted) of
+                [{Wanted, Indexed}] ->
+                    case mnesia:dirty_read(channel, ircd_wire:fold(Indexed)) of
+                        [#channel{name = Existing}] ->
+                            {ok, Existing};
+                        [] ->
+                            ets:delete(ircd_safe_channels, Wanted),
+                            scan_safe_short(Wanted)
+                    end;
+                [] ->
+                    scan_safe_short(Wanted)
+            end
+    end.
+
+scan_safe_short(Wanted) ->
     case
         [
             Name
@@ -352,8 +510,11 @@ find_safe_short(Short) ->
             ircd_wire:fold(ExistingShort) =:= Wanted
         ]
     of
-        [Name | _] -> {ok, Name};
-        [] -> none
+        [Name | _] ->
+            index_safe_channel(Name),
+            {ok, Name};
+        [] ->
+            none
     end.
 
 safe_channel_id() ->
@@ -480,6 +641,7 @@ finish_join(
         members = NewMembers,
         invited = lists:delete(Pid, Invited)
     }),
+    index_safe_channel(Canonical),
     mnesia:dirty_write(Client#client{channels = [Key | Channels]}),
     ircd_state_link:propagate_join(Client, Canonical, maps:get(Pid, NewMembers)),
     JoinRecipients =
@@ -1665,9 +1827,10 @@ invite(Nick, Name, #client{pid = Pid} = Client, Server) ->
                                 <<"You're not channel operator">>
                             );
                         {false, true, false} ->
+                            AliveInvited = [P || P <- Invited, is_process_alive(P)],
                             mnesia:dirty_write(Channel#channel{
                                 invited =
-                                    lists:usort([Target#client.pid | Invited])
+                                    lists:usort([Target#client.pid | AliveInvited])
                             }),
                             notify_invite(Target, Canonical, Client, Server),
                             ircd_state_v3:invite_notify(

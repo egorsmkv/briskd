@@ -286,6 +286,8 @@ init(#{name := Name} = Config) ->
     ensure_ets(ircd_account_channels),
     ensure_ets(ircd_remote_meta),
     ensure_ets(ircd_e2ee_bound),
+    ensure_ets(ircd_safe_channels),
+    ok = ircd_flood:init(),
     persistent_term:put({?MODULE, config}, Config),
     persistent_term:put({?MODULE, config_path}, maps:get(config_path, Config)),
     persistent_term:put({?MODULE, motd_file}, maps:get(motd_file, Config, null)),
@@ -532,7 +534,8 @@ reset_channels() ->
             {atomic, ok} = mnesia:clear_table(channel_history),
             {atomic, ok} = mnesia:clear_table(direct_history),
             ok
-    end.
+    end,
+    ircd_state_channel:index_safe_channels().
 
 cleared_membership(Channel) ->
     Channel#channel{members = #{}, invited = [], opless_since = undefined}.
@@ -908,6 +911,32 @@ client_command(Command, Params, Bytes, Tags, {Pid, _} = From, Server) ->
     count_command(Pid, Command, Bytes),
     Client = ircd_state_client:client(Pid),
     ircd_log:client_command(Client#client.nick, Command, Params),
+    case
+        ircd_flood:check_command(
+            Pid, Command, Params, Tags, ircd_state_client:ready(Client)
+        )
+    of
+        {flood, Category} ->
+            logger:warning(#{
+                event => flood_exceeded,
+                nick => Client#client.nick,
+                host => Client#client.host,
+                category => Category
+            }),
+            ircd_state_send:send(
+                Pid,
+                Server,
+                <<"ERROR">>,
+                [],
+                [<<"Closing Link: ">>, Client#client.host, <<" (Excess Flood)">>]
+            ),
+            ircd_state_client:disconnect(Client, <<"Excess Flood">>, Server),
+            {reply, quit, Server};
+        allow ->
+            run_client_command(Command, Params, Tags, Client, From, Server)
+    end.
+
+run_client_command(Command, Params, Tags, #client{pid = Pid} = Client, From, Server) ->
     Label =
         case welcomed_cap_end(Client, Command, Params) of
             true -> undefined;
@@ -981,6 +1010,8 @@ handle_info(reop_tick, Server) ->
     ircd_state_channel:reop_channels(Server),
     ok = ircd_state_net:expire_holds(),
     ok = ircd_e2ee:expire(),
+    ok = ircd_flood:expire(),
+    ok = ircd_state_link:expire_peer_batches(),
     erlang:send_after(1000, self(), reop_tick),
     {noreply, Server};
 %% Ignore unknown messages. Session and worker DOWN, `reop_tick`, and

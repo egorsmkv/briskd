@@ -240,8 +240,17 @@ note_direct({FromAccount, _} = From, {ToAccount, _} = To, Target, #{cmd := Comma
 ->
     case enabled() of
         true ->
-            Key = dm_key(party(From), party(To)),
+            PartyA = party(From),
+            PartyB = party(To),
+            Key = dm_key(PartyA, PartyB),
             Existing = dm_entries(Key),
+            case Existing of
+                [] ->
+                    prune_direct_conversations(PartyA, Key),
+                    prune_direct_conversations(PartyB, Key);
+                _ ->
+                    ok
+            end,
             Stored = Entry#{target => ircd_wire:retain(Target)},
             mnesia:dirty_write(#direct_history{
                 key = Key, entries = trim([Stored | Existing])
@@ -259,6 +268,34 @@ party({Account, _Nick}) -> {account, ircd_wire:fold(Account)}.
 
 dm_key(A, B) ->
     list_to_tuple(lists:sort([A, B])).
+
+prune_direct_conversations({account, _} = Party, KeepingKey) ->
+    Max = maps:get(
+        max_direct_conversations, persistent_term:get({ircd_state, config}, #{}), 200
+    ),
+    Convos = [
+        {latest_entry_time(Entries), Key}
+     || Key <- mnesia:dirty_all_keys(direct_history),
+        Key =/= KeepingKey,
+        element(1, Key) =:= Party orelse element(2, Key) =:= Party,
+        [#direct_history{entries = Entries}] <- [mnesia:dirty_read(direct_history, Key)]
+    ],
+    Excess = length(Convos) - (Max - 1),
+    case Excess > 0 of
+        true ->
+            Oldest = lists:sublist(lists:sort(Convos), Excess),
+            lists:foreach(
+                fun({_, OldKey}) -> mnesia:dirty_delete(direct_history, OldKey) end,
+                Oldest
+            );
+        false ->
+            ok
+    end;
+prune_direct_conversations(_, _) ->
+    ok.
+
+latest_entry_time([#{time := Time} | _]) when is_integer(Time) -> Time;
+latest_entry_time(_) -> 0.
 
 channel_entries(Key) ->
     case mnesia:dirty_read(channel_history, Key) of
@@ -828,15 +865,57 @@ get_marker(Pid, Target) ->
     end.
 
 put_marker(Pid, Target, Time) ->
+    FoldedTarget = ircd_wire:fold(Target),
     case ircd_state_v3:account(Pid) of
         undefined ->
-            Markers = ircd_conn:get(Pid, markread, #{}),
-            ircd_conn:put(Pid, markread, Markers#{ircd_wire:fold(Target) => Time});
+            Markers0 = ircd_conn:get(Pid, markread, #{}),
+            Markers1 = trim_conn_markers(Markers0, FoldedTarget, max_read_markers()),
+            ircd_conn:put(Pid, markread, Markers1#{FoldedTarget => Time});
         Account ->
             Folded = ircd_wire:fold(Account),
-            mnesia:dirty_write(#read_marker{key = {Folded, ircd_wire:fold(Target)}, time = Time}),
-            ircd_state_sync:markread(Folded, ircd_wire:fold(Target), Time)
+            store_account_marker(Folded, FoldedTarget, Time),
+            ircd_state_sync:markread(Folded, FoldedTarget, Time)
     end.
+
+max_read_markers() ->
+    maps:get(max_read_markers, persistent_term:get({ircd_state, config}, #{}), 500).
+
+trim_conn_markers(Markers, Target, Max) ->
+    case maps:is_key(Target, Markers) orelse map_size(Markers) < Max of
+        true ->
+            Markers;
+        false ->
+            Sorted = lists:sort([{T, K} || {K, T} <- maps:to_list(Markers)]),
+            DropCount = map_size(Markers) - (Max - 1),
+            DropKeys = [K || {_, K} <- lists:sublist(Sorted, DropCount)],
+            maps:without(DropKeys, Markers)
+    end.
+
+store_account_marker(FoldedAccount, FoldedTarget, Time) ->
+    Key = {FoldedAccount, FoldedTarget},
+    case mnesia:dirty_read(read_marker, Key) of
+        [_] ->
+            ok;
+        [] ->
+            Max = max_read_markers(),
+            Existing = mnesia:dirty_select(read_marker, [
+                {{read_marker, {FoldedAccount, '$1'}, '$2'}, [], [{{'$2', '$1'}}]}
+            ]),
+            Excess = length(Existing) - (Max - 1),
+            case Excess > 0 of
+                true ->
+                    Oldest = lists:sublist(lists:sort(Existing), Excess),
+                    lists:foreach(
+                        fun({_, OldTarget}) ->
+                            mnesia:dirty_delete(read_marker, {FoldedAccount, OldTarget})
+                        end,
+                        Oldest
+                    );
+                false ->
+                    ok
+            end
+    end,
+    mnesia:dirty_write(#read_marker{key = Key, time = Time}).
 
 -doc """
 Move every account's read marker from folded channel name `OldKey` to
@@ -868,7 +947,7 @@ remote_marker(Account, Target, Time) ->
         [#read_marker{time = Stored}] when Stored >= Time ->
             unchanged;
         _ ->
-            mnesia:dirty_write(#read_marker{key = Key, time = Time}),
+            store_account_marker(element(1, Key), element(2, Key), Time),
             Server = server(),
             lists:foreach(
                 fun({Pid, Map}) ->

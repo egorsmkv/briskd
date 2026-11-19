@@ -25,6 +25,7 @@ have members in the channel. The burst for a new peer is built by
 `ircd_wire:fold/1`.
 """.
 -export([
+    expire_peer_batches/0,
     import_remote_join/3,
     import_remote_nick/3,
     receive_remote_invite/4,
@@ -372,7 +373,8 @@ Errors: `invalid_hopcount`, `invalid_introduction_prefix`, `invalid_nickname`,
         | invalid_server_token
         | invalid_user_modes
         | invalid_username
-        | reserved_nickname}.
+        | reserved_nickname
+        | too_many_remote_users}.
 import_remote_nick(Peer, Prefix, [Nick, Hop, User, Host, Token, ModeString, Real]) ->
     case home_server(Peer, Prefix, Hop) of
         {error, Reason} ->
@@ -400,15 +402,23 @@ import_remote_nick(Peer, Home, Distance, Nick, _Hop, User, Host, Token, ModeStri
         }
     of
         {true, true, true, match, true, {ok, Modes}, undefined, []} ->
-            write_remote_nick(
-                Peer, Home, Distance, Key, Nick, User, Host, Token, Modes, Real
-            ),
-            ircd_state_monitor:online(Nick, <<Nick/binary, "!", User/binary, "@", Host/binary>>),
-            ircd_state_meta:forget_remote(Key),
-            relay_except(
-                Peer, remote_nick_line(Home, Nick, Distance, User, Host, Token, Modes, Real)
-            ),
-            ok;
+            case peer_user_room(Peer) of
+                false ->
+                    {error, too_many_remote_users};
+                true ->
+                    write_remote_nick(
+                        Peer, Home, Distance, Key, Nick, User, Host, Token, Modes, Real
+                    ),
+                    ircd_state_monitor:online(
+                        Nick, <<Nick/binary, "!", User/binary, "@", Host/binary>>
+                    ),
+                    ircd_state_meta:forget_remote(Key),
+                    relay_except(
+                        Peer,
+                        remote_nick_line(Home, Nick, Distance, User, Host, Token, Modes, Real)
+                    ),
+                    ok
+            end;
         {true, true, true, match, true, {ok, Modes}, undefined, [#remote_client{peer = Peer}]} ->
             write_remote_nick(
                 Peer, Home, Distance, Key, Nick, User, Host, Token, Modes, Real
@@ -534,6 +544,17 @@ remote_nick_line(Prefix, Nick, Hop, User, Host, Token, Modes, Real) ->
 
 local_server() ->
     maps:get(name, persistent_term:get({ircd_state, config})).
+
+peer_user_room(Peer) ->
+    Max = maps:get(max_peer_users, persistent_term:get({ircd_state, config}, #{}), 10000),
+    FoldedPeer = ircd_wire:fold(Peer),
+    Count = length([
+        K
+     || K <- mnesia:dirty_all_keys(remote_client),
+        [#remote_client{peer = P}] <- [mnesia:dirty_read(remote_client, K)],
+        ircd_wire:fold(P) =:= FoldedPeer
+    ]),
+    Count < Max.
 
 -doc """
 Apply a nickname change by a remote user.
@@ -2164,7 +2185,8 @@ receive_remote_invite(Peer, Prefix, Nick, Name) ->
 remember_local_invite(Pid, Name) ->
     case mnesia:dirty_read(channel, ircd_wire:fold(Name)) of
         [#channel{invited = Invited} = Channel] ->
-            mnesia:dirty_write(Channel#channel{invited = lists:usort([Pid | Invited])});
+            Alive = [P || P <- Invited, is_process_alive(P)],
+            mnesia:dirty_write(Channel#channel{invited = lists:usort([Pid | Alive])});
         [] ->
             ok
     end.
@@ -2280,7 +2302,8 @@ receive_remote_batch(Peer, Prefix, [<<"+", Ref/binary>>, <<"draft/multiline">>, 
                 command => undefined,
                 lines => [],
                 bytes => 0,
-                count => 0
+                count => 0,
+                opened_at => erlang:monotonic_time(second)
             }),
             ok;
         error ->
@@ -2311,6 +2334,26 @@ partial batches for a link that is gone.
 -spec forget_peer_batches(binary()) -> ok.
 forget_peer_batches(Peer) ->
     lists:foreach(fun erase/1, peer_batch_keys(Peer)).
+
+-doc """
+Discard any peer `draft/multiline` batch left open for more than 60 seconds.
+Called from `m:ircd_state`'s one-second tick.
+""".
+-spec expire_peer_batches() -> ok.
+expire_peer_batches() ->
+    Cutoff = erlang:monotonic_time(second) - 60,
+    lists:foreach(
+        fun
+            ({ircd_peer_batch, _, _} = Key) ->
+                case get(Key) of
+                    #{opened_at := Opened} when Opened =< Cutoff -> erase(Key);
+                    _ -> ok
+                end;
+            (_) ->
+                ok
+        end,
+        get_keys()
+    ).
 
 peer_batch_keys(Peer) ->
     [Key || {ircd_peer_batch, P, _} = Key <- get_keys(), P =:= Peer].
