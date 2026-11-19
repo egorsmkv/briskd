@@ -40,6 +40,7 @@ handle_info(activate, {Kind, Socket, Peer} = State) ->
     end;
 handle_info({irc, Line}, {Kind, Socket, _, _, _} = State) ->
     Module = transport(Kind),
+    mirror(Line),
     case Module:send(Socket, outgoing(Line)) of
         ok ->
             {noreply, State};
@@ -78,7 +79,9 @@ handle_info(registration_timeout, {_, _, _, _, Role} = State) ->
             end;
         awaiting ->
             logger:info(#{event => registration_timeout, peer => peer_of(State)}),
-            {stop, normal, State}
+            {stop, normal, State};
+        {attached, _} ->
+            {noreply, State}
     end;
 handle_info(liveness_ping, {Kind, Socket, _, _, {server, undefined}} = State) ->
     Config = persistent_term:get({ircd_state, config}),
@@ -109,8 +112,41 @@ handle_info({Tag, Socket, Reason}, {_, Socket, _, _, _} = State) when
     logger:warning(#{event => socket_error, peer => peer_of(State), reason => Reason}),
     {stop, normal, State};
 %% Ignore socket traffic and timers that belong to a previous connection state.
+%% multiclient: this connection was attached to the session that holds the
+%% same account's nickname. Its commands now run as that client and every
+%% line the primary session receives is mirrored here.
+handle_info({attach, Primary}, {Kind, Socket, Peer, Buffer, client}) ->
+    monitor(process, Primary),
+    Primary ! {attached_session, self()},
+    {noreply, {Kind, Socket, Peer, Buffer, {attached, Primary}}};
+handle_info({attached_session, Pid}, State) ->
+    monitor(process, Pid),
+    put(ircd_attached, [Pid | attached()]),
+    {noreply, State};
+handle_info({irc_mirror, Line}, {Kind, Socket, _, _, _} = State) ->
+    Module = transport(Kind),
+    case Module:send(Socket, outgoing(Line)) of
+        ok -> {noreply, State};
+        {error, _} -> {stop, normal, State}
+    end;
+handle_info({'DOWN', _, process, Primary, _}, {Kind, Socket, _, _, {attached, Primary}} = State) ->
+    Module = transport(Kind),
+    _ = Module:send(Socket, outgoing(<<"ERROR :Primary session closed\r\n">>)),
+    {stop, normal, State};
+handle_info({'DOWN', _, process, Pid, _}, State) ->
+    put(ircd_attached, lists:delete(Pid, attached())),
+    {noreply, State};
 handle_info(_, State) ->
     {noreply, State}.
+
+attached() ->
+    case get(ircd_attached) of
+        undefined -> [];
+        List -> List
+    end.
+
+mirror(Line) ->
+    lists:foreach(fun(Pid) -> Pid ! {irc_mirror, Line} end, attached()).
 
 %% @doc Redact an inbound server link password held during the handshake.
 -spec format_status(map()) -> map().
@@ -435,6 +471,14 @@ process_line(Tags, Command, Params, Bytes, {_, _, _, _, awaiting} = State) ->
     end;
 process_line(_Tags, _Command, _Params, _Bytes, {_, _, _, _, {server_pass, _}}) ->
     error;
+process_line(_Tags, <<"QUIT">>, _Params, _Bytes, {_, _, _, _, {attached, _}}) ->
+    %% QUIT on an attached connection closes only that connection.
+    quit;
+process_line(Tags, Command, Params, Bytes, {_, _, _, _, {attached, Primary}} = State) ->
+    case ircd_state:command_as(Primary, Command, Params, Bytes, Tags) of
+        quit -> quit;
+        _ -> {ok, State}
+    end;
 process_line(Tags, Command, Params, Bytes, {_, _, _, _, client} = State) ->
     process_client_line(Tags, Command, Params, Bytes, State).
 

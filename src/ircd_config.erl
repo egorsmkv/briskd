@@ -46,7 +46,13 @@ load(Path) ->
         ServerLinks = server_links(maps:get(<<"server_links">>, Json, []), Name),
         Admin = admin_info(Json),
         Network = network_name(maps:get(<<"network">>, Json, Name)),
+        ServerInfo = text_value(Json, <<"server_info">>, <<"Erlang/OTP IRC server">>),
         {ok, #{
+            server_info => ServerInfo,
+            multiclient => boolean_setting(multiclient, maps:get(<<"multiclient">>, Json, false)),
+            account_rejoin => boolean_setting(
+                account_rejoin, maps:get(<<"account_rejoin">>, Json, false)
+            ),
             ws => WS,
             wss => WSS,
             ws_origins => ws_origins(maps:get(<<"ws_origins">>, Json, null)),

@@ -275,6 +275,7 @@ add_member(Key, Name, #client{pid = Pid} = Client, Server, Password) ->
                     #channel{
                         key = Key,
                         name = Name,
+                        created = erlang:system_time(second),
                         creator =
                             case binary:first(Name) of
                                 $! -> Pid;
@@ -834,7 +835,11 @@ topic(Name, Rest, #client{pid = Pid} = Client, Server) ->
                         Client, Server, <<"482">>, [Canonical], <<"You're not channel operator">>
                     );
                 {false, true, [Text | _]} ->
-                    mnesia:dirty_write(Channel#channel{topic = ircd_wire:retain(Text)}),
+                    mnesia:dirty_write(Channel#channel{
+                        topic = ircd_wire:retain(Text),
+                        topic_by = iolist_to_binary(channel_origin_prefix(Channel, Client)),
+                        topic_at = erlang:system_time(second)
+                    }),
                     {TopicTags, TopicMeta} = ircd_state_history:event_tags(),
                     ircd_state_history:note_event(
                         Channel#channel.key,
@@ -904,8 +909,20 @@ join_topic(Channel, Client, Server) ->
 
 topic_reply(#channel{name = Name, topic = <<>>}, Client, Server) ->
     ircd_state_send:numeric(Client, Server, <<"331">>, [Name], <<"No topic is set">>);
-topic_reply(#channel{name = Name, topic = Topic}, Client, Server) ->
-    ircd_state_send:numeric(Client, Server, <<"332">>, [Name], Topic).
+topic_reply(#channel{name = Name, topic = Topic} = Channel, Client, Server) ->
+    ircd_state_send:numeric(Client, Server, <<"332">>, [Name], Topic),
+    By =
+        case Channel#channel.topic_by of
+            undefined -> Server;
+            Setter -> Setter
+        end,
+    At =
+        case {Channel#channel.topic_at, Channel#channel.created} of
+            {undefined, undefined} -> persistent_term:get({ircd_state, started_at_system}, 0);
+            {undefined, Created} -> Created;
+            {Time, _} -> Time
+        end,
+    ircd_state_send:numeric(Client, Server, <<"333">>, [Name, By, integer_to_binary(At)], none).
 
 names(Name, Client, Server) ->
     Canonical =
@@ -1029,7 +1046,9 @@ names_unattached(#client{pid = RequesterPid}, Server) ->
         [Member] <- [mnesia:dirty_read(client, Pid)],
         ircd_state_client:ready(Member),
         ircd_state_client:user_visible(Member, Requester),
-        not has_visible_channel(Member#client.channels, Requester)
+        %% Only users on no channel are listed under `*`; a user who is only
+        %% in secret or private channels is not revealed.
+        Member#client.channels =:= []
     ]),
     names_lines(Entries, [], 0, <<"*">>, Requester, Server).
 
@@ -1039,20 +1058,6 @@ visible_member(Pid, Requester, Members) ->
             [Member] -> ircd_state_client:user_visible(Member, Requester);
             [] -> false
         end.
-
-has_visible_channel(Keys, #client{pid = RequesterPid}) ->
-    lists:any(
-        fun(Key) ->
-            case mnesia:dirty_read(channel, Key) of
-                [#channel{members = Members, flags = Flags}] ->
-                    maps:is_key(RequesterPid, Members) orelse
-                        not (maps:is_key($p, Flags) orelse maps:is_key($s, Flags));
-                [] ->
-                    false
-            end
-        end,
-        Keys
-    ).
 
 names_lines([], [], _, _, _, _) ->
     ok;
@@ -1470,7 +1475,14 @@ channel_mode(Name, Rest, #client{pid = Pid} = Client, Server) ->
                 {[], _} ->
                     report_modes(Channel, Client, Server);
                 {[Modes | Args], true} ->
-                    change_modes(binary_to_list(Modes), add, Args, Channel, Client, Server);
+                    %% Applied changes are collected and announced as one
+                    %% MODE line, e.g. `MODE #chan -int` or `+ov a b`.
+                    put(ircd_mode_changes, []),
+                    try
+                        change_modes(binary_to_list(Modes), add, Args, Channel, Client, Server)
+                    after
+                        announce_mode_changes(Channel, Client)
+                    end;
                 {_, false} ->
                     ircd_state_send:numeric(
                         Client, Server, <<"482">>, [Canonical], <<"You're not channel operator">>
@@ -1489,40 +1501,43 @@ list_mode(Type, Name, Pid, Client, Server) ->
                         Client, Server, <<"482">>, [Canonical], <<"You're not channel operator">>
                     );
                 true ->
-                    Mode =
+                    %% RFC 2812: bans 367/368, exceptions 348/349, invites 346/347.
+                    {Item, End, Text} =
                         case Type of
-                            ban -> $b;
-                            exception -> $e;
-                            invite -> $I
+                            ban ->
+                                {<<"367">>, <<"368">>, <<"End of channel ban list">>};
+                            exception ->
+                                {<<"348">>, <<"349">>, <<"End of channel exception list">>};
+                            invite ->
+                                {<<"346">>, <<"347">>, <<"End of channel invite list">>}
                         end,
                     lists:foreach(
                         fun(Entry) ->
-                            ircd_state_send:numeric(
-                                Client, Server, <<"367">>, [Canonical, Entry], none
-                            )
+                            ircd_state_send:numeric(Client, Server, Item, [Canonical, Entry], none)
                         end,
                         maps:get(Type, Lists, [])
                     ),
-                    ircd_state_send:numeric(
-                        Client,
-                        Server,
-                        <<"368">>,
-                        [Canonical, <<Mode>>],
-                        <<"End of channel list">>
-                    )
+                    ircd_state_send:numeric(Client, Server, End, [Canonical], Text)
             end;
         [] ->
             ircd_state_send:numeric(Client, Server, <<"403">>, [Name], <<"No such channel">>)
     end.
 
 report_modes(
+    #channel{} = Channel,
+    Client,
+    Server
+) ->
+    report_modes_of(Channel, Client, Server).
+
+report_modes_of(
     #channel{
         name = Name,
         flags = Flags,
         limit = Limit,
         password = Password,
         members = Members
-    },
+    } = Channel,
     #client{pid = Pid} = Client,
     Server
 ) ->
@@ -1546,7 +1561,15 @@ report_modes(
     {KeyMode, KeyArgs} = KeyFields,
     {LimitMode, LimitArgs} = LimitFields,
     Modes = list_to_binary([$+ | lists:sort(maps:keys(Flags)) ++ KeyMode ++ LimitMode]),
-    ircd_state_send:numeric(Client, Server, <<"324">>, [Name, Modes | KeyArgs ++ LimitArgs], none).
+    ircd_state_send:numeric(Client, Server, <<"324">>, [Name, Modes | KeyArgs ++ LimitArgs], none),
+    %% RPL_CREATIONTIME (329). A row from before `created` existed reports
+    %% the server start time.
+    Created =
+        case Channel#channel.created of
+            undefined -> persistent_term:get({ircd_state, started_at_system}, 0);
+            Seconds -> Seconds
+        end,
+    ircd_state_send:numeric(Client, Server, <<"329">>, [Name, integer_to_binary(Created)], none).
 
 change_modes([], _, _, _, _, _) ->
     ok;
@@ -1581,32 +1604,8 @@ change_modes([Mode | Rest], Action, Args, Channel, Client, Server) ->
                             add -> $+;
                             remove -> $-
                         end,
-                    {ModeTags, ModeMeta} = ircd_state_history:event_tags(),
-                    ircd_state_send:broadcast(
-                        maps:keys(Members),
-                        channel_origin_prefix(Channel, Client),
-                        <<"MODE">>,
-                        [Name, <<Sign, Mode>> | Parameters],
-                        none,
-                        ModeTags
-                    ),
-                    %% A channel key is not written to history.
-                    case Mode of
-                        $k ->
-                            ok;
-                        _ ->
-                            ircd_state_history:note_event(
-                                Channel#channel.key,
-                                <<"MODE">>,
-                                channel_origin_prefix(Channel, Client),
-                                [<<Sign, Mode>> | Parameters],
-                                none,
-                                ModeMeta
-                            )
-                    end,
-                    ircd_state_link:propagate_channel_mode(
-                        Client, Name, <<Sign, Mode>>, Parameters
-                    );
+                    _ = {Name, Members},
+                    put(ircd_mode_changes, [{Sign, Mode, Parameters} | get(ircd_mode_changes)]);
                 false ->
                     ok
             end,
@@ -1614,6 +1613,40 @@ change_modes([Mode | Rest], Action, Args, Channel, Client, Server) ->
         {_, true, {error, Code, Params, Message, Tail}} ->
             ircd_state_send:numeric(Client, Server, Code, Params, Message),
             change_modes(Rest, Action, Tail, Channel, Client, Server)
+    end.
+
+%% Announce the collected changes of one MODE command as a single line to
+%% members, history, and peers. A change of the channel key keeps the line
+%% out of history.
+announce_mode_changes(#channel{key = Key, name = Name, members = Members} = Channel, Client) ->
+    case lists:reverse(erase(ircd_mode_changes)) of
+        [] ->
+            ok;
+        Changes ->
+            {Letters, _} = lists:foldl(
+                fun
+                    ({Sign, Mode, _}, {Acc, Sign}) -> {[Mode | Acc], Sign};
+                    ({Sign, Mode, _}, {Acc, _}) -> {[Mode, Sign | Acc], Sign}
+                end,
+                {[], none},
+                Changes
+            ),
+            ModeString = list_to_binary(lists:reverse(Letters)),
+            Params = lists:append([P || {_, _, P} <- Changes]),
+            Origin = channel_origin_prefix(Channel, Client),
+            {Tags, Meta} = ircd_state_history:event_tags(),
+            ircd_state_send:broadcast(
+                maps:keys(Members), Origin, <<"MODE">>, [Name, ModeString | Params], none, Tags
+            ),
+            case lists:keymember($k, 2, Changes) of
+                true ->
+                    ok;
+                false ->
+                    ircd_state_history:note_event(
+                        Key, <<"MODE">>, Origin, [ModeString | Params], none, Meta
+                    )
+            end,
+            ircd_state_link:propagate_channel_mode(Client, Name, ModeString, Params)
     end.
 
 mode_authorized($r, _Action, #channel{name = <<$!, _/binary>>} = Channel, Client) ->
@@ -1704,16 +1737,18 @@ apply_mode($l, add, [Value | Args], Channel) ->
     case string:to_integer(Value) of
         {Limit, <<>>} when Limit > 0, Limit =< 2147483647 ->
             {ok, Channel#channel{limit = Limit}, Args, [integer_to_binary(Limit)]};
+        %% ERR_INVALIDMODEPARAM (696): <channel> <mode> <param> :<reason>
         _ ->
-            {error, <<"461">>, [<<"MODE">>], <<"Invalid channel limit">>, Args}
+            {error, <<"696">>, [Channel#channel.name, <<"l">>, param_token(Value)],
+                <<"Invalid channel limit">>, Args}
     end;
 apply_mode($k, add, [Key | Args], Channel) when byte_size(Key) > 0, byte_size(Key) =< 64 ->
     case binary:match(Key, [<<" ">>, <<",">>, <<":">>]) of
         nomatch -> {ok, Channel#channel{password = ircd_wire:retain(Key)}, Args, [Key]};
-        _ -> {error, <<"461">>, [<<"MODE">>], <<"Invalid channel key">>, Args}
+        _ -> invalid_key(Key, Args, Channel)
     end;
-apply_mode($k, add, [_ | Args], _) ->
-    {error, <<"461">>, [<<"MODE">>], <<"Invalid channel key">>, Args};
+apply_mode($k, add, [Key | Args], Channel) ->
+    invalid_key(Key, Args, Channel);
 apply_mode($k, remove, [_ | Args], Channel) ->
     {ok, Channel#channel{password = undefined}, Args, [<<"*">>]};
 apply_mode(Mode, Action, [Nick | Args], #channel{name = Name, members = Members} = Channel) when
@@ -1733,6 +1768,11 @@ apply_mode(Mode, Action, [Nick | Args], #channel{name = Name, members = Members}
                     remove -> lists:delete(Role, Roles)
                 end,
             {ok, Channel#channel{members = Members#{Pid := New}}, Args, [Actual]};
+        undefined ->
+            case mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) of
+                [] -> {error, <<"401">>, [Nick], <<"No such nick/channel">>, Args};
+                _ -> {error, <<"441">>, [Nick, Name], <<"They aren't on that channel">>, Args}
+            end;
         _ ->
             {error, <<"441">>, [Nick, Name], <<"They aren't on that channel">>, Args}
     end;
@@ -1741,6 +1781,21 @@ apply_mode(Mode, _, [], _) when Mode =:= $k; Mode =:= $l; Mode =:= $o; Mode =:= 
 apply_mode(Mode, _, Args, _) ->
     {error, <<"472">>, [<<Mode>>], <<"Unknown mode character">>, Args}.
 split(Value) -> binary:split(Value, <<",">>, [global, trim_all]).
+
+%% ERR_INVALIDMODEPARAM (696) for a channel key that is empty, too long, or
+%% contains a space, comma, or colon. The key itself is not echoed.
+invalid_key(_Key, Args, #channel{name = Name}) ->
+    {error, <<"696">>, [Name, <<"k">>, <<"*">>], <<"Invalid channel key">>, Args}.
+
+%% A mode parameter shown in a numeric must be one non-empty middle token.
+param_token(Value) ->
+    case
+        Value =:= <<>> orelse binary:match(Value, [<<" ">>]) =/= nomatch orelse
+            binary:first(Value) =:= $:
+    of
+        true -> <<"*">>;
+        false -> Value
+    end.
 
 %% @doc `RENAME <old> <new> [:reason]` (draft/channel-rename). A channel
 %% operator may rename a local channel. The type prefix cannot change, safe

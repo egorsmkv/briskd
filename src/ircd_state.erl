@@ -4,6 +4,7 @@
     authenticate_server_link/2,
     command/3,
     command/4,
+    command_as/5,
     input_too_long/1,
     connect/1,
     connect/2,
@@ -70,6 +71,11 @@ command(Command, Params, Bytes) -> command(Command, Params, Bytes, []).
 command(Command, Params, Bytes, Tags) ->
     gen_server:call(?MODULE, {command, Command, Params, Bytes, Tags}).
 
+%% @doc Apply a command from a connection attached to `Primary` (multiclient).
+-spec command_as(pid(), binary(), [binary()], non_neg_integer(), list()) -> ok | quit.
+command_as(Primary, Command, Params, Bytes, Tags) ->
+    gen_server:call(?MODULE, {command_as, Primary, Command, Params, Bytes, Tags}).
+
 %% @doc Reject an over-long tagged line with numeric 417 and do not relay it.
 -spec input_too_long([{binary(), undefined | binary()}]) -> ok.
 input_too_long(Tags) -> gen_server:call(?MODULE, {input_too_long, Tags}).
@@ -131,6 +137,7 @@ init(#{name := Name} = Config) ->
     Started = calendar:system_time_to_rfc3339(erlang:system_time(second), [{unit, second}]),
     persistent_term:put({?MODULE, started}, Started),
     persistent_term:put({?MODULE, started_at}, erlang:monotonic_time(second)),
+    persistent_term:put({?MODULE, started_at_system}, erlang:system_time(second)),
     ets:new(ircd_command_stats, [named_table, public, set, {write_concurrency, true}]),
     ets:new(ircd_connection_stats, [named_table, public, set, {write_concurrency, true}]),
     ensure_ets(ircd_caps),
@@ -143,6 +150,8 @@ init(#{name := Name} = Config) ->
     ensure_ets(ircd_chan_meta),
     ensure_ets(ircd_dm_history),
     ensure_bag(ircd_monitor),
+    ensure_ets(ircd_attached),
+    ensure_ets(ircd_account_channels),
     ensure_ets(ircd_remote_meta),
     persistent_term:put({?MODULE, config}, Config),
     persistent_term:put({?MODULE, config_path}, maps:get(config_path, Config)),
@@ -237,14 +246,20 @@ ensure_disc_copy(Table) ->
             ok
     end.
 
+%% Channel rows gain fields over time; every missing trailing field is
+%% `undefined` (creator, opless_since, created).
 ensure_table_shape(channel, Fields) ->
     case mnesia:table_info(channel, attributes) of
         Fields ->
             ok;
         OldFields ->
+            Width = length(Fields) + 1,
             {atomic, ok} = mnesia:transform_table(
                 channel,
-                fun(Old) -> list_to_tuple(tuple_to_list(Old) ++ [undefined, undefined]) end,
+                fun(Old) ->
+                    List = tuple_to_list(Old),
+                    list_to_tuple(List ++ lists:duplicate(Width - length(List), undefined))
+                end,
                 Fields
             ),
             logger:info("Migrated Mnesia channel table from ~p", [OldFields])
@@ -417,7 +432,8 @@ seed_channel(#{
                 limit = Limit,
                 password = Password,
                 creator = undefined,
-                opless_since = undefined
+                opless_since = undefined,
+                created = erlang:system_time(second)
             })
     end.
 
@@ -661,6 +677,16 @@ other_call({input_too_long, Tags}, {Pid, _}, Server) ->
         ircd_state_send:end_label(Server)
     end,
     {reply, ok, Server};
+other_call({command_as, Primary, Command, Params, Bytes, Tags}, {Caller, Ref}, Server) ->
+    case ets:lookup(ircd_attached, Caller) of
+        [{Caller, Primary}] ->
+            case mnesia:dirty_read(client, Primary) of
+                [_] -> other_call({command, Command, Params, Bytes, Tags}, {Primary, Ref}, Server);
+                [] -> {reply, quit, Server}
+            end;
+        _ ->
+            {reply, quit, Server}
+    end;
 other_call({command, Command, Params, Bytes, Tags}, {Pid, _}, Server) ->
     count_command(Pid, Command, Bytes),
     Client = ircd_state_client:client(Pid),
@@ -690,6 +716,7 @@ handle_cast(_, State) -> {noreply, State}.
 
 %% @doc Remove client state after its session process exits.
 handle_info({'DOWN', _, process, Pid, _}, State) ->
+    ets:delete(ircd_attached, Pid),
     case mnesia:dirty_read(client, Pid) of
         [Client] -> ircd_state_client:disconnect(Client, <<"Connection closed">>, State);
         [] -> ok
@@ -850,6 +877,8 @@ dispatch_command(<<"NICK">>, [Nick | _], Client, Server, _Tags) ->
     end;
 dispatch_command(<<"NICK">>, [], Client, Server, _Tags) ->
     ircd_state_send:numeric(Client, Server, <<"431">>, [], <<"No nickname given">>);
+dispatch_command(<<"USER">>, [_, _, _, <<>>], #client{user = undefined} = Client, Server, _Tags) ->
+    ircd_state_send:numeric(Client, Server, <<"461">>, [<<"USER">>], <<"Not enough parameters">>);
 dispatch_command(
     <<"USER">>, [User, Mode, _, Real], #client{user = undefined} = Client, Server, _Tags
 ) ->
@@ -865,8 +894,9 @@ dispatch_command(
                 Client, Client#client{user = User, real = Real}, Server
             );
         {nomatch, _} ->
+            %% ERR_INVALIDUSERNAME (468)
             ircd_state_send:numeric(
-                Client, Server, <<"461">>, [<<"USER">>], <<"Invalid username">>
+                Client, Server, <<"468">>, [], <<"Your username is not valid">>
             );
         {_, error} ->
             ircd_state_send:numeric(
@@ -1020,6 +1050,35 @@ registered_command(<<"KNOCK">>, [Name | Rest], Client, Server) ->
     ircd_state_channel:knock(Name, Rest, Client, Server);
 registered_command(<<"KNOCK">>, [], Client, Server) ->
     ircd_state_send:numeric(Client, Server, <<"461">>, [<<"KNOCK">>], <<"Not enough parameters">>);
+registered_command(<<"INVITE">>, [<<C, _/binary>> = Name, Nick | _], Client, Server) when
+    C =:= $#
+->
+    %% `INVITE <channel> <nick>` (parameters reversed; a `#` never starts a
+    %% nickname, so this is unambiguous). An existing channel is handled as
+    %% the RFC order; for a channel that does not exist, which RFC 1459/2812
+    %% allow, both users see the INVITE in the order the client used.
+    case mnesia:dirty_read(channel, ircd_wire:fold(Name)) of
+        [_] ->
+            ircd_state_channel:invite(Nick, Name, Client, Server);
+        [] ->
+            case ircd_state_client:find_nick(Nick) of
+                #client{pid = Target} = Found ->
+                    case ircd_state_client:ready(Found) of
+                        true ->
+                            Prefix = ircd_state_send:prefix(Client),
+                            ircd_state_send:send(
+                                Client#client.pid, Prefix, <<"INVITE">>, [Name, Nick], none
+                            ),
+                            ircd_state_send:send(Target, Prefix, <<"INVITE">>, [Name, Nick], none);
+                        false ->
+                            ircd_state_send:numeric(
+                                Client, Server, <<"401">>, [Nick], <<"No such nick">>
+                            )
+                    end;
+                undefined ->
+                    ircd_state_send:numeric(Client, Server, <<"401">>, [Nick], <<"No such nick">>)
+            end
+    end;
 registered_command(<<"INVITE">>, [Nick, Name | _], Client, Server) ->
     ircd_state_channel:invite(Nick, Name, Client, Server);
 registered_command(<<"INVITE">>, _, Client, Server) ->
@@ -1042,13 +1101,35 @@ registered_command(<<"RESTART">>, Params, Client, Server) ->
     ircd_state_net:oper_command(<<"RESTART">>, Params, Client, Server);
 registered_command(<<"SERVICE">>, Params, Client, Server) ->
     ircd_state_net:oper_command(<<"SERVICE">>, Params, Client, Server);
-registered_command(<<"WALLOPS">>, _, Client, Server) ->
+registered_command(<<"WALLOPS">>, [Text | _], #client{pid = Pid} = Client, Server) ->
+    %% RFC 2812 3.7.1: an operator's WALLOPS goes to users with mode +w.
+    case maps:is_key($o, ircd_state_client:user_modes(Pid)) of
+        true ->
+            Recipients = [
+                P
+             || P <- mnesia:dirty_all_keys(user_modes),
+                [#client{} = C] <- [mnesia:dirty_read(client, P)],
+                ircd_state_client:ready(C),
+                maps:is_key($w, ircd_state_client:user_modes(P))
+            ],
+            ircd_state_send:broadcast(
+                Recipients, ircd_state_send:prefix(Client), <<"WALLOPS">>, [], Text
+            ),
+            ircd_state_link:server_broadcast(
+                ircd_wire:line(ircd_state_send:prefix(Client), <<"WALLOPS">>, [], Text)
+            );
+        false ->
+            ircd_state_send:numeric(
+                Client,
+                Server,
+                <<"481">>,
+                [],
+                <<"Permission Denied- You're not an IRC operator">>
+            )
+    end;
+registered_command(<<"WALLOPS">>, [], Client, Server) ->
     ircd_state_send:numeric(
-        Client,
-        Server,
-        <<"481">>,
-        [],
-        <<"Permission Denied- WALLOPS is server only">>
+        Client, Server, <<"461">>, [<<"WALLOPS">>], <<"Not enough parameters">>
     );
 registered_command(<<"REHASH">>, _, Client, Server) ->
     ircd_state_info:rehash(Client, Server);
@@ -1066,9 +1147,15 @@ registered_command(<<"NAMES">>, Params, Client, Server) ->
                 ircd_state_channel:split(Names)
             );
         [] ->
+            %% Channels oldest first (then by name), so the listing is stable.
+            Ordered = lists:sort([
+                {Created, Key}
+             || Key <- mnesia:dirty_all_keys(channel),
+                [#channel{created = Created}] <- [mnesia:dirty_read(channel, Key)]
+            ]),
             lists:foreach(
-                fun(Key) -> ircd_state_channel:names_listing(Key, Client, Server) end,
-                mnesia:dirty_all_keys(channel)
+                fun({_, Key}) -> ircd_state_channel:names_listing(Key, Client, Server) end,
+                Ordered
             ),
             LocalKeys = mnesia:dirty_all_keys(channel),
             lists:foreach(
@@ -1181,7 +1268,12 @@ registered_command(<<"WHOIS">>, [_ | _] = Args, Client, Server) ->
                 ircd_state_channel:split(NickMasks)
             );
         [Target, NickMasks | _] ->
-            case ircd_state_info:query_local_server([Target], Server) of
+            %% RFC 2812 3.6.2: the target may also be a nickname, meaning the
+            %% server that user is on; this server answers for every user it knows.
+            KnownNick =
+                ircd_state_client:find_nick(Target) =/= undefined orelse
+                    mnesia:dirty_read(remote_client, ircd_wire:fold(Target)) =/= [],
+            case KnownNick orelse ircd_state_info:query_local_server([Target], Server) of
                 true ->
                     lists:foreach(
                         fun(Nick) -> ircd_state_queries:whois(Nick, Client, Server) end,
@@ -1194,7 +1286,9 @@ registered_command(<<"WHOIS">>, [_ | _] = Args, Client, Server) ->
             end
     end;
 registered_command(<<"WHOWAS">>, [], Client, Server) ->
-    ircd_state_send:numeric(Client, Server, <<"431">>, [], <<"No nickname given">>);
+    %% RFC 1459/2812: RPL_ENDOFWHOWAS ends every reply, even an error.
+    ircd_state_send:numeric(Client, Server, <<"431">>, [], <<"No nickname given">>),
+    ircd_state_send:numeric(Client, Server, <<"369">>, [<<"*">>], <<"End of WHOWAS">>);
 registered_command(<<"WHOWAS">>, [NickMasks | Rest], Client, Server) ->
     {Count, Target} = ircd_state_queries:whowas_options(Rest),
     case
@@ -1210,10 +1304,18 @@ registered_command(<<"WHOWAS">>, [NickMasks | Rest], Client, Server) ->
             ircd_state_send:numeric(Client, Server, <<"402">>, [Unknown], <<"No such server">>);
         true ->
             Nicks = ircd_state_channel:split(NickMasks),
-            lists:foreach(
-                fun(Nick) -> ircd_state_queries:whowas_reply(Nick, Count, Client, Server) end, Nicks
-            ),
-            ircd_state_send:numeric(Client, Server, <<"369">>, [NickMasks], <<"End of WHOWAS">>)
+            Matched = lists:append([
+                ircd_state_queries:whowas_reply(Nick, Count, Client, Server)
+             || Nick <- Nicks
+            ]),
+            %% A mask that resolved to exactly one nickname ends with that
+            %% nickname; otherwise the query as given.
+            EndParam =
+                case lists:usort([ircd_wire:fold(N) || N <- Matched]) of
+                    [_] when length(Nicks) =:= 1 -> hd(Matched);
+                    _ -> NickMasks
+                end,
+            ircd_state_send:numeric(Client, Server, <<"369">>, [EndParam], <<"End of WHOWAS">>)
     end;
 registered_command(<<"MOTD">>, Params, Client, Server) ->
     ircd_state_info:motd(Params, Client, Server);
@@ -1244,6 +1346,15 @@ change_nick(Nick, Client, Server) ->
             ircd_state_send:numeric(Client, Server, <<"432">>, [Nick], <<"Erroneous nickname">>);
         {false, _, _, _} ->
             ircd_state_send:numeric(Client, Server, <<"432">>, [Nick], <<"Erroneous nickname">>);
+        {true, _, #client{pid = Holder} = HolderClient, _} when Holder =/= Client#client.pid ->
+            case ircd_state_v3:attachable(Client, HolderClient) of
+                true ->
+                    ircd_state_v3:prepare_attach(Client, HolderClient, Nick);
+                false ->
+                    nick_in_use(Client, Nick, Server)
+            end;
+        {true, _, _, true} ->
+            nick_in_use(Client, Nick, Server);
         {true, _, #client{pid = Pid}, _} when Pid =/= Client#client.pid ->
             remember_wanted_nick(Client, Nick),
             ircd_state_send:numeric(
@@ -1254,6 +1365,8 @@ change_nick(Nick, Client, Server) ->
             ircd_state_send:numeric(
                 Client, Server, <<"433">>, [Nick], <<"Nickname is already in use">>
             );
+        {true, _, _, false} when Nick =:= Client#client.nick ->
+            ok;
         {true, _, _, false} ->
             case ircd_state_client:ready(Client) of
                 true ->
@@ -1294,6 +1407,12 @@ change_nick(Nick, Client, Server) ->
                     ok
             end
     end.
+
+nick_in_use(Client, Nick, Server) ->
+    remember_wanted_nick(Client, Nick),
+    ircd_state_send:numeric(
+        Client, Server, <<"433">>, [Nick], <<"Nickname is already in use">>
+    ).
 
 %% Before registration, a refused NICK is remembered so `REGISTER *` can name
 %% the nickname the client asked for (draft/account-registration).

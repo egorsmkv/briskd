@@ -119,6 +119,9 @@ to the process working directory unless they are absolute.
 | `reop_delay` | `30` | Base delay in seconds before re-opping an operatorless safe channel |
 | `resource_delay` | `60` | Seconds a nickname or channel released by a quit or netsplit stays unavailable (437); `0` disables |
 | `account_password_min` | `8` | Shortest password `REGISTER` accepts, in bytes |
+| `server_info` | `Erlang/OTP IRC server` | Server description in LINKS |
+| `multiclient` | `false` | Let a connection logged into the same account as a nickname's holder attach to that nickname; it mirrors the holder's traffic and its QUIT closes only itself |
+| `account_rejoin` | `false` | Remember a logged-in client's channels on disconnect (in memory) and rejoin them at the account's next login |
 | `account_registration_before_connect` | `true` | Allow `REGISTER` before connection registration completes (`before-connect`) |
 | `account_registration_email_required` | `false` | Require an email address in `REGISTER` (`email-required`) |
 | `nicklen` | `9` | Longest nickname (9 to 30). RFC 1459 uses 9; every linked server must use the same value |
@@ -328,11 +331,16 @@ docker exec -w /workspace ircd-irctest rebar3 compile
 cd /path/to/irctest
 PYTHONPATH=/path/to/irc-server/test/irctest IRCTEST_SERVER_HOSTNAME=localhost \
     IRCTEST_SERVER_PORT=6667 pytest --controller ircd_controller \
-    -m "IRCv3 and not deprecated and not implementation-specific"
+    -m "not implementation-specific and not deprecated"
 ```
 
-Accounts are created with `REGISTER`, so no services daemon is needed. The
-roadmap lists the current results and the cases that do not apply.
+The controller stands in for services: it links a minimal
+`My.Little.Services` peer over RFC 2813 and provisions test accounts with
+`ACCOUNTSYNC`. `test/irctest/ircd.json` enables the opt-in `multiclient` and
+`account_rejoin` features, a 30-character `nicklen`, and no nickname delay,
+because irctest reuses nicknames between tests. With irctest's standard
+selection (`-m "not implementation-specific and not deprecated"`) all 491
+applicable tests pass.
 
 ## Protocol references
 

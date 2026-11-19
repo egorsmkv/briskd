@@ -1,6 +1,11 @@
 -module(ircd_state_v3).
 -export([
     account/1,
+    attachable/2,
+    finish_attach/2,
+    prepare_attach/3,
+    rejoin_on_login/2,
+    remember_channels/1,
     authenticate/3,
     away_on_join/3,
     burst_lines/1,
@@ -983,4 +988,74 @@ starttls(#client{pid = Pid} = Client, Server) ->
             starttls;
         false ->
             ircd_state_send:numeric(Client, Server, <<"691">>, [], <<"STARTTLS failed">>)
+    end.
+
+%%% multiclient and account rejoin (opt-in operator features)
+
+%% @doc With `multiclient`, a connection still registering that authenticated
+%% as the same account as a registered client may attach to that client's
+%% nickname instead of getting 433.
+-spec attachable(#client{}, #client{}) -> boolean().
+attachable(#client{pid = Pid} = Client, #client{pid = Holder} = HolderClient) ->
+    Config = persistent_term:get({ircd_state, config}),
+    Account = account(Pid),
+    maps:get(multiclient, Config, false) andalso Account =/= undefined andalso
+        not ircd_state_client:ready(Client) andalso ircd_state_client:ready(HolderClient) andalso
+        ircd_wire:fold(Account) =:= ircd_wire:fold(fold_or_empty(account(Holder))).
+
+fold_or_empty(undefined) -> <<>>;
+fold_or_empty(Value) -> Value.
+
+%% @doc Take the nickname for this connection without indexing it; the
+%% connection attaches to Holder once its registration completes.
+-spec prepare_attach(#client{}, #client{}, binary()) -> ok.
+prepare_attach(#client{pid = Pid} = Client, #client{pid = Holder}, Nick) ->
+    ircd_conn:put(Pid, attach_to, Holder),
+    mnesia:dirty_write(Client#client{nick = ircd_wire:retain(Nick)}),
+    ok.
+
+%% @doc Finish an attach after the welcome burst: route this connection's
+%% commands to the holder and drop its own client records.
+-spec finish_attach(#client{}, pid()) -> ok.
+finish_attach(#client{pid = Pid, nick = Nick}, Holder) ->
+    ets:insert(ircd_attached, {Pid, Holder}),
+    logger:info(#{event => session_attached, nick => Nick}),
+    mnesia:dirty_delete(client, Pid),
+    mnesia:dirty_delete(activity, Pid),
+    mnesia:dirty_delete(user_modes, Pid),
+    ircd_cap:disconnect(Pid),
+    ircd_conn:delete(Pid),
+    ircd_state_client:remove_connection_stats(Pid),
+    Pid ! {attach, Holder},
+    ok.
+
+%% @doc With `account_rejoin`, remember a logged-in client's channels when it
+%% disconnects (in memory, until the next login or restart).
+-spec remember_channels(#client{}) -> ok.
+remember_channels(#client{pid = Pid, channels = Keys}) ->
+    case
+        {maps:get(account_rejoin, persistent_term:get({ircd_state, config}), false), account(Pid)}
+    of
+        {true, Account} when is_binary(Account), Keys =/= [] ->
+            Names = [
+                Name
+             || Key <- Keys, [#channel{name = Name}] <- [mnesia:dirty_read(channel, Key)]
+            ],
+            ets:insert(ircd_account_channels, {ircd_wire:fold(Account), Names}),
+            ok;
+        _ ->
+            ok
+    end.
+
+%% @doc Rejoin the channels remembered for this account, after the welcome.
+-spec rejoin_on_login(#client{}, binary()) -> ok.
+rejoin_on_login(#client{pid = Pid}, Server) ->
+    case account(Pid) of
+        undefined ->
+            ok;
+        Account ->
+            case ets:take(ircd_account_channels, ircd_wire:fold(Account)) of
+                [{_, Names}] -> ircd_state_channel:join_channels(Names, [], Pid, Server);
+                [] -> ok
+            end
     end.

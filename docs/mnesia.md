@@ -51,6 +51,11 @@ each keep `history_limit` entries. Direct messages are kept only between two
 logged-in accounts, in the `direct_history` table under the same retention
 rules. Set `"chathistory": false` to record nothing.
 
+Channel rows gained `created` (RPL_CREATIONTIME), `topic_by`, and
+`topic_at` (RPL_TOPICWHOTIME). Older rows are migrated by appending
+`undefined`; such a channel reports the server start time until its topic
+changes. Channels remembered for `account_rejoin` live in memory only.
+
 The `account` and `read_marker` tables are disc copies created at startup and
 are never cleared. An account row created before the `pending` field existed is
 migrated by appending `undefined`. A pending account whose code expired is

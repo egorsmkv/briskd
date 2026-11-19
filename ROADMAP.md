@@ -208,22 +208,25 @@ Across server links:
 - [x] Interoperability gate: `test/ircd_interop_tests.erl` runs two separate
   ircd OS processes linked over RFC 2813 TCP and checks these paths.
 
-Conformance (irctest, `test/irctest/ircd_controller.py`, one fresh server per
-test, `-m "IRCv3 and not deprecated and not implementation-specific"`):
-174 passed. Two read-marker cases need bouncer-style shared sessions
-(several connections on one nickname), which this server does not offer, and
-one SASL case needs an 800-byte password that cannot fit in a 512-byte
-`REGISTER` line. irctest's `metadata_3.py` targets an unpublished
-`draft/metadata-3`; the published spec is `draft/metadata-2`.
+Conformance: irctest (`test/irctest/ircd_controller.py`, one fresh server
+per test) with irctest's standard selection for a server,
+`-m "not implementation-specific and not deprecated"`: 491 passed, 0 failed
+(IRCv3 and RFC 1459/2812/Modern together).
 
-Base-protocol gaps irctest reports outside IRCv3 (unchanged by this work):
+Tests irctest marks `deprecated`: 18 of 23 pass (legacy metadata 3.2 for
+clients without `draft/metadata-2`, WHOWAS masks, INVITE with the channel
+first, RPL_ENDOFWHOWAS after 431). The other five cannot pass together with
+the passing tests: three RFC 1459 NAMES variants require 353 without the `=`
+symbol that their RFC 2812 twins require; `testWhowasNoParamRfc` expects
+`369 <nick> nick2` although no `nick2` is involved; and
+`testSetGetZeroCharInValue` sends NUL inside a line, which the RFC 1459/2812
+grammar forbids. Tests marked `implementation-specific` (61 failing) cover
+Ergo and Sable features: NickServ, ChanServ, roleplay, RELAYMSG, proxy,
+always-on bouncer details, and Sable's PostgreSQL history server.
 
-- [ ] Channel key and limit argument validation (`chmodes/key.py`,
-  `chmodes/limit.py`), RPL_CHANNELMODEIS layout, ban and invite-exception
-  list numerics.
-- [ ] WHOIS numeric set and order, LUSERS counts, LINKS, WALLOPS (server-only
-  here), `NICK` to the identical nickname, an empty realname, and a
-  non-UTF-8 username.
+- [x] Opt-in bouncer behaviour used by the read-marker tests: `multiclient`
+  (a second connection of the same account shares the nickname) and
+  `account_rejoin` (an account is rejoined to its channels on login).
 
 ## Documentation and verification
 

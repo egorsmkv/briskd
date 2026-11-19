@@ -14,7 +14,8 @@
     touch_activity/1,
     update_connection_stats/4,
     user_modes/1,
-    user_visible/2
+    user_visible/2,
+    remove_connection_stats/1
 ]).
 -include("ircd_state.hrl").
 
@@ -73,6 +74,17 @@ save_identity(Old, New, Server) ->
         false -> ok
     end,
     mnesia:dirty_write(Updated),
+    %% NICK and USER are done but the server password was not given:
+    %% ERR_PASSWDMISMATCH (464), then ERROR and close.
+    case
+        not identity_ready(Current) andalso identity_ready(Updated) andalso
+            not identified(Updated)
+    of
+        true ->
+            numeric_and_close(Updated, Server);
+        false ->
+            ok
+    end,
     case not identified(Old) andalso identified(Updated) of
         true ->
             case maps:get(negotiating, ircd_cap:state(Updated#client.pid)) of
@@ -88,10 +100,30 @@ save_identity(Old, New, Server) ->
 
 %% @doc Send the numeric burst that completes registration.
 %% The caller marks the connection welcomed before this runs.
-send_welcome(#client{nick = Nick, user = User, host = Host} = Client, Server) ->
+send_welcome(#client{pid = Pid} = Client, Server) ->
+    case ircd_conn:get(Pid, attach_to) of
+        undefined -> send_full_welcome(Client, Server);
+        Holder -> send_attach_welcome(Client, Holder, Server)
+    end.
+
+%% An attached connection gets the welcome numerics for the shared nickname
+%% and is then handed to the holder; it is not introduced to anyone.
+send_attach_welcome(Client, Holder, Server) ->
+    welcome_numerics(Client, Server),
+    ircd_state_info:motd([], Client, Server),
+    ircd_state_v3:finish_attach(Client, Holder).
+
+send_full_welcome(#client{nick = Nick, user = User, host = Host} = Client, Server) ->
+    ircd_conn:put(Client#client.pid, signon, erlang:system_time(second)),
+    _ = ircd_state_info:note_user_counts(),
     ircd_state_link:propagate_introduction(Client, Server),
     ircd_state_v3:registered(Client, Server),
     logger:info(#{event => client_registered, nick => Nick, user => User, host => Host}),
+    welcome_numerics(Client, Server),
+    ircd_state_info:motd([], Client, Server),
+    ircd_state_v3:rejoin_on_login(Client, Server).
+
+welcome_numerics(Client, Server) ->
     ircd_state_send:numeric(Client, Server, <<"001">>, [], [
         <<"Welcome to IRC ">>, ircd_state_send:prefix(Client)
     ]),
@@ -120,8 +152,12 @@ send_welcome(#client{nick = Nick, user = User, host = Host} = Client, Server) ->
         none
     ),
     ircd_isupport:send(Client, Server, ircd_isupport:tokens()),
-    ircd_state_meta:on_registered(Client, Server),
-    ircd_state_info:motd([], Client, Server).
+    ircd_state_meta:on_registered(Client, Server).
+
+numeric_and_close(#client{pid = Pid} = Client, Server) ->
+    ircd_state_send:numeric(Client, Server, <<"464">>, [], <<"Password incorrect">>),
+    Pid ! {irc_close, ircd_wire:line(Server, <<"ERROR">>, [], <<"Password required">>)},
+    ok.
 
 pass(Params, Client, Server) ->
     case identity_ready(Client) of
@@ -212,6 +248,7 @@ update_connection_stats_counter(Pid, MessagesPosition, BytesPosition, Bytes) ->
 
 %% Broadcast QUIT, leave joined channels, and delete all per-client Mnesia rows.
 disconnect(#client{pid = Pid, channels = Channels} = Client, Reason, Server) ->
+    ircd_state_v3:remember_channels(Client),
     case ready(Client) of
         true ->
             save_whowas(Client, Server),

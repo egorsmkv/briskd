@@ -216,8 +216,10 @@ who_mask(Mask, OperatorsOnly, Client, Server) ->
 who_mask_nonchannel(Mask, OperatorsOnly, Client, Server) ->
     case ircd_state:find_nick(Mask) of
         #client{} = Member ->
+            %% An exact nickname is answered even for +i users; invisibility
+            %% only hides users from mask searches.
             case
-                ircd_state:user_visible(Member, Client) andalso
+                ircd_state:ready(Member) andalso
                     who_operator_matches(Member#client.pid, OperatorsOnly)
             of
                 true -> who_reply(Member, <<"*">>, Client, Server);
@@ -560,12 +562,14 @@ whois(Nick, Client, Server) ->
                             [] ->
                                 0
                         end,
+                    %% RPL_WHOISIDLE: <nick> <idle seconds> <signon time>
+                    Signon = ircd_conn:get(TargetPid, signon, erlang:system_time(second)),
                     ircd_state:numeric(
                         Client,
                         Server,
                         <<"317">>,
-                        [Actual, integer_to_binary(Idle)],
-                        <<"seconds idle">>
+                        [Actual, integer_to_binary(Idle), integer_to_binary(Signon)],
+                        <<"seconds idle, signon time">>
                     );
                 false ->
                     ircd_state:numeric(
@@ -715,7 +719,8 @@ whowas_reply(Nick, Count, Client, Server) ->
             Entry
          || Key <- mnesia:dirty_all_keys(whowas),
             [Entry = #whowas{nick = StoredNick}] <- [mnesia:dirty_read(whowas, Key)],
-            ircd_wire:fold(StoredNick) =:= Folded
+            %% A nickname may be a mask with `*` and `?` (RFC 2812 3.6.3).
+            ircd_wire:fold(StoredNick) =:= Folded orelse ircd_state:wildcard_match(Nick, StoredNick)
         ]
     ),
     Results =
@@ -725,7 +730,8 @@ whowas_reply(Nick, Count, Client, Server) ->
         end,
     case Results of
         [] ->
-            ircd_state:numeric(Client, Server, <<"406">>, [Nick], <<"There was no such nickname">>);
+            ircd_state:numeric(Client, Server, <<"406">>, [Nick], <<"There was no such nickname">>),
+            [];
         _ ->
             lists:foreach(
                 fun(Entry) ->
@@ -752,5 +758,6 @@ whowas_reply(Nick, Count, Client, Server) ->
                     )
                 end,
                 Results
-            )
+            ),
+            [OldNick || #whowas{nick = OldNick} <- Results]
     end.

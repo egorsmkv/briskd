@@ -16,7 +16,12 @@ There is no services daemon: accounts are created with the server's own
 draft/account-registration REGISTER command.
 """
 
+import base64
+import hashlib
+import hmac
 import json
+import queue
+import threading
 import os
 import socket
 import subprocess
@@ -67,6 +72,18 @@ class IrcdController(ExternalServerController):
         )
         if password is not None:
             config["client_password"] = password
+        # A stand-in services server linked over RFC 2813 when the test asks
+        # for services (irctest's LINKS tests expect My.Little.Services).
+        config["server_links"] = [
+            {
+                "name": "My.Little.Services",
+                "host": "127.0.0.1",
+                "port": 1,
+                "password": "servicespass",
+                "tls": False,
+            }
+        ]
+        self._run_services = run_services
         subprocess.run(
             ["docker", "exec", "-i", CONTAINER, "sh", "-c", "cat > /tmp/ircd-irctest.json"],
             input=json.dumps(config).encode(),
@@ -76,6 +93,40 @@ class IrcdController(ExternalServerController):
             ["docker", "exec", "-w", "/workspace", CONTAINER, "sh", "-c", START], check=True
         )
         self._wait_ready()
+        self._services_sock = None
+        if run_services:
+            self._link_services()
+
+    def _link_services(self) -> None:
+        hostname, port = self.get_hostname_and_port()
+        sock = socket.create_connection((hostname, port), timeout=10)
+        sock.sendall(
+            b"PASS servicespass 0210 |\r\n"
+            b"SERVER My.Little.Services 1 1 :Services\r\n"
+        )
+        self._services_sock = sock
+
+        def pump() -> None:
+            buffer = b""
+            try:
+                while True:
+                    data = sock.recv(4096)
+                    if not data:
+                        return
+                    buffer += data
+                    while b"\r\n" in buffer:
+                        line, buffer = buffer.split(b"\r\n", 1)
+                        if line.startswith(b"PING "):
+                            sock.sendall(b"PONG My.Little.Services " + line[5:] + b"\r\n")
+                        elif b" PONG " in line or line.startswith(b"PONG "):
+                            pongs = getattr(self, "_pongs", None)
+                            if pongs is not None:
+                                pongs.put(line.decode(errors="replace"))
+            except OSError:
+                return
+
+        threading.Thread(target=pump, daemon=True).start()
+        time.sleep(0.2)
 
     def _wait_ready(self) -> None:
         hostname, port = self.get_hostname_and_port()
@@ -96,22 +147,33 @@ class IrcdController(ExternalServerController):
         pass
 
     def registerUser(self, case, username: str, password: Optional[str] = None) -> None:  # type: ignore
-        hostname, port = self.get_hostname_and_port()
-        nick = "reg%d" % (time.monotonic_ns() % 100000)
-        with socket.create_connection((hostname, port), timeout=10) as sock:
-            sock.sendall(
-                (
-                    "CAP LS 302\r\nCAP REQ draft/account-registration\r\n"
-                    "NICK %s\r\nUSER reg * * :reg\r\nCAP END\r\n"
-                    "REGISTER %s * %s\r\nQUIT\r\n" % (nick, username, password or "")
-                ).encode()
-            )
-            data = b""
-            while b"REGISTER SUCCESS" not in data:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    raise AssertionError("account registration failed: %r" % data[-300:])
-                data += chunk
+        """Create an account the way a services server would: over the RFC 2813
+        link with ACCOUNTSYNC, carrying SCRAM-SHA-256 verifiers. This works for
+        passwords of any length (a REGISTER line is limited to 512 bytes)."""
+        if getattr(self, "_services_sock", None) is None:
+            self._link_services()
+        salt = os.urandom(16)
+        iterations = 4096
+        salted = hashlib.pbkdf2_hmac("sha256", (password or "").encode(), salt, iterations)
+        client_key = hmac.new(salted, b"Client Key", hashlib.sha256).digest()
+        server_key = hmac.new(salted, b"Server Key", hashlib.sha256).digest()
+        stored_key = hashlib.sha256(client_key).digest()
+        b64 = lambda b: base64.b64encode(b).decode()
+        line = ":My.Little.Services ACCOUNTSYNC %s %s %d %s %s %d :\r\n" % (
+            username, b64(salt), iterations, b64(stored_key), b64(server_key),
+            time.time_ns() // 1000,
+        )
+        token = "sync%d" % time.monotonic_ns()
+        self._pongs = queue.Queue()
+        self._services_sock.sendall(line.encode() + ("PING %s\r\n" % token).encode())
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            try:
+                if token in self._pongs.get(timeout=1):
+                    return
+            except queue.Empty:
+                pass
+        raise AssertionError("account provisioning timed out")
 
 
 def get_irctest_controller_class() -> Type[IrcdController]:

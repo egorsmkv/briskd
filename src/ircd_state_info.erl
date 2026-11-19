@@ -9,6 +9,7 @@
     oper/4,
     query_local_server/2,
     rehash/2,
+    note_user_counts/0,
     squery/3,
     stats/3,
     trace/3,
@@ -248,6 +249,13 @@ oper(Name, Password, #client{pid = Pid} = Client, Server) ->
                     }),
                     ircd_state_send:numeric(
                         Client, Server, <<"381">>, [], <<"You are now an IRC operator">>
+                    ),
+                    ircd_state_send:send(
+                        Pid,
+                        ircd_state_send:prefix(Client),
+                        <<"MODE">>,
+                        [Client#client.nick, <<"+o">>],
+                        none
                     );
                 false ->
                     logger:warning(#{
@@ -535,7 +543,7 @@ links(Params, Client, Server) ->
                         Server,
                         <<"364">>,
                         [Server, Server],
-                        [<<"0 ">>, Server, <<" (Erlang/OTP IRC server)">>]
+                        [<<"0 ">>, server_info()]
                     );
                 false ->
                     ok
@@ -558,6 +566,35 @@ links(Params, Client, Server) ->
                 ircd_state_net:links_entries()
             ),
             ircd_state_send:numeric(Client, Server, <<"365">>, [Mask], <<"End of LINKS list">>)
+    end.
+
+%% Server description for LINKS (`server_info` in configuration).
+server_info() ->
+    maps:get(server_info, persistent_term:get({ircd_state, config}), <<"Erlang/OTP IRC server">>).
+
+%% @doc Record the current local and global registered-user counts so the
+%% maxima reported by RPL_LOCALUSERS/RPL_GLOBALUSERS (265/266) never go down.
+-spec note_user_counts() -> {non_neg_integer(), non_neg_integer()}.
+note_user_counts() ->
+    Local = ets:foldl(
+        fun(#client{} = C, N) ->
+            case ircd_state_client:ready(C) of
+                true -> N + 1;
+                false -> N
+            end
+        end,
+        0,
+        client
+    ),
+    Global = Local + ets:info(remote_client, size),
+    put(ircd_max_local, max(Local, get_count(ircd_max_local))),
+    put(ircd_max_global, max(Global, get_count(ircd_max_global))),
+    {Local, Global}.
+
+get_count(Key) ->
+    case get(Key) of
+        undefined -> 0;
+        N -> N
     end.
 
 lusers(Params, Client, Server) ->
@@ -626,6 +663,9 @@ lusers(Params, Client, Server) ->
                     false ->
                         {0, 0, 0, 0, 0, 0}
                 end,
+            {LocalUsers, GlobalUsers} = note_user_counts(),
+            Invisible = invisible_count(),
+            %% RFC 2812 RPL_LUSERCLIENT: visible users, invisible users, servers.
             ircd_state_send:numeric(
                 Client,
                 Server,
@@ -633,10 +673,10 @@ lusers(Params, Client, Server) ->
                 [],
                 [
                     <<"There are ">>,
-                    integer_to_binary(Users),
+                    integer_to_binary(max(0, Users - Invisible)),
                     <<" users and ">>,
-                    integer_to_binary(ircd_state_net:service_count()),
-                    <<" services on ">>,
+                    integer_to_binary(Invisible),
+                    <<" invisible on ">>,
                     integer_to_binary(Servers),
                     <<" servers">>
                 ]
@@ -677,6 +717,7 @@ lusers(Params, Client, Server) ->
                         <<"channels formed">>
                     )
             end,
+            _ = Clients,
             ircd_state_send:numeric(
                 Client,
                 Server,
@@ -684,10 +725,61 @@ lusers(Params, Client, Server) ->
                 [],
                 [
                     <<"I have ">>,
-                    integer_to_binary(Clients),
+                    integer_to_binary(LocalUsers),
                     <<" clients and ">>,
-                    integer_to_binary(Servers),
+                    integer_to_binary(Servers - 1),
                     <<" servers">>
+                ]
+            ),
+            ircd_state_send:numeric(
+                Client,
+                Server,
+                <<"265">>,
+                [integer_to_binary(LocalUsers), integer_to_binary(get_count(ircd_max_local))],
+                [
+                    <<"Current local users ">>,
+                    integer_to_binary(LocalUsers),
+                    <<", max ">>,
+                    integer_to_binary(get_count(ircd_max_local))
+                ]
+            ),
+            ircd_state_send:numeric(
+                Client,
+                Server,
+                <<"266">>,
+                [integer_to_binary(GlobalUsers), integer_to_binary(get_count(ircd_max_global))],
+                [
+                    <<"Current global users ">>,
+                    integer_to_binary(GlobalUsers),
+                    <<", max ">>,
+                    integer_to_binary(get_count(ircd_max_global))
                 ]
             )
     end.
+
+%% Registered local users with mode +i plus remote users with +i.
+invisible_count() ->
+    Local = ets:foldl(
+        fun(#client{pid = Pid} = C, N) ->
+            case
+                ircd_state_client:ready(C) andalso
+                    maps:is_key($i, ircd_state_client:user_modes(Pid))
+            of
+                true -> N + 1;
+                false -> N
+            end
+        end,
+        0,
+        client
+    ),
+    Remote = ets:foldl(
+        fun(#remote_client{modes = Modes}, N) ->
+            case maps:is_key($i, Modes) of
+                true -> N + 1;
+                false -> N
+            end
+        end,
+        0,
+        remote_client
+    ),
+    Local + Remote.

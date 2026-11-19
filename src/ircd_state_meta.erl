@@ -26,10 +26,8 @@
 -spec metadata([binary()], #client{}, binary()) -> ok.
 metadata([Target, Sub | Params], #client{pid = Pid} = Client, Server) ->
     case {ircd_cap:enabled(Pid, <<"draft/metadata-2">>), string:uppercase(Sub)} of
-        {false, _} ->
-            ircd_state_send:numeric(
-                Client, Server, <<"421">>, [<<"METADATA">>], <<"Unknown command">>
-            );
+        {false, Upper} ->
+            legacy(Upper, Target, Params, Client, Server);
         {true, <<"SUB">>} ->
             sub(Params, Client, Server);
         {true, <<"UNSUB">>} ->
@@ -51,6 +49,87 @@ metadata([Target, Sub | Params], #client{pid = Pid} = Client, Server) ->
             fail(Pid, <<"SUBCOMMAND_INVALID">>, [Sub], <<"invalid subcommand">>)
     end;
 metadata(_, Client, Server) ->
+    ircd_state_send:numeric(
+        Client, Server, <<"461">>, [<<"METADATA">>], <<"Not enough parameters">>
+    ).
+
+%% Deprecated IRCv3 metadata 3.2, for clients that did not negotiate
+%% draft/metadata-2: the same stored keys, no batches, replies with the
+%% target first (761 RPL_KEYVALUE, 766 ERR_NOMATCHINGKEY, 762 RPL_METADATAEND,
+%% 765 ERR_TARGETINVALID, 767 ERR_KEYINVALID, 769 ERR_KEYNOPERMISSION).
+legacy(Sub, Target, Params, #client{pid = Pid} = Client, Server) ->
+    case resolve(Target, Client) of
+        error ->
+            ircd_state_send:send(Pid, Server, <<"765">>, [Target], <<"invalid metadata target">>);
+        {ok, Resolved} ->
+            legacy_command(Sub, Resolved, Params, Client, Server)
+    end.
+
+legacy_command(<<"GET">>, Resolved, Keys, #client{pid = Pid}, Server) ->
+    Name = target_name(Resolved),
+    Values = read(Resolved),
+    lists:foreach(
+        fun(Key) ->
+            case {valid_key(Key), maps:find(Key, Values)} of
+                {false, _} ->
+                    ircd_state_send:send(Pid, Server, <<"767">>, [Key], <<"invalid metadata key">>);
+                {true, {ok, Value}} ->
+                    ircd_state_send:send(Pid, Server, <<"761">>, [Name, Key, <<"*">>], Value);
+                {true, error} ->
+                    ircd_state_send:send(Pid, Server, <<"766">>, [Name, Key], <<"no matching key">>)
+            end
+        end,
+        Keys
+    );
+legacy_command(<<"LIST">>, Resolved, _, #client{pid = Pid}, Server) ->
+    Name = target_name(Resolved),
+    maps:foreach(
+        fun(Key, Value) ->
+            ircd_state_send:send(Pid, Server, <<"761">>, [Name, Key, <<"*">>], Value)
+        end,
+        maps:iterator(read(Resolved), ordered)
+    ),
+    ircd_state_send:send(Pid, Server, <<"762">>, [], <<"end of metadata">>);
+legacy_command(<<"SET">>, Resolved, [Key | Value], #client{pid = Pid} = Client, Server) ->
+    {_, MaxKeys, MaxBytes} = ircd_cap:metadata_limits(),
+    Name = target_name(Resolved),
+    Current = read(Resolved),
+    case {valid_key(Key), writable(Resolved, Client), Value} of
+        {false, _, _} ->
+            ircd_state_send:send(Pid, Server, <<"767">>, [Key], <<"invalid metadata key">>);
+        {_, false, _} ->
+            ircd_state_send:send(Pid, Server, <<"769">>, [Name, Key], <<"permission denied">>);
+        {true, true, []} ->
+            write(Resolved, maps:remove(Key, Current)),
+            ircd_state_send:send(Pid, Server, <<"762">>, [], <<"end of metadata">>);
+        {true, true, [Text | _]} ->
+            Acceptable =
+                byte_size(Text) =< MaxBytes andalso ircd_state_v3:valid_utf8(Text) andalso
+                    (maps:is_key(Key, Current) orelse map_size(Current) < MaxKeys),
+            case Acceptable of
+                true ->
+                    Stored = ircd_wire:retain(Text),
+                    write(Resolved, Current#{ircd_wire:retain(Key) => Stored}),
+                    ircd_state_send:send(Pid, Server, <<"761">>, [Name, Key, <<"*">>], Stored),
+                    ircd_state_send:send(Pid, Server, <<"762">>, [], <<"end of metadata">>),
+                    announce(Resolved, Key, Stored, Client);
+                false ->
+                    ircd_state_send:send(
+                        Pid, Server, <<"764">>, [Name], <<"metadata limit reached">>
+                    )
+            end
+    end;
+legacy_command(<<"CLEAR">>, Resolved, _, #client{pid = Pid} = Client, Server) ->
+    case writable(Resolved, Client) of
+        true ->
+            write(Resolved, #{}),
+            ircd_state_send:send(Pid, Server, <<"762">>, [], <<"end of metadata">>);
+        false ->
+            ircd_state_send:send(
+                Pid, Server, <<"769">>, [target_name(Resolved), <<"*">>], <<"permission denied">>
+            )
+    end;
+legacy_command(_Sub, _Resolved, _Params, Client, Server) ->
     ircd_state_send:numeric(
         Client, Server, <<"461">>, [<<"METADATA">>], <<"Not enough parameters">>
     ).
