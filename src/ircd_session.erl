@@ -113,6 +113,11 @@ handle_info({irc, Line}, {Kind, Socket, _, _, _} = State) ->
         false ->
             deliver(Module, Socket, Line, State)
     end;
+handle_info({irc_safelist, Lines}, State) ->
+    put(ircd_safelist, Lines),
+    drain_safelist(State);
+handle_info(safelist_step, State) ->
+    drain_safelist(State);
 handle_info({irc_close, Line}, {Kind, Socket, _, _, _} = State) ->
     Module = transport(Kind),
     _ = Module:send(Socket, outgoing(Line)),
@@ -256,6 +261,52 @@ deliver(Module, Socket, Line, State) ->
         {error, Reason} ->
             logger:debug(#{event => send_failed, peer => peer_of(State), reason => Reason}),
             {stop, normal, State}
+    end.
+
+%% Drain a SAFELIST response in bounded chunks so large LIST replies do not
+%% overflow max_sendq or block interactive commands.
+drain_safelist({Kind, Socket, _, _, _} = State) ->
+    case get(ircd_safelist) of
+        undefined ->
+            {noreply, State};
+        [] ->
+            erase(ircd_safelist),
+            {noreply, State};
+        Lines ->
+            {Chunk, Rest} = split_safelist(Lines, 32, []),
+            Module = transport(Kind),
+            case send_safelist_chunk(Module, Socket, Chunk) of
+                ok ->
+                    case Rest of
+                        [] ->
+                            erase(ircd_safelist),
+                            {noreply, State};
+                        _ ->
+                            put(ircd_safelist, Rest),
+                            self() ! safelist_step,
+                            {noreply, State}
+                    end;
+                {error, Reason} ->
+                    erase(ircd_safelist),
+                    logger:debug(#{event => send_failed, peer => peer_of(State), reason => Reason}),
+                    {stop, normal, State}
+            end
+    end.
+
+split_safelist([], _N, Acc) ->
+    {lists:reverse(Acc), []};
+split_safelist(Rest, 0, Acc) ->
+    {lists:reverse(Acc), Rest};
+split_safelist([H | T], N, Acc) ->
+    split_safelist(T, N - 1, [H | Acc]).
+
+send_safelist_chunk(_Module, _Socket, []) ->
+    ok;
+send_safelist_chunk(Module, Socket, [Line | Rest]) ->
+    mirror(Line),
+    case Module:send(Socket, outgoing(Line)) of
+        ok -> send_safelist_chunk(Module, Socket, Rest);
+        {error, Reason} -> {error, Reason}
     end.
 
 closing_link(Reason) ->

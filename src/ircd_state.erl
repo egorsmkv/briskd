@@ -1545,32 +1545,25 @@ registered_command(<<"LIST">>, Params, Client, Server) ->
             [Names | _] -> [ircd_wire:fold(Name) || Name <- ircd_state_channel:split(Names)];
             [] -> mnesia:dirty_all_keys(channel)
         end,
-    lists:foreach(
-        fun(Key) ->
+    Entries = lists:foldl(
+        fun(Key, Acc) ->
             case mnesia:dirty_read(channel, Key) of
                 [#channel{name = Name, topic = Topic, members = Members, flags = Flags}] ->
                     Visible =
                         maps:is_key(Client#client.pid, Members) orelse
                             not (maps:is_key($p, Flags) orelse maps:is_key($s, Flags)),
                     case Visible of
-                        true ->
-                            ircd_state_send:numeric(
-                                Client,
-                                Server,
-                                <<"322">>,
-                                [Name, integer_to_binary(map_size(Members))],
-                                Topic
-                            );
-                        false ->
-                            ok
+                        true -> [{Name, integer_to_binary(map_size(Members)), Topic} | Acc];
+                        false -> Acc
                     end;
                 [] ->
-                    ok
+                    Acc
             end
         end,
+        [],
         Keys
     ),
-    ircd_state_send:numeric(Client, Server, <<"323">>, [], <<"End of LIST">>);
+    ircd_state_send:send_safelist(Client, Server, lists:reverse(Entries));
 registered_command(<<"TIME">>, Params, Client, Server) ->
     case ircd_state_info:query_local_server(Params, Server) of
         true ->

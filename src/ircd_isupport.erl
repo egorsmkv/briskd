@@ -49,6 +49,7 @@ tokens() ->
         <<"NETWORK=", (maps:get(network, Config, <<"IRC">>))/binary>>,
         <<"NICKLEN=", (integer_to_binary(ircd_state:nicklen()))/binary>>,
         <<"PREFIX=(ov)@+">>,
+        <<"SAFELIST">>,
         <<"TARGMAX=NOTICE:4,PRIVMSG:4,TAGMSG:4">>,
         <<"TOPICLEN=390">>,
         <<"USERLEN=32">>,

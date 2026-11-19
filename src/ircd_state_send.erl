@@ -19,6 +19,7 @@
     prefix/1,
     send/5,
     send/6,
+    send_safelist/3,
     set_source/1,
     with_source/2,
     source_tags/1,
@@ -154,6 +155,43 @@ broadcast(Pids, Prefix, Command, Middle, Tail, Tags0) ->
                 #{},
                 Pids
             ),
+            ok
+    end.
+
+-doc """
+Send `LIST` results (`322` entries plus `323 End of LIST`) safely without
+overflowing the client's SendQ (`SAFELIST` ISUPPORT token).
+
+When a `labeled-response` is active for `Client`, replies go through `numeric/5`
+so the label batch stays intact. Otherwise the encoded lines are handed to
+`m:ircd_session` in a single `{irc_safelist, Lines}` message so the session
+paces socket writes in bounded chunks without tripping `max_sendq`.
+""".
+-spec send_safelist(#client{}, binary(), [{binary(), binary(), binary()}]) -> ok.
+send_safelist(#client{pid = Pid, nick = Nick} = Client, Server, Entries) ->
+    case get(ircd_label) of
+        {Pid, Label, _Acc} when is_binary(Label) ->
+            lists:foreach(
+                fun({Name, Count, Topic}) ->
+                    numeric(Client, Server, <<"322">>, [Name, Count], Topic)
+                end,
+                Entries
+            ),
+            numeric(Client, Server, <<"323">>, [], <<"End of LIST">>);
+        _ ->
+            Enabled = ircd_cap:enabled_set(Pid),
+            Tags = visible(Enabled, []),
+            Lines0 = [
+                ircd_wire:message(Tags, Server, <<"322">>, [Nick, Name, Count], Topic)
+             || {Name, Count, Topic} <- Entries
+            ],
+            End = ircd_wire:message(Tags, Server, <<"323">>, [Nick], <<"End of LIST">>),
+            Lines = [L || L <- Lines0 ++ [End], L =/= []],
+            TotalBytes = lists:foldl(fun(L, Acc) -> Acc + iolist_size(L) end, 0, Lines),
+            ircd_state_client:update_connection_stats(
+                Pid, sent_messages, sent_bytes, TotalBytes
+            ),
+            Pid ! {irc_safelist, Lines},
             ok
     end.
 

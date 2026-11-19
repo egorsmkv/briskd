@@ -1,5 +1,6 @@
 -module(ircd_safety_tests).
 -include_lib("eunit/include/eunit.hrl").
+-include("ircd_channel.hrl").
 
 %% Memory-safety regressions: linear mask matching, copied peer fields,
 %% bounded WHOWAS and list modes, the client SendQ limit, MARKREAD targets,
@@ -127,11 +128,48 @@ live() ->
         markread_targets(Port),
         holds_expire(),
         roadmap_memory_bounds(Port),
+        safelist_avoids_sendq_kill(Port),
         flood_control_disconnects_spammer(Port),
         sendq_limit(Port)
     after
         _ = application:stop(ircd),
         os:unsetenv("IRCD_CONFIG")
+    end.
+
+%% SAFELIST: 005 advertises SAFELIST, and a LIST returning more channels than
+%% max_sendq (100 here) completes with 323 End of LIST instead of tripping SendQ.
+safelist_avoids_sendq_kill(Port) ->
+    ?assert(lists:member(<<"SAFELIST">>, ircd_isupport:tokens())),
+    %% Seed 150 public channels directly in Mnesia (exceeds max_sendq = 100).
+    lists:foreach(
+        fun(N) ->
+            Name = <<"#sl", (integer_to_binary(N))/binary>>,
+            Key = ircd_wire:fold(Name),
+            mnesia:dirty_write(#channel{
+                key = Key,
+                name = Name,
+                topic = <<"Safelist topic">>,
+                created = erlang:system_time(second)
+            })
+        end,
+        lists:seq(1, 150)
+    ),
+    Viewer = register_client(Port, <<"slview">>),
+    try
+        send(Viewer, <<"LIST">>),
+        Reply = recv_until_needle(Viewer, <<" 323 slview :End of LIST">>, <<>>),
+        ?assert(has(Reply, <<" 322 slview #sl1 ">>)),
+        ?assert(has(Reply, <<" 322 slview #sl150 ">>)),
+        ?assert(has(Reply, <<" 323 slview :End of LIST">>)),
+        ?assertNot(has(Reply, <<"Max SendQ exceeded">>))
+    after
+        gen_tcp:close(Viewer),
+        lists:foreach(
+            fun(N) ->
+                mnesia:dirty_delete(channel, <<"#sl", (integer_to_binary(N))/binary>>)
+            end,
+            lists:seq(1, 150)
+        )
     end.
 
 config(Db) ->
@@ -487,6 +525,15 @@ recv_until(S, Needle, Acc) ->
         _ ->
             {ok, Data} = gen_tcp:recv(S, 0, 5000),
             recv_until(S, Needle, <<Acc/binary, Data/binary>>)
+    end.
+
+recv_until_needle(S, Needle, Acc) ->
+    case binary:match(Acc, Needle) of
+        {_, _} ->
+            Acc;
+        nomatch ->
+            {ok, Data} = gen_tcp:recv(S, 0, 5000),
+            recv_until_needle(S, Needle, <<Acc/binary, Data/binary>>)
     end.
 
 has(Bin, Needle) ->
