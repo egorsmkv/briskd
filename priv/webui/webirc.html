@@ -116,19 +116,32 @@
 
   <div class="messages" id="messages"></div>
 
-  <form class="input-bar" id="send-form">
-    <button type="button" class="small btn-file hidden" id="btn-file" aria-label="Attach file" title="Attach file">
-      <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-    </button>
-    <input type="file" id="inp-file" class="hidden">
-    <button type="button" class="small btn-voice hidden" id="btn-voice" aria-label="Record voice message" title="Record OPUS voice message">
-      <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
-      <span class="voice-timer" id="voice-timer"></span>
-    </button>
-    <button type="button" class="small danger hidden" id="btn-voice-cancel" aria-label="Cancel recording" data-i18n="voice.cancel">Cancel</button>
-    <input type="text" id="inp-msg" dir="auto" autocomplete="off" placeholder="Message or /help (Tab to complete nicks, Alt+Up/Down to switch)" data-i18n-placeholder="ph.msg">
-    <button type="submit" class="primary" data-i18n="btn.send">Send</button>
-  </form>
+  <div class="composer-wrap">
+    <div class="typing-bar hidden" id="typing-bar" aria-live="polite">
+      <span class="typing-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+      <span class="typing-text" id="typing-text"></span>
+    </div>
+    <div class="compose-banner hidden" id="compose-banner">
+      <div class="compose-banner-info">
+        <span class="compose-banner-label" id="compose-banner-label"></span>
+        <span class="compose-banner-snippet" id="compose-banner-snippet" dir="auto"></span>
+      </div>
+      <button type="button" class="small" id="btn-compose-cancel" aria-label="Cancel">×</button>
+    </div>
+    <form class="input-bar" id="send-form">
+      <button type="button" class="small btn-file hidden" id="btn-file" aria-label="Attach file" title="Attach file">
+        <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+      </button>
+      <input type="file" id="inp-file" class="hidden">
+      <button type="button" class="small btn-voice hidden" id="btn-voice" aria-label="Record voice message" title="Record OPUS voice message">
+        <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+        <span class="voice-timer" id="voice-timer"></span>
+      </button>
+      <button type="button" class="small danger hidden" id="btn-voice-cancel" aria-label="Cancel recording" data-i18n="voice.cancel">Cancel</button>
+      <input type="text" id="inp-msg" dir="auto" autocomplete="off" placeholder="Message or /help (Tab to complete nicks, Alt+Up/Down to switch)" data-i18n-placeholder="ph.msg">
+      <button type="submit" class="primary" data-i18n="btn.send">Send</button>
+    </form>
+  </div>
 
   <aside class="sidebar-right" id="sidebar-right">
     <div class="members-head">
@@ -200,6 +213,29 @@
           <input type="checkbox" id="opt-notify">
           <span data-i18n="settings.notify">Desktop notifications on mentions</span>
         </label>
+        <div class="setting-group">
+          <div class="setting-label" data-i18n="settings.features">Chat Features</div>
+          <label class="setting-check">
+            <input type="checkbox" id="opt-reactions" checked>
+            <span data-i18n="settings.reactions">Emoji reactions</span>
+          </label>
+          <label class="setting-check">
+            <input type="checkbox" id="opt-replies" checked>
+            <span data-i18n="settings.replies">Message replies</span>
+          </label>
+          <label class="setting-check">
+            <input type="checkbox" id="opt-typing" checked>
+            <span data-i18n="settings.typing">Typing indicators</span>
+          </label>
+          <label class="setting-check">
+            <input type="checkbox" id="opt-editing" checked>
+            <span data-i18n="settings.editing">Message editing</span>
+          </label>
+          <label class="setting-check">
+            <input type="checkbox" id="opt-redaction" checked>
+            <span data-i18n="settings.redaction">Message deletion / redaction</span>
+          </label>
+        </div>
         <div class="e2ee-actions">
           <button type="button" class="small" id="btn-share-2" data-i18n="btn.share.link">Share WebIRC Link</button>
         </div>

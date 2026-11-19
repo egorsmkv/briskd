@@ -1025,19 +1025,33 @@ sent to peers. Errors are `FAIL REDACT` with `INVALID_TARGET`,
 """.
 -spec redact([binary()], #client{}, binary()) -> ok.
 redact([Target, MsgId | Rest], #client{pid = Pid} = Client, Server) ->
-    Reason =
-        case Rest of
-            [Text | _] -> Text;
-            [] -> none
-        end,
-    case ircd_wire:channel(Target) of
-        true -> redact_channel(Target, MsgId, Reason, Client, Server);
-        false -> redact_direct(Target, MsgId, Reason, Client, Server)
+    case redaction_enabled() of
+        false ->
+            ircd_state_send:fail(
+                Pid,
+                <<"REDACT">>,
+                <<"REDACTION_DISABLED">>,
+                [Target],
+                <<"Message redaction is disabled">>
+            );
+        true ->
+            Reason =
+                case Rest of
+                    [Text | _] -> Text;
+                    [] -> none
+                end,
+            case ircd_wire:channel(Target) of
+                true -> redact_channel(Target, MsgId, Reason, Client, Server);
+                false -> redact_direct(Target, MsgId, Reason, Client, Server)
+            end
     end,
-    _ = Pid,
     ok;
 redact(_, Client, Server) ->
     ircd_state_send:numeric(Client, Server, <<"461">>, [<<"REDACT">>], <<"Not enough parameters">>).
+
+redaction_enabled() ->
+    Features = maps:get(features, persistent_term:get({ircd_state, config}, #{}), #{}),
+    maps:get(redaction, Features, true).
 
 redact_channel(Target, MsgId, Reason, #client{pid = Pid} = Client, _Server) ->
     case mnesia:dirty_read(channel, ircd_wire:fold(Target)) of

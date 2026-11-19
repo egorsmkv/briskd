@@ -343,7 +343,7 @@ handle_webirc_page(Socket, WebircHtml, Path, Headers) ->
             send_nonce_html(
                 Socket,
                 Page,
-                <<"connect-src 'self' ws: wss:; img-src 'self' data:; media-src 'self' blob:; ">>
+                <<"connect-src 'self' ws: wss:; img-src 'self' data: blob:; media-src 'self' blob:; ">>
             )
     end.
 

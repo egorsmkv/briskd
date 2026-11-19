@@ -29,6 +29,13 @@
     "secret_access_key": "rustfsadmin",
     "max_bytes": 10485760
   },
+  "features": {
+    "reactions": true,
+    "replies": true,
+    "typing": true,
+    "editing": true,
+    "redaction": true
+  },
   "administrators": [
     {"nick": "yehor", "password": "devpass"},
     {"nick": "admin", "password": "devpass"},

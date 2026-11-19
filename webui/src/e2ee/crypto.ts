@@ -919,3 +919,61 @@ export function decryptKeyBackup(
     throw new CryptoError("Wrong passphrase or corrupted backup");
   }
 }
+
+const ATTACHMENT_AD = enc.encode("ircd-e2ee-attachment-v1");
+
+export interface EncryptedAttachmentResult {
+  ciphertext: Uint8Array;
+  key: string;
+  iv: string;
+  sha256: string;
+}
+
+/**
+ * Encrypt arbitrary attachment bytes (voice note or file) with a fresh random
+ * AES-256-GCM key and 12-byte IV, plus a SHA-256 digest of the ciphertext so
+ * the object store cannot silently swap or tamper with the stored blob.
+ */
+export function encryptAttachment(
+  plaintext: Uint8Array,
+): EncryptedAttachmentResult {
+  const key = randomBytes(32);
+  const iv = randomBytes(12);
+  const ciphertext = gcm(key, iv, ATTACHMENT_AD).encrypt(plaintext);
+  const digest = sha256(ciphertext);
+  return {
+    ciphertext,
+    key: toB64(key),
+    iv: toB64(iv),
+    sha256: toB64(digest),
+  };
+}
+
+/**
+ * Verify the SHA-256 digest of an encrypted attachment blob and decrypt it
+ * with AES-256-GCM.
+ */
+export function decryptAttachment(
+  ciphertext: Uint8Array,
+  keyB64: string,
+  ivB64: string,
+  sha256B64: string,
+): Uint8Array {
+  const key = fromB64(keyB64);
+  const iv = fromB64(ivB64);
+  const expectedHash = fromB64(sha256B64);
+  if (key.length !== 32 || iv.length !== 12 || expectedHash.length !== 32) {
+    throw new CryptoError("Invalid encrypted attachment parameters");
+  }
+  const actualHash = sha256(ciphertext);
+  let diff = 0;
+  for (let i = 0; i < 32; i++) diff |= actualHash[i] ^ expectedHash[i];
+  if (diff !== 0) {
+    throw new CryptoError("Encrypted attachment integrity check failed");
+  }
+  try {
+    return gcm(key, iv, ATTACHMENT_AD).decrypt(ciphertext);
+  } catch {
+    throw new CryptoError("Encrypted attachment decryption failed");
+  }
+}

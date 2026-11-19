@@ -69,6 +69,7 @@ cannot be removed.
     <<"draft/read-marker">>,
     <<"echo-message">>,
     <<"egorsmkv.github.io/e2ee">>,
+    <<"egorsmkv.github.io/features">>,
     <<"egorsmkv.github.io/files">>,
     <<"egorsmkv.github.io/voice">>,
     <<"extended-join">>,
@@ -435,6 +436,30 @@ value(<<"egorsmkv.github.io/voice">>, _Info) ->
     case ircd_voice:enabled() of
         true -> {ok, ircd_voice:cap_value()};
         false -> error
+    end;
+%% Message redaction: offered unless disabled in `features.redaction`.
+value(<<"draft/message-redaction">>, _Info) ->
+    case maps:get(redaction, config(features, #{}), true) of
+        true -> {ok, undefined};
+        false -> error
+    end;
+%% Server-wide messenger feature flags for WebIRC and compatible clients.
+value(<<"egorsmkv.github.io/features">>, _Info) ->
+    Features = config(features, #{}),
+    Enabled = [
+        Name
+     || {Key, Name} <- [
+            {reactions, <<"reactions">>},
+            {replies, <<"replies">>},
+            {typing, <<"typing">>},
+            {editing, <<"editing">>},
+            {redaction, <<"redaction">>}
+        ],
+        maps:get(Key, Features, true)
+    ],
+    case Enabled of
+        [] -> {ok, <<"none">>};
+        _ -> {ok, iolist_to_binary(lists:join(<<",">>, Enabled))}
     end;
 %% File sharing (ircd_files): offered only when S3 storage is configured.
 value(<<"egorsmkv.github.io/files">>, _Info) ->

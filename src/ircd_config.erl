@@ -99,6 +99,7 @@ load(Path) ->
             e2ee => e2ee(maps:get(<<"e2ee">>, Json, null)),
             voice => voice(maps:get(<<"voice">>, Json, null)),
             files => files(maps:get(<<"files">>, Json, null)),
+            features => features(maps:get(<<"features">>, Json, #{})),
             max_accounts => positive_limit(maps:get(<<"max_accounts">>, Json, 100000)),
             max_empty_channels => positive_limit(maps:get(<<"max_empty_channels">>, Json, 1000)),
             empty_channel_ttl => empty_channel_ttl(maps:get(<<"empty_channel_ttl">>, Json, 86400)),
@@ -920,3 +921,16 @@ files_int(_Key, Val, Min, Max) when is_integer(Val, Min, Max) ->
     Val;
 files_int(Key, Val, _Min, _Max) ->
     erlang:error({invalid_files, Key, Val}).
+
+%% Optional messenger feature toggles. All default to true; set any to false
+%% to disable it server-wide.
+features(Map) when is_map(Map) ->
+    #{
+        reactions => boolean_setting(reactions, maps:get(<<"reactions">>, Map, true)),
+        replies => boolean_setting(replies, maps:get(<<"replies">>, Map, true)),
+        typing => boolean_setting(typing, maps:get(<<"typing">>, Map, true)),
+        editing => boolean_setting(editing, maps:get(<<"editing">>, Map, true)),
+        redaction => boolean_setting(redaction, maps:get(<<"redaction">>, Map, true))
+    };
+features(Value) ->
+    erlang:error({invalid_features, Value}).

@@ -99,7 +99,7 @@ body {
   height: 100dvh;
   position: relative;
   grid-template-columns: 236px 1fr;
-  grid-template-rows: 52px 1fr 60px;
+  grid-template-rows: 52px 1fr auto;
   grid-template-areas:
     "left head"
     "left main"
@@ -497,11 +497,18 @@ body {
   border-radius: 4px;
 }
 
-.input-bar {
+.composer-wrap {
   grid-area: input;
+  display: flex;
+  flex-direction: column;
   background: var(--surface);
   border-top: 1px solid var(--border);
-  padding: 0 16px;
+}
+
+.input-bar {
+  min-height: 60px;
+  background: var(--surface);
+  padding: 8px 16px;
   display: flex;
   gap: 8px;
   align-items: center;
@@ -1693,4 +1700,225 @@ body.layout-mobile {
     border-color: var(--accent);
     color: #fff;
   }
+}
+
+/* Typing indicator, compose banner, reactions, replies, editing, redaction */
+.typing-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 16px;
+  font-size: 12px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  &.hidden {
+    display: none;
+  }
+}
+
+.typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  span {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: typing-bounce 1.2s infinite ease-in-out;
+    &:nth-child(2) {
+      animation-delay: 0.2s;
+    }
+    &:nth-child(3) {
+      animation-delay: 0.4s;
+    }
+  }
+}
+
+@keyframes typing-bounce {
+  0%, 80%, 100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+.compose-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  border-inline-start: 3px solid var(--accent);
+  font-size: 12.5px;
+  &.hidden {
+    display: none;
+  }
+}
+
+.compose-banner-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.compose-banner-label {
+  font-weight: 700;
+  color: var(--accent);
+  font-size: 11.5px;
+}
+
+.compose-banner-snippet {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg {
+  position: relative;
+  &:hover .msg-actions,
+  &:focus-within .msg-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  &.flash-highlight {
+    animation: msg-flash 1.4s ease;
+  }
+}
+
+@keyframes msg-flash {
+  0% {
+    background: var(--accent-soft);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+.msg-actions {
+  position: absolute;
+  top: -12px;
+  inset-inline-end: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+  z-index: 5;
+}
+
+.msg-act-btn {
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  padding: 3px 6px;
+  height: 26px;
+  min-width: 26px;
+  border-radius: 5px;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  &:hover {
+    background: var(--hover);
+  }
+  &.danger:hover {
+    color: var(--danger);
+  }
+}
+
+.msg-reply-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 8px;
+  margin-bottom: 3px;
+  border: none;
+  border-inline-start: 2px solid var(--accent);
+  border-radius: 0 5px 5px 0;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: start;
+  &:hover {
+    color: var(--fg);
+  }
+  .reply-nick {
+    font-weight: 700;
+    color: var(--accent);
+    flex-shrink: 0;
+  }
+  .reply-snip {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.msg-reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+.react-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--fg);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+  &:hover {
+    border-color: var(--accent);
+  }
+  &.mine {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .react-count {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+  }
+  &.mine .react-count {
+    color: var(--accent);
+  }
+}
+
+.msg-edited {
+  font-size: 11px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.msg-redacted-text {
+  font-size: 12.5px;
+  color: var(--muted);
+  font-style: italic;
 }

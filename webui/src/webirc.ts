@@ -14,7 +14,14 @@ interface WebircSettings {
   timestamps: boolean;
   joinPart: boolean;
   notifyMentions: boolean;
+  reactions: boolean;
+  replies: boolean;
+  typing: boolean;
+  editing: boolean;
+  redaction: boolean;
 }
+
+type FeatureKey = "reactions" | "replies" | "typing" | "editing" | "redaction";
 
 const SETTINGS_KEY = "ircd-webirc-settings";
 
@@ -26,6 +33,11 @@ function loadSettings(): WebircSettings {
     timestamps: true,
     joinPart: true,
     notifyMentions: false,
+    reactions: true,
+    replies: true,
+    typing: true,
+    editing: true,
+    redaction: true,
   };
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
@@ -42,6 +54,11 @@ function loadSettings(): WebircSettings {
       timestamps: parsed.timestamps !== false,
       joinPart: parsed.joinPart !== false,
       notifyMentions: parsed.notifyMentions === true,
+      reactions: parsed.reactions !== false,
+      replies: parsed.replies !== false,
+      typing: parsed.typing !== false,
+      editing: parsed.editing !== false,
+      redaction: parsed.redaction !== false,
     };
   } catch {
     return defaults;
@@ -72,11 +89,36 @@ interface ChatLine {
   kind: "" | "sys" | "err" | "action" | "notice";
   mention?: boolean;
   encrypted?: boolean;
+  msgid?: string;
+  replyTo?: string;
+  edited?: boolean;
+  redacted?: boolean;
+  reactions?: Map<string, Set<string>>;
   voiceId?: string;
   voiceDur?: number;
   fileId?: string;
   fileName?: string;
   fileSize?: number;
+}
+
+const FEATURES_CAP = "egorsmkv.github.io/features";
+const REDACT_CAP = "draft/message-redaction";
+const REACT_TAG = "+draft/react";
+const REPLY_TAG = "+draft/reply";
+const TYPING_TAG = "+typing";
+const EDIT_TAG = "+egorsmkv.github.io/edit";
+const QUICK_EMOJIS = ["👍", "❤️", "😂", "🔥"] as const;
+
+const serverFeatures: Record<FeatureKey, boolean> = {
+  reactions: true,
+  replies: true,
+  typing: true,
+  editing: true,
+  redaction: true,
+};
+
+function featureOn(key: FeatureKey): boolean {
+  return serverFeatures[key] && settings[key];
 }
 
 const VOICE_CAP = "egorsmkv.github.io/voice";
@@ -206,6 +248,23 @@ function applySettings(): void {
   $<HTMLInputElement>("opt-timestamps").checked = settings.timestamps;
   $<HTMLInputElement>("opt-joinpart").checked = settings.joinPart;
   $<HTMLInputElement>("opt-notify").checked = settings.notifyMentions;
+  $<HTMLInputElement>("opt-reactions").checked = settings.reactions;
+  $<HTMLInputElement>("opt-replies").checked = settings.replies;
+  $<HTMLInputElement>("opt-typing").checked = settings.typing;
+  $<HTMLInputElement>("opt-editing").checked = settings.editing;
+  $<HTMLInputElement>("opt-redaction").checked = settings.redaction;
+  for (
+    const key of [
+      "reactions",
+      "replies",
+      "typing",
+      "editing",
+      "redaction",
+    ] as const
+  ) {
+    const el = $<HTMLInputElement>(`opt-${key}`);
+    el.disabled = !serverFeatures[key];
+  }
 }
 
 function renderThemeSwatches(): void {
@@ -267,6 +326,7 @@ document.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape") {
     closeSettings();
     closeTopicModal();
+    clearComposeMode();
   }
 });
 
@@ -331,6 +391,29 @@ $<HTMLInputElement>("opt-notify").onchange = async (ev) => {
   settings.notifyMentions = checked;
   saveSettings(settings);
 };
+
+for (
+  const key of [
+    "reactions",
+    "replies",
+    "typing",
+    "editing",
+    "redaction",
+  ] as const
+) {
+  $<HTMLInputElement>(`opt-${key}`).onchange = (ev) => {
+    settings[key] = (ev.target as HTMLInputElement).checked;
+    saveSettings(settings);
+    if (!featureOn("typing")) renderTypingBar();
+    if (!featureOn("replies") && composeMode?.kind === "reply") {
+      clearComposeMode();
+    }
+    if (!featureOn("editing") && composeMode?.kind === "edit") {
+      clearComposeMode();
+    }
+    renderActiveMessages();
+  };
+}
 
 const bodyData = document.body.dataset;
 const WS_PORT = bodyData.wsPort || "";
@@ -788,6 +871,8 @@ function addLine(
     text: string;
     kind?: ChatLine["kind"];
     encrypted?: boolean;
+    msgid?: string;
+    replyTo?: string;
     voiceId?: string;
     voiceDur?: number;
     fileId?: string;
@@ -806,6 +891,8 @@ function addLine(
     kind: opts.kind || "",
     mention,
     encrypted: opts.encrypted,
+    msgid: opts.msgid,
+    replyTo: opts.replyTo,
     voiceId: opts.voiceId,
     voiceDur: opts.voiceDur,
     fileId: opts.fileId,
@@ -881,9 +968,17 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
   row.className = "msg" +
     (entry.kind ? ` ${entry.kind}` : "") +
     (grouped ? " grouped" : "") +
-    (entry.mention ? " mention" : "");
+    (entry.mention ? " mention" : "") +
+    (entry.redacted ? " redacted" : "");
+  if (entry.msgid) row.dataset.msgid = entry.msgid;
 
   const renderBodyContent = (): Node => {
+    if (entry.redacted) {
+      const span = document.createElement("span");
+      span.className = "msg-redacted-text";
+      span.textContent = t("msg.deleted");
+      return span;
+    }
     if (entry.voiceId && VOICE_ID_RE.test(entry.voiceId)) {
       return createVoicePlayer({
         voiceId: entry.voiceId,
@@ -899,7 +994,125 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
         downloadLabel: t("file.download"),
       });
     }
-    return renderIrcMessage(entry.text, fmtOpts);
+    const frag = document.createDocumentFragment();
+    frag.appendChild(renderIrcMessage(entry.text, fmtOpts));
+    if (entry.edited) {
+      const ed = document.createElement("span");
+      ed.className = "msg-edited";
+      ed.textContent = ` ${t("msg.edited")}`;
+      frag.appendChild(ed);
+    }
+    return frag;
+  };
+
+  const renderReplyRef = (): HTMLElement | null => {
+    if (!entry.replyTo || entry.redacted || !featureOn("replies")) return null;
+    const orig = findMessageInActive(entry.replyTo);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "msg-reply-ref";
+    const who = document.createElement("span");
+    who.className = "reply-nick";
+    who.textContent = orig ? `↩ ${orig.nick}` : "↩";
+    const snip = document.createElement("span");
+    snip.className = "reply-snip";
+    snip.dir = "auto";
+    snip.textContent = orig
+      ? (orig.redacted ? t("msg.deleted") : orig.text.slice(0, 80))
+      : entry.replyTo.slice(0, 12);
+    btn.appendChild(who);
+    btn.appendChild(snip);
+    btn.onclick = () => jumpToMessage(entry.replyTo!);
+    return btn;
+  };
+
+  const renderReactionsEl = (): HTMLElement | null => {
+    if (
+      !entry.reactions || entry.reactions.size === 0 || entry.redacted ||
+      !featureOn("reactions")
+    ) {
+      return null;
+    }
+    const bar = document.createElement("div");
+    bar.className = "msg-reactions";
+    entry.reactions.forEach((nicks, emoji) => {
+      if (nicks.size === 0) return;
+      const pill = document.createElement("button");
+      pill.type = "button";
+      const mine = Array.from(nicks).some((n) =>
+        n.toLowerCase() === myNick.toLowerCase()
+      );
+      pill.className = "react-pill" + (mine ? " mine" : "");
+      pill.title = Array.from(nicks).join(", ");
+      const em = document.createElement("span");
+      em.textContent = emoji;
+      const cnt = document.createElement("span");
+      cnt.className = "react-count";
+      cnt.textContent = String(nicks.size);
+      pill.appendChild(em);
+      pill.appendChild(cnt);
+      pill.onclick = () => {
+        if (entry.msgid) sendReaction(entry.msgid, emoji);
+      };
+      bar.appendChild(pill);
+    });
+    return bar.childElementCount > 0 ? bar : null;
+  };
+
+  const renderActionsEl = (): HTMLElement | null => {
+    if (!entry.msgid || entry.redacted || entry.kind) return null;
+    const isMine = entry.nick.toLowerCase() === myNick.toLowerCase();
+    const canReact = featureOn("reactions");
+    const canReply = featureOn("replies");
+    const canEdit = featureOn("editing") && isMine && !entry.voiceId &&
+      !entry.fileId && !entry.encrypted;
+    const canDelete = featureOn("redaction") && isMine;
+    if (!canReact && !canReply && !canEdit && !canDelete) return null;
+
+    const actions = document.createElement("div");
+    actions.className = "msg-actions";
+    if (canReact) {
+      for (const emoji of QUICK_EMOJIS) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "msg-act-btn";
+        b.textContent = emoji;
+        b.title = emoji;
+        b.onclick = () => sendReaction(entry.msgid!, emoji);
+        actions.appendChild(b);
+      }
+    }
+    if (canReply) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "msg-act-btn";
+      b.textContent = "↩";
+      b.title = t("msg.reply");
+      b.setAttribute("aria-label", t("msg.reply"));
+      b.onclick = () => startReply(entry);
+      actions.appendChild(b);
+    }
+    if (canEdit) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "msg-act-btn";
+      b.textContent = "✎";
+      b.title = t("msg.edit");
+      b.setAttribute("aria-label", t("msg.edit"));
+      b.onclick = () => startEdit(entry);
+      actions.appendChild(b);
+    }
+    if (canDelete) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "msg-act-btn danger";
+      b.textContent = "🗑";
+      b.title = t("msg.delete");
+      b.setAttribute("aria-label", t("msg.delete"));
+      b.onclick = () => sendRedaction(entry.msgid!);
+      actions.appendChild(b);
+    }
+    return actions;
   };
 
   if (entry.kind || !entry.nick) {
@@ -917,11 +1130,18 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
     t.className = "msg-time compact-time";
     t.textContent = entry.time;
     row.appendChild(t);
-    const body = document.createElement("span");
+    const col = document.createElement("div");
+    col.className = "msg-col";
+    const ref = renderReplyRef();
+    if (ref) col.appendChild(ref);
+    const body = document.createElement("div");
     body.className = "msg-text";
     body.dir = "auto";
     body.appendChild(renderBodyContent());
-    row.appendChild(body);
+    col.appendChild(body);
+    const reacts = renderReactionsEl();
+    if (reacts) col.appendChild(reacts);
+    row.appendChild(col);
   } else {
     const av = document.createElement("div");
     av.className = "avatar";
@@ -931,6 +1151,9 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
 
     const col = document.createElement("div");
     col.className = "msg-col";
+
+    const ref = renderReplyRef();
+    if (ref) col.appendChild(ref);
 
     const meta = document.createElement("div");
     meta.className = "msg-meta";
@@ -965,8 +1188,13 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
 
     col.appendChild(meta);
     col.appendChild(body);
+    const reacts = renderReactionsEl();
+    if (reacts) col.appendChild(reacts);
     row.appendChild(col);
   }
+
+  const actions = renderActionsEl();
+  if (actions) row.appendChild(actions);
 
   wrap.appendChild(row);
   if (atBottom) wrap.scrollTop = wrap.scrollHeight;
@@ -1004,10 +1232,26 @@ $("btn-close-right").onclick = () => {
 };
 $("drawer-backdrop").onclick = closeDrawers;
 
+function renderActiveMessages(): void {
+  const buf = buffers.get(activeBuf);
+  const wrap = $("messages");
+  const prevTop = wrap.scrollTop;
+  const atBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 60;
+  wrap.textContent = "";
+  if (!buf) return;
+  let prev: ChatLine | undefined;
+  for (const line of buf.lines) {
+    appendLineDom(line, prev);
+    prev = line;
+  }
+  wrap.scrollTop = atBottom ? wrap.scrollHeight : prevTop;
+}
+
 function switchBuf(key: string, updateUrl = true): void {
   const buf = buffers.get(key);
   if (!buf) return;
   closeDrawers();
+  clearComposeMode();
   activeBuf = key;
   buf.unread = 0;
   buf.mentions = 0;
@@ -1027,6 +1271,7 @@ function switchBuf(key: string, updateUrl = true): void {
     prev = line;
   }
   wrap.scrollTop = wrap.scrollHeight;
+  renderTypingBar();
   updateE2eeUi();
   renderBuffers();
   renderMembers();
@@ -1202,8 +1447,30 @@ function handleMessage(raw: string): void {
             if (Number.isFinite(parsed) && parsed > 0) filesMaxBytes = parsed;
           }
         }
+        if (capName === FEATURES_CAP && eq !== -1) {
+          const val = tok.slice(eq + 1);
+          const enabledSet = new Set(
+            val === "none" ? [] : val.split(",").filter(Boolean),
+          );
+          for (
+            const k of [
+              "reactions",
+              "replies",
+              "typing",
+              "editing",
+              "redaction",
+            ] as const
+          ) {
+            serverFeatures[k] = enabledSet.has(k);
+          }
+          applySettings();
+        }
       }
       if (more) return;
+      if (!advertisedCaps.includes(REDACT_CAP)) {
+        serverFeatures.redaction = false;
+        applySettings();
+      }
       const wanted = [
         "message-tags",
         "server-time",
@@ -1211,11 +1478,13 @@ function handleMessage(raw: string): void {
         "batch",
         "draft/chathistory",
         "draft/multiline",
+        REDACT_CAP,
         "away-notify",
         "account-notify",
         "account-tag",
         "extended-join",
         E2EE_CAP,
+        FEATURES_CAP,
         FILES_CAP,
         VOICE_CAP,
       ];
@@ -1426,6 +1695,42 @@ function handleMessage(raw: string): void {
     });
     return;
   }
+  if (command === "TAGMSG") {
+    const target = params[0] || "";
+    const dest = isChan(target)
+      ? target
+      : nick.toLowerCase() === myNick.toLowerCase()
+      ? target
+      : nick;
+    if (!dest) return;
+    const reactEmoji = msg.tags[REACT_TAG];
+    const replyTarget = msg.tags[REPLY_TAG];
+    if (reactEmoji && replyTarget && featureOn("reactions")) {
+      applyReaction(dest, replyTarget, reactEmoji, nick || msg.prefix);
+      return;
+    }
+    const typingState = msg.tags[TYPING_TAG];
+    if (
+      typingState && featureOn("typing") &&
+      nick.toLowerCase() !== myNick.toLowerCase()
+    ) {
+      updateRemoteTyping(dest, nick, typingState);
+    }
+    return;
+  }
+  if (command === "REDACT") {
+    const target = params[0] || "";
+    const targetMsgId = params[1] || "";
+    const dest = isChan(target)
+      ? target
+      : nick.toLowerCase() === myNick.toLowerCase()
+      ? target
+      : nick;
+    if (dest && targetMsgId) {
+      applyRedaction(dest, targetMsgId);
+    }
+    return;
+  }
   if (command === "PRIVMSG" || command === "NOTICE") {
     const target = params[0] || "*status";
     const text = params[1] || "";
@@ -1434,11 +1739,22 @@ function handleMessage(raw: string): void {
       : nick.toLowerCase() === myNick.toLowerCase()
       ? target
       : nick || "*status";
+    if (nick && nick.toLowerCase() !== myNick.toLowerCase()) {
+      updateRemoteTyping(dest, nick, "done");
+    }
+    const editTargetId = msg.tags[EDIT_TAG];
+    if (
+      command === "PRIVMSG" && editTargetId && featureOn("editing") &&
+      applyEdit(dest, editTargetId, nick || msg.prefix, text)
+    ) {
+      return;
+    }
     if (text.startsWith("\x01ACTION ") && text.endsWith("\x01")) {
       addLine(dest, {
         time,
         text: `* ${nick} ${text.slice(8, -1)}`,
         kind: "action",
+        msgid: msg.tags.msgid,
       });
     } else {
       const rawVoiceId = msg.tags[VOICE_TAG] || "";
@@ -1461,11 +1777,14 @@ function handleMessage(raw: string): void {
       const fileSize = Number.isFinite(rawFileSize) && rawFileSize > 0
         ? rawFileSize
         : undefined;
+      const replyTo = msg.tags[REPLY_TAG] || undefined;
       addLine(dest, {
         time,
         nick: nick || msg.prefix,
         text,
         kind: command === "NOTICE" ? "notice" : "",
+        msgid: msg.tags.msgid,
+        replyTo,
         voiceId,
         voiceDur,
         fileId,
@@ -2010,12 +2329,270 @@ $<HTMLFormElement>("send-form").addEventListener("submit", (ev) => {
   }
   if (e2ee.isBufferEncrypted(buf.name)) {
     const dest = buf.name;
+    clearComposeMode();
+    sendTypingState(dest, "done");
     void e2ee.sendEncrypted(dest, raw).then((ok) => {
       if (ok) addLine(dest, { nick: myNick, text: raw, encrypted: true });
     });
     return;
   }
+  sendTypingState(buf.name, "done");
+  if (composeMode?.kind === "edit" && featureOn("editing")) {
+    const targetId = composeMode.msgid;
+    clearComposeMode();
+    sendRaw(`@${EDIT_TAG}=${targetId} PRIVMSG ${buf.name} :${raw}`);
+    return;
+  }
+  if (composeMode?.kind === "reply" && featureOn("replies")) {
+    const targetId = composeMode.msgid;
+    clearComposeMode();
+    sendRaw(`@${REPLY_TAG}=${targetId} PRIVMSG ${buf.name} :${raw}`);
+    return;
+  }
+  clearComposeMode();
   sendRaw(`PRIVMSG ${buf.name} :${raw}`);
+});
+
+type ComposeMode =
+  | { kind: "reply"; msgid: string; nick: string; snippet: string }
+  | { kind: "edit"; msgid: string; origText: string }
+  | null;
+
+let composeMode: ComposeMode = null;
+
+function clearComposeMode(): void {
+  composeMode = null;
+  $("compose-banner").classList.add("hidden");
+  $("compose-banner-label").textContent = "";
+  $("compose-banner-snippet").textContent = "";
+}
+
+function startReply(entry: ChatLine): void {
+  if (!entry.msgid || !featureOn("replies")) return;
+  composeMode = {
+    kind: "reply",
+    msgid: entry.msgid,
+    nick: entry.nick,
+    snippet: entry.text.slice(0, 100),
+  };
+  $("compose-banner-label").textContent = t("msg.replyingTo", {
+    nick: entry.nick,
+  });
+  $("compose-banner-snippet").textContent = composeMode.snippet;
+  $("compose-banner").classList.remove("hidden");
+  msgInp.focus();
+}
+
+function startEdit(entry: ChatLine): void {
+  if (!entry.msgid || !featureOn("editing")) return;
+  composeMode = {
+    kind: "edit",
+    msgid: entry.msgid,
+    origText: entry.text,
+  };
+  $("compose-banner-label").textContent = t("msg.editing");
+  $("compose-banner-snippet").textContent = entry.text.slice(0, 100);
+  $("compose-banner").classList.remove("hidden");
+  msgInp.value = entry.text;
+  msgInp.focus();
+}
+
+$("btn-compose-cancel").onclick = () => {
+  if (composeMode?.kind === "edit") msgInp.value = "";
+  clearComposeMode();
+};
+
+function findMessageInActive(msgid: string): ChatLine | undefined {
+  const buf = buffers.get(activeBuf);
+  if (!buf) return undefined;
+  return buf.lines.find((l) => l.msgid === msgid);
+}
+
+function jumpToMessage(msgid: string): void {
+  const wrap = $("messages");
+  const rows = wrap.querySelectorAll<HTMLElement>("[data-msgid]");
+  for (const el of rows) {
+    if (el.dataset.msgid === msgid) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.remove("flash-highlight");
+      void el.offsetWidth;
+      el.classList.add("flash-highlight");
+      break;
+    }
+  }
+}
+
+function sendReaction(msgid: string, emoji: string): void {
+  if (!featureOn("reactions")) return;
+  const buf = buffers.get(activeBuf);
+  if (!buf || buf.name === "*status") return;
+  sendRaw(`@${REPLY_TAG}=${msgid};${REACT_TAG}=${emoji} TAGMSG ${buf.name}`);
+}
+
+function sendRedaction(msgid: string): void {
+  if (!featureOn("redaction")) return;
+  const buf = buffers.get(activeBuf);
+  if (!buf || buf.name === "*status") return;
+  sendRaw(`REDACT ${buf.name} ${msgid}`);
+}
+
+function applyReaction(
+  bufName: string,
+  msgid: string,
+  emoji: string,
+  sender: string,
+): void {
+  const cleanEmoji = emoji.trim().slice(0, 16);
+  if (!cleanEmoji || !sender) return;
+  const key = bufName.toLowerCase();
+  const buf = buffers.get(key);
+  if (!buf) return;
+  const line = buf.lines.find((l) => l.msgid === msgid);
+  if (!line || line.redacted) return;
+  if (!line.reactions) line.reactions = new Map();
+  let set = line.reactions.get(cleanEmoji);
+  if (!set) {
+    set = new Set();
+    line.reactions.set(cleanEmoji, set);
+  }
+  const existing = Array.from(set).find((n) =>
+    n.toLowerCase() === sender.toLowerCase()
+  );
+  if (existing) {
+    set.delete(existing);
+    if (set.size === 0) line.reactions.delete(cleanEmoji);
+  } else {
+    set.add(sender);
+  }
+  if (activeBuf === key) renderActiveMessages();
+}
+
+function applyEdit(
+  bufName: string,
+  msgid: string,
+  sender: string,
+  newText: string,
+): boolean {
+  const key = bufName.toLowerCase();
+  const buf = buffers.get(key);
+  if (!buf) return false;
+  const line = buf.lines.find((l) => l.msgid === msgid);
+  if (!line || line.redacted) return false;
+  // Prevent spoofing: only the original sender may edit their message
+  if (line.nick.toLowerCase() !== sender.toLowerCase()) return false;
+  line.text = newText;
+  line.edited = true;
+  if (activeBuf === key) renderActiveMessages();
+  return true;
+}
+
+function applyRedaction(bufName: string, msgid: string): void {
+  const key = bufName.toLowerCase();
+  const buf = buffers.get(key);
+  if (!buf) return;
+  const line = buf.lines.find((l) => l.msgid === msgid);
+  if (!line) return;
+  line.redacted = true;
+  line.text = "";
+  line.voiceId = undefined;
+  line.fileId = undefined;
+  line.reactions?.clear();
+  if (activeBuf === key) renderActiveMessages();
+}
+
+// Typing indicators (per-buffer remote typers with 6s expiry + throttled local send)
+const typingTimers = new Map<string, Map<string, number>>();
+let lastTypingSentAt = 0;
+let lastTypingTarget = "";
+let localTypingStopTimer: number | null = null;
+
+function renderTypingBar(): void {
+  const bar = $("typing-bar");
+  if (!featureOn("typing")) {
+    bar.classList.add("hidden");
+    return;
+  }
+  const map = typingTimers.get(activeBuf);
+  const nicks = map ? Array.from(map.keys()) : [];
+  if (nicks.length === 0) {
+    bar.classList.add("hidden");
+    return;
+  }
+  let text = "";
+  if (nicks.length === 1) text = t("typing.one", { nick: nicks[0] });
+  else if (nicks.length === 2) {
+    text = t("typing.two", { a: nicks[0], b: nicks[1] });
+  } else text = t("typing.many", { count: nicks.length });
+  $("typing-text").textContent = text;
+  bar.classList.remove("hidden");
+}
+
+function updateRemoteTyping(
+  bufName: string,
+  sender: string,
+  state: string,
+): void {
+  const key = bufName.toLowerCase();
+  let map = typingTimers.get(key);
+  if (!map) {
+    map = new Map();
+    typingTimers.set(key, map);
+  }
+  const prev = map.get(sender);
+  if (prev !== undefined) globalThis.clearTimeout(prev);
+  if (state === "active") {
+    const tid = globalThis.setTimeout(() => {
+      map?.delete(sender);
+      if (activeBuf === key) renderTypingBar();
+    }, 6000);
+    map.set(sender, tid);
+  } else {
+    map.delete(sender);
+  }
+  if (activeBuf === key) renderTypingBar();
+}
+
+function sendTypingState(target: string, state: "active" | "done"): void {
+  if (
+    !featureOn("typing") || !isRegistered || !target || target === "*status"
+  ) {
+    return;
+  }
+  if (state === "active") {
+    const now = Date.now();
+    if (lastTypingTarget === target && now - lastTypingSentAt < 3000) return;
+    lastTypingSentAt = now;
+    lastTypingTarget = target;
+    sendRaw(`@${TYPING_TAG}=active TAGMSG ${target}`);
+    if (localTypingStopTimer !== null) {
+      globalThis.clearTimeout(localTypingStopTimer);
+    }
+    localTypingStopTimer = globalThis.setTimeout(() => {
+      sendTypingState(target, "done");
+    }, 5000);
+  } else {
+    if (localTypingStopTimer !== null) {
+      globalThis.clearTimeout(localTypingStopTimer);
+      localTypingStopTimer = null;
+    }
+    if (lastTypingTarget === target) {
+      lastTypingTarget = "";
+      lastTypingSentAt = 0;
+      sendRaw(`@${TYPING_TAG}=done TAGMSG ${target}`);
+    }
+  }
+}
+
+msgInp.addEventListener("input", () => {
+  if (!featureOn("typing")) return;
+  const buf = buffers.get(activeBuf);
+  if (!buf || buf.name === "*status") return;
+  const v = msgInp.value;
+  if (v.trim() && !v.startsWith("/")) {
+    sendTypingState(buf.name, "active");
+  } else {
+    sendTypingState(buf.name, "done");
+  }
 });
 
 let voiceSupported = false;
