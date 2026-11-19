@@ -63,7 +63,11 @@ users compare safety numbers.
 
 ## Key directory (X3DH)
 
-Keys travel as standard base64 (at most 200 characters each). Device ids are
+Keys and signatures travel as standard base64 without whitespace: identity
+keys, signed prekeys, and one-time prekeys must decode to 32 bytes (Curve25519
+/ Ed25519 public keys), and the signed-prekey signature must decode to 64
+bytes (Ed25519 signature); any other value is rejected with
+`FAIL E2EE INVALID_KEY`. Device ids are
 1 to 2147483647. Prekey ids are 0 to 4294967295.
 
 ```text
@@ -184,7 +188,11 @@ consistent:
 - **Splits:** two servers that are split can still hand out the same prekey.
   The second X3DH session then fails, and that client fetches again.
 - **Bindings:** a `BIND` is valid while that user is still logged into the
-  same account. It follows nickname changes and ends when the user leaves.
+  same account and owns the device. It follows nickname changes and is cleared
+  when the user logs out, switches accounts, or quits.
+- **Link ingress validation:** a peer's `E2EE` lines must carry a trusted
+  server prefix (or a verified remote user prefix for `BIND`), and `E2EE QUEUE`
+  verifies that the envelope sender is a remote user behind that peer.
 
 ## Testing with real clients
 

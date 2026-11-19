@@ -103,6 +103,8 @@ src/ircd_listener.erl        # TCP or TLS accept loop
 src/ircd_certs.erl           # TLS certificate file watcher and live reload
 src/ircd_session.erl         # one client connection
 src/ircd_sessions.erl        # client supervisor and max_clients admission
+src/ircd_flood.erl           # client command/message flood and REGISTER rate limits
+src/ircd_shutdown.erl        # graceful listener, peer, and client drain on stop
 src/ircd_link.erl            # one direct server peer
 src/ircd_links.erl           # link supervisor
 src/ircd_log.erl
@@ -111,9 +113,12 @@ include/ircd_client.hrl
 include/ircd_channel.hrl
 include/ircd_remote.hrl
 include/ircd_account.hrl     # account and read_marker records
+include/ircd_e2ee.hrl        # e2ee_device and e2ee_queue records
 include/ircd_wire.hrl        # wire buffer limit
 config/ircd.json             # sample/operator config
 config/ircd.dev.json         # development container config
+config/ircd.prod.json        # production container config
+config/ircd.prod.tls.json    # production container config with TLS/lego
 test/
 justfile
 rebar.config

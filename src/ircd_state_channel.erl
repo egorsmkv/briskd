@@ -38,13 +38,15 @@ concerned; members with user mode `+i` are listed only to requesters sharing
 a channel with them.
 
 Safe channels (RFC 2811 section 3.2) are named `!` plus a five-character id
-plus a short name. `JOIN !short` reuses the existing safe channel with that
-short name or creates one with a new id, whose creator gets operator and
-creator status and alone controls `+r` and `+a`. With `+r`, a channel left
-without an operator is reopped after `reop_delay` seconds plus jitter,
-measured in monotonic time (`reop_channels/1`). An emptied safe channel is
-kept; an emptied ordinary channel is kept only under `channels` retention or
-when it is a configured channel.
+plus a short name. `JOIN !short` looks up the folded short name in the
+`ircd_safe_channels` ETS index to reuse an existing safe channel or creates
+one with a new id, whose creator gets operator and creator status and alone
+controls `+r` and `+a`. With `+r`, a channel left without an operator is
+reopped after `reop_delay` seconds plus jitter, measured in monotonic time
+(`reop_channels/1`). An emptied safe channel is kept; an emptied ordinary
+channel is kept only under `channels` retention or when it is a configured
+channel. Empty non-predefined channels without remote members are bounded by
+`max_empty_channels` and expire after `empty_channel_ttl` seconds.
 """.
 -export([
     deliver/5,

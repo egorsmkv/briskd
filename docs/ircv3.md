@@ -10,7 +10,8 @@ TCP when TLS is configured), and the drafts
 `draft/event-playback`, `draft/extended-isupport`, `draft/message-redaction`,
 `draft/metadata-2`,
 `draft/multiline`, `draft/oper-tag`, `draft/pre-away`, and
-`draft/read-marker`. `CAP LS 302` shows values (`sasl` mechanisms, multiline
+`draft/read-marker` (plus the vendor capability `egorsmkv.github.io/e2ee` when
+`e2ee` is configured; see [End-to-end encryption](e2ee.md)). `CAP LS 302` shows values (`sasl` mechanisms, multiline
 and metadata limits, the STS policy) and uses `*` continuation lines. Version
 302 makes `cap-notify` implicit. `CAP REQ` is atomic; an unknown or
 unrequestable name (`sts`) is `NAK`, and an unknown subcommand is numeric 410.
@@ -72,7 +73,7 @@ WHO, and WHOIS prefixes; `no-implicit-names` drops the NAMES after JOIN; WHOX
 invitations. `RENAME <old> <new> [:reason]` renames a local channel (same
 type prefix, not `!`, not shared with a peer); clients without
 `draft/channel-rename` see PART and JOIN. `METADATA` stores public user and
-channel keys (`draft/metadata-2`, local to this server).
+channel keys (`draft/metadata-2`, synchronized across server links).
 
 Connections: `WEBIRC <password> <gateway> <hostname> <ip> [:options]` is
 accepted as the first command from a configured gateway address; a bad

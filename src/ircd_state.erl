@@ -62,11 +62,12 @@ messages RFC 2813; IRCv3 commands are dispatched to their own modules.
 `init/1` creates (or loads and migrates) these `disc_copies` tables:
 `client`, `channel`, `channel_history`, `activity`, `whowas`, `user_modes`,
 `remote_client`, `remote_channel`, `known_server`, `service`, `account`,
-`read_marker`, and `direct_history`. On every start it clears `client`,
-`activity`, `user_modes`, and all imported peer state (`remote_client`,
-`remote_channel`, `known_server`, `service`). `whowas`, safe `!` channels,
-`account`, and `read_marker` always survive a restart. The JSON `retention`
-setting decides the rest:
+`read_marker`, `e2ee_device`, `e2ee_queue`, and `direct_history`. On every
+start it clears `client`, `activity`, `user_modes`, and all imported peer
+state (`remote_client`, `remote_channel`, `known_server`, `service`).
+`whowas`, safe `!` channels, `account`, `read_marker`, `e2ee_device`, and
+`e2ee_queue` always survive a restart. The JSON `retention` setting decides
+the rest:
 
 - `transient` (default): ordinary channels and both history tables are
   deleted; safe channels are kept with their membership cleared.
@@ -81,20 +82,26 @@ Configured `channels` entries are then created when no row exists. See
 Named ETS tables are created (or emptied) at startup and are transient:
 `ircd_caps` (negotiated capabilities, `m:ircd_cap`), `ircd_conn`
 (per-connection IRCv3 state, `m:ircd_conn`), `ircd_nicks` (folded-nick
-index), `ircd_monitor` (MONITOR watcher bag), `ircd_chan_meta` and
-`ircd_remote_meta` (metadata), `ircd_holds` (nick and channel holds after a
-split or nick change), `ircd_admins`, `ircd_attached` (multiclient),
-`ircd_account_channels` (account rejoin), `ircd_inbound_peers`,
-`ircd_outbound_ready`, and the `ircd_command_stats` / `ircd_connection_stats`
-counters used by `STATS`. Validated configuration, operator credentials, and
-link secrets are published in `persistent_term` and replaced on `REHASH`.
+index), `ircd_safe_channels` (safe-channel short-name index), `ircd_monitor`
+(MONITOR watcher bag), `ircd_chan_meta` and `ircd_remote_meta` (metadata),
+`ircd_holds` (nick and channel holds after a split or nick change),
+`ircd_admins`, `ircd_attached` (multiclient), `ircd_account_channels`
+(account rejoin), `ircd_e2ee_bound` (bound E2EE devices), `ircd_flood`
+(per-client flood token buckets and per-host `REGISTER` rate limits,
+`m:ircd_flood`), `ircd_inbound_peers`, `ircd_outbound_ready`, and the
+`ircd_command_stats` / `ircd_connection_stats` counters used by `STATS`.
+Validated configuration, operator credentials, and link secrets are published
+in `persistent_term` and replaced on `REHASH`.
 
 ## Timers and lifecycle
 
 A `reop_tick` message every second reopens operatorless safe channels after
-`reop_delay` and expires nick and channel holds. Each session is monitored
-when it connects; its `'DOWN'` removes the client, its memberships, and its
-IRCv3 state. `format_status/1` redacts `PASS` and `OPER` passwords.
+`reop_delay`, expires empty non-predefined channels after `empty_channel_ttl`,
+and expires nick/channel holds, E2EE queues, `REGISTER` rate-limit windows,
+and stale open peer batches. Each session is monitored when it connects; its
+`'DOWN'` removes the client, its memberships, and its IRCv3, E2EE, and flood
+state. `format_status/1` redacts secrets in `PASS`, `OPER`, `AUTHENTICATE`,
+`REGISTER`, `VERIFY`, and `WEBIRC` commands.
 """.
 
 -doc """

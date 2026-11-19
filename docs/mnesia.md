@@ -81,19 +81,34 @@ on restart.
 
 ## Backup
 
-Stop the server, or at least stop writes, before copying the directory. From a
-shell on the node that owns the tables:
+Stop the server, or use `mnesia:backup/1` for a consistent online checkpoint,
+before copying data.
+
+### Online backup via the release CLI (Docker Compose or systemd)
+
+To write a consistent Mnesia backup file inside the `/var/lib/ircd` volume while
+the production container is running:
+
+```sh
+docker compose -f docker-compose.prod.yml exec -T ircd \
+  /opt/ircd/bin/ircd eval 'ok = mnesia:backup("/var/lib/ircd/backup.bup").'
+docker compose -f docker-compose.prod.yml cp ircd:/var/lib/ircd/backup.bup ./backup-$(date -u +%Y%m%dT%H%M%SZ).bup
+```
+
+Or from an Erlang shell on the node that owns the tables:
 
 ```erlang
 ok = mnesia:backup(BackupFile).
 ```
 
-`BackupFile` is a path outside `mnesia_dir`. A filesystem copy of `mnesia_dir`
-is a valid backup only when Mnesia is stopped. Copying the directory while the
-server is writing can produce a schema that will not start.
+`BackupFile` is a path outside `mnesia_dir`. A raw filesystem or volume copy of
+`mnesia_dir` is a valid backup **only when `ircd` is stopped** (`docker compose
+-f docker-compose.prod.yml stop ircd`). Copying `mnesia_dir` while the server is
+writing can produce a corrupt schema that will not start.
 
 Keep backups of `mnesia_dir` with the same access controls as the host. WHOWAS
-rows contain nicknames, usernames, hosts, and real names.
+rows contain nicknames, usernames, hosts, and real names, and `account` rows
+contain SCRAM-SHA-256 verifiers and optional email addresses.
 
 ## Restore
 

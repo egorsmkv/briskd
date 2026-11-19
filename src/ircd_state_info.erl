@@ -409,9 +409,12 @@ Settings that need a restart (server name, bind address, listeners, TLS
 options, `mnesia_dir`, `client_password`, `server_links`) must be unchanged,
 otherwise the reply is 400 and nothing is applied.
 
-When accepted, the new configuration replaces the operator, administrator,
-and predefined-channel lists (creating missing predefined channels), the MOTD
-path, admin info, `reop_delay`, `max_clients`, and log format and level.
+When accepted, the new configuration replaces the running config map
+(including `flood`, `e2ee`, `max_sendq`, and resource caps), the operator,
+administrator, and predefined-channel lists (creating missing predefined
+channels), the MOTD path, admin info, `reop_delay`, `max_clients`, and log
+format and level, and triggers an asynchronous TLS certificate reload check
+(`ircd_certs:check_async/0`).
 Clients with `cap-notify` or `draft/extended-isupport` are told about changed
 capabilities and ISUPPORT tokens, `+w` users get a `WALLOPS`, an
 `oper_rehash` audit event (`result => accepted`, logged just before the new

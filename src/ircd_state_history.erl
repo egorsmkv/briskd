@@ -50,9 +50,11 @@ where each line is `{Concat, Text}`), `msgid`, `time` (ms since epoch),
 before this format are `{Command, Prefix, Text}` tuples and are still read.
 
 Read markers are the Mnesia `read_marker` table, keyed by folded account and
-target, and survive every restart; a connection without an account keeps
-them in `m:ircd_conn` until it disconnects. Markers only move forward and are
-synchronized to peers through `m:ircd_state_sync`.
+target (bounded by `max_read_markers` per account), and survive every restart;
+a connection without an account keeps them in `m:ircd_conn` until it
+disconnects. Direct-message conversations are bounded per account by
+`max_direct_conversations`. Markers only move forward and are synchronized to
+peers through `m:ircd_state_sync`.
 """.
 
 -doc """

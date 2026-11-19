@@ -6,7 +6,11 @@ Implemented client commands include `PASS`, `NICK`, `USER`, `JOIN`, `PART`,
 `VERSION`, `TIME`, `INFO`, `ADMIN`, `LINKS`, `TRACE`, `STATS`, `SERVLIST`,
 `SQUERY`, `PING`, `PONG`, `QUIT`, `OPER`, `KILL`, `REHASH`, `CONNECT`,
 `SQUIT`, `SERVICE`, `CAP`, `TAGMSG`, `KNOCK`, `SUMMON`, `USERS`, `DIE`, and
-`RESTART`. `SUMMON` and `USERS` stay disabled and return numerics 445 and 446.
+`RESTART`, together with the IRCv3 commands `AUTHENTICATE`, `REGISTER`,
+`VERIFY`, `BATCH`, `CHATHISTORY`, `MARKREAD`, `REDACT`, `METADATA`, `MONITOR`,
+`SETNAME`, `CHGHOST`, `RENAME`, `WEBIRC`, `ISUPPORT`, `STARTTLS` (see
+[IRCv3](ircv3.md)), and `E2EE` when enabled (see
+[End-to-end encryption](e2ee.md)). `SUMMON` and `USERS` stay disabled and return numerics 445 and 446.
 Operator `DIE` stops the node and operator `RESTART` restarts the runtime.
 Other clients receive numeric 481.
 
@@ -32,8 +36,8 @@ Implementation policies on queries and channel lists:
   attempts per client host.
 
 A client may join at most ten channels (numeric 405). A nickname or channel
-released by a quit or a netsplit stays unavailable for 60 seconds (numeric
-437). A nickname introduced for an existing local or remote user kills both
+released by a quit or a netsplit stays unavailable for `resource_delay`
+seconds (default 60, numeric 437; `0` disables). A nickname introduced for an existing local or remote user kills both
 sides, and both peers are sent `KILL` and `QUIT`. `WHO` and `WHOIS` name a
 remote user's home server. Invisible users are hidden from `WHO`, `WHOIS`, and
 `NAMES` unless the requester shares a channel, including when the other user

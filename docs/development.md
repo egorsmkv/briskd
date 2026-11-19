@@ -29,6 +29,7 @@ If `just` is installed, `just --list` shows the available commands:
 | Command | Action |
 | --- | --- |
 | `just build` | Compile the application and dependencies |
+| `just release` | Build a packaged production release with ERTS included |
 | `just run` | Start with `config/ircd.json` |
 | `just run-config path/to/file.json` | Start with a selected configuration |
 | `just format` | Format Erlang source with erlfmt |
