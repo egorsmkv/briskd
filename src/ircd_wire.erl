@@ -129,7 +129,9 @@ split_tags(<<$@, _/binary>> = Body) ->
     end;
 split_tags(Body) ->
     case byte_size(Body) + 2 > 512 of
-        true -> error;
+        %% A complete line over 512 octets is answered with 417 on a client
+        %% socket; parse/1 and parse_server/1 still treat it as an error.
+        true -> {error, input_too_long, []};
         false -> {ok, [], Body}
     end.
 
@@ -236,9 +238,12 @@ parse_server_command(Body) ->
 
 parse_command(<<>>) ->
     empty;
+%% RFC 1459 commands are letters or a three-digit numeric. Other word-like
+%% tokens (letters, digits, `_`, `.`, `-`) still parse so the server can
+%% answer 421 ERR_UNKNOWNCOMMAND instead of closing the connection.
 parse_command(Body) ->
     [Command | Rest] = binary:split(Body, <<" ">>),
-    case re:run(Command, <<"^(?:[A-Za-z]+|[0-9]{3})$">>, [{capture, none}]) of
+    case re:run(Command, <<"^[A-Za-z0-9_.-]{1,64}$">>, [{capture, none}]) of
         match -> params(Rest, string:uppercase(Command), []);
         nomatch -> error
     end.

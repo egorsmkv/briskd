@@ -9,6 +9,7 @@
     invite_notify/4,
     isupport/3,
     join_broadcast/5,
+    join_broadcast/6,
     logout/2,
     notify/6,
     notify_remote/6,
@@ -131,6 +132,10 @@ recipients(Shared, Nick, Cap, Self, IncludeSelf) ->
 %% the account (`*` when logged out) and realname.
 -spec join_broadcast([pid()], iodata(), binary(), undefined | binary(), binary()) -> ok.
 join_broadcast(Pids, Prefix, Channel, Account, Real) ->
+    join_broadcast(Pids, Prefix, Channel, Account, Real, []).
+
+-spec join_broadcast([pid()], iodata(), binary(), undefined | binary(), binary(), list()) -> ok.
+join_broadcast(Pids, Prefix, Channel, Account, Real, Tags) ->
     {Extended, Plain} = lists:partition(
         fun(Pid) -> ircd_cap:enabled(Pid, <<"extended-join">>) end, Pids
     ),
@@ -139,8 +144,8 @@ join_broadcast(Pids, Prefix, Channel, Account, Real) ->
             undefined -> <<"*">>;
             _ -> Account
         end,
-    ircd_state_send:broadcast(Plain, Prefix, <<"JOIN">>, [Channel], none),
-    ircd_state_send:broadcast(Extended, Prefix, <<"JOIN">>, [Channel, AccountParam], Real),
+    ircd_state_send:broadcast(Plain, Prefix, <<"JOIN">>, [Channel], none, Tags),
+    ircd_state_send:broadcast(Extended, Prefix, <<"JOIN">>, [Channel, AccountParam], Real, Tags),
     ok.
 
 %% @doc After a JOIN, tell away-notify members that the joining user is away.
@@ -269,6 +274,8 @@ authenticate([Param | _], #client{pid = Pid} = Client, Server) ->
                     sasl_numeric(Client, Server, <<"905">>, [], <<"SASL message too long">>);
                 {error, invalid} ->
                     sasl_fail(Client, Server);
+                {error, overflow} ->
+                    sasl_fail(Client, Server);
                 {done, Data} ->
                     sasl_step(Client, Server, State, Data)
             end
@@ -378,12 +385,26 @@ register([Requested, Email, Password | _], #client{pid = Pid, nick = Current} = 
     Verification = maps:get(
         account_verification, persistent_term:get({ircd_state, config}), null
     ),
-    EmailOk =
-        valid_email(Email) andalso (Verification =:= null orelse Email =/= <<"*">>),
+    Config = persistent_term:get({ircd_state, config}),
+    EmailRequired =
+        Verification =/= null orelse maps:get(account_registration_email_required, Config, false),
+    EmailOk = valid_email(Email) andalso (not EmailRequired orelse Email =/= <<"*">>),
+    %% Without `before-connect`, REGISTER needs a completed connection.
+    TooEarly =
+        not maps:get(account_registration_before_connect, Config, true) andalso
+            not ircd_state_client:ready(Client),
     Held = Nick =/= <<"*">> andalso nick_held_by_other(Name, Pid),
     case {Enabled, Nick, account(Pid), EmailOk} of
         {false, _, _, _} ->
             reg_fail(Pid, <<"TEMPORARILY_UNAVAILABLE">>, Name, <<"Registration is disabled">>);
+        _ when TooEarly ->
+            ircd_state_send:fail(
+                Pid,
+                <<"REGISTER">>,
+                <<"COMPLETE_CONNECTION_REQUIRED">>,
+                [Name],
+                <<"Finish connecting before registering">>
+            );
         {_, <<"*">>, _, _} ->
             reg_fail(Pid, <<"NEED_NICK">>, <<"*">>, <<"Send NICK before REGISTER">>);
         {_, _, Logged, _} when Logged =/= undefined ->

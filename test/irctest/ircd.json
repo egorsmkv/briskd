@@ -8,7 +8,7 @@
   "mnesia_dir": "/tmp/ircd-irctest-db",
   "retention": "transient",
   "history_limit": 100,
-  "account_password_min": 4,
+  "account_password_min": 1,
   "resource_delay": 0,
   "nicklen": 30,
   "operators": [{"name": "operuser", "password": "operpassword"}],

@@ -537,9 +537,11 @@ history_markers_redaction(Port) ->
     ]),
     send(B, <<"CHATHISTORY AROUND #hist msgid=", Second/binary, " 2">>),
     Around = collect(B),
-    ?assert(has(Around, <<":msg1">>)),
+    %% AROUND includes the reference: (limit - 1) div 2 before it, then it
+    %% and the following messages (msg3 was redacted above).
+    ?assertNot(has(Around, <<":msg1">>)),
     ?assert(has(Around, <<":msg2">>)),
-    ?assertNot(has(Around, <<":msg4">>)),
+    ?assert(has(Around, <<":msg4">>)),
     send(
         B,
         <<"CHATHISTORY BETWEEN #hist timestamp=2000-01-01T00:00:00.000Z ",

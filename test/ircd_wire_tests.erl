@@ -66,7 +66,7 @@ tag_prefix_and_size_test() ->
     BadText = binary:copy(<<"m">>, 499),
     Bad = <<"PRIVMSG #a :", BadText/binary, "\r\n">>,
     ?assertEqual(error, ircd_wire:parse(Bad)),
-    ?assertEqual(error, ircd_wire:parse_client(Bad)),
+    ?assertEqual({error, input_too_long, []}, ircd_wire:parse_client(Bad)),
     Tagged = <<"@+a=b PRIVMSG #a :", BadText/binary, "\r\n">>,
     ?assertMatch(
         {error, input_too_long, [{<<"+a">>, <<"b">>}]}, ircd_wire:parse_client(Tagged)

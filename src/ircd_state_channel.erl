@@ -388,8 +388,11 @@ finish_join(
             true -> {undefined, <<"anonymous">>};
             false -> {ircd_state_v3:account(Pid), Client#client.real}
         end,
-    ircd_state_v3:join_broadcast(JoinRecipients, Origin, Canonical, JoinAccount, JoinReal),
-    ircd_state_history:note_event(Key, <<"JOIN">>, Origin, [], none),
+    {JoinTags, JoinMeta} = ircd_state_history:event_tags(),
+    ircd_state_v3:join_broadcast(
+        JoinRecipients, Origin, Canonical, JoinAccount, JoinReal, JoinTags
+    ),
+    ircd_state_history:note_event(Key, <<"JOIN">>, Origin, [], none, JoinMeta),
     case Anonymous of
         true ->
             ok;
@@ -398,7 +401,8 @@ finish_join(
                 [P || P <- JoinRecipients, P =/= Pid], Origin, Client#client.away
             )
     end,
-    topic_reply(Channel, Client, Server),
+    %% RFC 2812 3.2.1: after JOIN only an existing topic is sent (RPL_TOPIC).
+    join_topic(Channel, Client, Server),
     ircd_state_history:markread_on_join(Pid, Canonical, Server),
     case ircd_cap:enabled(Pid, <<"no-implicit-names">>) of
         true -> ok;
@@ -420,11 +424,17 @@ leave(Key, #client{pid = Pid} = Client, Command, Reason, Notify, Propagate) ->
                     true -> [Pid];
                     false -> maps:keys(Members)
                 end,
+            {LeaveTags, LeaveMeta} = ircd_state_history:event_tags(),
             ircd_state_send:broadcast(
-                Recipients, channel_origin_prefix(Channel, Client), Command, [Name], Reason
+                Recipients,
+                channel_origin_prefix(Channel, Client),
+                Command,
+                [Name],
+                Reason,
+                LeaveTags
             ),
             ircd_state_history:note_event(
-                Key, Command, channel_origin_prefix(Channel, Client), [], Reason
+                Key, Command, channel_origin_prefix(Channel, Client), [], Reason, LeaveMeta
             );
         false ->
             ok
@@ -508,6 +518,7 @@ kick_member(
                     ),
                     kick(Canonical, Nicks, Reason, Client, Server);
                 true ->
+                    {KickTags, KickMeta} = ircd_state_history:event_tags(),
                     ircd_state_send:broadcast(
                         case maps:is_key($q, Channel#channel.flags) of
                             true -> [Client#client.pid, TargetPid];
@@ -516,10 +527,16 @@ kick_member(
                         channel_origin_prefix(Channel, Client),
                         <<"KICK">>,
                         [Canonical, Actual],
-                        Reason
+                        Reason,
+                        KickTags
                     ),
                     ircd_state_history:note_event(
-                        Key, <<"KICK">>, channel_origin_prefix(Channel, Client), [Actual], Reason
+                        Key,
+                        <<"KICK">>,
+                        channel_origin_prefix(Channel, Client),
+                        [Actual],
+                        Reason,
+                        KickMeta
                     ),
                     ircd_state_link:propagate_channel_kick(Client, Canonical, Actual, Reason),
                     Remaining = maps:remove(TargetPid, Members),
@@ -578,10 +595,25 @@ deliver(Command, Params, #client{pid = Pid} = Client, Server, Tags) ->
             deliver_targets(Targets, Text, Command, Client, Server, ClientTags)
     end.
 
+%% At most ?MAX_TARGETS recipients per PRIVMSG, NOTICE, or TAGMSG
+%% (advertised as TARGMAX). Each extra target gets 407 ERR_TOOMANYTARGETS,
+%% except for NOTICE, whose errors are silent.
+-define(MAX_TARGETS, 4).
+
 deliver_targets(Targets, Text, Command, Client, Server, Tags) ->
+    All = lists:uniq(split(Targets)),
+    {Allowed, Extra} = lists:split(min(length(All), ?MAX_TARGETS), All),
     lists:foreach(
         fun(Target) -> deliver_body(Command, Target, Text, Client, Server, Tags) end,
-        lists:uniq(split(Targets))
+        Allowed
+    ),
+    lists:foreach(
+        fun(Target) ->
+            message_error(
+                Command, Client, Server, <<"407">>, [Target], <<"Too many recipients">>
+            )
+        end,
+        Extra
     ).
 
 %% @doc Deliver one message body to one target. `Body` is a binary, `none`
@@ -651,14 +683,13 @@ deliver_body(Command, Target, Body, #client{pid = Pid} = Client, Server, ClientT
                     );
                 #client{pid = Other, nick = Nick, away = Away} ->
                     Prefix = ircd_state_send:prefix(Client),
-                    case Other =:= Pid andalso ircd_cap:enabled(Pid, <<"echo-message">>) of
-                        true -> ok;
-                        false -> fan_out([Other], Prefix, Command, Nick, Body, Tags)
-                    end,
+                    %% A message to oneself is delivered and, with
+                    %% echo-message, also echoed: two copies, one labeled.
+                    fan_out([Other], Prefix, Command, Nick, Body, Tags),
                     echo(Pid, Prefix, Command, Nick, Body, Tags),
                     ircd_state_history:note_direct(
-                        Account,
-                        ircd_state_v3:account(Other),
+                        {Account, Client#client.nick},
+                        {ircd_state_v3:account(Other), Nick},
                         Nick,
                         ircd_state_history:entry(
                             Command, Prefix, Body, MsgId, Now, ClientTags, Account
@@ -684,8 +715,8 @@ deliver_body(Command, Target, Body, #client{pid = Pid} = Client, Server, ClientT
                                 true ->
                                     echo(Pid, Prefix, Command, Nick, Body, Tags),
                                     ircd_state_history:note_direct(
-                                        Account,
-                                        Theirs,
+                                        {Account, Client#client.nick},
+                                        {Theirs, Nick},
                                         Nick,
                                         ircd_state_history:entry(
                                             Command, Prefix, Body, MsgId, Now, ClientTags, Account
@@ -804,19 +835,22 @@ topic(Name, Rest, #client{pid = Pid} = Client, Server) ->
                     );
                 {false, true, [Text | _]} ->
                     mnesia:dirty_write(Channel#channel{topic = ircd_wire:retain(Text)}),
+                    {TopicTags, TopicMeta} = ircd_state_history:event_tags(),
                     ircd_state_history:note_event(
                         Channel#channel.key,
                         <<"TOPIC">>,
                         channel_origin_prefix(Channel, Client),
                         [],
-                        Text
+                        Text,
+                        TopicMeta
                     ),
                     ircd_state_send:broadcast(
                         maps:keys(Members),
                         channel_origin_prefix(Channel, Client),
                         <<"TOPIC">>,
                         [Canonical],
-                        Text
+                        Text,
+                        TopicTags
                     ),
                     ircd_state_link:propagate_topic(Client, Canonical, Text)
             end;
@@ -861,6 +895,12 @@ effective_topic(#channel{name = Name, topic = <<>>} = Channel) ->
     end;
 effective_topic(Channel) ->
     Channel.
+
+join_topic(Channel, Client, Server) ->
+    case effective_topic(Channel) of
+        #channel{topic = <<>>} -> ok;
+        WithTopic -> topic_reply(WithTopic, Client, Server)
+    end.
 
 topic_reply(#channel{name = Name, topic = <<>>}, Client, Server) ->
     ircd_state_send:numeric(Client, Server, <<"331">>, [Name], <<"No topic is set">>);
@@ -1541,12 +1581,14 @@ change_modes([Mode | Rest], Action, Args, Channel, Client, Server) ->
                             add -> $+;
                             remove -> $-
                         end,
+                    {ModeTags, ModeMeta} = ircd_state_history:event_tags(),
                     ircd_state_send:broadcast(
                         maps:keys(Members),
                         channel_origin_prefix(Channel, Client),
                         <<"MODE">>,
                         [Name, <<Sign, Mode>> | Parameters],
-                        none
+                        none,
+                        ModeTags
                     ),
                     %% A channel key is not written to history.
                     case Mode of
@@ -1558,7 +1600,8 @@ change_modes([Mode | Rest], Action, Args, Channel, Client, Server) ->
                                 <<"MODE">>,
                                 channel_origin_prefix(Channel, Client),
                                 [<<Sign, Mode>> | Parameters],
-                                none
+                                none,
+                                ModeMeta
                             )
                     end,
                     ircd_state_link:propagate_channel_mode(
@@ -1847,7 +1890,7 @@ apply_rename(
                                 ircd_state_v3:account(Pid),
                                 Member#client.real
                             ),
-                            topic_reply(Renamed, Member, Server),
+                            join_topic(Renamed, Member, Server),
                             ircd_state_history:markread_on_join(Pid, Name, Server),
                             case ircd_cap:enabled(Pid, <<"no-implicit-names">>) of
                                 true -> ok;

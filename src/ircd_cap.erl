@@ -308,12 +308,20 @@ value(<<"draft/account-registration">>, _Info) ->
     case config(account_registration, true) of
         true ->
             Email =
-                case config(account_verification, null) of
-                    null -> <<>>;
-                    _ -> <<",email-required">>
+                case
+                    config(account_verification, null) =/= null orelse
+                        config(account_registration_email_required, false)
+                of
+                    true -> <<",email-required">>;
+                    false -> <<>>
+                end,
+            Before =
+                case config(account_registration_before_connect, true) of
+                    true -> <<"before-connect,">>;
+                    false -> <<>>
                 end,
             {ok,
-                <<"before-connect,custom-account-name", Email/binary, ",min-password-length=",
+                <<Before/binary, "custom-account-name", Email/binary, ",min-password-length=",
                     (integer_to_binary(ircd_account:min_password()))/binary,
                     ",max-password-length=300">>};
         false ->

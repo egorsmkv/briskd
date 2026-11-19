@@ -208,6 +208,23 @@ Across server links:
 - [x] Interoperability gate: `test/ircd_interop_tests.erl` runs two separate
   ircd OS processes linked over RFC 2813 TCP and checks these paths.
 
+Conformance (irctest, `test/irctest/ircd_controller.py`, one fresh server per
+test, `-m "IRCv3 and not deprecated and not implementation-specific"`):
+174 passed. Two read-marker cases need bouncer-style shared sessions
+(several connections on one nickname), which this server does not offer, and
+one SASL case needs an 800-byte password that cannot fit in a 512-byte
+`REGISTER` line. irctest's `metadata_3.py` targets an unpublished
+`draft/metadata-3`; the published spec is `draft/metadata-2`.
+
+Base-protocol gaps irctest reports outside IRCv3 (unchanged by this work):
+
+- [ ] Channel key and limit argument validation (`chmodes/key.py`,
+  `chmodes/limit.py`), RPL_CHANNELMODEIS layout, ban and invite-exception
+  list numerics.
+- [ ] WHOIS numeric set and order, LUSERS counts, LINKS, WALLOPS (server-only
+  here), `NICK` to the identical nickname, an empty realname, and a
+  non-UTF-8 username.
+
 ## Documentation and verification
 
 - [x] README documents run instructions, configuration, current protocol

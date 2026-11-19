@@ -182,8 +182,12 @@ tags_and_link(Port) ->
     ?assert(has(collect(Alice), <<"PONG">>)),
     Drop = register_client(Port, <<"drop">>, <<"Drop">>),
     _ = collect(Drop),
+    %% An over-long complete line gets 417 and the connection stays open.
     send(Drop, <<"PRIVMSG #room :", (binary:copy(<<"A">>, 600))/binary>>),
-    ?assertMatch({error, closed}, gen_tcp:recv(Drop, 0, 500)),
+    ?assert(has(collect(Drop), <<" 417 ">>)),
+    ?assertNot(has(collect_quiet(Carol), <<"AAAA">>)),
+    send(Drop, <<"PING stillhere">>),
+    ?assert(has(collect(Drop), <<"PONG">>)),
     Peer = handshake(Port, <<"peer.test">>),
     _ = collect(Peer),
     send(Peer, <<":peer.test NICK remote 0 user peer.test 1 + :Remote">>),

@@ -799,6 +799,15 @@ dispatch_command(<<"QUIT">>, Params, Client, Server, _Tags) ->
             [Text | _] -> Text;
             [] -> <<"Client quit">>
         end,
+    %% RFC 2812 3.1.7: the server acknowledges QUIT with ERROR. The session
+    %% flushes it before closing the socket.
+    ircd_state_send:send(
+        Client#client.pid,
+        Server,
+        <<"ERROR">>,
+        [],
+        [<<"Closing Link: ">>, Client#client.host, <<" (Quit: ">>, Reason, <<")">>]
+    ),
     ircd_state_client:disconnect(Client, Reason, Server),
     quit;
 dispatch_command(<<"PASS">>, Params, Client, Server, _Tags) ->
@@ -1248,16 +1257,22 @@ change_nick(Nick, Client, Server) ->
         {true, _, _, false} ->
             case ircd_state_client:ready(Client) of
                 true ->
+                    {NickTags, NickMeta} = ircd_state_history:event_tags(),
                     ircd_state_send:broadcast(
                         ircd_state_channel:nick_recipients(Client),
                         ircd_state_send:prefix(Client),
                         <<"NICK">>,
                         [],
-                        Nick
+                        Nick,
+                        NickTags
                     ),
                     ircd_state_link:propagate_nick_change(Client, Nick),
                     ircd_state_history:note_user_event(
-                        Client#client.channels, <<"NICK">>, ircd_state_send:prefix(Client), Nick
+                        Client#client.channels,
+                        <<"NICK">>,
+                        ircd_state_send:prefix(Client),
+                        Nick,
+                        NickMeta
                     );
                 false ->
                     ok
@@ -1267,7 +1282,8 @@ change_nick(Nick, Client, Server) ->
                 false -> ok
             end,
             ircd_state_client:save_identity(Client, Client#client{nick = Nick}, Server),
-            case ircd_state_client:ready(Client) of
+            CaseOnly = ircd_wire:fold(Client#client.nick) =:= ircd_wire:fold(Nick),
+            case ircd_state_client:ready(Client) andalso not CaseOnly of
                 true ->
                     Renamed = ircd_state_client:client(Client#client.pid),
                     ircd_state_monitor:offline(Client#client.nick),

@@ -56,6 +56,14 @@ load(Path) ->
             nicklen => nicklen(maps:get(<<"nicklen">>, Json, 9)),
             resource_delay => resource_delay(maps:get(<<"resource_delay">>, Json, 60)),
             account_password_min => password_min(maps:get(<<"account_password_min">>, Json, 8)),
+            account_registration_before_connect => boolean_setting(
+                account_registration_before_connect,
+                maps:get(<<"account_registration_before_connect">>, Json, true)
+            ),
+            account_registration_email_required => boolean_setting(
+                account_registration_email_required,
+                maps:get(<<"account_registration_email_required">>, Json, false)
+            ),
             account_registration => boolean_setting(
                 account_registration, maps:get(<<"account_registration">>, Json, true)
             ),

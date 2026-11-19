@@ -206,7 +206,8 @@ link_and_restart(Port, Bob, Dir, _Config) ->
     ?assert(has(Rejoined, <<"kept">>)),
     send(Carol, <<"JOIN #ordinary">>),
     Ordinary = recv(Carol),
-    ?assert(has(Ordinary, <<" 331 ">>)),
+    %% A JOIN sends RPL_TOPIC only when a topic is set (RFC 2812 3.2.1).
+    ?assertNot(has(Ordinary, <<" 332 ">>)),
     ?assertNot(has(Ordinary, <<"temp">>)),
     gen_tcp:close(Carol),
     restore_from_backup(Dir).
@@ -240,7 +241,8 @@ restore_from_backup(Dir) ->
     ?assert(has(Rejoined, <<"kept">>)),
     send(Dave, <<"JOIN #ordinary">>),
     Ordinary = recv(Dave),
-    ?assert(has(Ordinary, <<" 331 ">>)),
+    %% A JOIN sends RPL_TOPIC only when a topic is set (RFC 2812 3.2.1).
+    ?assertNot(has(Ordinary, <<" 332 ">>)),
     ?assertNot(has(Ordinary, <<"temp">>)),
     gen_tcp:close(Dave).
 

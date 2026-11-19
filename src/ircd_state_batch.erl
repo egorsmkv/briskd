@@ -184,8 +184,16 @@ deliver_multiline(Pid, Prefix, Command, Target, Lines, Tags, Mode) ->
                 fun(Text, First) ->
                     LineTags =
                         case First of
-                            true -> Tags;
-                            false -> [T || {K, _} = T <- Tags, K =:= <<"time">>]
+                            true ->
+                                Tags;
+                            %% Later lines keep `time` and client-only tags;
+                            %% only the first carries `msgid`.
+                            false ->
+                                [
+                                    T
+                                 || {K, _} = T <- Tags,
+                                    K =:= <<"time">> orelse binary:first(K) =:= $+
+                                ]
                         end,
                     Send(Pid, Prefix, Command, [Target], Text, LineTags),
                     false

@@ -222,13 +222,19 @@ disconnect(#client{pid = Pid, channels = Channels} = Client, Reason, Server) ->
     end,
     case ready(Client) of
         true ->
+            {QuitTags, QuitMeta} = ircd_state_history:event_tags(),
             ircd_state_send:with_source(ircd_state_v3:source_info(Client), fun() ->
                 ircd_state_send:broadcast(
-                    quit_recipients(Client), ircd_state_send:prefix(Client), <<"QUIT">>, [], Reason
+                    quit_recipients(Client),
+                    ircd_state_send:prefix(Client),
+                    <<"QUIT">>,
+                    [],
+                    Reason,
+                    QuitTags
                 )
             end),
             ircd_state_history:note_user_event(
-                Channels, <<"QUIT">>, ircd_state_send:prefix(Client), Reason
+                Channels, <<"QUIT">>, ircd_state_send:prefix(Client), Reason, QuitMeta
             );
         false ->
             ok

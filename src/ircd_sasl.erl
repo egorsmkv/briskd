@@ -71,14 +71,16 @@ step(_State, _Data) ->
 %% @doc Add one AUTHENTICATE parameter to the pending response.
 %% `+` alone is an empty chunk. A chunk of exactly 400 bytes means more follows.
 -spec decode_chunk(binary(), binary()) ->
-    {more, binary()} | {done, binary()} | {error, too_long | invalid}.
+    {more, binary()} | {done, binary()} | {error, too_long | overflow | invalid}.
 decode_chunk(Buffer, <<"+">>) ->
     finish(Buffer);
 decode_chunk(Buffer, Chunk) when byte_size(Chunk) > ?CHUNK ->
     _ = Buffer,
     {error, too_long};
 decode_chunk(Buffer, Chunk) when byte_size(Buffer) + byte_size(Chunk) > ?MAX_RESPONSE ->
-    {error, too_long};
+    %% A correctly chunked but oversized response is a failed authentication
+    %% (904); only a single chunk over 400 bytes is ERR_SASLTOOLONG (905).
+    {error, overflow};
 decode_chunk(Buffer, Chunk) when byte_size(Chunk) =:= ?CHUNK ->
     {more, <<Buffer/binary, Chunk/binary>>};
 decode_chunk(Buffer, Chunk) ->

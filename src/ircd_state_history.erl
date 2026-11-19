@@ -8,6 +8,9 @@
     note_channel/2,
     note_direct/4,
     note_event/5,
+    note_event/6,
+    note_user_event/5,
+    event_tags/0,
     rename_markers/2,
     remote_marker/3,
     note_user_event/4,
@@ -79,15 +82,37 @@ note_channel(_Key, _Entry) ->
 %% draft/event-playback. `Params` are the parameters after the channel name.
 -spec note_event(binary(), binary(), iodata(), [binary()], none | binary()) -> ok.
 note_event(Key, Command, Prefix, Params, Text) ->
-    store_event(Key, Command, Prefix, Params, Text).
+    {_, Meta} = event_tags(),
+    store_event(Key, Command, Prefix, Params, Text, Meta).
+
+%% @doc Like note_event/5 with the `msgid` and `time` already sent on the live
+%% line (from event_tags/0), so history replays the same identifiers.
+-spec note_event(binary(), binary(), iodata(), [binary()], none | binary(), {binary(), integer()}) ->
+    ok.
+note_event(Key, Command, Prefix, Params, Text, Meta) ->
+    store_event(Key, Command, Prefix, Params, Text, Meta).
+
+%% @doc Tags for a live channel event plus the metadata to store with it.
+%% Events carry a `msgid` (message-tags) and `time` (server-time) so
+%% draft/event-playback replays them with the identifiers clients saw.
+-spec event_tags() -> {list(), {binary(), integer()}}.
+event_tags() ->
+    MsgId = ircd_state_send:msgid(),
+    Now = erlang:system_time(millisecond),
+    {[{<<"msgid">>, MsgId}, {<<"time">>, ircd_state_send:time_value(Now)}], {MsgId, Now}}.
 
 %% @doc Record a QUIT or NICK in the history of every channel the user is on.
 %% These lines have no channel parameter when replayed.
 -spec note_user_event([binary()], binary(), iodata(), binary()) -> ok.
 note_user_event(Keys, Command, Prefix, Text) ->
-    lists:foreach(fun(Key) -> store_event(Key, Command, Prefix, notarget, Text) end, Keys).
+    {_, Meta} = event_tags(),
+    note_user_event(Keys, Command, Prefix, Text, Meta).
 
-store_event(Key, Command, Prefix, Params, Text) ->
+-spec note_user_event([binary()], binary(), iodata(), binary(), {binary(), integer()}) -> ok.
+note_user_event(Keys, Command, Prefix, Text, Meta) ->
+    lists:foreach(fun(Key) -> store_event(Key, Command, Prefix, notarget, Text, Meta) end, Keys).
+
+store_event(Key, Command, Prefix, Params, Text, {MsgId, Time}) ->
     case enabled() of
         true ->
             Account =
@@ -99,9 +124,8 @@ store_event(Key, Command, Prefix, Params, Text) ->
                 Command,
                 Prefix,
                 Text,
-                %% Live event lines carry no msgid, so history has none either.
-                undefined,
-                erlang:system_time(millisecond),
+                MsgId,
+                Time,
                 [],
                 Account
             ))#{
@@ -155,16 +179,21 @@ playable(Pid, Entries) ->
         false -> [E || #{cmd := C} = E <- Entries, C =:= <<"PRIVMSG">> orelse C =:= <<"NOTICE">>]
     end.
 
-%% @doc Record a direct message when sender and recipient are both logged in.
--spec note_direct(undefined | binary(), undefined | binary(), binary(), map()) -> ok.
-note_direct(From, To, Target, #{cmd := Command} = Entry) when
-    is_binary(From),
-    is_binary(To),
+%% @doc Record a direct message when at least one side is logged in. Each
+%% side is `{Account | undefined, Nick}`: a logged-in participant is keyed by
+%% account, the other by nickname. Only logged-in users can read history, so a
+%% nickname-keyed side never reads it, even if someone else takes the nick.
+-spec note_direct(
+    {undefined | binary(), binary()}, {undefined | binary(), binary()}, binary(), map()
+) ->
+    ok.
+note_direct({FromAccount, _} = From, {ToAccount, _} = To, Target, #{cmd := Command} = Entry) when
+    (is_binary(FromAccount) orelse is_binary(ToAccount)),
     (Command =:= <<"PRIVMSG">> orelse Command =:= <<"NOTICE">> orelse Command =:= <<"TAGMSG">>)
 ->
     case enabled() of
         true ->
-            Key = dm_key(From, To),
+            Key = dm_key(party(From), party(To)),
             Existing = dm_entries(Key),
             Stored = Entry#{target => ircd_wire:retain(Target)},
             mnesia:dirty_write(#direct_history{
@@ -177,8 +206,12 @@ note_direct(From, To, Target, #{cmd := Command} = Entry) when
 note_direct(_, _, _, _) ->
     ok.
 
+%% A conversation participant: `{account, Folded}` or `{nick, Folded}`.
+party({undefined, Nick}) -> {nick, ircd_wire:fold(Nick)};
+party({Account, _Nick}) -> {account, ircd_wire:fold(Account)}.
+
 dm_key(A, B) ->
-    list_to_tuple(lists:sort([ircd_wire:fold(A), ircd_wire:fold(B)])).
+    list_to_tuple(lists:sort([A, B])).
 
 channel_entries(Key) ->
     case mnesia:dirty_read(channel_history, Key) of
@@ -416,22 +449,12 @@ access(#client{pid = Pid}, Target) ->
                     error
             end;
         false ->
-            case {ircd_state_v3:account(Pid), peer_account(Target)} of
-                {undefined, _} -> error;
-                {_, undefined} -> error;
-                {Mine, Theirs} -> {ok, canonical_nick(Target), {direct, dm_key(Mine, Theirs)}}
-            end
-    end.
-
-%% The current spelling of a nickname, for the chathistory batch parameter.
-canonical_nick(Nick) ->
-    case ircd_state_client:find_nick(Nick) of
-        #client{nick = Actual} ->
-            Actual;
-        undefined ->
-            case mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) of
-                [#remote_client{nick = Actual}] -> Actual;
-                [] -> Nick
+            case ircd_state_v3:account(Pid) of
+                undefined ->
+                    error;
+                Mine ->
+                    Theirs = party({peer_account(Target), Target}),
+                    {ok, Target, {direct, dm_key(party({Mine, <<>>}), Theirs)}}
             end
     end.
 
@@ -525,8 +548,9 @@ select(<<"BEFORE">>, Pos, Entries, N) ->
 select(<<"AFTER">>, Pos, Entries, N) ->
     lists:sublist([E || {_, E} = X <- indexed(Entries), after_pos(Pos, X)], N);
 select(<<"AROUND">>, Pos, Entries, N) ->
-    Half = max(1, N div 2),
-    Before = last_n([E || {_, E} = X <- indexed(Entries), before_pos(Pos, X)], Half),
+    %% The reference message is included: up to (N-1) div 2 before it, then
+    %% the reference and the messages after it.
+    Before = last_n([E || {_, E} = X <- indexed(Entries), before_pos(Pos, X)], (N - 1) div 2),
     After = lists:sublist(
         [E || {_, E} = X <- indexed(Entries), not before_pos(Pos, X)], N - length(Before)
     ),
@@ -587,11 +611,12 @@ targets(#client{pid = Pid, channels = Keys}, From, To, N) ->
                 [];
             Account ->
                 Mine = ircd_wire:fold(Account),
+                Me = {account, Mine},
                 [
                     {other_party(Mine, Entries), latest_time(Entries)}
                  || {A, B} = Pair <- mnesia:dirty_all_keys(direct_history),
+                    A =:= Me orelse B =:= Me,
                     Entries <- [dm_entries(Pair)],
-                    A =:= Mine orelse B =:= Mine,
                     Entries =/= []
                 ]
         end,

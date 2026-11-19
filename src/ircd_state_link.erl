@@ -1302,7 +1302,9 @@ receive_remote_target(Peer, Remote, Prefix, Target, Text, Command, Tags) ->
     end.
 
 %% Keep the recipient's copy of a direct message from a remote account.
-note_remote_direct(#remote_client{account = From}, Prefix, Command, Target, Text, Tags, Pid) ->
+note_remote_direct(
+    #remote_client{account = From, nick = FromNick}, Prefix, Command, Target, Text, Tags, Pid
+) ->
     Time =
         case lists:keyfind(<<"time">>, 1, Tags) of
             {_, Stamp} ->
@@ -1319,8 +1321,8 @@ note_remote_direct(#remote_client{account = From}, Prefix, Command, Target, Text
             false -> undefined
         end,
     ircd_state_history:note_direct(
-        From,
-        ircd_state_v3:account(Pid),
+        {From, FromNick},
+        {ircd_state_v3:account(Pid), Target},
         Target,
         ircd_state_history:entry(
             Command, Prefix, Text, MsgId, Time, ircd_cap:client_tags(Tags), From
