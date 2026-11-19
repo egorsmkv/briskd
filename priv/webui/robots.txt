@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Allow: /signup
+Disallow: /admin
+Disallow: /api/
+Disallow: /verify

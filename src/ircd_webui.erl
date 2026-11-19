@@ -23,6 +23,8 @@ Opt-in via the `"webui"` configuration object (`bind`, `port`, `username`,
 - `GET /signup` and `POST /api/signup` — public (unauthenticated) user
   self-registration page and JSON endpoint (with ALTCHA), active when
   `account_registration` is `true`.
+- `GET /favicon.ico`, `GET /favicon.svg`, and `GET /robots.txt` — public
+  favicon and crawler policy assets.
 
 Security controls:
 
@@ -102,6 +104,9 @@ init(#{webui := #{ip := IP, port := Port}}) ->
                 signup => load_asset("signup.html", <<"ircd signup UI asset missing">>),
                 verify => load_asset("verify.html", <<"ircd verify UI asset missing">>),
                 webirc => load_asset("webirc.html", <<"ircd webirc UI asset missing">>),
+                favicon_ico => load_raw_asset("favicon.ico", <<>>),
+                favicon_svg => load_raw_asset("favicon.svg", <<>>),
+                robots_txt => load_raw_asset("robots.txt", <<"User-agent: *\nDisallow: /admin\n">>),
                 static => load_static_assets()
             },
             Counter = atomics:new(1, []),
@@ -207,10 +212,23 @@ handle_connection(
         signup := SignupHtml,
         verify := VerifyHtml,
         webirc := WebircHtml,
+        favicon_ico := FaviconIco,
+        favicon_svg := FaviconSvg,
+        robots_txt := RobotsTxt,
         static := Static
     }
 ) ->
     case read_request(Socket) of
+        {ok, <<"GET">>, {<<"/favicon.ico">>, _Query}, _Headers, _Body} ->
+            send_public_asset(Socket, <<"image/x-icon">>, <<"public, max-age=86400">>, FaviconIco);
+        {ok, <<"GET">>, {<<"/favicon.svg">>, _Query}, _Headers, _Body} ->
+            send_public_asset(
+                Socket, <<"image/svg+xml">>, <<"public, max-age=86400">>, FaviconSvg
+            );
+        {ok, <<"GET">>, {<<"/robots.txt">>, _Query}, _Headers, _Body} ->
+            send_public_asset(
+                Socket, <<"text/plain; charset=utf-8">>, <<"public, max-age=3600">>, RobotsTxt
+            );
         {ok, <<"GET">>, {<<"/assets/", Name/binary>>, _Query}, _Headers, _Body} ->
             handle_static(Socket, Name, Static);
         {ok, <<"GET">>, {<<"/api/altcha">>, _Query}, _Headers, _Body} ->
@@ -246,6 +264,18 @@ handle_connection(
         {error, _} ->
             send_json(Socket, 400, <<"Bad Request">>, #{error => <<"bad_request">>})
     end.
+
+send_public_asset(Socket, _ContentType, _Cache, <<>>) ->
+    send_json(Socket, 404, <<"Not Found">>, #{error => <<"not_found">>});
+send_public_asset(Socket, ContentType, Cache, Body) ->
+    send_response(
+        Socket,
+        200,
+        <<"OK">>,
+        ContentType,
+        [{<<"Cache-Control">>, Cache}],
+        Body
+    ).
 
 handle_static(Socket, Name, Static) ->
     case maps:find(Name, Static) of
@@ -797,6 +827,11 @@ send_json(Socket, Code, Reason, Map) ->
 
 send_response(Socket, Code, Reason, ContentType, ExtraHeaders, Body) ->
     Bin = iolist_to_binary(Body),
+    CacheHeader =
+        case lists:keymember(<<"Cache-Control">>, 1, ExtraHeaders) of
+            true -> [];
+            false -> [<<"Cache-Control: no-store\r\n">>]
+        end,
     CspHeader =
         case lists:keymember(<<"Content-Security-Policy">>, 1, ExtraHeaders) of
             true -> [];
@@ -807,7 +842,7 @@ send_response(Socket, Code, Reason, ContentType, ExtraHeaders, Body) ->
         [<<"Content-Type: ">>, ContentType, <<"\r\n">>],
         [<<"Content-Length: ">>, integer_to_binary(byte_size(Bin)), <<"\r\n">>],
         <<"Connection: close\r\n">>,
-        <<"Cache-Control: no-store\r\n">>,
+        CacheHeader,
         <<"X-Content-Type-Options: nosniff\r\n">>,
         <<"X-Frame-Options: DENY\r\n">>,
         <<"Referrer-Policy: no-referrer\r\n">>,
@@ -879,6 +914,12 @@ read_file_first([Path | Rest]) ->
     end;
 read_file_first([]) ->
     error.
+
+load_raw_asset(File, Fallback) ->
+    case read_asset_file(File) of
+        {ok, Bin} -> Bin;
+        error -> Fallback
+    end.
 
 load_asset(File, Fallback) ->
     Candidates = [

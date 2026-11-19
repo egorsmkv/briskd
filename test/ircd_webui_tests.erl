@@ -85,6 +85,18 @@ live_webui() ->
         ?assert(binary:match(Csp, <<"frame-ancestors 'none'">>) =/= nomatch),
         ?assertEqual(nomatch, binary:match(HtmlBody, <<"__CSP_NONCE__">>)),
         ?assert(binary:match(HtmlBody, <<"<title>ircd admin</title>">>) =/= nomatch),
+        ?assert(binary:match(HtmlBody, <<"noindex, nofollow">>) =/= nomatch),
+
+        %% Public favicon.ico, favicon.svg, and robots.txt are served without auth.
+        {200, IcoHeaders, IcoBody} = http_req(Port, <<"GET">>, <<"/favicon.ico">>, [], <<>>),
+        ?assertEqual(<<"image/x-icon">>, maps:get(<<"content-type">>, IcoHeaders)),
+        ?assert(byte_size(IcoBody) > 100),
+        {200, SvgHeaders, SvgBody} = http_req(Port, <<"GET">>, <<"/favicon.svg">>, [], <<>>),
+        ?assertEqual(<<"image/svg+xml">>, maps:get(<<"content-type">>, SvgHeaders)),
+        ?assert(binary:match(SvgBody, <<"<svg">>) =/= nomatch),
+        {200, RobotsHeaders, RobotsBody} = http_req(Port, <<"GET">>, <<"/robots.txt">>, [], <<>>),
+        ?assertEqual(<<"text/plain; charset=utf-8">>, maps:get(<<"content-type">>, RobotsHeaders)),
+        ?assert(binary:match(RobotsBody, <<"Disallow: /admin">>) =/= nomatch),
 
         %% Second GET /admin issues a fresh per-request CSP nonce.
         {200, HtmlHeaders2, _} = http_req(
