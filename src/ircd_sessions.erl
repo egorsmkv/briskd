@@ -3,10 +3,11 @@
 -export([start_link/1, start_child/3, init/1]).
 
 %% @doc Start the dynamic supervisor for client sessions with a hard client limit.
--spec start_link(pos_integer()) -> supervisor:startchild_ret().
+-spec start_link(pos_integer()) -> supervisor:startlink_ret().
 start_link(MaxClients) -> supervisor:start_link({local, ?MODULE}, ?MODULE, MaxClients).
 
 %% @doc Start a session only if the configured active-client limit allows it.
+-spec start_child(atom(), term(), binary()) -> supervisor:startchild_ret().
 start_child(Kind, Socket, Peer) ->
     %% TCP and TLS listeners can accept concurrently, so serialize the check
     %% and child start to make the configured limit strict.

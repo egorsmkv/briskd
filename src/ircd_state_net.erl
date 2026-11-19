@@ -1,5 +1,6 @@
 -module(ircd_state_net).
 -export([
+    expire_holds/0,
     cap/3,
     notify_cap_changes/2,
     channel_blocked/1,
@@ -38,7 +39,7 @@ register_adjacent(Name, Token, Kind, Pid) ->
         parent = Local,
         info = <<"Direct peer">>
     },
-    mnesia:dirty_write(Record),
+    mnesia:dirty_write(ircd_wire:retain_fields(Record)),
     case Kind of
         inbound -> ets:insert(?INBOUND, {ircd_wire:fold(Name), {Pid, Name}});
         outbound -> ets:insert(ircd_outbound_ready, {ircd_wire:fold(Name), {Pid, Name}})
@@ -455,15 +456,17 @@ store_service(Name, Dist, Type, Info, Home, Peer) ->
         true ->
             {error, nickname_collision};
         false ->
-            mnesia:dirty_write(#service{
-                key = Key,
-                name = Name,
-                distribution = Dist,
-                type = Type,
-                info = Info,
-                server = Home,
-                peer = Peer
-            }),
+            mnesia:dirty_write(
+                ircd_wire:retain_fields(#service{
+                    key = Key,
+                    name = Name,
+                    distribution = Dist,
+                    type = Type,
+                    info = Info,
+                    server = Home,
+                    peer = Peer
+                })
+            ),
             ok
     end.
 
@@ -543,7 +546,11 @@ drop_memberships(NickKey) ->
                                         _ -> ok
                                     end;
                                 _ ->
-                                    mnesia:dirty_write(Channel#remote_channel{members = Remaining})
+                                    mnesia:dirty_write(
+                                        ircd_wire:retain_fields(Channel#remote_channel{
+                                            members = Remaining
+                                        })
+                                    )
                             end;
                         false ->
                             ok
@@ -558,15 +565,17 @@ drop_memberships(NickKey) ->
 store_server(#{
     name := Name, hop := Hop, token := Token, adjacent := Adjacent, parent := Parent, info := Info
 }) ->
-    mnesia:dirty_write(#known_server{
-        key = ircd_wire:fold(Name),
-        name = Name,
-        hop = Hop,
-        token = Token,
-        adjacent = Adjacent,
-        parent = Parent,
-        info = Info
-    }).
+    mnesia:dirty_write(
+        ircd_wire:retain_fields(#known_server{
+            key = ircd_wire:fold(Name),
+            name = Name,
+            hop = Hop,
+            token = Token,
+            adjacent = Adjacent,
+            parent = Parent,
+            info = Info
+        })
+    ).
 
 announce_server(Map, Except) ->
     _ = ircd_links:send_except(Except, intro_line(local_name(), Map)).
@@ -628,9 +637,25 @@ blocked(Kind, Name) ->
     Key = {Kind, ircd_wire:fold(Name)},
     Now = erlang:monotonic_time(second),
     case ets:lookup(?HOLDS, Key) of
-        [{_, Until}] -> ircd_route:nick_delay_blocked(Key, Now, #{Key => Until});
-        [] -> false
+        [{_, Until}] ->
+            case ircd_route:nick_delay_blocked(Key, Now, #{Key => Until}) of
+                true ->
+                    true;
+                false ->
+                    true = ets:delete(?HOLDS, Key),
+                    false
+            end;
+        [] ->
+            false
     end.
+
+%% @doc Drop nickname and channel holds whose delay has passed. Called from the
+%% state's one-second tick so holds nobody asks about again do not accumulate.
+-spec expire_holds() -> ok.
+expire_holds() ->
+    Now = erlang:monotonic_time(second),
+    _ = ets:select_delete(?HOLDS, [{{'_', '$1'}, [{'=<', '$1', Now}], [true]}]),
+    ok.
 
 configured_peer(Target) ->
     Links = persistent_term:get({ircd_state, server_links}, []),

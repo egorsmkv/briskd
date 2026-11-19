@@ -144,6 +144,7 @@ to the process working directory unless they are absolute.
 | `log_level` | `info` | `debug`, `info`, `notice`, `warning`, `error`, `critical`, `alert`, `emergency`, or `trace`. `trace` shows every event |
 | `log_format` | `json` | `json` (one object per line: `level`, `time` in microseconds, and the event's fields, or `message` for plain text) or `text` |
 | `max_clients` | `10000` | Maximum active client sessions |
+| `max_sendq` | `10000` | Lines queued for one client before it is disconnected with `ERROR :Closing Link: <server> (Max SendQ exceeded)` (100..1000000) |
 | `client_password` | `null` | Optional password required with IRC `PASS` before registration |
 | `operators` | `[]` | Operator accounts, each with `name` and `password` |
 | `administrators` | `[]` | Operator accounts, each with `nick` and `password`. `OPER` uses `nick`. A successful login also grants channel operator on predefined channels |

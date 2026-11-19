@@ -44,8 +44,10 @@
 %% The source (set_source/1) names the user whose command is being applied.
 %% Lines with that user's prefix carry `account`, `bot`, and `draft/oper`.
 
+-spec prefix(#client{}) -> iolist().
 prefix(#client{nick = Nick, user = User, host = Host}) -> [Nick, <<"!">>, User, <<"@">>, Host].
 
+-spec numeric(#client{}, binary(), term(), [binary()], none | iodata()) -> ok.
 numeric(#client{pid = Pid, nick = Nick}, Server, Number, Params, Text) ->
     send(Pid, Server, Number, [Nick | Params], Text).
 
@@ -67,9 +69,13 @@ note(Pid, Command, Code, Context, Text) ->
 standard(Pid, Type, Command, Code, Context, Text) ->
     send(Pid, local_server(), Type, [Command, Code | Context], Text).
 
+-spec broadcast([pid()], iodata(), binary(), [iodata()], none | iodata()) -> ok.
 broadcast(Pids, Prefix, Command, Middle, Tail) ->
     broadcast(Pids, Prefix, Command, Middle, Tail, []).
 
+-spec broadcast([pid()], iodata(), binary(), [iodata()], none | iodata(), [
+    {binary(), undefined | binary()}
+]) -> ok.
 broadcast([], _Prefix, _Command, _Middle, _Tail, _Tags) ->
     ok;
 broadcast(Pids, Prefix, Command, Middle, Tail, Tags0) ->
@@ -93,9 +99,13 @@ broadcast(Pids, Prefix, Command, Middle, Tail, Tags0) ->
             ok
     end.
 
+-spec send(pid(), iodata(), binary(), [iodata()], none | iodata()) -> ok.
 send(Pid, Prefix, Command, Middle, Tail) ->
     send(Pid, Prefix, Command, Middle, Tail, []).
 
+-spec send(pid(), iodata(), binary(), [iodata()], none | iodata(), [
+    {binary(), undefined | binary()}
+]) -> ok.
 send(Pid, Prefix, Command, Middle, Tail, Tags0) ->
     Tags =
         case batch_command(Command) of

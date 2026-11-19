@@ -3,7 +3,7 @@
 -export([start_link/1, init/1]).
 
 %% @doc Start the top-level supervisor for state, sessions, and listeners.
--spec start_link(map()) -> supervisor:startchild_ret().
+-spec start_link(map()) -> supervisor:startlink_ret().
 start_link(Config) -> supervisor:start_link({local, ?MODULE}, ?MODULE, Config).
 
 %% @doc Build the supervision tree from the enabled listener configuration.

@@ -22,6 +22,7 @@
 %% @doc Local client identity, registration, visibility, and connection stats.
 
 %% Retrieve the Mnesia record associated with a live session process.
+-spec client(pid()) -> #client{}.
 client(Pid) ->
     [Client] = mnesia:dirty_read(client, Pid),
     Client.
@@ -30,10 +31,12 @@ client(Pid) ->
 %% and the welcome has been sent. While CAP negotiation holds the welcome
 %% (IRCv3: registration MUST NOT complete before CAP END) the client is not
 %% ready: commands that need registration get 451 and peers do not see it.
+-spec ready(#client{}) -> boolean().
 ready(#client{pid = Pid} = Client) ->
     identified(Client) andalso ircd_cap:welcomed(Pid).
 
 %% @doc NICK, USER, and any required PASS have been accepted.
+-spec identified(#client{}) -> boolean().
 identified(#client{nick = Nick, user = User, pass = Pass}) ->
     HasIdentity = Nick =/= <<"*">> andalso User =/= undefined,
     Password = persistent_term:get({ircd_state, client_password}, null),
@@ -42,6 +45,7 @@ identified(#client{nick = Nick, user = User, pass = Pass}) ->
 
 %% Find a registered nickname using the RFC1459 case-folding rules.
 %% `ircd_nicks` is the folded-nick index maintained by the state process.
+-spec find_nick(binary()) -> undefined | #client{}.
 find_nick(Nick) ->
     case ets:lookup(ircd_nicks, ircd_wire:fold(Nick)) of
         [{_, Pid}] ->
@@ -59,6 +63,7 @@ find_nick(Nick) ->
     end.
 
 %% Persist nickname or USER changes and send the registration welcome once ready.
+-spec save_identity(#client{}, #client{}, binary()) -> ok.
 save_identity(Old, New, Server) ->
     Current = client(Old#client.pid),
     Updated = New#client{
@@ -100,6 +105,7 @@ save_identity(Old, New, Server) ->
 
 %% @doc Send the numeric burst that completes registration.
 %% The caller marks the connection welcomed before this runs.
+-spec send_welcome(#client{}, binary()) -> ok.
 send_welcome(#client{pid = Pid} = Client, Server) ->
     case ircd_conn:get(Pid, attach_to) of
         undefined -> send_full_welcome(Client, Server);
@@ -159,6 +165,7 @@ numeric_and_close(#client{pid = Pid} = Client, Server) ->
     Pid ! {irc_close, ircd_wire:line(Server, <<"ERROR">>, [], <<"Password required">>)},
     ok.
 
+-spec pass([binary()], #client{}, binary()) -> ok.
 pass(Params, Client, Server) ->
     case identity_ready(Client) of
         true ->
@@ -184,6 +191,7 @@ pass_unregistered([Given | _], Client, Server) ->
 identity_ready(#client{nick = Nick, user = User}) ->
     Nick =/= <<"*">> andalso User =/= undefined.
 
+-spec initial_user_modes(term()) -> error | {ok, #{105 => true, 119 => true}}.
 initial_user_modes(Mode) ->
     try binary_to_integer(Mode) of
         Mask when Mask >= 0 ->
@@ -207,12 +215,22 @@ initial_user_modes(Mode) ->
         %% applies to a number).
         error:badarg -> {ok, #{}}
     end.
+-spec put_connection_stats(pid(), term()) -> true.
 put_connection_stats(Pid, _Entry) ->
     ets:insert(ircd_connection_stats, {Pid, erlang:monotonic_time(second), 0, 0, 0, 0}).
 
+-spec remove_connection_stats(pid()) -> true.
 remove_connection_stats(Pid) ->
     ets:delete(ircd_connection_stats, Pid).
 
+-spec connection_stats(pid()) ->
+    #{
+        connected_at => term(),
+        recv_bytes => term(),
+        recv_messages => term(),
+        sent_bytes => term(),
+        sent_messages => term()
+    }.
 connection_stats(Pid) ->
     case ets:lookup(ircd_connection_stats, Pid) of
         [{Pid, ConnectedAt, SentMessages, SentBytes, RecvMessages, RecvBytes}] ->
@@ -227,6 +245,7 @@ connection_stats(Pid) ->
             #{}
     end.
 
+-spec update_connection_stats(pid(), term(), term(), term()) -> ok.
 update_connection_stats(Pid, MessagesKey, BytesKey, Bytes) ->
     case {MessagesKey, BytesKey} of
         {sent_messages, sent_bytes} -> update_connection_stats_counter(Pid, 3, 4, Bytes);
@@ -237,16 +256,18 @@ update_connection_stats(Pid, MessagesKey, BytesKey, Bytes) ->
 update_connection_stats_counter(Pid, MessagesPosition, BytesPosition, Bytes) ->
     case ets:member(ircd_connection_stats, Pid) of
         true ->
-            ets:update_counter(
+            _ = ets:update_counter(
                 ircd_connection_stats,
                 Pid,
                 [{MessagesPosition, 1}, {BytesPosition, Bytes}]
-            );
+            ),
+            ok;
         false ->
             ok
     end.
 
 %% Broadcast QUIT, leave joined channels, and delete all per-client Mnesia rows.
+-spec disconnect(#client{}, none | iodata(), binary()) -> ok.
 disconnect(#client{pid = Pid, channels = Channels} = Client, Reason, Server) ->
     ircd_state_v3:remember_channels(Client),
     case ready(Client) of
@@ -317,15 +338,18 @@ quit_recipients(#client{pid = Pid, channels = Channels}) ->
         OtherPid =/= Pid
     ]).
 
+-spec touch_activity(pid()) -> ok.
 touch_activity(Pid) ->
     mnesia:dirty_write(#activity{pid = Pid, last = erlang:system_time(second)}).
 
+-spec user_modes(pid()) -> #{char() => true}.
 user_modes(Pid) ->
     case mnesia:dirty_read(user_modes, Pid) of
         [#user_modes{modes = Modes}] -> Modes;
         [] -> #{}
     end.
 
+-spec user_visible(#client{}, #client{}) -> boolean().
 user_visible(#client{pid = Pid}, #client{pid = RequesterPid}) when
     Pid =:= RequesterPid
 ->
@@ -371,8 +395,7 @@ forget_nick(Pid, Nick) ->
     forget_key(nick_key(Nick), Pid).
 
 nick_key(<<"*">>) -> undefined;
-nick_key(Nick) when is_binary(Nick) -> ircd_wire:fold(Nick);
-nick_key(_) -> undefined.
+nick_key(Nick) when is_binary(Nick) -> ircd_wire:fold(Nick).
 
 forget_key(undefined, _Pid) ->
     ok;
@@ -394,7 +417,8 @@ remember_key(Key, Pid) ->
 %% Keep the most recent user identity for lookup after a nickname is released.
 save_whowas(#client{nick = Nick, user = User, host = Host, real = Real}, Server) ->
     Time = erlang:system_time(second),
-    Key = {ircd_wire:fold(Nick), -Time, erlang:unique_integer([positive])},
+    Fold = ircd_wire:fold(Nick),
+    Key = {Fold, -Time, erlang:unique_integer([positive])},
     mnesia:dirty_write(#whowas{
         key = Key,
         nick = Nick,
@@ -403,4 +427,34 @@ save_whowas(#client{nick = Nick, user = User, host = Host, real = Real}, Server)
         real = Real,
         server = Server,
         time = Time
-    }).
+    }),
+    trim_whowas(Fold).
+
+%% Bound WHOWAS: the newest entries per nickname, then a total cap.
+trim_whowas(Fold) ->
+    %% Match specs use the raw tuple: '_' is not a valid typed record field.
+    %% #whowas{} is {whowas, Key, Nick, User, Host, Real, Server, Time}.
+    Mine = mnesia:dirty_select(whowas, [
+        {{whowas, {Fold, '_', '_'}, '_', '_', '_', '_', '_', '_'}, [], [{element, 2, '$_'}]}
+    ]),
+    lists:foreach(
+        fun(Key) -> mnesia:dirty_delete(whowas, Key) end,
+        drop_newest(?WHOWAS_PER_NICK, Mine)
+    ),
+    case mnesia:table_info(whowas, size) > ?WHOWAS_MAX of
+        true ->
+            All = mnesia:dirty_select(whowas, [
+                {{whowas, '$1', '_', '_', '_', '_', '_', '$2'}, [], [{{'$2', '$1'}}]}
+            ]),
+            Oldest = lists:sublist(lists:sort(All), ?WHOWAS_MAX div 10 + 1),
+            lists:foreach(fun({_, Key}) -> mnesia:dirty_delete(whowas, Key) end, Oldest);
+        false ->
+            ok
+    end.
+
+%% Keys are {Fold, -Time, Unique}, so ascending order is newest first.
+drop_newest(Keep, Keys) ->
+    case length(Keys) > Keep of
+        true -> lists:nthtail(Keep, lists:sort(Keys));
+        false -> []
+    end.

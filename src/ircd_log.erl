@@ -115,7 +115,7 @@ formatter(<<"text">>) ->
 %% call, or an OTP report with its own callback, is rendered by logger_formatter
 %% into `message`. Terms JSON cannot hold (pids, tuples, references, invalid
 %% UTF-8) are written as Erlang term text.
--spec format(logger:log_event(), logger:formatter_config()) -> iodata().
+-spec format(logger:log_event(), logger:formatter_config()) -> iolist().
 format(#{level := Level, meta := Meta, msg := Msg} = Event, _) ->
     Base = #{level => Level, time => maps:get(time, Meta, 0)},
     Fields =

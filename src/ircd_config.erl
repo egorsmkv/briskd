@@ -50,6 +50,7 @@ load(Path) ->
         {ok, #{
             server_info => ServerInfo,
             shutdown_grace => shutdown_grace(maps:get(<<"shutdown_grace">>, Json, 5)),
+            max_sendq => max_sendq(maps:get(<<"max_sendq">>, Json, 10000)),
             multiclient => boolean_setting(multiclient, maps:get(<<"multiclient">>, Json, false)),
             account_rejoin => boolean_setting(
                 account_rejoin, maps:get(<<"account_rejoin">>, Json, false)
@@ -176,6 +177,10 @@ sni_hosts(Entries) when is_list(Entries) ->
 %% Seconds to wait for sessions to close during a graceful shutdown.
 shutdown_grace(Value) when is_integer(Value), Value >= 0, Value =< 300 -> Value;
 shutdown_grace(Value) -> erlang:error({invalid_shutdown_grace, Value}).
+
+%% Lines queued for one client before it is disconnected (Max SendQ exceeded).
+max_sendq(Value) when is_integer(Value, 100, 1000000) -> Value;
+max_sendq(Value) -> erlang:error({invalid_max_sendq, Value}).
 
 %% Longest nickname. RFC 1459 uses 9; larger values are an operator choice
 %% and must match every linked server.

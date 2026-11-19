@@ -212,7 +212,7 @@ unmask(<<Tail/binary>>, M, Acc) ->
     <<Acc/binary, (T bxor Key):Bits>>.
 
 %% @doc Encode one unmasked server frame.
--spec encode(text | binary | close | ping | pong, iodata()) -> iodata().
+-spec encode(text | binary | close | ping | pong, iodata()) -> iolist().
 encode(Type, Payload) ->
     Data = iolist_to_binary(Payload),
     Opcode =

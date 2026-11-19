@@ -1,5 +1,6 @@
 -module(ircd_state_history).
 -export([
+    valid_marker_target/1,
     chathistory/3,
     entry/7,
     find/2,
@@ -668,9 +669,26 @@ markread([], #client{pid = Pid}, _Server) ->
     ircd_state_send:fail(
         Pid, <<"MARKREAD">>, <<"NEED_MORE_PARAMS">>, [], <<"Missing parameters">>
     );
-markread([Target], #client{pid = Pid}, Server) ->
+markread([Target | Rest], #client{pid = Pid} = Client, Server) ->
+    %% Only a channel or nickname can carry a marker, so a client cannot
+    %% create stored rows for arbitrary strings.
+    case valid_marker_target(Target) of
+        true ->
+            markread_valid([Target | Rest], Client, Server);
+        false ->
+            ircd_state_send:fail(
+                Pid, <<"MARKREAD">>, <<"INVALID_PARAMS">>, [Target], <<"Invalid target">>
+            )
+    end.
+
+%% @doc A read marker target is a channel name or a nickname.
+-spec valid_marker_target(binary()) -> boolean().
+valid_marker_target(Target) ->
+    ircd_wire:channel(Target) orelse ircd_wire:nickname(Target, ircd_state:nicklen()).
+
+markread_valid([Target], #client{pid = Pid}, Server) ->
     send_marker(Pid, Server, Target, get_marker(Pid, Target));
-markread([Target, <<"timestamp=", Value/binary>> | _], #client{pid = Pid}, Server) ->
+markread_valid([Target, <<"timestamp=", Value/binary>> | _], #client{pid = Pid}, Server) ->
     case parse_timestamp(Value) of
         {ok, Time} ->
             Stored = get_marker(Pid, Target),
@@ -689,7 +707,7 @@ markread([Target, <<"timestamp=", Value/binary>> | _], #client{pid = Pid}, Serve
                 Pid, <<"MARKREAD">>, <<"INVALID_PARAMS">>, [Value], <<"Invalid parameters">>
             )
     end;
-markread([_Target, Other | _], #client{pid = Pid}, _Server) ->
+markread_valid([_Target, Other | _], #client{pid = Pid}, _Server) ->
     ircd_state_send:fail(
         Pid, <<"MARKREAD">>, <<"INVALID_PARAMS">>, [Other], <<"Invalid parameters">>
     ).

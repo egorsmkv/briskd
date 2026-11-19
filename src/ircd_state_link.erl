@@ -42,6 +42,7 @@
 
 %% @doc Direct server-link burst, import, and propagation.
 
+-spec server_burst_lines(binary()) -> [binary() | [binary()]].
 server_burst_lines(Server) ->
     ServerLines = ircd_state_net:burst_server_lines(Server),
     ClientLines =
@@ -291,9 +292,22 @@ channel_mode_burst(Name, Flags, Password, Limit, Lists, Server) ->
             [{ban, $b}, {exception, $e}, {invite, $I}]
         ),
     FlagLines ++ AccessLines.
+-spec remote_nick_exists(binary()) -> boolean().
 remote_nick_exists(Nick) ->
     mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) =/= [].
 
+-spec import_remote_nick(binary(), undefined | binary(), term()) ->
+    ok
+    | {error,
+        invalid_hopcount
+        | invalid_hostname
+        | invalid_introduction_prefix
+        | invalid_nick_message
+        | invalid_nickname
+        | invalid_server_token
+        | invalid_user_modes
+        | invalid_username
+        | reserved_nickname}.
 import_remote_nick(Peer, Prefix, [Nick, Hop, User, Host, Token, ModeString, Real]) ->
     case home_server(Peer, Prefix, Hop) of
         {error, Reason} ->
@@ -423,18 +437,20 @@ collision_nick(Nick, _, _) ->
     Nick.
 
 write_remote_nick(Peer, Home, Distance, Key, Nick, User, Host, Token, Modes, Real) ->
-    mnesia:dirty_write(#remote_client{
-        key = Key,
-        peer = Peer,
-        nick = Nick,
-        user = User,
-        host = Host,
-        token = Token,
-        modes = Modes,
-        real = Real,
-        server = Home,
-        hop = Distance
-    }).
+    mnesia:dirty_write(
+        ircd_wire:retain_fields(#remote_client{
+            key = Key,
+            peer = Peer,
+            nick = Nick,
+            user = User,
+            host = Host,
+            token = Token,
+            modes = Modes,
+            real = Real,
+            server = Home,
+            hop = Distance
+        })
+    ).
 
 remote_nick_line(Prefix, Nick, Hop, User, Host, Token, Modes, Real) ->
     ircd_wire:line(
@@ -454,6 +470,8 @@ remote_nick_line(Prefix, Nick, Hop, User, Host, Token, Modes, Real) ->
 local_server() ->
     maps:get(name, persistent_term:get({ircd_state, config})).
 
+-spec rename_remote_nick(binary(), binary(), binary()) ->
+    ok | {error, invalid_nickname | nickname_collision | reserved_nickname | unknown_remote_nick}.
 rename_remote_nick(Peer, Prefix, Nick) ->
     NewKey = ircd_wire:fold(Nick),
     case remote_source(Peer, Prefix) of
@@ -468,7 +486,9 @@ rename_remote_nick(Peer, Prefix, Nick) ->
             of
                 {true, true, undefined, []} ->
                     mnesia:dirty_delete(remote_client, OldKey),
-                    mnesia:dirty_write(Remote#remote_client{key = NewKey, nick = Nick}),
+                    mnesia:dirty_write(
+                        ircd_wire:retain_fields(Remote#remote_client{key = NewKey, nick = Nick})
+                    ),
                     rename_remote_memberships(Peer, OldKey, NewKey),
                     ircd_state_meta:rename_remote(OldKey, NewKey),
                     ircd_state_monitor:offline(Remote#remote_client.nick),
@@ -480,7 +500,7 @@ rename_remote_nick(Peer, Prefix, Nick) ->
                     relay_except(Peer, ircd_wire:line(Prefix, <<"NICK">>, [Nick], none)),
                     ok;
                 {true, true, undefined, [#remote_client{key = OldKey, peer = Peer}]} ->
-                    mnesia:dirty_write(Remote#remote_client{nick = Nick}),
+                    mnesia:dirty_write(ircd_wire:retain_fields(Remote#remote_client{nick = Nick})),
                     ok;
                 {true, true, undefined, [#remote_client{peer = Peer}]} ->
                     {error, nickname_collision};
@@ -495,6 +515,7 @@ rename_remote_nick(Peer, Prefix, Nick) ->
             {error, unknown_remote_nick}
     end.
 
+-spec remove_remote_nick(binary(), binary(), none | iodata()) -> ok | {error, unknown_remote_nick}.
 remove_remote_nick(Peer, Prefix, Reason) ->
     case remote_source(Peer, Prefix) of
         {ok, #remote_client{key = Key, nick = Nick}} ->
@@ -508,6 +529,7 @@ remove_remote_nick(Peer, Prefix, Reason) ->
             {error, unknown_remote_nick}
     end.
 
+-spec set_remote_away(binary(), binary(), [binary()]) -> ok | {error, unknown_remote_nick}.
 set_remote_away(Peer, Prefix, Params) ->
     case remote_source(Peer, Prefix) of
         {ok, Remote} ->
@@ -516,7 +538,7 @@ set_remote_away(Peer, Prefix, Params) ->
                     [] -> maps:remove($a, Remote#remote_client.modes);
                     [_Message | _] -> (Remote#remote_client.modes)#{$a => true}
                 end,
-            mnesia:dirty_write(Remote#remote_client{modes = Modes}),
+            mnesia:dirty_write(ircd_wire:retain_fields(Remote#remote_client{modes = Modes})),
             AwayTail =
                 case Params of
                     [] -> none;
@@ -552,6 +574,14 @@ remote_source(Peer, Prefix) ->
             error
     end.
 
+-spec update_remote_topic(binary(), binary(), binary(), term()) ->
+    ok
+    | {error,
+        invalid_channel
+        | remote_topic_requires_operator
+        | remote_user_not_on_channel
+        | unknown_remote_channel
+        | unknown_remote_source}.
 update_remote_topic(Peer, Prefix, Name, Topic) ->
     Key = ircd_wire:fold(Name),
     case {ircd_wire:channel(Name), trusted_server(Peer, Prefix)} of
@@ -587,11 +617,11 @@ store_remote_topic(Peer, Prefix, Key, Name, Topic) ->
             [RemoteRecord] -> RemoteRecord;
             [] -> #remote_channel{key = Key, name = Name}
         end,
-    Flags = (Remote#remote_channel.flags)#{topic => Topic},
-    mnesia:dirty_write(Remote#remote_channel{flags = Flags}),
+    Flags = (Remote#remote_channel.flags)#{topic => ircd_wire:retain(Topic)},
+    mnesia:dirty_write(ircd_wire:retain_fields(Remote#remote_channel{flags = Flags})),
     case mnesia:dirty_read(channel, Key) of
         [#channel{name = Canonical, members = Members, flags = ChannelFlags} = Channel] ->
-            mnesia:dirty_write(Channel#channel{topic = Topic}),
+            mnesia:dirty_write(Channel#channel{topic = ircd_wire:retain(Topic)}),
             EventPrefix =
                 case
                     maps:is_key($a, ChannelFlags) orelse
@@ -660,8 +690,14 @@ remove_remote_memberships(Peer, NickKey) ->
                         {ok, {Peer, _Roles}} ->
                             Remaining = maps:remove(NickKey, Members),
                             case map_size(Remaining) of
-                                0 -> mnesia:dirty_delete(remote_channel, ChannelKey);
-                                _ -> mnesia:dirty_write(Channel#remote_channel{members = Remaining})
+                                0 ->
+                                    mnesia:dirty_delete(remote_channel, ChannelKey);
+                                _ ->
+                                    mnesia:dirty_write(
+                                        ircd_wire:retain_fields(Channel#remote_channel{
+                                            members = Remaining
+                                        })
+                                    )
                             end;
                         _ ->
                             ok
@@ -673,6 +709,10 @@ remove_remote_memberships(Peer, NickKey) ->
         mnesia:dirty_all_keys(remote_channel)
     ).
 
+-spec import_remote_njoin(binary(), binary(), map()) ->
+    ok
+    | {error, empty_njoin | invalid_channel | remote_member_from_other_peer | unknown_remote_member}
+    | {ok, [{term(), term()}, ...]}.
 import_remote_njoin(Peer, Name, Members) ->
     case ircd_wire:channel(Name) of
         false ->
@@ -750,6 +790,8 @@ flush_netjoin(Peer) ->
             end
     end.
 
+-spec import_remote_join(binary(), binary(), binary()) ->
+    ok | {error, invalid_channel | unknown_remote_source}.
 import_remote_join(Peer, Prefix, Name) ->
     case {remote_source(Peer, Prefix), ircd_wire:channel(Name)} of
         {{ok, #remote_client{key = NickKey}}, true} ->
@@ -777,6 +819,8 @@ import_remote_join(Peer, Prefix, Name) ->
             {error, invalid_channel}
     end.
 
+-spec remove_remote_channel_member(binary(), binary(), binary(), none | iodata()) ->
+    ok | {error, remote_user_not_on_channel | unknown_remote_channel | unknown_remote_source}.
 remove_remote_channel_member(Peer, Prefix, Name, Reason) ->
     case {remote_source(Peer, Prefix), mnesia:dirty_read(remote_channel, ircd_wire:fold(Name))} of
         {{ok, #remote_client{key = NickKey}}, [#remote_channel{members = Members} = Channel]} ->
@@ -785,8 +829,12 @@ remove_remote_channel_member(Peer, Prefix, Name, Reason) ->
                     broadcast_remote_channel_event(Name, Prefix, <<"PART">>, Reason),
                     Remaining = maps:remove(NickKey, Members),
                     case map_size(Remaining) of
-                        0 -> mnesia:dirty_delete(remote_channel, Channel#remote_channel.key);
-                        _ -> mnesia:dirty_write(Channel#remote_channel{members = Remaining})
+                        0 ->
+                            mnesia:dirty_delete(remote_channel, Channel#remote_channel.key);
+                        _ ->
+                            mnesia:dirty_write(
+                                ircd_wire:retain_fields(Channel#remote_channel{members = Remaining})
+                            )
                     end,
                     relay_except(Peer, ircd_wire:line(Prefix, <<"PART">>, [Name], Reason)),
                     ok;
@@ -799,6 +847,14 @@ remove_remote_channel_member(Peer, Prefix, Name, Reason) ->
             {error, unknown_remote_channel}
     end.
 
+-spec receive_remote_kick(binary(), binary(), binary(), binary(), none | iodata()) ->
+    ok
+    | {error,
+        remote_kick_requires_operator
+        | remote_kick_target_not_on_channel
+        | unknown_remote_channel
+        | unknown_remote_kick_target
+        | unknown_remote_source}.
 receive_remote_kick(Peer, Prefix, Name, Nick, Reason) ->
     Key = ircd_wire:fold(Name),
     case {remote_source(Peer, Prefix), mnesia:dirty_read(remote_channel, Key)} of
@@ -867,7 +923,7 @@ remove_remote_channel_member_record(_Peer, NickKey, #remote_channel{key = Key} =
     Members = maps:remove(NickKey, Channel#remote_channel.members),
     case map_size(Members) of
         0 -> mnesia:dirty_delete(remote_channel, Key);
-        _ -> mnesia:dirty_write(Channel#remote_channel{members = Members})
+        _ -> mnesia:dirty_write(ircd_wire:retain_fields(Channel#remote_channel{members = Members}))
     end,
     ok.
 
@@ -963,6 +1019,19 @@ remote_member(<<$@, Nick/binary>>) -> {[operator], Nick};
 remote_member(<<$+, Nick/binary>>) -> {[voice], Nick};
 remote_member(Nick) -> {[member], Nick}.
 
+-spec update_remote_modes(binary(), binary(), binary(), term(), [binary()]) ->
+    ok
+    | {error,
+        invalid_channel_limit
+        | missing_channel_limit
+        | missing_mode_argument
+        | remote_mode_requires_operator
+        | remote_user_mode_source_mismatch
+        | unknown_remote_channel
+        | unknown_remote_mode_target
+        | unknown_remote_source
+        | {extra_mode_arguments, term()}
+        | {unsupported_channel_mode, byte()}}.
 update_remote_modes(Peer, Prefix, Name, ModeString, Args) ->
     case ircd_wire:channel(Name) of
         false -> update_remote_user_modes(Peer, Prefix, Name, ModeString);
@@ -1075,7 +1144,7 @@ apply_remote_modes([Mode | Rest], Action, Args, #remote_channel{flags = Flags} =
 apply_remote_modes([$k | Rest], Action, [Key | Args], #remote_channel{flags = Flags} = Channel) ->
     NewFlags =
         case Action of
-            add -> Flags#{key => Key};
+            add -> Flags#{key => ircd_wire:retain(Key)};
             remove -> maps:remove(key, Flags)
         end,
     apply_remote_modes(Rest, Action, Args, Channel#remote_channel{flags = NewFlags});
@@ -1113,7 +1182,8 @@ apply_remote_modes(
     Existing = maps:get(Type, Flags, []),
     Updated =
         case Action of
-            add -> lists:usort([Mask | Existing]);
+            add when length(Existing) >= ?MAX_LIST_ENTRIES -> Existing;
+            add -> lists:usort([ircd_wire:retain(Mask) | Existing]);
             remove -> lists:delete(Mask, Existing)
         end,
     apply_remote_modes(Rest, Action, Args, Channel#remote_channel{flags = Flags#{Type => Updated}});
@@ -1169,7 +1239,7 @@ update_remote_user_modes(Peer, Prefix, Nick, ModeString) ->
     case remote_source(Peer, Prefix) of
         {ok, #remote_client{key = Key, modes = Modes} = Remote} ->
             Updated = apply_remote_user_modes(binary_to_list(ModeString), undefined, Modes),
-            mnesia:dirty_write(Remote#remote_client{modes = Updated}),
+            mnesia:dirty_write(ircd_wire:retain_fields(Remote#remote_client{modes = Updated})),
             ircd_state_send:broadcast(
                 remote_user_local_recipients(Key), Prefix, <<"MODE">>, [Nick, ModeString], none
             ),
@@ -1218,9 +1288,29 @@ server_user_modes(<<$+, Modes/binary>>) ->
     end;
 server_user_modes(_) ->
     error.
+-spec receive_remote_message(binary(), undefined | binary(), binary(), [binary()]) ->
+    ok
+    | {error,
+        invalid_remote_message
+        | malformed_remote_prefix
+        | remote_prefix_mismatch
+        | remote_user_not_on_channel
+        | unknown_remote_channel
+        | unknown_remote_source}.
 receive_remote_message(Peer, Prefix, Command, Params) ->
     receive_remote_message(Peer, Prefix, Command, Params, []).
 
+-spec receive_remote_message(binary(), undefined | binary(), term(), term(), [
+    {binary(), undefined | binary()}
+]) ->
+    ok
+    | {error,
+        invalid_remote_message
+        | malformed_remote_prefix
+        | remote_prefix_mismatch
+        | remote_user_not_on_channel
+        | unknown_remote_channel
+        | unknown_remote_source}.
 receive_remote_message(Peer, Prefix, <<"TAGMSG">>, [Target | _], Tags) ->
     relay_remote_message(Peer, Prefix, <<"TAGMSG">>, Target, none, Tags);
 receive_remote_message(Peer, Prefix, Command, [Target, Text | _], Tags) ->
@@ -1370,14 +1460,9 @@ receive_remote_channel_message(Peer, Remote, Prefix, Name, Text, Command, Tags) 
             case maps:find(NickKey, RemoteMembers) of
                 {ok, {Peer, Roles}} ->
                     Flags = maps:merge(RemoteFlags, Channel#channel.flags),
-                    RemoteIdentity = #client{
-                        nick = Remote#remote_client.nick,
-                        user = Remote#remote_client.user,
-                        host = Remote#remote_client.host
-                    },
                     Banned =
-                        ircd_state_channel:mask_matches(Channel, ban, RemoteIdentity) andalso
-                            not ircd_state_channel:mask_matches(Channel, exception, RemoteIdentity),
+                        ircd_state_channel:mask_matches(Channel, ban, Remote) andalso
+                            not ircd_state_channel:mask_matches(Channel, exception, Remote),
                     Allowed =
                         not maps:is_key($m, Flags) orelse
                             lists:member(operator, Roles) orelse lists:member(voice, Roles),
@@ -1416,6 +1501,7 @@ receive_remote_channel_message(Peer, Remote, Prefix, Name, Text, Command, Tags) 
             {error, unknown_remote_channel}
     end.
 
+-spec remote_names_listing(binary(), #client{}, binary()) -> ok.
 remote_names_listing(Key, Client, Server) ->
     case mnesia:dirty_read(remote_channel, Key) of
         [#remote_channel{name = Name, flags = Flags}] ->
@@ -1439,12 +1525,14 @@ remote_names_listing(Key, Client, Server) ->
             ok
     end.
 
+-spec remote_channel_flags(binary()) -> #{atom() | char() => term()}.
 remote_channel_flags(Name) ->
     case mnesia:dirty_read(remote_channel, ircd_wire:fold(Name)) of
         [#remote_channel{flags = Flags}] -> Flags;
         [] -> #{}
     end.
 
+-spec remote_names_entries(binary(), #client{}, term()) -> [binary()].
 remote_names_entries(Name, Client, LocalMember) ->
     case mnesia:dirty_read(remote_channel, ircd_wire:fold(Name)) of
         [#remote_channel{members = Members}] ->
@@ -1461,6 +1549,7 @@ remote_names_entries(Name, Client, LocalMember) ->
 remote_visible_in_names(#remote_client{modes = Modes}, _Client, LocalMember) ->
     LocalMember orelse not maps:is_key($i, Modes).
 
+-spec remote_user_visible_to_requester(term(), map(), #client{}) -> boolean().
 remote_user_visible_to_requester(NickKey, Modes, Client) ->
     not maps:is_key($i, Modes) orelse
         lists:any(
@@ -1484,6 +1573,7 @@ remote_user_visible_to_requester(NickKey, Modes, Client) ->
             mnesia:dirty_all_keys(remote_channel)
         ).
 
+-spec remote_user_local_recipients(term()) -> [term()].
 remote_user_local_recipients(NickKey) ->
     lists:usort([
         Pid
@@ -1508,6 +1598,7 @@ remote_display_nick(#remote_client{nick = Nick, user = User, host = Host}, Roles
         end,
     <<(ircd_state_channel:role_prefix(Roles, Pid))/binary, Name/binary>>.
 
+-spec propagate_introduction(#client{}, iodata()) -> ok.
 propagate_introduction(
     #client{nick = Nick, user = User, host = Host, real = Real, pid = Pid}, Server
 ) ->
@@ -1521,21 +1612,26 @@ propagate_introduction(
         )
     ).
 
+-spec propagate_nick_change(#client{}, iodata()) -> ok.
 propagate_nick_change(Client, Nick) ->
     server_broadcast(ircd_wire:line(ircd_state_send:prefix(Client), <<"NICK">>, [Nick], none)).
 
+-spec propagate_away(#client{}, none | iodata()) -> ok.
 propagate_away(Client, none) ->
     server_broadcast(ircd_wire:line(ircd_state_send:prefix(Client), <<"AWAY">>, [], none));
 propagate_away(Client, Message) ->
     server_broadcast(ircd_wire:line(ircd_state_send:prefix(Client), <<"AWAY">>, [], Message)).
 
+-spec propagate_quit(#client{}, none | iodata()) -> ok.
 propagate_quit(Client, Reason) ->
     server_broadcast(ircd_wire:line(ircd_state_send:prefix(Client), <<"QUIT">>, [], Reason)).
 
+-spec server_broadcast(iodata()) -> ok.
 server_broadcast(Line) ->
     relay_except(undefined, Line).
 
 %% Forward one server message to every authenticated peer except the ingress link.
+-spec relay_except(term(), iodata()) -> ok.
 relay_except(Ingress, Line) ->
     try ircd_links:send_except(Ingress, iolist_to_binary(Line)) of
         _ -> ok
@@ -1543,6 +1639,7 @@ relay_except(Ingress, Line) ->
         exit:_ -> ok
     end.
 
+-spec receive_remote_kill(binary(), binary(), none | iodata()) -> ok.
 receive_remote_kill(Peer, Nick, Reason) ->
     Server = local_server(),
     relay_except(Peer, ircd_wire:line(Server, <<"KILL">>, [Nick], Reason)),
@@ -1563,6 +1660,7 @@ receive_remote_kill(Peer, Nick, Reason) ->
     end,
     ircd_state_net:hold_nick(Nick).
 
+-spec propagate_invite(#client{}, iodata(), binary(), binary()) -> ok.
 propagate_invite(Client, Nick, Name, Peer) ->
     Line = iolist_to_binary(
         ircd_wire:line(ircd_state_send:prefix(Client), <<"INVITE">>, [Nick, Name], none)
@@ -1585,6 +1683,8 @@ propagate_invite(Client, Nick, Name, Peer) ->
     end,
     ok.
 
+-spec receive_remote_invite(binary(), binary(), binary(), binary()) ->
+    ok | {error, unknown_remote_nick}.
 receive_remote_invite(Peer, Prefix, Nick, Name) ->
     case remote_source(Peer, Prefix) of
         {ok, #remote_client{}} ->
@@ -1632,23 +1732,29 @@ remember_remote_invite_link(NickKey, Name) ->
             [Existing] -> Existing;
             [] -> #remote_channel{key = Key, name = Name}
         end,
-    mnesia:dirty_write(Channel#remote_channel{
-        invited = (Channel#remote_channel.invited)#{NickKey => true}
-    }).
+    mnesia:dirty_write(
+        ircd_wire:retain_fields(Channel#remote_channel{
+            invited = (Channel#remote_channel.invited)#{NickKey => true}
+        })
+    ).
 
+-spec propagate_topic(#client{}, iodata(), none | iodata()) -> ok.
 propagate_topic(Client, Name, Topic) ->
     server_broadcast(ircd_wire:line(ircd_state_send:prefix(Client), <<"TOPIC">>, [Name], Topic)).
 
+-spec propagate_channel_mode(#client{}, iodata(), iodata(), [iodata()]) -> ok.
 propagate_channel_mode(Client, Name, Mode, Args) ->
     server_broadcast(
         ircd_wire:line(ircd_state_send:prefix(Client), <<"MODE">>, [Name, Mode | Args], none)
     ).
 
+-spec propagate_channel_kick(#client{}, iodata(), iodata(), none | iodata()) -> ok.
 propagate_channel_kick(Client, Name, Nick, Reason) ->
     server_broadcast(
         ircd_wire:line(ircd_state_send:prefix(Client), <<"KICK">>, [Name, Nick], Reason)
     ).
 
+-spec propagate_join(#client{}, binary(), [term()]) -> ok.
 propagate_join(Client, Name, Roles) ->
     Server = maps:get(name, persistent_term:get({ircd_state, config})),
     server_broadcast(ircd_wire:line(ircd_state_send:prefix(Client), <<"JOIN">>, [Name], none)),
@@ -1831,6 +1937,9 @@ forward_lines_channel(Ingress, Name, Lines) ->
             ok
     end.
 
+-spec propagate_channel_message(binary(), none | iodata(), binary(), #client{}, [
+    {binary(), undefined | binary()}
+]) -> ok.
 propagate_channel_message(Name, Text, Command, Client, Tags) ->
     case mnesia:dirty_read(remote_channel, ircd_wire:fold(Name)) of
         [#remote_channel{members = Members}] ->

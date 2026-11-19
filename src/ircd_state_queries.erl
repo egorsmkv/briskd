@@ -2,9 +2,11 @@
 -export([ison/3, userhost/3, who/3, whois/3, whowas_options/1, whowas_reply/4]).
 -include("ircd_state.hrl").
 
+-spec who([binary()], #client{}, binary()) -> ok.
 who(Params, Client, Server) ->
     who_command(Params, Client, Server).
 
+-spec ison([binary()], #client{}, binary()) -> ok.
 ison(Nicks, Client, Server) ->
     Existing = [
         Actual
@@ -14,6 +16,7 @@ ison(Nicks, Client, Server) ->
     ],
     ircd_state:numeric(Client, Server, <<"303">>, [], lists:join(<<" ">>, Existing)).
 
+-spec userhost([term()], #client{}, binary()) -> ok.
 userhost(Nicks, Client, Server) ->
     Entries = lists:filtermap(
         fun(Nick) ->
@@ -523,6 +526,7 @@ whois_operator(Nick, Pid, Client, Server) ->
     end.
 
 %% Produce the local server's WHOIS numerics for one nickname mask.
+-spec whois(binary(), #client{}, binary()) -> ok.
 whois(Nick, Client, Server) ->
     case ircd_state:find_nick(Nick) of
         #client{
@@ -697,6 +701,7 @@ whois_channel_lines([Entry | Rest], Acc, _, Nick, Client, Server) ->
 emit_whois_channels(Entries, Nick, Client, Server) ->
     ircd_state:numeric(Client, Server, <<"319">>, [Nick], lists:join(<<" ">>, Entries)).
 
+-spec whowas_options([binary()]) -> {all | integer(), term()}.
 whowas_options([]) ->
     {all, undefined};
 whowas_options([Count | Rest]) ->
@@ -711,6 +716,7 @@ whowas_options([Count | Rest]) ->
         error:badarg -> {all, Target}
     end.
 
+-spec whowas_reply(binary(), all | integer(), #client{}, binary()) -> [binary()].
 whowas_reply(Nick, Count, Client, Server) ->
     Folded = ircd_wire:fold(Nick),
     History = lists:sort(

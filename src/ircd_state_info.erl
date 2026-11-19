@@ -19,6 +19,7 @@
 %% @doc Server query, operator, and statistics commands.
 
 %% Match an optional server argument against this server's configured name.
+-spec query_local_server([binary()], term()) -> true | {false, binary()}.
 query_local_server([], _) ->
     true;
 query_local_server([Target | _], Server) ->
@@ -27,6 +28,7 @@ query_local_server([Target | _], Server) ->
         false -> {false, Target}
     end.
 
+-spec trace([binary()], #client{}, binary()) -> ok.
 trace([], Client, Server) ->
     trace_server(Client, Server);
 trace([Target | _], Client, Server) ->
@@ -81,6 +83,7 @@ trace_user(#client{pid = Pid, nick = Nick}, Client, Server) ->
         end,
     ircd_state_send:numeric(Client, Server, Reply, [Label, <<"0">>, Nick], none).
 
+-spec users_disabled([binary()], #client{}, binary()) -> ok.
 users_disabled(Params, Client, Server) ->
     case query_local_server(Params, Server) of
         true ->
@@ -98,6 +101,7 @@ server_wallops(Text, Server) ->
         ],
     ircd_state_send:broadcast(Recipients, Server, <<"WALLOPS">>, [], Text).
 
+-spec stats([binary()], #client{}, binary()) -> ok.
 stats(Params, Client, Server) ->
     {Query, Target} =
         case Params of
@@ -202,6 +206,7 @@ report_stats(Query, Client, Server) ->
 two_digits(Value) when Value < 10 -> <<$0, ($0 + Value)>>;
 two_digits(Value) -> integer_to_binary(Value).
 
+-spec oper(binary(), binary(), #client{}, binary()) -> ok.
 oper(Name, Password, #client{pid = Pid} = Client, Server) ->
     Credentials = persistent_term:get({ircd_state, operators}, []),
     Fold = ircd_wire:fold(Name),
@@ -258,6 +263,7 @@ oper(Name, Password, #client{pid = Pid} = Client, Server) ->
             end
     end.
 
+-spec kill([binary()], #client{}, binary()) -> ok | quit.
 kill(Params, #client{pid = Pid} = Client, Server) ->
     case maps:is_key($o, ircd_state_client:user_modes(Pid)) of
         false ->
@@ -288,6 +294,7 @@ kill_target([Nick, Reason | _], Client, Server) ->
 kill_target(_, Client, Server) ->
     ircd_state_send:numeric(Client, Server, <<"461">>, [<<"KILL">>], <<"Not enough parameters">>).
 
+-spec rehash(#client{}, binary()) -> ok.
 rehash(#client{pid = Pid} = Client, Server) ->
     case maps:is_key($o, ircd_state_client:user_modes(Pid)) of
         false ->
@@ -387,6 +394,7 @@ apply_rehash(Config) ->
     ok = logger:update_handler_config(default, formatter, Formatter),
     ok = ircd_log:apply_level(maps:get(level, Config)).
 
+-spec admin([binary()], #client{}, binary()) -> ok.
 admin(Params, Client, Server) ->
     case admin_target(Params, Server) of
         {false, Target} ->
@@ -423,6 +431,7 @@ admin_target([Target | _], Server) ->
     end.
 
 %% Send the configured MOTD sequence, or the RFC missing-file response.
+-spec motd([binary()], #client{}, binary()) -> ok.
 motd(Params, Client, Server) ->
     case query_local_server(Params, Server) of
         {false, Target} ->
@@ -487,6 +496,7 @@ strip_cr(Line) ->
         _ -> Line
     end.
 
+-spec info([binary()], #client{}, binary()) -> ok.
 info(Params, Client, Server) ->
     case query_local_server(Params, Server) of
         {false, Target} ->
@@ -511,6 +521,7 @@ info(Params, Client, Server) ->
             ircd_state_send:numeric(Client, Server, <<"374">>, [], <<"End of INFO list">>)
     end.
 
+-spec links([binary()], #client{}, binary()) -> ok.
 links(Params, Client, Server) ->
     {Remote, Mask} =
         case Params of
@@ -583,6 +594,7 @@ get_count(Key) ->
         N -> N
     end.
 
+-spec lusers([binary()], #client{}, binary()) -> ok.
 lusers(Params, Client, Server) ->
     {Mask, Target} =
         case Params of

@@ -76,6 +76,24 @@ in the referenced RFC.
   long-lived Mnesia data in `docs/mnesia.md`.
 - [x] Add restart-level verification for each state category that is intended
   to persist.
+- [x] Resource bounds (implementation policy):
+  - A client whose outgoing queue passes `max_sendq` lines is disconnected
+    with `Max SendQ exceeded`. An outbound link that stops reading is
+    dropped after a 30 s send timeout or 50000 queued lines and reconnects.
+  - WHOWAS keeps the newest 10 entries per nickname and 10000 in all.
+  - Ban, exception, and invite lists hold 100 masks each (`MAXLIST=beI:100`,
+    ERR_BANLISTFULL 478); a peer's additions past that are dropped.
+  - Expired nickname and channel holds are deleted.
+  - `MARKREAD` targets must be a channel or a nickname.
+  - Mask matching is linear in mask times value length.
+  - Peer-supplied identities, topics, keys, and masks are copied before they
+    are stored, so they do not keep receive buffers alive.
+- [ ] Remaining bounds from the memory audit: an expiry or cap for empty safe
+  and retained channels (and a short-name index for safe JOIN), REGISTER rate
+  limits and an account cap, a per-account read-marker cap, pruning of
+  disconnected pids from `invited`, a cap and cleanup for open peer batches,
+  per-account direct-history conversation caps, and per-peer caps on
+  introduced users, servers, services, and metadata.
 
 ## Server protocol and linking (RFC 2813)
 

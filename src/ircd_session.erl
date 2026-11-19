@@ -40,13 +40,13 @@ handle_info(activate, {Kind, Socket, Peer} = State) ->
     end;
 handle_info({irc, Line}, {Kind, Socket, _, _, _} = State) ->
     Module = transport(Kind),
-    mirror(Line),
-    case Module:send(Socket, outgoing(Line)) of
-        ok ->
-            {noreply, State};
-        {error, Reason} ->
-            logger:debug(#{event => send_failed, peer => peer_of(State), reason => Reason}),
-            {stop, normal, State}
+    case sendq_exceeded() of
+        {true, Queued} ->
+            logger:warning(#{event => sendq_exceeded, peer => peer_of(State), queued => Queued}),
+            _ = Module:send(Socket, closing_link(<<"Max SendQ exceeded">>)),
+            {stop, normal, State};
+        false ->
+            deliver(Module, Socket, Line, State)
     end;
 handle_info({irc_close, Line}, {Kind, Socket, _, _, _} = State) ->
     Module = transport(Kind),
@@ -159,6 +159,35 @@ redact_state({Kind, Socket, Peer, Buffer, {server_pass, _Password}}) ->
     {Kind, Socket, Peer, Buffer, {server_pass, redacted}};
 redact_state(State) ->
     State.
+
+%% A client that reads slower than lines arrive builds up this mailbox; past
+%% `max_sendq` queued lines it is disconnected, as IRC servers do for SendQ.
+sendq_exceeded() ->
+    Limit = maps:get(max_sendq, persistent_term:get({ircd_state, config}, #{}), 10000),
+    case process_info(self(), message_queue_len) of
+        {message_queue_len, Queued} when Queued > Limit -> {true, Queued};
+        _ -> false
+    end.
+
+deliver(Module, Socket, Line, State) ->
+    mirror(Line),
+    case Module:send(Socket, outgoing(Line)) of
+        ok ->
+            {noreply, State};
+        {error, Reason} ->
+            logger:debug(#{event => send_failed, peer => peer_of(State), reason => Reason}),
+            {stop, normal, State}
+    end.
+
+closing_link(Reason) ->
+    Server = maps:get(name, persistent_term:get({ircd_state, config}, #{}), <<"irc.local">>),
+    outgoing(
+        iolist_to_binary(
+            ircd_wire:line(Server, <<"ERROR">>, [], [
+                <<"Closing Link: ">>, Server, <<" (">>, Reason, <<")">>
+            ])
+        )
+    ).
 
 terminate(_, {_, _, Peer, _, {server, _}}) ->
     ok = ircd_state:server_disconnect(Peer);

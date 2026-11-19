@@ -12,6 +12,7 @@
     parse_server/1,
     partial/1,
     retain/1,
+    retain_fields/1,
     safe_channel/1
 ]).
 
@@ -269,14 +270,14 @@ params(_, _, _) ->
 -spec message(
     [{binary(), undefined | binary()}], iodata(), iodata(), [iodata()], none | iodata()
 ) ->
-    iodata().
+    iolist().
 message([], Prefix, Command, Middle, Trailing) ->
     line(Prefix, Command, Middle, Trailing);
 message(Tags, Prefix, Command, Middle, Trailing) ->
     [encode_tags(Tags), line(Prefix, Command, Middle, Trailing)].
 
 %% @doc Encode an IRC message, enforcing the protocol's 512-byte line limit.
--spec line(iodata(), iodata(), [iodata()], none | iodata()) -> iodata().
+-spec line(iodata(), iodata(), [iodata()], none | iodata()) -> iolist().
 line(Prefix, Command, Middle, Trailing) ->
     Head = iolist_to_binary([
         <<":">>,
@@ -301,6 +302,13 @@ line(Prefix, Command, Middle, Trailing) ->
 
 %% @doc Copy a binary that will outlive the socket buffer it was sliced from.
 %% Other terms are returned unchanged. Short-lived relay text should not be copied.
+%% @doc Copy every top-level binary field of a record (or other tuple), so a
+%% row built from a parsed peer line does not keep the receive buffer alive.
+%% Nested maps and lists are left as they are; copy those at insertion.
+-spec retain_fields(T) -> T when T :: tuple().
+retain_fields(Record) when is_tuple(Record) ->
+    list_to_tuple([retain(Field) || Field <- tuple_to_list(Record)]).
+
 -spec retain(term()) -> term().
 retain(Value) when is_binary(Value) -> binary:copy(Value);
 retain(Value) -> Value.

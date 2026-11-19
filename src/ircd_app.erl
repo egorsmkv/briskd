@@ -23,7 +23,7 @@ start(_, _) ->
                             }),
                             {ok, Pid, {Previous, Primary, StartedMnesia}};
                         Error ->
-                            stop({Previous, Primary, StartedMnesia}),
+                            ok = stop({Previous, Primary, StartedMnesia}),
                             Error
                     end;
                 {error, Reason} ->
@@ -50,10 +50,12 @@ prep_stop(State) ->
 stop({Previous, Primary, StartedMnesia}) ->
     ok = logger:set_primary_config(level, Primary),
     ok = logger:update_handler_config(default, Previous),
-    case StartedMnesia of
-        true -> application:stop(mnesia);
-        false -> ok
-    end.
+    _ =
+        case StartedMnesia of
+            true -> application:stop(mnesia);
+            false -> ok
+        end,
+    ok.
 
 start_mnesia(Dir) ->
     case application:which_applications() of

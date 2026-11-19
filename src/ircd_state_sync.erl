@@ -211,6 +211,14 @@ markread_line(Account, Target, Time) ->
 %% @doc Apply a read marker from a peer when it is newer, and relay it.
 -spec receive_markread(binary(), undefined | binary(), [binary()]) -> ok | {error, term()}.
 receive_markread(Peer, Prefix, [Account, Target, Raw | _]) ->
+    case ircd_state_history:valid_marker_target(Target) of
+        true -> receive_valid_markread(Peer, Prefix, Account, Target, Raw);
+        false -> {error, invalid_markread}
+    end;
+receive_markread(_, _, _) ->
+    {error, invalid_markread}.
+
+receive_valid_markread(Peer, Prefix, Account, Target, Raw) ->
     try binary_to_integer(Raw) of
         Time ->
             case ircd_state_history:remote_marker(Account, Target, Time) of
@@ -224,9 +232,7 @@ receive_markread(Peer, Prefix, [Account, Target, Raw | _]) ->
             ok
     catch
         error:badarg -> {error, invalid_markread}
-    end;
-receive_markread(_, _, _) ->
-    {error, invalid_markread}.
+    end.
 
 server() ->
     maps:get(name, persistent_term:get({ircd_state, config})).

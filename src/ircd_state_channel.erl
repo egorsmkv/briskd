@@ -36,6 +36,7 @@
 %% Last local member left. Safe channels always remain. Ordinary channels remain
 %% when retention is `channels` or the channel is in the configured list, so
 %% a predefined channel stays available after the last member leaves.
+-spec release_if_empty(#channel{}, term()) -> ok.
 release_if_empty(#channel{name = <<$!, _/binary>>} = Channel, Remaining) ->
     mnesia:dirty_write(track_opless(Channel, Remaining));
 release_if_empty(#channel{key = Key} = Channel, Remaining) ->
@@ -50,6 +51,7 @@ release_if_empty(#channel{key = Key} = Channel, Remaining) ->
 
 %% An administrator who is already on a predefined channel becomes its
 %% channel operator when OPER succeeds. `+` channels stay modeless.
+-spec grant_predefined_operator(#client{}, binary()) -> ok.
 grant_predefined_operator(#client{pid = Pid}, Server) ->
     case ircd_state:administrator(Pid) of
         false ->
@@ -92,6 +94,7 @@ grant_predefined_row(
             ircd_state_link:propagate_channel_mode(Client, Channel#channel.name, <<"+o">>, [Nick])
     end.
 
+-spec track_opless(#channel{}, #{pid() => [creator | member | operator | voice]}) -> #channel{}.
 track_opless(#channel{} = Channel, Remaining) ->
     HasOperator = lists:any(
         fun(Roles) -> lists:member(operator, Roles) end,
@@ -111,6 +114,7 @@ next_reop_time() ->
     Delay = persistent_term:get({ircd_state, reop_delay}, 30),
     erlang:monotonic_time(second) + Delay + rand:uniform(Delay).
 
+-spec reop_channels(binary()) -> ok.
 reop_channels(Server) ->
     lists:foreach(
         fun(Key) ->
@@ -190,6 +194,7 @@ pick_member(Iterator, Seen, Chosen, Pids) ->
                 end,
             pick_member(Next, Seen1, Chosen1, [Pid | Pids])
     end.
+-spec join_channels([binary()], term(), term(), term()) -> ok.
 join_channels([], _, _, _) ->
     ok;
 join_channels([Name | Names], Keys, Pid, Server) ->
@@ -408,9 +413,11 @@ finish_join(
     ircd_state_meta:on_join(Key, Client, Server),
     replay_channel_history(Key, Canonical, Pid).
 
+-spec leave(binary(), #client{}, binary(), none | iodata(), boolean()) -> ok.
 leave(Key, Client, Command, Reason, Notify) ->
     leave(Key, Client, Command, Reason, Notify, Notify).
 
+-spec leave(binary(), #client{}, binary(), none | iodata(), boolean(), boolean()) -> ok.
 leave(Key, #client{pid = Pid} = Client, Command, Reason, Notify, Propagate) ->
     [#channel{name = Name, members = Members, flags = Flags} = Channel] =
         mnesia:dirty_read(channel, Key),
@@ -458,6 +465,7 @@ leave(Key, #client{pid = Pid} = Client, Command, Reason, Notify, Propagate) ->
     Current = ircd_state_client:client(Pid),
     mnesia:dirty_write(Current#client{channels = lists:delete(Key, Current#client.channels)}).
 
+-spec kick(term(), [binary()], term(), term(), term()) -> ok.
 kick(_, [], _, _, _) ->
     ok;
 kick(Name, [Nick | Nicks], Reason, #client{pid = Pid} = Client, Server) ->
@@ -549,6 +557,7 @@ kick_member(
                     kick(Canonical, Nicks, Reason, Client, Server)
             end
     end.
+-spec nick_recipients(#client{}) -> [term(), ...].
 nick_recipients(#client{pid = Pid, channels = Channels}) ->
     lists:usort([
         Pid
@@ -571,6 +580,7 @@ channel_origin_prefix(_, Client) ->
 %% Route PRIVMSG/NOTICE/TAGMSG to nicknames and channels, applying channel restrictions.
 %% Client-only tags are relayed. Each delivered message gets a `msgid` and a
 %% `time` tag (filtered per recipient by capability). TAGMSG has no text body.
+-spec deliver(binary(), [binary()], #client{}, binary(), [{binary(), undefined | binary()}]) -> ok.
 deliver(Command, Params, #client{pid = Pid} = Client, Server, Tags) ->
     ClientTags =
         case ircd_cap:enabled(Pid, <<"message-tags">>) of
@@ -615,6 +625,7 @@ deliver_targets(Targets, Text, Command, Client, Server, Tags) ->
 
 %% @doc Deliver one message body to one target. `Body` is a binary, `none`
 %% for TAGMSG, or `{multiline, Lines}` from a draft/multiline batch.
+-spec deliver_body(binary(), binary(), term(), #client{}, binary(), term()) -> ok.
 deliver_body(Command, Target, Body, #client{pid = Pid} = Client, Server, ClientTags) ->
     MsgId = ircd_state_send:msgid(),
     Now = erlang:system_time(millisecond),
@@ -775,9 +786,13 @@ message_error(_, Client, Server, Number, Middle, Text) ->
 
 %% Remember an accepted channel PRIVMSG or NOTICE from a peer. The body is not
 %% logged. `Tags` may carry the peer's `msgid` and `time`.
+-spec note_channel_history(binary(), binary(), undefined | binary(), none | iodata()) -> ok.
 note_channel_history(Key, Command, Prefix, Text) ->
     note_channel_history(Key, Command, Prefix, Text, []).
 
+-spec note_channel_history(binary(), binary(), undefined | binary(), none | iodata(), [
+    {binary(), undefined | binary()}
+]) -> ok.
 note_channel_history(Key, Command, Prefix, Text, Tags) when is_binary(Text) ->
     MsgId =
         case lists:keyfind(<<"msgid">>, 1, Tags) of
@@ -810,6 +825,7 @@ note_channel_history(_Key, _Command, _Prefix, _Text, _Tags) ->
 replay_channel_history(Key, Name, Pid) ->
     ircd_state_history:replay_on_join(Key, Name, Pid).
 
+-spec topic(binary(), term(), #client{}, binary()) -> ok.
 topic(Name, Rest, #client{pid = Pid} = Client, Server) ->
     case mnesia:dirty_read(channel, ircd_wire:fold(Name)) of
         [#channel{name = Canonical, members = Members, flags = Flags} = Channel] ->
@@ -866,7 +882,9 @@ topic(Name, Rest, #client{pid = Pid} = Client, Server) ->
                         {false, []} ->
                             topic_reply(
                                 #channel{
-                                    name = Canonical, topic = maps:get(topic, RemoteFlags, <<>>)
+                                    key = ircd_wire:fold(Canonical),
+                                    name = Canonical,
+                                    topic = maps:get(topic, RemoteFlags, <<>>)
                                 },
                                 Client,
                                 Server
@@ -920,6 +938,7 @@ topic_reply(#channel{name = Name, topic = Topic} = Channel, Client, Server) ->
         end,
     ircd_state_send:numeric(Client, Server, <<"333">>, [Name, By, integer_to_binary(At)], none).
 
+-spec names(binary(), #client{}, binary()) -> ok.
 names(Name, Client, Server) ->
     Canonical =
         case mnesia:dirty_read(channel, ircd_wire:fold(Name)) of
@@ -989,6 +1008,7 @@ names(Name, Client, Server) ->
         end,
     ircd_state_send:numeric(Client, Server, <<"366">>, [Canonical], <<"End of NAMES list">>).
 
+-spec names_listing(binary(), #client{}, binary()) -> ok.
 names_listing(Key, Client, Server) ->
     case mnesia:dirty_read(channel, Key) of
         [#channel{name = Name, members = Members, flags = Flags}] ->
@@ -1034,6 +1054,7 @@ names_listing(Key, Client, Server) ->
 
 nick_less(Left, Right) -> ircd_wire:fold(Left) =< ircd_wire:fold(Right).
 
+-spec names_unattached(#client{}, binary()) -> ok.
 names_unattached(#client{pid = RequesterPid}, Server) ->
     Requester = ircd_state_client:client(RequesterPid),
     Entries = lists:sort([
@@ -1048,6 +1069,7 @@ names_unattached(#client{pid = RequesterPid}, Server) ->
     ]),
     names_lines(Entries, [], 0, <<"*">>, Requester, Server).
 
+-spec visible_member(pid(), #client{}, map()) -> boolean().
 visible_member(Pid, Requester, Members) ->
     maps:is_key(Requester#client.pid, Members) orelse
         case mnesia:dirty_read(client, Pid) of
@@ -1055,6 +1077,7 @@ visible_member(Pid, Requester, Members) ->
             [] -> false
         end.
 
+-spec names_lines([binary()], [term()], term(), term(), term(), term()) -> ok.
 names_lines([], [], _, _, _, _) ->
     ok;
 names_lines([], Acc, _, Name, Client, Server) ->
@@ -1112,51 +1135,56 @@ role_prefix(Roles, Requester) ->
 %% advertised as EXTBAN=$,a and ACCOUNTEXTBAN=a) matches a logged-in user by
 %% account name with wildcards and RFC 1459 folding; `$a` alone matches any
 %% logged-in user. Other masks match `nick!user@host`.
-mask_matches(
-    #channel{lists = Lists}, Type, #client{nick = Nick, user = User, host = Host} = Client
-) ->
+%% A local client or a remote user matches a ban, exception, or invite mask by
+%% nick!user@host, or by account for the `$a` extban.
+-spec mask_matches(#channel{}, ban | exception | invite, #client{} | #remote_client{}) ->
+    boolean().
+mask_matches(Channel, Type, #client{pid = Pid, nick = Nick, user = User, host = Host}) ->
+    identity_matches(Channel, Type, Nick, User, Host, fun() -> ircd_state_v3:account(Pid) end);
+mask_matches(Channel, Type, #remote_client{key = Key, nick = Nick, user = User, host = Host}) ->
+    identity_matches(Channel, Type, Nick, User, Host, fun() ->
+        ircd_state_v3:remote_account(Key)
+    end).
+
+identity_matches(#channel{lists = Lists}, Type, Nick, User, Host, Account) ->
     Identity = <<Nick/binary, "!", User/binary, "@", Host/binary>>,
     lists:any(
         fun
             (<<"$a:", AccountMask/binary>>) ->
-                case identity_account(Client) of
+                case Account() of
                     undefined -> false;
-                    Account -> wildcard_match(AccountMask, Account)
+                    Name -> wildcard_match(AccountMask, Name)
                 end;
             (<<"$a">>) ->
-                identity_account(Client) =/= undefined;
+                Account() =/= undefined;
             (Mask) ->
                 wildcard_match(Mask, Identity)
         end,
         maps:get(Type, Lists, [])
     ).
 
-identity_account(#client{pid = Pid}) when is_pid(Pid) ->
-    ircd_state_v3:account(Pid);
-identity_account(#client{nick = Nick}) ->
-    ircd_state_v3:remote_account(ircd_wire:fold(Nick)).
-
+%% @doc Match an IRC mask (`*` any run, `?` one octet) against a value under
+%% the RFC 1459 case mapping. On a mismatch the scan resumes from the most
+%% recent `*`, so the cost is O(byte_size(Mask) * byte_size(Value)) even for
+%% hostile masks such as `*a*a*a*a*b` (no exponential backtracking).
+-spec wildcard_match(binary(), binary()) -> boolean().
 wildcard_match(Mask, Value) ->
-    wildcard_match_chars(
-        binary_to_list(ircd_wire:fold(Mask)),
-        binary_to_list(ircd_wire:fold(Value))
-    ).
+    glob(ircd_wire:fold(Mask), ircd_wire:fold(Value), none).
 
-wildcard_match_chars([], []) ->
+glob(<<>>, <<>>, _Star) ->
     true;
-wildcard_match_chars([$* | Mask], Value) ->
-    wildcard_match_chars(Mask, Value) orelse
-        case Value of
-            [] -> false;
-            [_ | Rest] -> wildcard_match_chars([$* | Mask], Rest)
-        end;
-wildcard_match_chars([$? | Mask], [_ | Value]) ->
-    wildcard_match_chars(Mask, Value);
-wildcard_match_chars([Char | Mask], [Char | Value]) ->
-    wildcard_match_chars(Mask, Value);
-wildcard_match_chars(_, _) ->
+glob(<<$*, Mask/binary>>, Value, _Star) ->
+    glob(Mask, Value, {Mask, Value});
+glob(<<$?, Mask/binary>>, <<_, Value/binary>>, Star) ->
+    glob(Mask, Value, Star);
+glob(<<Char, Mask/binary>>, <<Char, Value/binary>>, Star) ->
+    glob(Mask, Value, Star);
+glob(_Mask, _Value, {StarMask, <<_, StarValue/binary>>}) ->
+    glob(StarMask, StarValue, {StarMask, StarValue});
+glob(_Mask, _Value, _Star) ->
     false.
 
+-spec knock(binary(), [binary()], #client{}, binary()) -> ok.
 knock(Name, ReasonParams, #client{pid = Pid} = Client, Server) ->
     Reason =
         case ReasonParams of
@@ -1219,6 +1247,7 @@ knock(Name, ReasonParams, #client{pid = Pid} = Client, Server) ->
             end
     end.
 
+-spec invite(binary(), binary(), #client{}, binary()) -> ok.
 invite(Nick, Name, #client{pid = Pid} = Client, Server) ->
     Found =
         case ircd_state_client:find_nick(Nick) of
@@ -1363,6 +1392,7 @@ invite_origin_prefix(Channel, Client) ->
     end.
 
 %% Route MODE to a channel or to the requesting user's supported modes.
+-spec mode_command(binary(), term(), #client{}, binary()) -> ok.
 mode_command(Target, Rest, Client, Server) ->
     case ircd_wire:channel(Target) of
         true -> channel_mode(Target, Rest, Client, Server);
@@ -1398,6 +1428,7 @@ user_mode(Target, Rest, #client{pid = Pid} = Client, Server) ->
             end
     end.
 
+-spec user_mode_string(map()) -> binary().
 user_mode_string(Modes) ->
     list_to_binary([$+ | lists:sort(maps:keys(Modes))]).
 
@@ -1678,7 +1709,7 @@ mode_authorized($a, _Action, _, _) ->
 mode_authorized(_, _, _, _) ->
     true.
 
-apply_mode(Mode, Action, Args, #channel{lists = Lists} = Channel) when
+apply_mode(Mode, Action, Args, #channel{name = Name, lists = Lists} = Channel) when
     Mode =:= $b; Mode =:= $e; Mode =:= $I
 ->
     Type =
@@ -1689,6 +1720,13 @@ apply_mode(Mode, Action, Args, #channel{lists = Lists} = Channel) when
         end,
     Existing = maps:get(Type, Lists, []),
     case Args of
+        [Mask | Tail] when Action =:= add, length(Existing) >= ?MAX_LIST_ENTRIES ->
+            case lists:member(Mask, Existing) of
+                true ->
+                    {ok, Channel, Tail, []};
+                false ->
+                    {error, <<"478">>, [Name, <<Mode>>], <<"Channel list is full">>, Tail}
+            end;
         [Mask | Tail] ->
             StoredMask = ircd_wire:retain(Mask),
             NewList =
@@ -1796,6 +1834,7 @@ apply_mode(Mode, _, [], _) when Mode =:= $k; Mode =:= $l; Mode =:= $o; Mode =:= 
     {error, <<"461">>, [<<"MODE">>], <<"Not enough parameters">>, []};
 apply_mode(Mode, _, Args, _) ->
     {error, <<"472">>, [<<Mode>>], <<"Unknown mode character">>, Args}.
+-spec split(binary()) -> [binary()].
 split(Value) -> binary:split(Value, <<",">>, [global, trim_all]).
 
 %% ERR_INVALIDMODEPARAM (696) for a channel key that is empty, too long, or
@@ -1818,6 +1857,7 @@ param_token(Value) ->
 %% `!` channels and channels shared with a server link cannot be renamed.
 %% channel-rename clients see RENAME; other members see PART, then JOIN with
 %% the topic and names burst. A case-only rename sends no fallback.
+-spec rename(term(), #client{}, binary()) -> ok.
 rename([Old, New | Rest], #client{pid = Pid} = Client, Server) ->
     Reason =
         case Rest of

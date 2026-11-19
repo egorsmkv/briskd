@@ -62,7 +62,7 @@ tls_upgraded(Info) -> gen_server:call(?MODULE, {tls_upgraded, Info}).
 
 %% @doc Apply a parsed IRC command on behalf of the calling session.
 %% Params contains the command's tokenized parameters and Bytes is the wire line size.
--spec command(binary(), [binary()], non_neg_integer()) -> ok | quit.
+-spec command(binary(), [binary()], non_neg_integer()) -> ok | quit | starttls.
 command(Command, Params, Bytes) -> command(Command, Params, Bytes, []).
 
 %% @doc Apply a client command that may carry IRCv3 message tags.
@@ -138,8 +138,12 @@ init(#{name := Name} = Config) ->
     persistent_term:put({?MODULE, started}, Started),
     persistent_term:put({?MODULE, started_at}, erlang:monotonic_time(second)),
     persistent_term:put({?MODULE, started_at_system}, erlang:system_time(second)),
-    ets:new(ircd_command_stats, [named_table, public, set, {write_concurrency, true}]),
-    ets:new(ircd_connection_stats, [named_table, public, set, {write_concurrency, true}]),
+    ircd_command_stats = ets:new(ircd_command_stats, [
+        named_table, public, set, {write_concurrency, true}
+    ]),
+    ircd_connection_stats = ets:new(ircd_connection_stats, [
+        named_table, public, set, {write_concurrency, true}
+    ]),
     ensure_ets(ircd_caps),
     ensure_ets(ircd_nicks),
     ensure_ets(ircd_inbound_peers),
@@ -239,7 +243,8 @@ replace_table(Table, Fields, Options) ->
 ensure_disc_copy(Table) ->
     case mnesia:table_info(Table, storage_type) of
         ram_copies ->
-            {atomic, ok} = mnesia:change_table_copy_type(Table, node(), disc_copies);
+            {atomic, ok} = mnesia:change_table_copy_type(Table, node(), disc_copies),
+            ok;
         disc_copies ->
             ok
     end.
@@ -333,17 +338,21 @@ pads(remote_client, Missing, _Default) when Missing >= 2 ->
 pads(_Table, Missing, Default) ->
     lists:duplicate(Missing, Default).
 
+-spec ensure_bag(atom()) -> ok.
 ensure_bag(Name) ->
     case ets:whereis(Name) of
-        undefined -> ets:new(Name, [named_table, public, bag]);
-        _ -> ets:delete_all_objects(Name)
-    end.
+        undefined -> Name = ets:new(Name, [named_table, public, bag]);
+        _ -> true = ets:delete_all_objects(Name)
+    end,
+    ok.
 
+-spec ensure_ets(atom()) -> ok.
 ensure_ets(Name) ->
     case ets:whereis(Name) of
-        undefined -> ets:new(Name, [named_table, public, set]);
-        _ -> ets:delete_all_objects(Name)
-    end.
+        undefined -> Name = ets:new(Name, [named_table, public, set]);
+        _ -> true = ets:delete_all_objects(Name)
+    end,
+    ok.
 
 reset_channels() ->
     case retention() of
@@ -367,7 +376,8 @@ reset_channels() ->
                     end
                 end,
                 mnesia:dirty_all_keys(channel_history)
-            );
+            ),
+            ok;
         transient ->
             lists:foreach(
                 fun(Key) ->
@@ -383,7 +393,8 @@ reset_channels() ->
                 mnesia:dirty_all_keys(channel)
             ),
             {atomic, ok} = mnesia:clear_table(channel_history),
-            {atomic, ok} = mnesia:clear_table(direct_history)
+            {atomic, ok} = mnesia:clear_table(direct_history),
+            ok
     end.
 
 cleared_membership(Channel) ->
@@ -745,6 +756,7 @@ handle_info({flush_netjoin, Peer}, Server) ->
     {noreply, Server};
 handle_info(reop_tick, Server) ->
     ircd_state_channel:reop_channels(Server),
+    ok = ircd_state_net:expire_holds(),
     erlang:send_after(1000, self(), reop_tick),
     {noreply, Server};
 %% Ignore unknown messages. Reop and session DOWN are the only expected info events.
@@ -1430,12 +1442,13 @@ remember_wanted_nick(_Client, _Nick) ->
 count_command(Pid, Command, MessageBytes) ->
     case supported_command(Command) of
         true ->
-            ets:update_counter(
+            _ = ets:update_counter(
                 ircd_command_stats,
                 Command,
                 [{2, 1}, {3, MessageBytes}],
                 {Command, 0, 0}
-            );
+            ),
+            ok;
         false ->
             ok
     end,
@@ -1512,21 +1525,30 @@ supported_command(Command) ->
 
 %% Public lookups and replies used by query handlers. The implementations
 %% live with the state they read.
+-spec find_nick(binary()) -> undefined | #client{}.
 find_nick(A0) -> ircd_state_client:find_nick(A0).
 
+-spec ready(#client{}) -> boolean().
 ready(A0) -> ircd_state_client:ready(A0).
 
+-spec user_modes(term()) -> #{char() => true}.
 user_modes(A0) -> ircd_state_client:user_modes(A0).
 
+-spec user_visible(#client{}, #client{}) -> boolean().
 user_visible(A0, A1) -> ircd_state_client:user_visible(A0, A1).
 
+-spec visible_member(term(), #client{}, map()) -> boolean().
 visible_member(A0, A1, A2) -> ircd_state_channel:visible_member(A0, A1, A2).
 
+-spec wildcard_match(binary(), binary()) -> boolean().
 wildcard_match(A0, A1) -> ircd_state_channel:wildcard_match(A0, A1).
 
+-spec remote_channel_flags(binary()) -> #{atom() | char() => term()}.
 remote_channel_flags(A0) -> ircd_state_link:remote_channel_flags(A0).
 
+-spec remote_user_visible_to_requester(term(), map(), term()) -> boolean().
 remote_user_visible_to_requester(A0, A1, A2) ->
     ircd_state_link:remote_user_visible_to_requester(A0, A1, A2).
 
+-spec numeric(#client{}, term(), term(), term(), term()) -> ok.
 numeric(A0, A1, A2, A3, A4) -> ircd_state_send:numeric(A0, A1, A2, A3, A4).

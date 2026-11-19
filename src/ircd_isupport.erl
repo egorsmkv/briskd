@@ -28,6 +28,7 @@ tokens() ->
         <<"CHATHISTORY=", History/binary>>,
         <<"EXTBAN=$,a">>,
         <<"KICKLEN=390">>,
+        <<"MAXLIST=beI:", (integer_to_binary(?MAX_LIST_ENTRIES))/binary>>,
         <<"METADATA=50">>,
         <<"MONITOR=", (integer_to_binary(maps:get(monitor_limit, Config, 100)))/binary>>,
         <<"MSGREFTYPES=timestamp,msgid">>,

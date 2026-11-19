@@ -10,6 +10,12 @@
     format_status/1
 ]).
 
+%% A blocked send to the peer fails after this many milliseconds and closes
+%% the socket; the worker then reconnects with its backoff.
+-define(SEND_TIMEOUT_MS, 30000).
+%% Lines queued for the peer before the link is dropped and reconnected.
+-define(MAX_SENDQ, 50000).
+
 %% @doc Start an outbound RFC 2813 peer connection worker.
 -spec start_link(map(), map()) -> gen_server:start_ret().
 start_link(Config, Peer) -> gen_server:start_link(?MODULE, {Config, Peer}, []).
@@ -47,9 +53,15 @@ handle_continue(connect, State) ->
 
 handle_call(_, _, State) -> {reply, {error, unsupported}, State}.
 handle_cast({send, Line}, #{phase := authenticated, kind := Kind, socket := Socket} = State) ->
-    case send(Kind, Socket, Line) of
-        ok -> {noreply, State};
-        {error, Reason} -> retry(State, {send_failed, Reason})
+    %% A peer that stops reading must not let relayed lines pile up here.
+    case process_info(self(), message_queue_len) of
+        {message_queue_len, Queued} when Queued > ?MAX_SENDQ ->
+            retry(State, {sendq_exceeded, Queued});
+        _ ->
+            case send(Kind, Socket, Line) of
+                ok -> {noreply, State};
+                {error, Reason} -> retry(State, {send_failed, Reason})
+            end
     end;
 handle_cast(connect_now, #{phase := disconnected, timer_gen := Gen} = State) ->
     cancel_timer(maps:get(reconnect_timer, State, undefined)),
@@ -147,6 +159,8 @@ connect(#{peer := #{host := Host, port := Port, tls := true}} = State) ->
         binary,
         {packet, raw},
         {active, false},
+        {send_timeout, ?SEND_TIMEOUT_MS},
+        {send_timeout_close, true},
         {verify, verify_peer},
         {cacerts, public_key:cacerts_get()},
         {server_name_indication, HostName},
@@ -166,7 +180,15 @@ connect(#{peer := #{host := Host, port := Port}} = State) ->
         port => Port,
         tls => false
     }),
-    Options = [binary, {packet, raw}, {active, false}, {nodelay, true}, {keepalive, true}],
+    Options = [
+        binary,
+        {packet, raw},
+        {active, false},
+        {nodelay, true},
+        {keepalive, true},
+        {send_timeout, ?SEND_TIMEOUT_MS},
+        {send_timeout_close, true}
+    ],
     case gen_tcp:connect(binary_to_list(Host), Port, Options, 10000) of
         {ok, Socket} -> {ok, State#{kind => tcp, socket => Socket}};
         {error, Reason} -> {error, Reason}
@@ -350,7 +372,7 @@ retry(State, Reason) ->
         _ -> ok
     end,
     cancel_timers(State),
-    close(State),
+    _ = close(State),
     Gen = maps:get(timer_gen, State) + 1,
     Reconnect = erlang:send_after(5000, self(), {reconnect, Gen}),
     {noreply, State#{
@@ -381,7 +403,7 @@ cancel_timers(State) ->
 cancel_timer(undefined) ->
     ok;
 cancel_timer(Ref) when is_reference(Ref) ->
-    erlang:cancel_timer(Ref),
+    _ = erlang:cancel_timer(Ref),
     ok.
 
 peer_name(#{peer := Peer}) -> maps:get(name, Peer, <<"unknown">>).

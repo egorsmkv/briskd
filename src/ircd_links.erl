@@ -3,9 +3,11 @@
 -export([connect_peer/1, send/2, send_all/1, send_except/2, start_link/1, init/1]).
 
 %% @doc Supervise one outbound connector for each configured server peer.
+-spec start_link(map()) -> supervisor:startlink_ret().
 start_link(Config) -> supervisor:start_link({local, ?MODULE}, ?MODULE, Config).
 
 %% @doc Ask one configured outbound peer to connect or reconnect.
+-spec connect_peer(binary()) -> ok | {error, peer_unavailable}.
 connect_peer(Name) ->
     case outbound_pid(Name) of
         {ok, Pid} ->
@@ -16,6 +18,7 @@ connect_peer(Name) ->
     end.
 
 %% @doc Send an already encoded server message to one authenticated peer.
+-spec send(binary(), iodata()) -> ok | {error, peer_unavailable}.
 send(Peer, Line) ->
     Fold = ircd_wire:fold(Peer),
     case ets:lookup(ircd_outbound_ready, Fold) of
@@ -33,10 +36,12 @@ send(Peer, Line) ->
     end.
 
 %% @doc Send a server message to each authenticated peer, outbound or inbound.
+-spec send_all(iodata()) -> ok.
 send_all(Line) ->
     send_except(undefined, Line).
 
 %% @doc Send a server message to every peer except the named ingress link.
+-spec send_except(undefined | binary(), iodata()) -> ok.
 send_except(Except, Line) ->
     ExceptFold =
         case Except of
