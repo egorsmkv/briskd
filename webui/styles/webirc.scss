@@ -1190,7 +1190,21 @@ body.layout-mobile {
   }
 }
 
-/* RTL (Hebrew) layout adjustments */
+/* RTL (Hebrew) layout & bidirectional text adjustments */
+.msg-text {
+  unicode-bidi: plaintext;
+}
+
+.msg-time,
+.msg-nick,
+.my-nick,
+.member-name,
+.member-role,
+.head-title,
+.buf-name > span:not(.buf-lock) {
+  unicode-bidi: isolate;
+}
+
 :root[dir="rtl"] {
   .sidebar-left {
     border-right: none;
@@ -1199,6 +1213,13 @@ body.layout-mobile {
   .sidebar-right {
     border-left: none;
     border-right: 1px solid var(--border);
+  }
+  .msg.sys,
+  .msg.action,
+  .msg.notice,
+  .msg.err {
+    padding-left: 8px;
+    padding-right: 10px;
   }
   .msg.grouped {
     padding-left: 8px;
@@ -1222,10 +1243,15 @@ body.layout-mobile {
     margin-left: 0;
     margin-right: 6px;
   }
+  .e2ee-fp,
+  .peer-sn {
+    text-align: left;
+  }
   .theme-swatch {
     text-align: right;
   }
   body.density-compact .msg.grouped {
+    padding-left: 8px;
     padding-right: 8px;
   }
   body.layout-mobile .sidebar-left {

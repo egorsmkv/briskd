@@ -719,6 +719,7 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
     row.appendChild(t);
     const body = document.createElement("span");
     body.className = "msg-text";
+    body.dir = "auto";
     body.textContent = entry.text;
     row.appendChild(body);
   } else if (grouped) {
@@ -728,6 +729,7 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
     row.appendChild(t);
     const body = document.createElement("span");
     body.className = "msg-text";
+    body.dir = "auto";
     body.textContent = entry.text;
     row.appendChild(body);
   } else {
@@ -768,6 +770,7 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
 
     const body = document.createElement("div");
     body.className = "msg-text";
+    body.dir = "auto";
     body.textContent = entry.text;
 
     col.appendChild(meta);
@@ -818,11 +821,12 @@ function switchBuf(key: string): void {
   activeBuf = key;
   buf.unread = 0;
   buf.mentions = 0;
-  $("active-title").textContent = buf.name === "*status"
-    ? t("status.title")
-    : buf.name;
-  $("active-topic").textContent = buf.topic ||
-    (isChan(buf.name) ? t("topic.none") : "");
+  const titleEl = $("active-title");
+  titleEl.dir = buf.name === "*status" ? "auto" : "ltr";
+  titleEl.textContent = buf.name === "*status" ? t("status.title") : buf.name;
+  const topicEl = $("active-topic");
+  topicEl.dir = "auto";
+  topicEl.textContent = buf.topic || (isChan(buf.name) ? t("topic.none") : "");
   $("btn-topic").style.display = isChan(buf.name) ? "inline-flex" : "none";
 
   const wrap = $("messages");
@@ -852,11 +856,10 @@ function buildBufRow(buf: BufferState, key: string): HTMLElement {
     lock.textContent = "🔒";
     label.appendChild(lock);
   }
-  label.appendChild(
-    document.createTextNode(
-      buf.name === "*status" ? t("status.short") : buf.name,
-    ),
-  );
+  const nameSpan = document.createElement("span");
+  nameSpan.dir = buf.name === "*status" ? "auto" : "ltr";
+  nameSpan.textContent = buf.name === "*status" ? t("status.short") : buf.name;
+  label.appendChild(nameSpan);
   item.appendChild(label);
 
   const right = document.createElement("span");

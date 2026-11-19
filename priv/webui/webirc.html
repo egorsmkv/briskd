@@ -85,7 +85,7 @@
       <div id="dm-list"></div>
     </div>
     <form class="join-box" id="join-form">
-      <input type="text" id="inp-join" placeholder="#channel" data-i18n-placeholder="ph.join">
+      <input type="text" id="inp-join" dir="ltr" placeholder="#channel" data-i18n-placeholder="ph.join">
       <button type="submit" class="small" data-i18n="btn.join">Join</button>
     </form>
   </aside>
@@ -117,7 +117,7 @@
   <div class="messages" id="messages"></div>
 
   <form class="input-bar" id="send-form">
-    <input type="text" id="inp-msg" autocomplete="off" placeholder="Message or /help (Tab to complete nicks, Alt+Up/Down to switch)" data-i18n-placeholder="ph.msg">
+    <input type="text" id="inp-msg" dir="auto" autocomplete="off" placeholder="Message or /help (Tab to complete nicks, Alt+Up/Down to switch)" data-i18n-placeholder="ph.msg">
     <button type="submit" class="primary" data-i18n="btn.send">Send</button>
   </form>
 
@@ -127,7 +127,7 @@
         <div class="members-title" id="members-title" data-i18n="members.title">Members</div>
         <button type="button" class="small" id="btn-close-right" aria-label="Close members">×</button>
       </div>
-      <input type="text" id="inp-member-filter" placeholder="Filter members..." data-i18n-placeholder="ph.filter.members">
+      <input type="text" id="inp-member-filter" dir="auto" placeholder="Filter members..." data-i18n-placeholder="ph.filter.members">
     </div>
     <div id="members-list"></div>
   </aside>
@@ -234,7 +234,7 @@
     <form class="modal-body" id="topic-form">
       <div class="field">
         <label for="inp-topic"><span data-i18n="topic.modal.label">Topic for</span> <span id="topic-modal-chan" dir="ltr">#channel</span></label>
-        <input type="text" id="inp-topic" maxlength="390" placeholder="Enter channel topic (leave blank to clear)" data-i18n-placeholder="topic.modal.ph">
+        <input type="text" id="inp-topic" dir="auto" maxlength="390" placeholder="Enter channel topic (leave blank to clear)" data-i18n-placeholder="topic.modal.ph">
       </div>
       <div class="e2ee-actions">
         <button type="submit" class="primary small" data-i18n="btn.save.topic">Save Topic</button>
