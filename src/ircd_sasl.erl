@@ -163,8 +163,15 @@ scram_first(ClientFirst) ->
         [Flag, AuthzPart | BareParts] when (Flag =:= <<"n">> orelse Flag =:= <<"y">>) ->
             Bare = iolist_to_binary(lists:join(<<",">>, BareParts)),
             Attrs = attributes(BareParts),
-            case {authzid(AuthzPart), maps:find($n, Attrs), maps:find($r, Attrs)} of
-                {{ok, Authz}, {ok, RawUser}, {ok, ClientNonce}} when ClientNonce =/= <<>> ->
+            case
+                {
+                    maps:is_key($m, Attrs),
+                    authzid(AuthzPart),
+                    maps:find($n, Attrs),
+                    maps:find($r, Attrs)
+                }
+            of
+                {false, {ok, Authz}, {ok, RawUser}, {ok, ClientNonce}} when ClientNonce =/= <<>> ->
                     User = scram_unescape(RawUser),
                     case authz_ok(Authz, User) andalso ircd_account:scram_credentials(User) of
                         {ok, Credentials} ->
@@ -212,8 +219,15 @@ scram_final(Session, ClientFinal) ->
                 name := Name
             } = Session,
             Binding = base64:encode(Gs2),
-            case {maps:find($c, Attrs), maps:find($r, Attrs), decode64(Proof64)} of
-                {{ok, Binding}, {ok, Nonce}, {ok, Proof}} when byte_size(Proof) =:= 32 ->
+            case
+                {
+                    maps:is_key($m, Attrs),
+                    maps:find($c, Attrs),
+                    maps:find($r, Attrs),
+                    decode64(Proof64)
+                }
+            of
+                {false, {ok, Binding}, {ok, Nonce}, {ok, Proof}} when byte_size(Proof) =:= 32 ->
                     AuthMessage = <<Bare/binary, ",", ServerFirst/binary, ",", Without/binary>>,
                     Signature = crypto:mac(hmac, sha256, Stored, AuthMessage),
                     ClientKey = crypto:exor(Proof, Signature),

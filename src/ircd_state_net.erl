@@ -522,7 +522,10 @@ import_service(Peer, Prefix, Params) ->
                     undefined -> Peer;
                     _ -> Prefix
                 end,
-            case ircd_wire:nickname(Name, ircd_state:nicklen()) of
+            case
+                ircd_state_link:trusted_server(Peer, Home) andalso
+                    ircd_wire:nickname(Name, ircd_state:nicklen())
+            of
                 false ->
                     {error, invalid_service};
                 true ->

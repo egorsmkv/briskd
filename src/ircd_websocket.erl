@@ -58,6 +58,8 @@ handshake(Data, Origins) ->
             {error, response(<<"431 Request Header Fields Too Large">>, [])};
         nomatch ->
             more;
+        {Offset, 4} when Offset > ?MAX_REQUEST ->
+            {error, response(<<"431 Request Header Fields Too Large">>, [])};
         {Offset, 4} ->
             Head = binary:part(Data, 0, Offset),
             Rest = binary:part(Data, Offset + 4, byte_size(Data) - Offset - 4),
@@ -74,7 +76,8 @@ check(RequestLine, Headers, Origins, Rest) ->
     Origin = maps:get(<<"origin">>, Headers, undefined),
     Upgradable =
         binary:match(RequestLine, <<"GET ">>) =:= {0, 4} andalso Upgrade =:= <<"websocket">> andalso
-            binary:match(Connection, <<"upgrade">>) =/= nomatch andalso is_binary(Key),
+            binary:match(Connection, <<"upgrade">>) =/= nomatch andalso is_binary(Key) andalso
+            byte_size(Key) > 0 andalso byte_size(Key) =< 64,
     if
         not Upgradable ->
             {error, response(<<"400 Bad Request">>, [])};

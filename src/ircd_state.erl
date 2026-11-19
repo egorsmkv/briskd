@@ -752,8 +752,11 @@ server_call({server_command, Peer, Prefix, <<"MARKREAD">>, Params, _Tags}, _, Se
 server_call(Request, From, Server) ->
     other_call(Request, From, Server).
 
-other_call({server_command, Peer, _Prefix, <<"NJOIN">>, [Name, Members]}, _, Server) ->
-    {reply, ircd_state_link:import_remote_njoin(Peer, Name, Members), Server};
+other_call({server_command, Peer, Prefix, <<"NJOIN">>, [Name, Members]}, _, Server) ->
+    case ircd_state_link:trusted_server(Peer, link_source(Peer, Prefix)) of
+        true -> {reply, ircd_state_link:import_remote_njoin(Peer, Name, Members), Server};
+        false -> {reply, {error, unknown_remote_source}, Server}
+    end;
 other_call({server_command, Peer, Prefix, <<"JOIN">>, [Name | _]}, _, Server) when
     is_binary(Prefix)
 ->
@@ -839,13 +842,22 @@ other_call({server_command, Peer, Prefix, <<"SQUERY">>, Params}, _, Server) when
     is_binary(Prefix)
 ->
     {reply, ircd_state_net:remote_squery(Peer, Prefix, Params), Server};
-other_call({server_command, Peer, _Prefix, <<"KILL">>, [Nick | Rest]}, _, Server) ->
-    Reason =
-        case Rest of
-            [Text | _] -> Text;
-            [] -> <<"KILL">>
-        end,
-    {reply, ircd_state_link:receive_remote_kill(Peer, Nick, Reason), Server};
+other_call({server_command, Peer, Prefix, <<"KILL">>, [Nick | Rest]}, _, Server) ->
+    Source = link_source(Peer, Prefix),
+    case
+        ircd_state_link:trusted_server(Peer, Source) orelse
+            is_tuple(ircd_state_link:remote_source(Peer, Source))
+    of
+        true ->
+            Reason =
+                case Rest of
+                    [Text | _] -> Text;
+                    [] -> <<"KILL">>
+                end,
+            {reply, ircd_state_link:receive_remote_kill(Peer, Nick, Reason), Server};
+        false ->
+            {reply, {error, unknown_remote_source}, Server}
+    end;
 other_call({server_command, _Peer, _Prefix, _Command, _Params}, _, Server) ->
     {reply, ok, Server};
 other_call({server_disconnect, Peer}, _, Server) ->
@@ -989,7 +1001,8 @@ session_down(Pid, State) ->
 -doc """
 Redact secrets from status and crash reports.
 
-The password of a `PASS` command and the password of an `OPER` command are
+Secrets in `PASS`, `OPER`, `AUTHENTICATE`, `REGISTER`, `VERIFY`, and `WEBIRC`
+commands (including those sent through an attached `multiclient` session) are
 replaced by `redacted` in the current message and in the `sys` log. Other
 state is returned unchanged.
 """.
@@ -1013,6 +1026,9 @@ redact_log_event(Event) ->
 
 redact_command({'$gen_call', From, Request}) ->
     {'$gen_call', From, redact_command(Request)};
+redact_command({command_as, Primary, Command, Params, Bytes, Tags}) ->
+    {command, _, Redacted, _, _} = redact_command({command, Command, Params, Bytes, Tags}),
+    {command_as, Primary, Command, Redacted, Bytes, Tags};
 redact_command({command, <<"PASS">>, [_Password | Rest], Bytes, Tags}) ->
     {command, <<"PASS">>, [redacted | Rest], Bytes, Tags};
 redact_command({command, <<"PASS">>, [_Password | Rest], Bytes}) ->
@@ -1021,6 +1037,22 @@ redact_command({command, <<"OPER">>, [Name, _Password | Rest], Bytes, Tags}) ->
     {command, <<"OPER">>, [Name, redacted | Rest], Bytes, Tags};
 redact_command({command, <<"OPER">>, [Name, _Password | Rest], Bytes}) ->
     {command, <<"OPER">>, [Name, redacted | Rest], Bytes};
+redact_command({command, <<"AUTHENTICATE">>, [_ | _], Bytes, Tags}) ->
+    {command, <<"AUTHENTICATE">>, [redacted], Bytes, Tags};
+redact_command({command, <<"AUTHENTICATE">>, [_ | _], Bytes}) ->
+    {command, <<"AUTHENTICATE">>, [redacted], Bytes};
+redact_command({command, <<"REGISTER">>, [Account, Email, _Password | Rest], Bytes, Tags}) ->
+    {command, <<"REGISTER">>, [Account, Email, redacted | Rest], Bytes, Tags};
+redact_command({command, <<"REGISTER">>, [Account, Email, _Password | Rest], Bytes}) ->
+    {command, <<"REGISTER">>, [Account, Email, redacted | Rest], Bytes};
+redact_command({command, <<"VERIFY">>, [Account, _Code | Rest], Bytes, Tags}) ->
+    {command, <<"VERIFY">>, [Account, redacted | Rest], Bytes, Tags};
+redact_command({command, <<"VERIFY">>, [Account, _Code | Rest], Bytes}) ->
+    {command, <<"VERIFY">>, [Account, redacted | Rest], Bytes};
+redact_command({command, <<"WEBIRC">>, [_Password | Rest], Bytes, Tags}) ->
+    {command, <<"WEBIRC">>, [redacted | Rest], Bytes, Tags};
+redact_command({command, <<"WEBIRC">>, [_Password | Rest], Bytes}) ->
+    {command, <<"WEBIRC">>, [redacted | Rest], Bytes};
 redact_command(Message) ->
     Message.
 

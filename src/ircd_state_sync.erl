@@ -119,9 +119,16 @@ malformed field.
 -spec receive_accountsync(binary(), undefined | binary(), [binary()]) -> ok | {error, term()}.
 receive_accountsync(Peer, Prefix, [Name, Salt, I, Stored, ServerKey, Created | Rest]) ->
     try
+        true = is_binary(Prefix) andalso ircd_state_link:trusted_server(Peer, Prefix),
         true = ircd_account:valid_name(Name),
         Iterations = binary_to_integer(I),
         true = Iterations >= 4096 andalso Iterations =< 1000000,
+        DecodedSalt = base64:decode(Salt),
+        DecodedStored = base64:decode(Stored),
+        DecodedServerKey = base64:decode(ServerKey),
+        true = byte_size(DecodedSalt) > 0 andalso byte_size(DecodedSalt) =< 64,
+        true = byte_size(DecodedStored) > 0 andalso byte_size(DecodedStored) =< 64,
+        true = byte_size(DecodedServerKey) > 0 andalso byte_size(DecodedServerKey) =< 64,
         Fps =
             case Rest of
                 [List | _] -> [F || F <- binary:split(List, <<",">>, [global, trim_all])];
@@ -130,10 +137,10 @@ receive_accountsync(Peer, Prefix, [Name, Salt, I, Stored, ServerKey, Created | R
         Account = #account{
             key = ircd_wire:fold(Name),
             name = ircd_wire:retain(Name),
-            salt = base64:decode(Salt),
+            salt = DecodedSalt,
             iterations = Iterations,
-            stored_key = base64:decode(Stored),
-            server_key = base64:decode(ServerKey),
+            stored_key = DecodedStored,
+            server_key = DecodedServerKey,
             email = undefined,
             certfps = [ircd_wire:retain(F) || F <- Fps],
             created = binary_to_integer(Created),
@@ -223,8 +230,17 @@ receive_metadata(Peer, Prefix, [Target, Key, _Visibility | Rest]) ->
         end,
     Result =
         case ircd_wire:channel(Target) of
-            true -> ircd_state_meta:remote_channel_change(Target, Key, Value, Prefix);
-            false -> remote_user_change(Peer, Target, Key, Value, Prefix)
+            true ->
+                case
+                    is_binary(Prefix) andalso
+                        (ircd_state_link:trusted_server(Peer, Prefix) orelse
+                            is_tuple(ircd_state_link:remote_source(Peer, Prefix)))
+                of
+                    true -> ircd_state_meta:remote_channel_change(Target, Key, Value, Prefix);
+                    false -> {error, metadata_source_mismatch}
+                end;
+            false ->
+                remote_user_change(Peer, Target, Key, Value, Prefix)
         end,
     case Result of
         ok ->
@@ -240,21 +256,18 @@ receive_metadata(_, _, _) ->
 
 %% A user's metadata may only be changed by that user's own prefix, and only
 %% through the link the user is reached by.
-remote_user_change(Peer, Target, Key, Value, Prefix) ->
-    case
-        {
-            binary:split(Prefix, <<"!">>),
-            mnesia:dirty_read(remote_client, ircd_wire:fold(Target))
-        }
-    of
-        {[Nick, _], [#remote_client{peer = Peer, nick = Actual}]} ->
-            case ircd_wire:fold(Nick) =:= ircd_wire:fold(Actual) of
+remote_user_change(Peer, Target, Key, Value, Prefix) when is_binary(Prefix) ->
+    case ircd_state_link:remote_source(Peer, Prefix) of
+        {ok, #remote_client{nick = Actual}} ->
+            case ircd_wire:fold(Target) =:= ircd_wire:fold(Actual) of
                 true -> ircd_state_meta:remote_user_change(Target, Key, Value, Prefix);
                 false -> {error, metadata_source_mismatch}
             end;
-        _ ->
+        error ->
             {error, metadata_source_mismatch}
-    end.
+    end;
+remote_user_change(_, _, _, _, _) ->
+    {error, metadata_source_mismatch}.
 
 -doc """
 Broadcast to every peer that `Account`'s read marker for `Target` moved to
@@ -278,7 +291,11 @@ is accepted but not relayed.
 """.
 -spec receive_markread(binary(), undefined | binary(), [binary()]) -> ok | {error, term()}.
 receive_markread(Peer, Prefix, [Account, Target, Raw | _]) ->
-    case ircd_state_history:valid_marker_target(Target) of
+    case
+        is_binary(Prefix) andalso ircd_state_link:trusted_server(Peer, Prefix) andalso
+            ircd_account:valid_name(Account) andalso
+            ircd_state_history:valid_marker_target(Target)
+    of
         true -> receive_valid_markread(Peer, Prefix, Account, Target, Raw);
         false -> {error, invalid_markread}
     end;
@@ -287,7 +304,7 @@ receive_markread(_, _, _) ->
 
 receive_valid_markread(Peer, Prefix, Account, Target, Raw) ->
     try binary_to_integer(Raw) of
-        Time ->
+        Time when Time >= 0 ->
             case ircd_state_history:remote_marker(Account, Target, Time) of
                 updated ->
                     ircd_state_link:relay_except(
@@ -296,7 +313,9 @@ receive_valid_markread(Peer, Prefix, Account, Target, Raw) ->
                 unchanged ->
                     ok
             end,
-            ok
+            ok;
+        _ ->
+            {error, invalid_markread}
     catch
         error:badarg -> {error, invalid_markread}
     end.

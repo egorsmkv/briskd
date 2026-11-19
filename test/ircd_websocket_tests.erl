@@ -41,7 +41,18 @@ origin_and_partial_request_test() ->
         {ok, _, _, _},
         ircd_websocket:handshake(request(<<"Origin: https://ok\r\n">>), [<<"https://ok">>])
     ),
-    ?assertMatch({error, _}, ircd_websocket:handshake(<<"GET / HTTP/1.1\r\n\r\n">>, null)).
+    ?assertMatch({error, _}, ircd_websocket:handshake(<<"GET / HTTP/1.1\r\n\r\n">>, null)),
+    Oversized = request(<<(binary:copy(<<"X-Pad: aaaaaaaaaaaaaaaa\r\n">>, 400))/binary>>),
+    {error, Err431} = ircd_websocket:handshake(Oversized, null),
+    ?assertNotEqual(nomatch, binary:match(iolist_to_binary(Err431), <<"431">>)),
+    BigKey = iolist_to_binary([
+        <<"GET /irc HTTP/1.1\r\nHost: example\r\nUpgrade: websocket\r\n">>,
+        <<"Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\n">>,
+        <<"Sec-WebSocket-Key: ">>,
+        binary:copy(<<"A">>, 65),
+        <<"\r\n\r\n">>
+    ]),
+    ?assertMatch({error, _}, ircd_websocket:handshake(BigKey, null)).
 
 masked(Opcode, Fin, Payload) ->
     Mask = <<1, 2, 3, 4>>,
@@ -96,4 +107,6 @@ sasl_chunks_test() ->
     ?assertEqual({done, <<"hi">>}, ircd_sasl:decode_chunk(<<>>, base64:encode(<<"hi">>))),
     ?assertEqual({done, <<>>}, ircd_sasl:decode_chunk(<<>>, <<"+">>)),
     ?assertEqual({error, too_long}, ircd_sasl:decode_chunk(<<>>, binary:copy(<<"A">>, 401))),
-    ?assertMatch({error, unknown_mechanism}, ircd_sasl:start(<<"NOPE">>, #{})).
+    ?assertMatch({error, unknown_mechanism}, ircd_sasl:start(<<"NOPE">>, #{})),
+    {continue, <<>>, Scram} = ircd_sasl:start(<<"SCRAM-SHA-256">>, #{}),
+    ?assertEqual({error, failed}, ircd_sasl:step(Scram, <<"n,,m=ext,n=alice,r=nonce">>)).

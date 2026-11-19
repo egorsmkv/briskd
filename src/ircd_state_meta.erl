@@ -623,21 +623,21 @@ remote_user_change(Nick, Key, Value, Prefix) ->
     case {valid_key(Key), mnesia:dirty_read(remote_client, NickKey)} of
         {true, [#remote_client{nick = Actual}]} ->
             Current = read({remote, NickKey, Actual}),
-            Updated =
-                case Value of
-                    none -> maps:remove(Key, Current);
-                    _ -> Current#{ircd_wire:retain(Key) => Value}
-                end,
-            case map_size(Updated) of
-                0 -> ets:delete(ircd_remote_meta, NickKey);
-                _ -> ets:insert(ircd_remote_meta, {NickKey, Updated})
-            end,
-            Audience = lists:usort(
-                ircd_state_link:remote_user_local_recipients(NickKey) ++
-                    ircd_state_monitor:watchers(Actual)
-            ),
-            notify_subscribers(Audience, Prefix, Actual, Key, Value),
-            ok;
+            case apply_remote_value(Key, Value, Current) of
+                {ok, Updated} ->
+                    case map_size(Updated) of
+                        0 -> ets:delete(ircd_remote_meta, NickKey);
+                        _ -> ets:insert(ircd_remote_meta, {NickKey, Updated})
+                    end,
+                    Audience = lists:usort(
+                        ircd_state_link:remote_user_local_recipients(NickKey) ++
+                            ircd_state_monitor:watchers(Actual)
+                    ),
+                    notify_subscribers(Audience, Prefix, Actual, Key, Value),
+                    ok;
+                {error, _} = Error ->
+                    Error
+            end;
         {false, _} ->
             {error, invalid_metadata_key};
         {_, []} ->
@@ -649,7 +649,9 @@ Apply a metadata change for channel `Name` received from a peer. `Value`
 `none` deletes the key. Subscribed local members get `METADATA` with
 `Prefix` as source.
 
-Returns `{error, invalid_metadata_key}` for a malformed key.
+Returns `{error, invalid_metadata_key}` for a malformed key, and
+`{error, invalid_metadata_value}` or `{error, metadata_limit_reached}` when
+the value or key count exceeds the configured metadata limits.
 """.
 -spec remote_channel_change(binary(), binary(), none | binary(), binary()) -> ok | {error, term()}.
 remote_channel_change(Name, Key, Value, Prefix) ->
@@ -659,19 +661,34 @@ remote_channel_change(Name, Key, Value, Prefix) ->
         true ->
             ChannelKey = ircd_wire:fold(Name),
             Current = read({channel, ChannelKey, Name}),
-            Updated =
-                case Value of
-                    none -> maps:remove(Key, Current);
-                    _ -> Current#{ircd_wire:retain(Key) => Value}
-                end,
-            write({channel, ChannelKey, Name}, Updated),
-            Audience =
-                case mnesia:dirty_read(channel, ChannelKey) of
-                    [#channel{members = Members}] -> maps:keys(Members);
-                    [] -> []
-                end,
-            notify_subscribers(Audience, Prefix, Name, Key, Value),
-            ok
+            case apply_remote_value(Key, Value, Current) of
+                {ok, Updated} ->
+                    write({channel, ChannelKey, Name}, Updated),
+                    Audience =
+                        case mnesia:dirty_read(channel, ChannelKey) of
+                            [#channel{members = Members}] -> maps:keys(Members);
+                            [] -> []
+                        end,
+                    notify_subscribers(Audience, Prefix, Name, Key, Value),
+                    ok;
+                {error, _} = Error ->
+                    Error
+            end
+    end.
+
+apply_remote_value(Key, none, Current) ->
+    {ok, maps:remove(Key, Current)};
+apply_remote_value(Key, Value, Current) ->
+    {_MaxSubs, MaxKeys, MaxBytes} = ircd_cap:metadata_limits(),
+    case
+        {
+            byte_size(Value) =< MaxBytes andalso ircd_state_v3:valid_utf8(Value),
+            maps:is_key(Key, Current) orelse map_size(Current) < MaxKeys
+        }
+    of
+        {false, _} -> {error, invalid_metadata_value};
+        {_, false} -> {error, metadata_limit_reached};
+        {true, true} -> {ok, Current#{ircd_wire:retain(Key) => ircd_wire:retain(Value)}}
     end.
 
 notify_subscribers(Audience, Prefix, Target, Key, Value) ->

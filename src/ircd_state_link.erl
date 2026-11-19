@@ -2126,8 +2126,17 @@ receive_remote_invite(Peer, Prefix, Nick, Name) ->
             case ircd_state_client:find_nick(Nick) of
                 #client{pid = Pid} = Target ->
                     remember_local_invite(Pid, Name),
+                    Key = ircd_wire:fold(Name),
+                    Origin =
+                        case
+                            local_channel_mode(Key, $a) orelse
+                                maps:is_key($a, remote_channel_flags(Name))
+                        of
+                            true -> <<"anonymous!anonymous@anonymous.">>;
+                            false -> Prefix
+                        end,
                     ircd_state_send:send(
-                        Pid, Prefix, <<"INVITE">>, [Target#client.nick, Name], none
+                        Pid, Origin, <<"INVITE">>, [Target#client.nick, Name], none
                     ),
                     ok;
                 undefined ->
@@ -2270,17 +2279,24 @@ receive_remote_batch(Peer, Prefix, [<<"+", Ref/binary>>, <<"draft/multiline">>, 
                 tags => trusted_server_tags(Tags) ++ ircd_cap:client_tags(Tags),
                 command => undefined,
                 lines => [],
+                bytes => 0,
                 count => 0
             }),
             ok;
         error ->
             {error, unknown_remote_source}
     end;
-receive_remote_batch(Peer, _Prefix, [<<"-", Ref/binary>> | _], _Tags) ->
+receive_remote_batch(Peer, Prefix, [<<"-", Ref/binary>> | _], _Tags) ->
     case erase({ircd_peer_batch, Peer, Ref}) of
-        #{command := Command, lines := [_ | _] = Lines} = Batch when Command =/= undefined ->
+        #{prefix := Prefix, command := Command, lines := [_ | _] = Lines} = Batch when
+            Command =/= undefined
+        ->
             deliver_remote_multiline(Peer, Batch#{lines := lists:reverse(Lines)});
-        _ ->
+        #{prefix := Prefix} ->
+            ok;
+        #{} ->
+            {error, invalid_batch};
+        undefined ->
             ok
     end;
 receive_remote_batch(_Peer, _Prefix, _Params, _Tags) ->
@@ -2304,22 +2320,50 @@ Add one `PRIVMSG` or `NOTICE` line to an open peer `draft/multiline` batch.
 
 The line's `batch` tag names the batch, and `Prefix` must match the prefix
 that opened it. Returns `{error, unknown_batch}` when no such batch is open,
-and `{error, invalid_multiline}` (discarding the batch) when the prefix
-differs or the line limit is exceeded.
+and `{error, invalid_multiline}` (discarding the batch) when the prefix,
+command, or target differs, or the line or byte limit is exceeded.
 """.
 -spec remote_batch_line(binary(), binary(), binary(), [binary()], list()) -> ok | {error, term()}.
-remote_batch_line(Peer, Prefix, Command, [_Target, Text | _], Tags) ->
+remote_batch_line(Peer, Prefix, Command, [Target, Text | _], Tags) when
+    Command =:= <<"PRIVMSG">>; Command =:= <<"NOTICE">>
+->
     {_, Ref} = lists:keyfind(<<"batch">>, 1, Tags),
-    {_, MaxLines} = ircd_cap:multiline_limits(),
+    {MaxBytes, MaxLines} = ircd_cap:multiline_limits(),
     case get({ircd_peer_batch, Peer, Ref}) of
-        #{prefix := Prefix, count := Count, lines := Lines} = Batch when Count < MaxLines ->
+        #{
+            prefix := Prefix,
+            target := BatchTarget,
+            command := Previous,
+            bytes := Bytes,
+            count := Count,
+            lines := Lines
+        } = Batch when Count < MaxLines ->
             Concat = lists:keymember(<<"draft/multiline-concat">>, 1, Tags),
-            put({ircd_peer_batch, Peer, Ref}, Batch#{
-                command => Command,
-                lines => [{Concat, ircd_wire:retain(Text)} | Lines],
-                count => Count + 1
-            }),
-            ok;
+            Separator =
+                case {Lines, Concat} of
+                    {[], _} -> 0;
+                    {_, true} -> 0;
+                    {_, false} -> 1
+                end,
+            NewBytes = Bytes + Separator + byte_size(Text),
+            SameTarget = ircd_wire:fold(Target) =:= ircd_wire:fold(BatchTarget),
+            SameCommand = Previous =:= undefined orelse Previous =:= Command,
+            case
+                SameTarget andalso SameCommand andalso (not Concat orelse Text =/= <<>>) andalso
+                    NewBytes =< MaxBytes
+            of
+                true ->
+                    put({ircd_peer_batch, Peer, Ref}, Batch#{
+                        command => Command,
+                        lines => [{Concat, ircd_wire:retain(Text)} | Lines],
+                        bytes => NewBytes,
+                        count => Count + 1
+                    }),
+                    ok;
+                false ->
+                    erase({ircd_peer_batch, Peer, Ref}),
+                    {error, invalid_multiline}
+            end;
         #{} ->
             erase({ircd_peer_batch, Peer, Ref}),
             {error, invalid_multiline};
@@ -2335,47 +2379,89 @@ deliver_remote_multiline(
     Body = {multiline, Lines},
     case ircd_state_client:find_nick(Target) of
         #client{pid = Pid, nick = Nick} ->
-            ircd_state_batch:deliver_multiline(Pid, Prefix, Command, Nick, Lines, Tags, normal);
+            ircd_state_batch:deliver_multiline(Pid, Prefix, Command, Nick, Lines, Tags, normal),
+            [RemoteNick | _] = binary:split(Prefix, <<"!">>),
+            case mnesia:dirty_read(remote_client, ircd_wire:fold(RemoteNick)) of
+                [Remote] -> note_remote_direct(Remote, Prefix, Command, Nick, Body, Tags, Pid);
+                [] -> ok
+            end;
         undefined ->
             case ircd_wire:channel(Target) of
                 true ->
                     Key = ircd_wire:fold(Target),
                     [Nick | _] = binary:split(Prefix, <<"!">>),
+                    NickKey = ircd_wire:fold(Nick),
                     case
                         {
                             mnesia:dirty_read(remote_channel, Key),
-                            mnesia:dirty_read(channel, Key)
+                            mnesia:dirty_read(channel, Key),
+                            mnesia:dirty_read(remote_client, NickKey)
                         }
                     of
-                        {[#remote_channel{members = RM}], [#channel{name = Name, members = LM}]} ->
-                            case maps:is_key(ircd_wire:fold(Nick), RM) of
-                                true ->
-                                    lists:foreach(
-                                        fun(P) ->
-                                            ircd_state_batch:deliver_multiline(
-                                                P, Prefix, Command, Name, Lines, Tags, normal
-                                            )
-                                        end,
-                                        maps:keys(LM)
-                                    ),
-                                    MsgId =
-                                        case lists:keyfind(<<"msgid">>, 1, Tags) of
-                                            {_, Id} -> Id;
-                                            false -> undefined
-                                        end,
-                                    ircd_state_history:note_channel(
-                                        Key,
-                                        ircd_state_history:entry(
-                                            Command,
-                                            Prefix,
-                                            Body,
-                                            MsgId,
-                                            erlang:system_time(millisecond),
-                                            ircd_cap:client_tags(Tags),
-                                            ircd_state_v3:remote_account(ircd_wire:fold(Nick))
-                                        )
-                                    );
-                                false ->
+                        {
+                            [#remote_channel{members = RM, flags = RF}],
+                            [#channel{name = Name, members = LM, flags = LF} = Channel],
+                            [Remote]
+                        } ->
+                            case maps:find(NickKey, RM) of
+                                {ok, {Peer, Roles}} ->
+                                    Flags = maps:merge(RF, LF),
+                                    Banned =
+                                        ircd_state_channel:mask_matches(Channel, ban, Remote) andalso
+                                            not ircd_state_channel:mask_matches(
+                                                Channel, exception, Remote
+                                            ),
+                                    Allowed =
+                                        not maps:is_key($m, Flags) orelse
+                                            lists:member(operator, Roles) orelse
+                                            lists:member(voice, Roles),
+                                    case Allowed andalso not Banned of
+                                        true ->
+                                            Origin =
+                                                case maps:is_key($a, Flags) of
+                                                    true -> <<"anonymous!anonymous@anonymous.">>;
+                                                    false -> Prefix
+                                                end,
+                                            lists:foreach(
+                                                fun(P) ->
+                                                    ircd_state_batch:deliver_multiline(
+                                                        P,
+                                                        Origin,
+                                                        Command,
+                                                        Name,
+                                                        Lines,
+                                                        Tags,
+                                                        normal
+                                                    )
+                                                end,
+                                                maps:keys(LM)
+                                            ),
+                                            MsgId =
+                                                case lists:keyfind(<<"msgid">>, 1, Tags) of
+                                                    {_, Id} -> Id;
+                                                    false -> undefined
+                                                end,
+                                            Account =
+                                                case maps:is_key($a, Flags) of
+                                                    true -> undefined;
+                                                    false -> Remote#remote_client.account
+                                                end,
+                                            ircd_state_history:note_channel(
+                                                Key,
+                                                ircd_state_history:entry(
+                                                    Command,
+                                                    Origin,
+                                                    Body,
+                                                    MsgId,
+                                                    erlang:system_time(millisecond),
+                                                    ircd_cap:client_tags(Tags),
+                                                    Account
+                                                )
+                                            );
+                                        false ->
+                                            ok
+                                    end;
+                                _ ->
                                     ok
                             end;
                         _ ->

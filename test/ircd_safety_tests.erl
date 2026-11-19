@@ -63,6 +63,29 @@ max_sendq_config_test() ->
     ?assertMatch({error, _}, Load(<<",\"max_sendq\":1000001">>)),
     ?assertMatch({error, _}, Load(<<",\"max_sendq\":\"10\"">>)).
 
+format_status_redacts_secrets_test() ->
+    Calls = [
+        {command, <<"PASS">>, [<<"s1">>], 10, []},
+        {command, <<"OPER">>, [<<"admin">>, <<"s2">>], 15, []},
+        {command, <<"AUTHENTICATE">>, [<<"c2VjcmV0">>], 20, []},
+        {command, <<"REGISTER">>, [<<"alice">>, <<"a@b.c">>, <<"s3">>], 25, []},
+        {command, <<"VERIFY">>, [<<"alice">>, <<"s4">>], 20, []},
+        {command, <<"WEBIRC">>, [<<"s5">>, <<"gw">>, <<"h">>, <<"1.2.3.4">>], 30, []},
+        {command_as, self(), <<"OPER">>, [<<"admin">>, <<"s6">>], 15, []}
+    ],
+    Status = ircd_state:format_status(#{
+        message => {'$gen_call', {self(), make_ref()}, hd(Calls)},
+        log => [{in, {'$gen_call', {self(), make_ref()}, C}} || C <- Calls]
+    }),
+    Formatted = io_lib:format("~p", [Status]),
+    Flat = iolist_to_binary(Formatted),
+    lists:foreach(
+        fun(Secret) ->
+            ?assertEqual(nomatch, binary:match(Flat, Secret))
+        end,
+        [<<"s1">>, <<"s2">>, <<"c2VjcmV0">>, <<"s3">>, <<"s4">>, <<"s5">>, <<"s6">>]
+    ).
+
 %%% Live server
 
 live_test_() ->
@@ -156,6 +179,50 @@ markread_targets(Port) ->
         {error, invalid_markread},
         ircd_state_sync:receive_markread(
             <<"peer.test">>, <<"peer.test">>, [<<"acct">>, <<"bad target">>, <<"1">>]
+        )
+    ),
+    ?assertEqual(
+        {error, invalid_markread},
+        ircd_state_sync:receive_markread(
+            <<"peer.test">>, <<"spoofed.test">>, [<<"acct">>, <<"#ok">>, <<"1">>]
+        )
+    ),
+    ?assertEqual(
+        {error, invalid_markread},
+        ircd_state_sync:receive_markread(
+            <<"peer.test">>, <<"peer.test">>, [<<"acct">>, <<"#ok">>, <<"-1">>]
+        )
+    ),
+    ?assertEqual(
+        {error, invalid_accountsync},
+        ircd_state_sync:receive_accountsync(
+            <<"peer.test">>,
+            <<"spoofed.test">>,
+            [<<"acct">>, <<"c2E=">>, <<"4096">>, <<"c2E=">>, <<"c2E=">>, <<"5">>]
+        )
+    ),
+    ?assertEqual(
+        {error, metadata_source_mismatch},
+        ircd_state_sync:receive_metadata(
+            <<"peer.test">>, <<"spoofed.test">>, [<<"#ok">>, <<"k">>, <<"*">>, <<"v">>]
+        )
+    ),
+    ?assertEqual(
+        {error, invalid_service},
+        ircd_state_net:import_service(
+            <<"peer.test">>, <<"spoofed.test">>, [<<"svc">>, <<"*">>, <<"t">>, <<"info">>]
+        )
+    ),
+    ?assertEqual(
+        {error, unknown_remote_source},
+        ircd_state:server_command(
+            <<"peer.test">>, <<"spoofed.test">>, <<"NJOIN">>, [<<"#ok">>, <<"rem">>]
+        )
+    ),
+    ?assertEqual(
+        {error, unknown_remote_source},
+        ircd_state:server_command(
+            <<"peer.test">>, <<"spoofed.test">>, <<"KILL">>, [<<"marker">>]
         )
     ),
     close(S).

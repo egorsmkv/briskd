@@ -172,9 +172,18 @@ handle_info({attached_session, Pid}, State) ->
     {noreply, State};
 handle_info({irc_mirror, Line}, {Kind, Socket, _, _, _} = State) ->
     Module = transport(Kind),
-    case Module:send(Socket, outgoing(Line)) of
-        ok -> {noreply, State};
-        {error, _} -> {stop, normal, State}
+    case sendq_exceeded() of
+        {true, Queued} ->
+            logger:warning(#{
+                event => sendq_exceeded, peer => peer_of(State), queued => Queued
+            }),
+            _ = Module:send(Socket, closing_link(<<"Max SendQ exceeded">>)),
+            {stop, normal, State};
+        false ->
+            case Module:send(Socket, outgoing(Line)) of
+                ok -> {noreply, State};
+                {error, _} -> {stop, normal, State}
+            end
     end;
 handle_info({'DOWN', _, process, Primary, _}, {Kind, Socket, _, _, {attached, Primary}} = State) ->
     Module = transport(Kind),
