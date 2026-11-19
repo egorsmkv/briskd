@@ -264,6 +264,10 @@ handle_connection(
             handle_recover_request_api(Socket, Headers, Body);
         {ok, <<"POST">>, {<<"/api/recover/confirm">>, _Query}, Headers, Body} ->
             handle_recover_confirm_api(Socket, Headers, Body);
+        {ok, <<"POST">>, {<<"/api/voice">>, _Query}, Headers, Body} ->
+            handle_voice_upload(Socket, Headers, Body);
+        {ok, <<"GET">>, {<<"/api/voice/", VoiceId/binary>>, _Query}, _Headers, _Body} ->
+            handle_voice_download(Socket, VoiceId);
         {ok, Method, {Path, _Query}, Headers, Body} ->
             case check_auth(Headers) of
                 ok ->
@@ -333,7 +337,9 @@ handle_webirc_page(Socket, WebircHtml, Path, Headers) ->
             P4 = binary:replace(P3, <<"__PUBLIC_URL__">>, PublicUrl, [global]),
             Page = binary:replace(P4, <<"__OG_IMAGE_URL__">>, OgImageUrl, [global]),
             send_nonce_html(
-                Socket, Page, <<"connect-src 'self' ws: wss:; img-src 'self' data:; ">>
+                Socket,
+                Page,
+                <<"connect-src 'self' ws: wss:; img-src 'self' data:; media-src 'self' blob:; ">>
             )
     end.
 
@@ -627,6 +633,71 @@ signup_error_message(email_required) -> <<"A valid email address is required.">>
 signup_error_message(invalid_email) -> <<"Invalid email address.">>;
 signup_error_message(account_limit_reached) -> <<"Server account limit reached.">>;
 signup_error_message(_) -> <<"Could not create account.">>.
+
+handle_voice_upload(Socket, Headers, Body) ->
+    case maps:get(<<"x-requested-with">>, Headers, undefined) of
+        <<"ircd-webui">> ->
+            Duration = parse_voice_duration(maps:get(<<"x-voice-duration">>, Headers, undefined)),
+            case ircd_voice:store(Body, Duration) of
+                {ok, Meta} ->
+                    send_json(Socket, 201, <<"Created">>, Meta);
+                {error, disabled} ->
+                    send_json(Socket, 404, <<"Not Found">>, #{error => <<"voice_disabled">>});
+                {error, empty} ->
+                    send_json(Socket, 400, <<"Bad Request">>, #{error => <<"empty_audio">>});
+                {error, too_large} ->
+                    send_json(Socket, 413, <<"Payload Too Large">>, #{
+                        error => <<"payload_too_large">>
+                    });
+                {error, too_long} ->
+                    send_json(Socket, 400, <<"Bad Request">>, #{error => <<"voice_too_long">>});
+                {error, unsupported_format} ->
+                    send_json(Socket, 415, <<"Unsupported Media Type">>, #{
+                        error => <<"unsupported_format">>,
+                        message => <<"Only OPUS audio (Ogg or WebM) is accepted.">>
+                    });
+                {error, Reason} ->
+                    ircd_log:warning(voice_upload_failed, #{reason => Reason}),
+                    send_json(Socket, 502, <<"Bad Gateway">>, #{error => <<"storage_error">>})
+            end;
+        _ ->
+            send_json(Socket, 403, <<"Forbidden">>, #{error => <<"missing_csrf_header">>})
+    end.
+
+handle_voice_download(Socket, VoiceId) ->
+    case ircd_voice:fetch(VoiceId) of
+        {ok, Bytes, Mime} ->
+            send_response(
+                Socket,
+                200,
+                <<"OK">>,
+                Mime,
+                [
+                    {<<"Cache-Control">>, <<"public, max-age=86400">>},
+                    {<<"Content-Disposition">>, <<"inline">>}
+                ],
+                Bytes
+            );
+        {error, disabled} ->
+            send_json(Socket, 404, <<"Not Found">>, #{error => <<"voice_disabled">>});
+        {error, invalid_id} ->
+            send_json(Socket, 400, <<"Bad Request">>, #{error => <<"invalid_voice_id">>});
+        {error, not_found} ->
+            send_json(Socket, 404, <<"Not Found">>, #{error => <<"not_found">>});
+        {error, Reason} ->
+            ircd_log:warning(voice_download_failed, #{id => VoiceId, reason => Reason}),
+            send_json(Socket, 502, <<"Bad Gateway">>, #{error => <<"storage_error">>})
+    end.
+
+parse_voice_duration(undefined) ->
+    undefined;
+parse_voice_duration(Bin) when is_binary(Bin) ->
+    try binary_to_integer(string:trim(Bin)) of
+        N when N >= 0 -> N;
+        _ -> undefined
+    catch
+        _:_ -> undefined
+    end.
 
 peer_ip(Socket) ->
     case inet:peername(Socket) of
@@ -992,6 +1063,7 @@ parse_header_lines([Line | Rest], Acc) ->
     end.
 
 read_body(Socket, Method, Path, Headers, Rest) ->
+    MaxBytes = max_body_bytes(Method, Path),
     case maps:get(<<"content-length">>, Headers, undefined) of
         undefined ->
             {ok, Method, Path, Headers, <<>>};
@@ -999,7 +1071,7 @@ read_body(Socket, Method, Path, Headers, Rest) ->
             try binary_to_integer(LenBin) of
                 Len when Len < 0 ->
                     {error, invalid_content_length};
-                Len when Len > ?MAX_REQUEST_BYTES ->
+                Len when Len > MaxBytes ->
                     {error, payload_too_large};
                 Len ->
                     read_exact(Socket, Len, Rest, Method, Path, Headers)
@@ -1007,6 +1079,11 @@ read_body(Socket, Method, Path, Headers, Rest) ->
                 _:_ -> {error, invalid_content_length}
             end
     end.
+
+max_body_bytes(<<"POST">>, {<<"/api/voice">>, _}) ->
+    ircd_voice:max_bytes();
+max_body_bytes(_, _) ->
+    ?MAX_REQUEST_BYTES.
 
 read_exact(_Socket, Len, Buf, Method, Path, Headers) when byte_size(Buf) >= Len ->
     {ok, Method, Path, Headers, binary:part(Buf, 0, Len)};

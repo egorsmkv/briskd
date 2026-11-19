@@ -83,6 +83,15 @@ const DICT: Record<Lang, Record<string, string>> = {
     "topic.modal.title": "Set Channel Topic",
     "topic.modal.label": "Topic for",
     "topic.modal.ph": "Enter channel topic (leave blank to clear)",
+    "voice.cancel": "Cancel",
+    "voice.record": "Record voice message (OPUS)",
+    "voice.stop": "Stop & send voice message",
+    "voice.uploading": "Uploading voice message...",
+    "voice.label": "Voice message",
+    "voice.err.mic": "Microphone access denied or unavailable.",
+    "voice.err.upload": "Voice upload failed: {{reason}}",
+    "voice.err.target":
+      "Select a channel or DM before sending a voice message.",
   },
   he: {
     "connect.sub": "סביבת צ׳אט IRC בדפדפן על גבי IRCv3 WebSocket.",
@@ -163,6 +172,14 @@ const DICT: Record<Lang, Record<string, string>> = {
     "topic.modal.title": "הגדרת נושא ערוץ",
     "topic.modal.label": "נושא עבור",
     "topic.modal.ph": "הזן נושא לערוץ (השאר ריק למחיקה)",
+    "voice.cancel": "ביטול",
+    "voice.record": "הקלטת הודעה קולית (OPUS)",
+    "voice.stop": "עצור ושלח הודעה קולית",
+    "voice.uploading": "מעלה הודעה קולית...",
+    "voice.label": "הודעה קולית",
+    "voice.err.mic": "הגישה למיקרופון נדחתה או אינה זמינה.",
+    "voice.err.upload": "העלאת ההודעה הקולית נכשלה: {{reason}}",
+    "voice.err.target": "יש לבחור ערוץ או הודעה פרטית לפני שליחת הודעה קולית.",
   },
 };
 

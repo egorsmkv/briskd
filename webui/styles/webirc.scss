@@ -1363,3 +1363,61 @@ body.layout-mobile {
     }
   }
 }
+
+/* Voice messages (OPUS) */
+.btn-voice {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  padding: 0 10px;
+  height: 36px;
+  &.hidden {
+    display: none;
+  }
+  &.recording {
+    background: var(--err);
+    border-color: var(--err);
+    color: #fff;
+    animation: voice-pulse 1.2s ease-in-out infinite;
+  }
+  .voice-timer {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    &:empty {
+      display: none;
+    }
+  }
+}
+
+@keyframes voice-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.72;
+  }
+}
+
+.voice-player {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 10px;
+  margin-top: 2px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-width: 340px;
+  width: 100%;
+  .voice-label {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--muted);
+  }
+  audio {
+    width: 100%;
+    height: 32px;
+  }
+}

@@ -6,7 +6,7 @@ ARG DENO_VERSION=2.9.8
 ARG TARGETARCH
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl tar unzip \
+    && apt-get install -y --no-install-recommends ca-certificates cmake curl tar unzip \
     && rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \

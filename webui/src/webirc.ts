@@ -70,6 +70,20 @@ interface ChatLine {
   kind: "" | "sys" | "err" | "action" | "notice";
   mention?: boolean;
   encrypted?: boolean;
+  voiceId?: string;
+  voiceDur?: number;
+}
+
+const VOICE_CAP = "egorsmkv.github.io/voice";
+const VOICE_TAG = "+egorsmkv.github.io/voice";
+const VOICE_DUR_TAG = "+egorsmkv.github.io/voice-dur";
+const VOICE_ID_RE = /^[0-9a-f]{32}\.(ogg|webm)$/;
+
+function fmtDuration(sec?: number): string {
+  const s = Math.max(0, Math.floor(sec || 0));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${r < 10 ? "0" : ""}${r}`;
 }
 
 interface BufferState {
@@ -763,6 +777,8 @@ function addLine(
     text: string;
     kind?: ChatLine["kind"];
     encrypted?: boolean;
+    voiceId?: string;
+    voiceDur?: number;
   },
 ): void {
   const buf = ensureBuf(bufName);
@@ -776,6 +792,8 @@ function addLine(
     kind: opts.kind || "",
     mention,
     encrypted: opts.encrypted,
+    voiceId: opts.voiceId,
+    voiceDur: opts.voiceDur,
   };
   const prev = buf.lines[buf.lines.length - 1];
   buf.lines.push(entry);
@@ -848,6 +866,25 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
     (grouped ? " grouped" : "") +
     (entry.mention ? " mention" : "");
 
+  const renderBodyContent = (): Node => {
+    if (entry.voiceId && VOICE_ID_RE.test(entry.voiceId)) {
+      const box = document.createElement("div");
+      box.className = "voice-player";
+      const label = document.createElement("span");
+      label.className = "voice-label";
+      const durText = entry.voiceDur ? ` (${fmtDuration(entry.voiceDur)})` : "";
+      label.textContent = `${t("voice.label")}${durText}`;
+      const audio = document.createElement("audio");
+      audio.controls = true;
+      audio.preload = "metadata";
+      audio.src = `/api/voice/${entry.voiceId}`;
+      box.appendChild(label);
+      box.appendChild(audio);
+      return box;
+    }
+    return renderIrcMessage(entry.text, fmtOpts);
+  };
+
   if (entry.kind || !entry.nick) {
     const t = document.createElement("span");
     t.className = "msg-time";
@@ -856,7 +893,7 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
     const body = document.createElement("span");
     body.className = "msg-text";
     body.dir = "auto";
-    body.appendChild(renderIrcMessage(entry.text, fmtOpts));
+    body.appendChild(renderBodyContent());
     row.appendChild(body);
   } else if (grouped) {
     const t = document.createElement("span");
@@ -866,7 +903,7 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
     const body = document.createElement("span");
     body.className = "msg-text";
     body.dir = "auto";
-    body.appendChild(renderIrcMessage(entry.text, fmtOpts));
+    body.appendChild(renderBodyContent());
     row.appendChild(body);
   } else {
     const av = document.createElement("div");
@@ -907,7 +944,7 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
     const body = document.createElement("div");
     body.className = "msg-text";
     body.dir = "auto";
-    body.appendChild(renderIrcMessage(entry.text, fmtOpts));
+    body.appendChild(renderBodyContent());
 
     col.appendChild(meta);
     col.appendChild(body);
@@ -1154,6 +1191,7 @@ function handleMessage(raw: string): void {
         "account-tag",
         "extended-join",
         E2EE_CAP,
+        VOICE_CAP,
       ];
       if (saslPass) wanted.push("sasl");
       const toReq = wanted.filter((c) => advertisedCaps.includes(c));
@@ -1162,6 +1200,10 @@ function handleMessage(raw: string): void {
     } else if (sub === "ACK") {
       const acked = (params[2] || "").split(" ").filter(Boolean);
       if (acked.includes(E2EE_CAP)) e2ee.setServerSupported(true);
+      if (acked.includes(VOICE_CAP)) {
+        voiceSupported = true;
+        updateVoiceButton();
+      }
       if (acked.includes("account-tag")) e2ee.setAccountTagEnabled(true);
       if (saslPass && acked.includes("sasl")) {
         sendRaw("AUTHENTICATE PLAIN");
@@ -1369,11 +1411,19 @@ function handleMessage(raw: string): void {
         kind: "action",
       });
     } else {
+      const rawVoiceId = msg.tags[VOICE_TAG] || "";
+      const voiceId = VOICE_ID_RE.test(rawVoiceId) ? rawVoiceId : undefined;
+      const rawDur = parseInt(msg.tags[VOICE_DUR_TAG] || "", 10);
+      const voiceDur = Number.isFinite(rawDur) && rawDur > 0 && rawDur <= 600
+        ? rawDur
+        : undefined;
       addLine(dest, {
         time,
         nick: nick || msg.prefix,
         text,
         kind: command === "NOTICE" ? "notice" : "",
+        voiceId,
+        voiceDur,
       });
     }
     return;
@@ -1919,6 +1969,178 @@ $<HTMLFormElement>("send-form").addEventListener("submit", (ev) => {
     return;
   }
   sendRaw(`PRIVMSG ${buf.name} :${raw}`);
+});
+
+let voiceSupported = false;
+let voiceRecorder: MediaRecorder | null = null;
+let voiceStream: MediaStream | null = null;
+let voiceChunks: Blob[] = [];
+let voiceStartMs = 0;
+let voiceTimerId: number | null = null;
+let voiceCancelled = false;
+let voiceTarget = "";
+const VOICE_MAX_SEC = 120;
+
+function pickOpusMime(): string {
+  if (typeof MediaRecorder === "undefined") return "";
+  const candidates = [
+    "audio/ogg;codecs=opus",
+    "audio/webm;codecs=opus",
+    "audio/webm",
+  ];
+  for (const mime of candidates) {
+    if (MediaRecorder.isTypeSupported(mime)) return mime;
+  }
+  return "";
+}
+
+function updateVoiceButton(): void {
+  const btn = $("btn-voice");
+  const canRecord = voiceSupported &&
+    typeof MediaRecorder !== "undefined" &&
+    Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  btn.classList.toggle("hidden", !canRecord);
+  btn.title = voiceRecorder ? t("voice.stop") : t("voice.record");
+}
+
+function resetVoiceUi(): void {
+  if (voiceTimerId !== null) {
+    globalThis.clearInterval(voiceTimerId);
+    voiceTimerId = null;
+  }
+  if (voiceStream) {
+    for (const track of voiceStream.getTracks()) track.stop();
+    voiceStream = null;
+  }
+  voiceRecorder = null;
+  voiceChunks = [];
+  const btn = $("btn-voice");
+  btn.classList.remove("recording");
+  btn.title = t("voice.record");
+  $("voice-timer").textContent = "";
+  $("btn-voice-cancel").classList.add("hidden");
+}
+
+async function uploadAndSendVoice(
+  blob: Blob,
+  durSec: number,
+  target: string,
+): Promise<void> {
+  const btn = $<HTMLButtonElement>("btn-voice");
+  btn.disabled = true;
+  try {
+    const resp = await fetch("/api/voice", {
+      method: "POST",
+      headers: {
+        "X-Requested-With": "ircd-webui",
+        "Content-Type": blob.type || "audio/ogg",
+        "X-Voice-Duration": String(durSec),
+      },
+      body: blob,
+    });
+    const data = await resp.json().catch(() => ({})) as {
+      id?: string;
+      duration?: number;
+      error?: string;
+      message?: string;
+    };
+    if (!resp.ok || !data.id || !VOICE_ID_RE.test(data.id)) {
+      const reason = data.message || data.error || `HTTP ${resp.status}`;
+      addLine(target, {
+        text: t("voice.err.upload", { reason }),
+        kind: "err",
+      });
+      return;
+    }
+    const finalDur = typeof data.duration === "number" && data.duration > 0
+      ? data.duration
+      : durSec;
+    sendRaw(
+      `@${VOICE_TAG}=${data.id};${VOICE_DUR_TAG}=${finalDur} PRIVMSG ${target} :[Voice message ${
+        fmtDuration(finalDur)
+      }] /api/voice/${data.id}`,
+    );
+  } catch (e) {
+    addLine(target, {
+      text: t("voice.err.upload", { reason: errorMessage(e) }),
+      kind: "err",
+    });
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$("btn-voice").addEventListener("click", () => {
+  if (voiceRecorder && voiceRecorder.state === "recording") {
+    voiceCancelled = false;
+    voiceRecorder.stop();
+    return;
+  }
+  const buf = buffers.get(activeBuf);
+  if (!buf || buf.name === "*status") {
+    addLine("*status", { text: t("voice.err.target"), kind: "err" });
+    return;
+  }
+  voiceTarget = buf.name;
+  voiceCancelled = false;
+  void navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+    voiceStream = stream;
+    voiceChunks = [];
+    const mime = pickOpusMime();
+    const opts: MediaRecorderOptions = mime
+      ? { mimeType: mime, audioBitsPerSecond: 32000 }
+      : { audioBitsPerSecond: 32000 };
+    const rec = new MediaRecorder(stream, opts);
+    voiceRecorder = rec;
+    voiceStartMs = Date.now();
+    rec.ondataavailable = (ev) => {
+      if (ev.data && ev.data.size > 0) voiceChunks.push(ev.data);
+    };
+    rec.onstop = () => {
+      const chunks = voiceChunks.slice();
+      const cancelled = voiceCancelled;
+      const target = voiceTarget;
+      const durSec = Math.max(
+        1,
+        Math.min(VOICE_MAX_SEC, Math.round((Date.now() - voiceStartMs) / 1000)),
+      );
+      const outMime = rec.mimeType || mime || "audio/ogg";
+      resetVoiceUi();
+      if (!cancelled && chunks.length > 0) {
+        const blob = new Blob(chunks, { type: outMime });
+        void uploadAndSendVoice(blob, durSec, target);
+      }
+    };
+    rec.start(250);
+    const btn = $("btn-voice");
+    btn.classList.add("recording");
+    btn.title = t("voice.stop");
+    $("btn-voice-cancel").classList.remove("hidden");
+    $("voice-timer").textContent = "0:00";
+    voiceTimerId = globalThis.setInterval(() => {
+      const elapsed = Math.floor((Date.now() - voiceStartMs) / 1000);
+      $("voice-timer").textContent = fmtDuration(elapsed);
+      if (elapsed >= VOICE_MAX_SEC && voiceRecorder) {
+        voiceCancelled = false;
+        voiceRecorder.stop();
+      }
+    }, 250);
+  }).catch(() => {
+    resetVoiceUi();
+    addLine(voiceTarget || "*status", {
+      text: t("voice.err.mic"),
+      kind: "err",
+    });
+  });
+});
+
+$("btn-voice-cancel").addEventListener("click", () => {
+  voiceCancelled = true;
+  if (voiceRecorder && voiceRecorder.state === "recording") {
+    voiceRecorder.stop();
+  } else {
+    resetVoiceUi();
+  }
 });
 
 // Auto-restore saved WebIRC session across page refreshes

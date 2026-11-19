@@ -5,6 +5,21 @@ services:
       - "2500:2500"
       - "9000:9000"
 
+  rustfs:
+    image: rustfs/rustfs:latest
+    ports:
+      - "9100:9000"
+      - "9101:9001"
+    environment:
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+    volumes:
+      - rustfs-data:/data
+
   ircd-dev:
     build:
       context: .
@@ -13,6 +28,7 @@ services:
     command: ["just", "run-config", "config/ircd.dev.json"]
     depends_on:
       - inbucket
+      - rustfs
     environment:
       IRCD_CONFIG: config/ircd.dev.json
     ports:
@@ -29,3 +45,4 @@ services:
 volumes:
   rebar3-cache:
   ircd-mnesia:
+  rustfs-data:

@@ -69,6 +69,7 @@ cannot be removed.
     <<"draft/read-marker">>,
     <<"echo-message">>,
     <<"egorsmkv.github.io/e2ee">>,
+    <<"egorsmkv.github.io/voice">>,
     <<"extended-join">>,
     <<"extended-monitor">>,
     <<"invite-notify">>,
@@ -426,6 +427,12 @@ value(<<"draft/account-registration">>, _Info) ->
 value(<<"egorsmkv.github.io/e2ee">>, _Info) ->
     case ircd_e2ee:enabled() of
         true -> {ok, ircd_e2ee:cap_value()};
+        false -> error
+    end;
+%% Voice messages (ircd_voice): offered only when S3 storage is configured.
+value(<<"egorsmkv.github.io/voice">>, _Info) ->
+    case ircd_voice:enabled() of
+        true -> {ok, ircd_voice:cap_value()};
         false -> error
     end;
 value(_Name, _Info) ->

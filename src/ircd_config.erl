@@ -97,6 +97,7 @@ load(Path) ->
             dronebl => dronebl(maps:get(<<"dronebl">>, Json, false)),
             webui => webui(maps:get(<<"webui">>, Json, null)),
             e2ee => e2ee(maps:get(<<"e2ee">>, Json, null)),
+            voice => voice(maps:get(<<"voice">>, Json, null)),
             max_accounts => positive_limit(maps:get(<<"max_accounts">>, Json, 100000)),
             max_empty_channels => positive_limit(maps:get(<<"max_empty_channels">>, Json, 1000)),
             empty_channel_ttl => empty_channel_ttl(maps:get(<<"empty_channel_ttl">>, Json, 86400)),
@@ -834,3 +835,58 @@ webui_url(_Key, Url) when is_binary(Url), byte_size(Url) =< 2048 ->
     end;
 webui_url(Key, Value) ->
     erlang:error({invalid_webui_url, Key, Value}).
+
+%% Voice messages (OPUS) stored in S3-compatible object storage (e.g. RustFS).
+%% Disabled when `null` or `false`.
+voice(null) ->
+    null;
+voice(false) ->
+    null;
+voice(Map) when is_map(Map) ->
+    Endpoint = webui_url(endpoint, maps:get(<<"endpoint">>, Map)),
+    Region = voice_token(region, maps:get(<<"region">>, Map, <<"us-east-1">>), 1, 64),
+    Bucket = voice_bucket(maps:get(<<"bucket">>, Map, <<"ircd-voice">>)),
+    AccessKey = voice_secret(access_key_id, maps:get(<<"access_key_id">>, Map)),
+    SecretKey = voice_secret(secret_access_key, maps:get(<<"secret_access_key">>, Map)),
+    MaxBytes = voice_int(max_bytes, maps:get(<<"max_bytes">>, Map, 1048576), 1024, 20971520),
+    MaxDuration = voice_int(max_duration, maps:get(<<"max_duration">>, Map, 120), 1, 600),
+    #{
+        endpoint => Endpoint,
+        region => Region,
+        bucket => Bucket,
+        access_key_id => AccessKey,
+        secret_access_key => SecretKey,
+        max_bytes => MaxBytes,
+        max_duration => MaxDuration
+    };
+voice(Value) ->
+    erlang:error({invalid_voice, Value}).
+
+voice_token(_Key, Val, Min, Max) when
+    is_binary(Val), byte_size(Val) >= Min, byte_size(Val) =< Max
+->
+    case re:run(Val, <<"^[A-Za-z0-9._-]+$">>, [{capture, none}]) of
+        match -> ircd_wire:retain(Val);
+        nomatch -> erlang:error({invalid_voice_token, Val})
+    end;
+voice_token(Key, Val, _Min, _Max) ->
+    erlang:error({invalid_voice, Key, Val}).
+
+voice_bucket(Bucket) when is_binary(Bucket), byte_size(Bucket) >= 3, byte_size(Bucket) =< 63 ->
+    case re:run(Bucket, <<"^[a-z0-9][a-z0-9.-]*[a-z0-9]$">>, [{capture, none}]) of
+        match -> ircd_wire:retain(Bucket);
+        nomatch -> erlang:error({invalid_voice_bucket, Bucket})
+    end;
+voice_bucket(Bucket) ->
+    erlang:error({invalid_voice_bucket, Bucket}).
+
+voice_secret(_Key, Val) when is_binary(Val), byte_size(Val) > 0, byte_size(Val) =< 256 ->
+    nomatch = binary:match(Val, [<<0>>, <<"\r">>, <<"\n">>]),
+    retain_secret(Val);
+voice_secret(Key, _Val) ->
+    erlang:error({invalid_voice, Key}).
+
+voice_int(_Key, Val, Min, Max) when is_integer(Val, Min, Max) ->
+    Val;
+voice_int(Key, Val, _Min, _Max) ->
+    erlang:error({invalid_voice, Key, Val}).

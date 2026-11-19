@@ -12,6 +12,15 @@
   "retention": "channels",
   "history_limit": 100,
   "e2ee": {},
+  "voice": {
+    "endpoint": "http://rustfs:9000",
+    "region": "us-east-1",
+    "bucket": "ircd-voice",
+    "access_key_id": "rustfsadmin",
+    "secret_access_key": "rustfsadmin",
+    "max_bytes": 1048576,
+    "max_duration": 120
+  },
   "administrators": [
     {"nick": "yehor", "password": "devpass"},
     {"nick": "admin", "password": "devpass"},
