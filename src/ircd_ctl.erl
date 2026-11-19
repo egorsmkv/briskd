@@ -574,7 +574,7 @@ cmd_status(Format) ->
                 version => <<"0.1.0">>,
                 started_at => StartedIso,
                 uptime_seconds => Uptime,
-                retention => atom_to_binary(maps:get(retention, Config, transient)),
+                retention => atom_to_binary(maps:get(retention, Config, channels)),
                 log_level => atom_to_binary(maps:get(level, Config, info)),
                 log_format => maps:get(log_format, Config, <<"json">>),
                 listeners => active_listeners(),

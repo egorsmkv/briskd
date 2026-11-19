@@ -78,7 +78,7 @@ load(Path) ->
         MotdFile = optional_path(maps:get(<<"motd_file">>, Json, null)),
         ClientPassword = optional_secret(maps:get(<<"client_password">>, Json, null)),
         MnesiaDir = required_path(maps:get(<<"mnesia_dir">>, Json, <<"data/mnesia">>)),
-        Retention = retention(maps:get(<<"retention">>, Json, <<"transient">>)),
+        Retention = retention(maps:get(<<"retention">>, Json, <<"channels">>)),
         HistoryLimit = history_limit(maps:get(<<"history_limit">>, Json, 100)),
         NickLen = nicklen(maps:get(<<"nicklen">>, Json, 9)),
         Operators = operators(maps:get(<<"operators">>, Json, [])),

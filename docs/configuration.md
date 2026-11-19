@@ -41,7 +41,7 @@ to the process working directory unless they are absolute.
 | `account_registration_email_required` | `false` | Require an email address in `REGISTER` (`email-required`) |
 | `nicklen` | `9` | Longest nickname (9 to 30). RFC 1459 uses 9; every linked server must use the same value |
 | `mnesia_dir` | `data/mnesia` | Mnesia database directory |
-| `retention` | `transient` | `transient` or `channels`. `channels` keeps ordinary channel state and channel message history across a restart |
+| `retention` | `channels` | `channels` or `transient`. `channels` keeps ordinary channel state and channel/DM message history across a restart; `transient` clears them on restart |
 | `history_limit` | `100` | Channel `PRIVMSG`/`NOTICE` lines kept per channel when `retention` is `channels` (1..10000) |
 | `server_links` | `[]` | Direct peer definitions with `name`, `host`, `port`, `password`, and optional `tls` |
 | `ws_port`, `wss_port` | `null` | IRCv3 WebSocket listeners over TCP and TLS; `null` disables |
@@ -68,11 +68,11 @@ handling is unchanged. Port `0` requests an ephemeral port, which is reported
 in the startup log.
 
 `mnesia_dir` should point to writable storage. The default `retention` value
-`transient` persists WHOWAS history, safe-channel state, accounts, and read
-markers, and clears ordinary channels and channel history on restart.
-`channels` also keeps ordinary channel names, topics, modes, keys, limits,
-access masks, and the bounded channel `PRIVMSG`/`NOTICE` history
-(`history_limit` lines, default 100). With `chathistory` enabled (the
+`channels` persists WHOWAS history, safe-channel state, accounts, read markers,
+ordinary channel names, topics, modes, keys, limits, access masks, channel
+metadata, and the bounded channel and direct-message `PRIVMSG`/`NOTICE` history
+(`history_limit` lines, default 100). `transient` clears ordinary channels,
+their metadata, and message history on restart. With `chathistory` enabled (the
 default) that history is recorded in both modes for `CHATHISTORY`; under
 `transient` retention it lasts until the next restart. A joining client
 without `draft/chathistory` receives it after a restart under `channels`

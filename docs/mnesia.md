@@ -7,7 +7,7 @@ that directory and the schema before it starts Mnesia.
 ## What survives a restart
 
 `retention` in the JSON configuration selects the policy. The default is
-`transient`. `history_limit` (default 100, maximum 10000) is the number of
+`channels`. `history_limit` (default 100, maximum 10000) is the number of
 channel `PRIVMSG` and `NOTICE` bodies kept per channel when retention is
 `channels`. Any other `retention` string, or a `history_limit` outside
 1..10000, is rejected at startup. `REHASH` accepts a new limit and retention

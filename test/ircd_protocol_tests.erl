@@ -23,7 +23,9 @@ protocol() ->
     ),
     ok = filelib:ensure_dir(filename:join(Dir, "db")),
     Config = filename:join(Dir, "ircd.json"),
-    ok = file:write_file(Config, config(filename:join(Dir, "db"))),
+    ok = file:write_file(
+        Config, config(filename:join(Dir, "db"), <<"\"retention\":\"transient\",">>)
+    ),
     os:putenv("IRCD_CONFIG", Config),
     {ok, _} = application:ensure_all_started(ircd),
     Port = listener_port(),
@@ -227,7 +229,7 @@ restore_from_backup(Dir) ->
     {atomic, _} = mnesia:restore(Backup, [{default_op, recreate_tables}]),
     ok = application:stop(mnesia),
     RestoredConfig = filename:join(Dir, "restored.json"),
-    ok = file:write_file(RestoredConfig, config(Restored)),
+    ok = file:write_file(RestoredConfig, config(Restored, <<"\"retention\":\"transient\",">>)),
     os:putenv("IRCD_CONFIG", RestoredConfig),
     {ok, _} = application:ensure_all_started(ircd),
     Port = listener_port(),
@@ -489,9 +491,6 @@ assert_before(Bin, Left, Right) ->
     {LeftAt, _} = binary:match(Bin, Left),
     {RightAt, _} = binary:match(Bin, Right),
     ?assert(LeftAt < RightAt).
-
-config(Db) ->
-    config(Db, <<>>).
 
 config(Db, Extra) ->
     iolist_to_binary([

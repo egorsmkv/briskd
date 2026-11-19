@@ -16,8 +16,7 @@ in the referenced RFC.
 - [x] Predefined `administrators` and `channels` in JSON. Administrator
   accounts log in with `OPER` and receive channel operator on the configured
   channels. Those channels are created at startup when no row exists.
-- [x] Flatlog JSON logging by default, with text logging as a configuration
-  option.
+- [x] JSON logging by default, with text logging as a configuration option.
 - [x] Direct TLS listener using TLS 1.2 and 1.3.
 - [x] Mnesia disk-copy tables and configurable `mnesia_dir`.
 - [x] `justfile` commands for build, format, format check, run, run with a

@@ -71,12 +71,12 @@ peer state (`remote_client`, `remote_channel`, `known_server`, `service`).
 `e2ee_device`, and `e2ee_queue` always survive a restart. The JSON `retention`
 setting decides the rest:
 
-- `transient` (default): ordinary channels, their metadata, and both history
-  tables are deleted; safe channels and their metadata are kept with their
-  membership cleared.
-- `channels`: every channel row is kept with membership cleared, together
-  with its history and metadata, plus direct-message history; history and
-  metadata of channels that no longer exist are dropped.
+- `channels` (default): every channel row is kept with membership cleared,
+  together with its history and metadata, plus direct-message history; history
+  and metadata of channels that no longer exist are dropped.
+- `transient`: ordinary channels, their metadata, and both history tables are
+  deleted; safe channels and their metadata are kept with their membership
+  cleared.
 
 Configured `channels` entries are then created when no row exists. See
 `docs/mnesia.md` for backup, restore, and migration.
@@ -647,13 +647,13 @@ predefined_channel(Key) when is_binary(Key) ->
 -doc """
 Configured `retention` policy.
 
-`transient` (default) deletes ordinary channels and message history at
-startup and when a channel empties; `channels` keeps them. Both clear client
-sessions and imported peer state.
+`channels` (default) keeps ordinary channels and message history across
+restarts; `transient` deletes them at startup and when a channel empties. Both
+clear client sessions and imported peer state.
 """.
 -spec retention() -> transient | channels.
 retention() ->
-    maps:get(retention, persistent_term:get({?MODULE, config}), transient).
+    maps:get(retention, persistent_term:get({?MODULE, config}), channels).
 
 -doc """
 Longest accepted nickname in bytes: the `nicklen` setting, default 9 from
