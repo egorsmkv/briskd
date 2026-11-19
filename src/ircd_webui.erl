@@ -641,28 +641,42 @@ signup_error_message(_) -> <<"Could not create account.">>.
 handle_voice_upload(Socket, Headers, Body) ->
     case maps:get(<<"x-requested-with">>, Headers, undefined) of
         <<"ircd-webui">> ->
-            Duration = parse_voice_duration(maps:get(<<"x-voice-duration">>, Headers, undefined)),
-            case ircd_voice:store(Body, Duration) of
-                {ok, Meta} ->
-                    send_json(Socket, 201, <<"Created">>, Meta);
-                {error, disabled} ->
-                    send_json(Socket, 404, <<"Not Found">>, #{error => <<"voice_disabled">>});
-                {error, empty} ->
-                    send_json(Socket, 400, <<"Bad Request">>, #{error => <<"empty_audio">>});
-                {error, too_large} ->
-                    send_json(Socket, 413, <<"Payload Too Large">>, #{
-                        error => <<"payload_too_large">>
-                    });
-                {error, too_long} ->
-                    send_json(Socket, 400, <<"Bad Request">>, #{error => <<"voice_too_long">>});
-                {error, unsupported_format} ->
-                    send_json(Socket, 415, <<"Unsupported Media Type">>, #{
-                        error => <<"unsupported_format">>,
-                        message => <<"Only OPUS audio (Ogg or WebM) is accepted.">>
-                    });
-                {error, Reason} ->
-                    ircd_log:warning(voice_upload_failed, #{reason => Reason}),
-                    send_json(Socket, 502, <<"Bad Gateway">>, #{error => <<"storage_error">>})
+            case check_upload_rate(peer_ip(Socket)) of
+                ok ->
+                    Duration = parse_voice_duration(
+                        maps:get(<<"x-voice-duration">>, Headers, undefined)
+                    ),
+                    case ircd_voice:store(Body, Duration) of
+                        {ok, Meta} ->
+                            send_json(Socket, 201, <<"Created">>, Meta);
+                        {error, disabled} ->
+                            send_json(Socket, 404, <<"Not Found">>, #{error => <<"voice_disabled">>});
+                        {error, empty} ->
+                            send_json(Socket, 400, <<"Bad Request">>, #{error => <<"empty_audio">>});
+                        {error, too_large} ->
+                            send_json(Socket, 413, <<"Payload Too Large">>, #{
+                                error => <<"payload_too_large">>
+                            });
+                        {error, too_long} ->
+                            send_json(Socket, 400, <<"Bad Request">>, #{
+                                error => <<"voice_too_long">>
+                            });
+                        {error, unsupported_format} ->
+                            send_json(Socket, 415, <<"Unsupported Media Type">>, #{
+                                error => <<"unsupported_format">>,
+                                message => <<"Only OPUS audio (Ogg or WebM) is accepted.">>
+                            });
+                        {error, Reason} ->
+                            ircd_log:warning(voice_upload_failed, #{reason => Reason}),
+                            send_json(Socket, 502, <<"Bad Gateway">>, #{
+                                error => <<"storage_error">>
+                            })
+                    end;
+                rate_limited ->
+                    send_json(Socket, 429, <<"Too Many Requests">>, #{
+                        error => <<"rate_limited">>,
+                        message => <<"Too many uploads. Please wait a moment.">>
+                    })
             end;
         _ ->
             send_json(Socket, 403, <<"Forbidden">>, #{error => <<"missing_csrf_header">>})
@@ -706,24 +720,73 @@ parse_voice_duration(Bin) when is_binary(Bin) ->
 handle_file_upload(Socket, Headers, Body) ->
     case maps:get(<<"x-requested-with">>, Headers, undefined) of
         <<"ircd-webui">> ->
-            RawName = decode_header_filename(maps:get(<<"x-file-name">>, Headers, undefined)),
-            case ircd_files:store(Body, RawName) of
-                {ok, Meta} ->
-                    send_json(Socket, 201, <<"Created">>, Meta);
-                {error, disabled} ->
-                    send_json(Socket, 404, <<"Not Found">>, #{error => <<"files_disabled">>});
-                {error, empty} ->
-                    send_json(Socket, 400, <<"Bad Request">>, #{error => <<"empty_file">>});
-                {error, too_large} ->
-                    send_json(Socket, 413, <<"Payload Too Large">>, #{
-                        error => <<"payload_too_large">>
-                    });
-                {error, Reason} ->
-                    ircd_log:warning(file_upload_failed, #{reason => Reason}),
-                    send_json(Socket, 502, <<"Bad Gateway">>, #{error => <<"storage_error">>})
+            case check_upload_rate(peer_ip(Socket)) of
+                ok ->
+                    RawName = decode_header_filename(
+                        maps:get(<<"x-file-name">>, Headers, undefined)
+                    ),
+                    case ircd_files:store(Body, RawName) of
+                        {ok, Meta} ->
+                            send_json(Socket, 201, <<"Created">>, Meta);
+                        {error, disabled} ->
+                            send_json(Socket, 404, <<"Not Found">>, #{error => <<"files_disabled">>});
+                        {error, empty} ->
+                            send_json(Socket, 400, <<"Bad Request">>, #{error => <<"empty_file">>});
+                        {error, too_large} ->
+                            send_json(Socket, 413, <<"Payload Too Large">>, #{
+                                error => <<"payload_too_large">>
+                            });
+                        {error, Reason} ->
+                            ircd_log:warning(file_upload_failed, #{reason => Reason}),
+                            send_json(Socket, 502, <<"Bad Gateway">>, #{
+                                error => <<"storage_error">>
+                            })
+                    end;
+                rate_limited ->
+                    send_json(Socket, 429, <<"Too Many Requests">>, #{
+                        error => <<"rate_limited">>,
+                        message => <<"Too many uploads. Please wait a moment.">>
+                    })
             end;
         _ ->
             send_json(Socket, 403, <<"Forbidden">>, #{error => <<"missing_csrf_header">>})
+    end.
+
+%% Bounded per-IP upload rate limiter: at most 20 uploads per 60 seconds.
+check_upload_rate(IP) ->
+    Tab = ensure_upload_rate_table(),
+    Now = erlang:monotonic_time(second),
+    Cutoff = Now - 60,
+    case ets:lookup(Tab, IP) of
+        [{IP, Timestamps}] ->
+            Recent = [T || T <- Timestamps, T > Cutoff],
+            case length(Recent) >= 20 of
+                true ->
+                    ets:insert(Tab, {IP, Recent}),
+                    rate_limited;
+                false ->
+                    ets:insert(Tab, {IP, [Now | Recent]}),
+                    ok
+            end;
+        [] ->
+            case ets:info(Tab, size) > 5000 of
+                true -> ets:delete_all_objects(Tab);
+                false -> ok
+            end,
+            ets:insert(Tab, {IP, [Now]}),
+            ok
+    end.
+
+ensure_upload_rate_table() ->
+    case ets:whereis(ircd_webui_uploads) of
+        undefined ->
+            try
+                ets:new(ircd_webui_uploads, [named_table, public, set])
+            catch
+                error:badarg -> ircd_webui_uploads
+            end;
+        Tab ->
+            Tab
     end.
 
 handle_file_download(Socket, FileId) ->

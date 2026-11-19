@@ -78,6 +78,35 @@ const SAFE_IMAGE_MIMES = new Set([
   "image/gif",
   "image/webp",
 ]);
+const SAFE_AUDIO_MIMES = new Set([
+  "audio/ogg",
+  "audio/webm",
+  "audio/mpeg",
+  "audio/wav",
+]);
+
+/**
+ * Strip path separators, control chars, and Unicode bidi spoofing overrides
+ * (e.g. RLO U+202E) from untrusted filenames before displaying or downloading.
+ */
+export function sanitizeDisplayName(raw: string): string {
+  const base = (raw || "").split(/[/\\]/).pop() || "";
+  let out = "";
+  for (let i = 0; i < base.length; i++) {
+    const code = base.charCodeAt(i);
+    if (
+      code < 0x20 || code === 0x7f ||
+      (code >= 0x202a && code <= 0x202e) ||
+      (code >= 0x2066 && code <= 0x2069) ||
+      code === 0x200e || code === 0x200f
+    ) {
+      continue;
+    }
+    out += base[i];
+  }
+  const trimmed = out.trim().slice(0, 120);
+  return trimmed || "file.bin";
+}
 
 export function parseE2eeAttachment(
   text: string,
@@ -212,8 +241,8 @@ function makeFileSvg(kind: FileCategory | "download"): SVGSVGElement {
 
 export function createFileCard(opts: FileCardOptions): HTMLElement {
   const url = opts.srcUrl || `/api/files/${opts.fileId}`;
-  const displayName = opts.fileName || opts.fileId;
-  const { kind, ext } = classifyFile(opts.fileName || opts.fileId);
+  const displayName = sanitizeDisplayName(opts.fileName || opts.fileId);
+  const { kind, ext } = classifyFile(displayName);
   const sizeText = formatBytes(opts.fileSize);
   const preview = opts.previewImage ?? isPreviewImageId(opts.fileId);
 
@@ -338,9 +367,11 @@ async function fetchAndDecryptBlobUrl(
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const ct = new Uint8Array(await resp.arrayBuffer());
   const pt = decryptAttachment(ct, key, iv, sha256);
-  const safeMime = SAFE_IMAGE_MIMES.has(mime) || mime.startsWith("audio/")
-    ? mime
-    : "application/octet-stream";
+  const baseMime = (mime || "").split(";")[0].trim().toLowerCase();
+  const safeMime =
+    SAFE_IMAGE_MIMES.has(baseMime) || SAFE_AUDIO_MIMES.has(baseMime)
+      ? baseMime
+      : "application/octet-stream";
   const blob = new Blob([pt as BlobPart], { type: safeMime });
   const url = URL.createObjectURL(blob);
   if (decryptedBlobCache.size > 80) {

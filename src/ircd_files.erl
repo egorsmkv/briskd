@@ -140,7 +140,7 @@ store(Bytes, RawName) when is_binary(Bytes) ->
             case validate_size(Size, MaxBytes) of
                 ok ->
                     Name = sanitize_filename(RawName),
-                    Ext = safe_ext(Name),
+                    Ext = verified_ext(safe_ext(Name), Bytes),
                     {ok, Mime} = ext_to_mime(Ext),
                     Id = new_id(Ext),
                     case put_object_with_bucket(Cfg, Id, Bytes, Mime) of
@@ -272,6 +272,32 @@ safe_ext(Name) ->
                 error -> <<"bin">>
             end
     end.
+
+%% Verify leading magic bytes for inline-previewable raster images so a
+%% non-image payload (e.g. HTML disguised as photo.png) is downgraded to .bin
+%% and served as an attachment.
+verified_ext(<<"png">>, <<16#89, "PNG\r\n", 16#1A, "\n", _/binary>>) ->
+    <<"png">>;
+verified_ext(<<"jpg">>, <<16#FF, 16#D8, 16#FF, _/binary>>) ->
+    <<"jpg">>;
+verified_ext(<<"jpeg">>, <<16#FF, 16#D8, 16#FF, _/binary>>) ->
+    <<"jpeg">>;
+verified_ext(<<"gif">>, <<"GIF87a", _/binary>>) ->
+    <<"gif">>;
+verified_ext(<<"gif">>, <<"GIF89a", _/binary>>) ->
+    <<"gif">>;
+verified_ext(<<"webp">>, <<"RIFF", _Size:32, "WEBP", _/binary>>) ->
+    <<"webp">>;
+verified_ext(Ext, _Bytes) when
+    Ext =:= <<"png">>;
+    Ext =:= <<"jpg">>;
+    Ext =:= <<"jpeg">>;
+    Ext =:= <<"gif">>;
+    Ext =:= <<"webp">>
+->
+    <<"bin">>;
+verified_ext(Ext, _Bytes) ->
+    Ext.
 
 ext_to_mime(<<"png">>) -> {ok, <<"image/png">>};
 ext_to_mime(<<"jpg">>) -> {ok, <<"image/jpeg">>};

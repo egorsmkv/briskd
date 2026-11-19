@@ -6,6 +6,7 @@ import {
   formatBytes,
   isPreviewImageId,
   parseE2eeAttachment,
+  sanitizeDisplayName,
 } from "./file_card.ts";
 
 function assert(cond: boolean, msg: string): void {
@@ -67,4 +68,13 @@ Deno.test("parseE2eeAttachment validates payloads and rejects traversal IDs", ()
   });
   assert(parseE2eeAttachment(badId) === null, "must reject traversal id");
   assert(parseE2eeAttachment("plain text") === null, "ignores normal text");
+});
+
+Deno.test("sanitizeDisplayName strips paths, control chars, and RLO spoofing", () => {
+  assert(
+    sanitizeDisplayName("../../invoice\u202Egpj.exe") === "invoicegpj.exe",
+    "strips traversal and RLO",
+  );
+  assert(sanitizeDisplayName("a\r\nb.txt") === "ab.txt", "strips CRLF");
+  assert(sanitizeDisplayName("   ") === "file.bin", "fallback");
 });

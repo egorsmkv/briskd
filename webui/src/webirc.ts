@@ -100,6 +100,7 @@ interface ChatLine {
   mention?: boolean;
   encrypted?: boolean;
   msgid?: string;
+  account?: string;
   replyTo?: string;
   edited?: boolean;
   redacted?: boolean;
@@ -118,6 +119,9 @@ const REACT_TAG = "+draft/react";
 const REPLY_TAG = "+draft/reply";
 const TYPING_TAG = "+typing";
 const EDIT_TAG = "+egorsmkv.github.io/edit";
+const SAFE_MSGID_RE = /^[A-Za-z0-9._-]{1,128}$/;
+const MAX_REACTIONS_PER_MSG = 20;
+const MAX_TYPERS_PER_BUF = 20;
 const QUICK_EMOJIS = ["👍", "❤️", "😂", "🔥"] as const;
 
 const serverFeatures: Record<FeatureKey, boolean> = {
@@ -884,6 +888,7 @@ function addLine(
     kind?: ChatLine["kind"];
     encrypted?: boolean;
     msgid?: string;
+    account?: string;
     replyTo?: string;
     voiceId?: string;
     voiceDur?: number;
@@ -904,8 +909,13 @@ function addLine(
     kind: opts.kind || "",
     mention,
     encrypted: opts.encrypted,
-    msgid: opts.msgid,
-    replyTo: opts.replyTo,
+    msgid: opts.msgid && SAFE_MSGID_RE.test(opts.msgid)
+      ? opts.msgid
+      : undefined,
+    account: opts.account,
+    replyTo: opts.replyTo && SAFE_MSGID_RE.test(opts.replyTo)
+      ? opts.replyTo
+      : undefined,
     voiceId: opts.voiceId,
     voiceDur: opts.voiceDur,
     fileId: opts.fileId,
@@ -1775,8 +1785,16 @@ function handleMessage(raw: string): void {
     }
     const editTargetId = msg.tags[EDIT_TAG];
     if (
-      command === "PRIVMSG" && editTargetId && featureOn("editing") &&
-      applyEdit(dest, editTargetId, nick || msg.prefix, text)
+      command === "PRIVMSG" && editTargetId &&
+      SAFE_MSGID_RE.test(editTargetId) &&
+      featureOn("editing") &&
+      applyEdit(
+        dest,
+        editTargetId,
+        nick || msg.prefix,
+        msg.tags.account,
+        text,
+      )
     ) {
       return;
     }
@@ -1821,6 +1839,7 @@ function handleMessage(raw: string): void {
         text,
         kind: command === "NOTICE" ? "notice" : "",
         msgid: msg.tags.msgid,
+        account: msg.tags.account,
         replyTo,
         voiceId,
         voiceDur,
@@ -2461,14 +2480,16 @@ function jumpToMessage(msgid: string): void {
 }
 
 function sendReaction(msgid: string, emoji: string): void {
-  if (!featureOn("reactions")) return;
+  if (!featureOn("reactions") || !SAFE_MSGID_RE.test(msgid)) return;
+  const clean = emoji.trim().slice(0, 8);
+  if (!clean || /[\s;\r\n\0]/.test(clean)) return;
   const buf = buffers.get(activeBuf);
   if (!buf || buf.name === "*status") return;
-  sendRaw(`@${REPLY_TAG}=${msgid};${REACT_TAG}=${emoji} TAGMSG ${buf.name}`);
+  sendRaw(`@${REPLY_TAG}=${msgid};${REACT_TAG}=${clean} TAGMSG ${buf.name}`);
 }
 
 function sendRedaction(msgid: string): void {
-  if (!featureOn("redaction")) return;
+  if (!featureOn("redaction") || !SAFE_MSGID_RE.test(msgid)) return;
   const buf = buffers.get(activeBuf);
   if (!buf || buf.name === "*status") return;
   sendRaw(`REDACT ${buf.name} ${msgid}`);
@@ -2480,8 +2501,21 @@ function applyReaction(
   emoji: string,
   sender: string,
 ): void {
-  const cleanEmoji = emoji.trim().slice(0, 16);
-  if (!cleanEmoji || !sender) return;
+  if (!SAFE_MSGID_RE.test(msgid) || !sender) return;
+  let cleanEmoji = "";
+  for (const ch of emoji.trim()) {
+    const code = ch.codePointAt(0) || 0;
+    if (
+      code < 0x20 || code === 0x7f ||
+      (code >= 0x202a && code <= 0x202e) ||
+      (code >= 0x2066 && code <= 0x2069)
+    ) {
+      continue;
+    }
+    cleanEmoji += ch;
+    if (cleanEmoji.length >= 8) break;
+  }
+  if (!cleanEmoji) return;
   const key = bufName.toLowerCase();
   const buf = buffers.get(key);
   if (!buf) return;
@@ -2490,6 +2524,7 @@ function applyReaction(
   if (!line.reactions) line.reactions = new Map();
   let set = line.reactions.get(cleanEmoji);
   if (!set) {
+    if (line.reactions.size >= MAX_REACTIONS_PER_MSG) return;
     set = new Set();
     line.reactions.set(cleanEmoji, set);
   }
@@ -2509,15 +2544,28 @@ function applyEdit(
   bufName: string,
   msgid: string,
   sender: string,
+  senderAccount: string | undefined,
   newText: string,
 ): boolean {
   const key = bufName.toLowerCase();
   const buf = buffers.get(key);
   if (!buf) return false;
   const line = buf.lines.find((l) => l.msgid === msgid);
-  if (!line || line.redacted) return false;
-  // Prevent spoofing: only the original sender may edit their message
+  if (
+    !line || line.redacted || line.encrypted || line.voiceId || line.fileId ||
+    line.albumIds
+  ) {
+    return false;
+  }
+  // Prevent spoofing: require matching nick, and matching SASL account if known
   if (line.nick.toLowerCase() !== sender.toLowerCase()) return false;
+  if (
+    line.account && line.account !== "*" &&
+    (!senderAccount ||
+      senderAccount.toLowerCase() !== line.account.toLowerCase())
+  ) {
+    return false;
+  }
   line.text = newText;
   line.edited = true;
   if (activeBuf === key) renderActiveMessages();
@@ -2579,6 +2627,7 @@ function updateRemoteTyping(
   const prev = map.get(sender);
   if (prev !== undefined) globalThis.clearTimeout(prev);
   if (state === "active") {
+    if (!map.has(sender) && map.size >= MAX_TYPERS_PER_BUF) return;
     const tid = globalThis.setTimeout(() => {
       map?.delete(sender);
       if (activeBuf === key) renderTypingBar();
