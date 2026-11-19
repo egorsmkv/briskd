@@ -85,12 +85,23 @@ interface OverviewPayload {
   links?: { connected?: ConnectedLink[]; configured?: ConfiguredLink[] };
   accounts?: { accounts?: AccountEntry[] };
   dronebl?: {
-    stats?: { enabled?: boolean; bans?: number; cached_clean?: number; in_flight?: number };
+    stats?: {
+      enabled?: boolean;
+      bans?: number;
+      cached_clean?: number;
+      in_flight?: number;
+    };
     bans?: DroneblBan[];
   };
 }
 
-type CellValue = Node | { text: string; cls?: string } | string | number | null | undefined;
+type CellValue =
+  | Node
+  | { text: string; cls?: string }
+  | string
+  | number
+  | null
+  | undefined;
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T =>
   document.getElementById(id) as T;
@@ -121,7 +132,9 @@ function fmtUptime(s: number): string {
 }
 
 function fmtBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
+  }
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
   if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
   return `${bytes} B`;
@@ -145,7 +158,10 @@ async function postAction(action: string, args: string[] = []): Promise<void> {
       showNotice(false, `${action} failed: ${JSON.stringify(data)}`);
     }
   } catch (e) {
-    showNotice(false, `${action} error: ${e instanceof Error ? e.message : String(e)}`);
+    showNotice(
+      false,
+      `${action} error: ${e instanceof Error ? e.message : String(e)}`,
+    );
   }
 }
 
@@ -169,7 +185,9 @@ function makeTable(headers: string[], rows: CellValue[][]): HTMLElement {
         td.textContent = String(cell.text);
         if (cell.cls) td.className = cell.cls;
       } else {
-        td.textContent = cell === undefined || cell === null ? "" : String(cell);
+        td.textContent = cell === undefined || cell === null
+          ? ""
+          : String(cell);
       }
       r.appendChild(td);
     }
@@ -192,30 +210,39 @@ function render(data: OverviewPayload): void {
   badge.textContent = st.status || "unknown";
   badge.className = st.status === "running" ? "badge" : "badge off";
   $("srv-meta").textContent =
-    `network ${st.network || "-"} | up ${fmtUptime(st.uptime_seconds || 0)} | listeners: ` +
+    `network ${st.network || "-"} | up ${
+      fmtUptime(st.uptime_seconds || 0)
+    } | listeners: ` +
     (st.listeners || []).map((l) => `${l.transport}:${l.port}`).join(", ");
 
   $("st-sessions").textContent = `${st.sessions ?? 0} / ${st.max_clients ?? 0}`;
-  $("st-sessions-sub").textContent =
-    `registered: ${st.registered_users ?? 0}, operators: ${st.operators_online ?? 0}`;
+  $("st-sessions-sub").textContent = `registered: ${
+    st.registered_users ?? 0
+  }, operators: ${st.operators_online ?? 0}`;
   $("st-channels").textContent = String(st.channels ?? 0);
   $("st-channels-sub").textContent = `remote: ${st.remote_channels ?? 0}`;
   $("st-network").textContent = `${st.known_servers ?? 0} peers`;
-  $("st-network-sub").textContent =
-    `remote users: ${st.remote_users ?? 0}, services: ${st.services ?? 0}`;
+  $("st-network-sub").textContent = `remote users: ${
+    st.remote_users ?? 0
+  }, services: ${st.services ?? 0}`;
   $("st-accounts").textContent = String(st.accounts ?? 0);
   $("st-retention").textContent = `retention: ${st.retention || "-"}`;
 
   const dbl = data.dronebl ?? {};
   const dblStats = dbl.stats ?? {};
-  $("st-dronebl").textContent = dblStats.enabled ? `${dblStats.bans ?? 0} bans` : "disabled";
+  $("st-dronebl").textContent = dblStats.enabled
+    ? `${dblStats.bans ?? 0} bans`
+    : "disabled";
   $("st-dronebl-sub").textContent = dblStats.enabled
-    ? `clean cache: ${dblStats.cached_clean ?? 0}, in-flight: ${dblStats.in_flight ?? 0}`
+    ? `clean cache: ${dblStats.cached_clean ?? 0}, in-flight: ${
+      dblStats.in_flight ?? 0
+    }`
     : "enable in config";
 
   $("st-db").textContent = fmtBytes(st.db_disk_bytes || 0);
-  $("st-db-sub").textContent =
-    `RAM: ${fmtBytes(st.db_memory_bytes || 0)} | ${st.db_tables ?? 0} tables`;
+  $("st-db-sub").textContent = `RAM: ${fmtBytes(st.db_memory_bytes || 0)} | ${
+    st.db_tables ?? 0
+  } tables`;
 
   $("st-memory").textContent = fmtBytes(st.memory_bytes || 0);
   $("st-procs").textContent = `${st.erlang_processes ?? 0} processes`;
@@ -230,13 +257,27 @@ function render(data: OverviewPayload): void {
   replace(
     "clients-wrap",
     makeTable(
-      ["Nick", "User@Host", "Account", "Oper", "TLS", "Channels", "Idle", "Action"],
+      [
+        "Nick",
+        "User@Host",
+        "Account",
+        "Oper",
+        "TLS",
+        "Channels",
+        "Idle",
+        "Action",
+      ],
       clients.map((c) => {
         const btn = el("button", "Kick", "danger small");
         btn.type = "button";
         btn.onclick = () => {
-          const reason = prompt(`Kick reason for ${c.nick}:`, "Disconnected by administrator");
-          if (reason !== null && c.nick) void postAction("kick-client", [c.nick, reason]);
+          const reason = prompt(
+            `Kick reason for ${c.nick}:`,
+            "Disconnected by administrator",
+          );
+          if (reason !== null && c.nick) {
+            void postAction("kick-client", [c.nick, reason]);
+          }
         };
         const chDisplay = Array.isArray(c.channels)
           ? c.channels.join(", ")
@@ -290,7 +331,10 @@ function render(data: OverviewPayload): void {
     const btn = el("button", "SQUIT", "danger small");
     btn.type = "button";
     btn.onclick = () => {
-      const reason = prompt(`SQUIT reason for ${srvName}:`, "Operator disconnect");
+      const reason = prompt(
+        `SQUIT reason for ${srvName}:`,
+        "Operator disconnect",
+      );
       if (reason !== null) void postAction("squit", [srvName, reason]);
     };
     linkRows.push([
@@ -314,7 +358,10 @@ function render(data: OverviewPayload): void {
       ]);
     }
   }
-  replace("links-wrap", makeTable(["Server", "State", "Info", "Action"], linkRows));
+  replace(
+    "links-wrap",
+    makeTable(["Server", "State", "Info", "Action"], linkRows),
+  );
 
   const accounts = data.accounts?.accounts ?? [];
   $("cnt-accounts").textContent = String(accounts.length);
@@ -379,7 +426,12 @@ async function refresh(): Promise<void> {
   } catch (e) {
     $("srv-status").textContent = "unreachable";
     $("srv-status").className = "badge off";
-    showNotice(false, `Failed to load server stats: ${e instanceof Error ? e.message : String(e)}`);
+    showNotice(
+      false,
+      `Failed to load server stats: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
   }
 }
 
@@ -389,8 +441,12 @@ $("tabs").addEventListener("click", (ev) => {
   const target = ev.target as HTMLElement | null;
   const btn = target?.closest<HTMLButtonElement>(".tab");
   if (!btn || !btn.dataset.tab) return;
-  document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
-  document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
+  document.querySelectorAll(".tab").forEach((t) =>
+    t.classList.remove("active")
+  );
+  document.querySelectorAll(".panel").forEach((p) =>
+    p.classList.remove("active")
+  );
   btn.classList.add("active");
   $(`panel-${btn.dataset.tab}`).classList.add("active");
 });
@@ -415,7 +471,9 @@ $("btn-backup").onclick = () => {
 };
 $("btn-drain").onclick = () => {
   const reason = prompt("Drain reason:", "Server maintenance");
-  if (reason !== null && confirm("Drain all listeners and disconnect clients?")) {
+  if (
+    reason !== null && confirm("Drain all listeners and disconnect clients?")
+  ) {
     void postAction("drain", [reason]);
   }
 };

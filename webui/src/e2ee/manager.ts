@@ -1,7 +1,9 @@
 import {
   bytesEqual,
   CryptoError,
+  decryptKeyBackup,
   DoubleRatchet,
+  encryptKeyBackup,
   fromB64,
   Identity,
   identityFingerprint,
@@ -9,8 +11,8 @@ import {
   NO_OPK,
   parseEnvelope,
   PreKeyBundle,
-  PreKeys,
   prekeyEnvelope,
+  PreKeys,
   randomDeviceId,
   safetyNumber,
   SenderKey,
@@ -210,7 +212,9 @@ export class E2eeManager {
   }
 
   onRegistered(): void {
-    if (!this.serverSupported || !this.account || !this.identity || !this.prekeys) {
+    if (
+      !this.serverSupported || !this.account || !this.identity || !this.prekeys
+    ) {
       this.cb.onStateChange();
       return;
     }
@@ -222,7 +226,8 @@ export class E2eeManager {
   }
 
   isReady(): boolean {
-    return this.serverSupported && !!this.account && this.bound && !!this.identity;
+    return this.serverSupported && !!this.account && this.bound &&
+      !!this.identity;
   }
 
   isBufferEncrypted(bufKey: string): boolean {
@@ -250,7 +255,11 @@ export class E2eeManager {
         return false;
       }
       if (!this.bound) {
-        this.cb.onNotice(bufKey, "E2EE device is still initializing; please wait a moment.", "err");
+        this.cb.onNotice(
+          bufKey,
+          "E2EE device is still initializing; please wait a moment.",
+          "err",
+        );
         return false;
       }
       this.enabledBuffers.add(k);
@@ -297,7 +306,9 @@ export class E2eeManager {
       deviceId: this.deviceId,
       bound: this.bound,
       prekeyCount: this.serverPrekeyCount,
-      fingerprint: this.identity ? identityFingerprint(this.identity.publicKey) : "",
+      fingerprint: this.identity
+        ? identityFingerprint(this.identity.publicKey)
+        : "",
       sessionCount: this.sessions.size,
       trustedPeers,
     };
@@ -326,7 +337,11 @@ export class E2eeManager {
     this.needsRotation.delete(k);
     this.saveState();
     await this.distributeSenderKey(channel);
-    this.cb.onNotice(channel, "Rotated E2EE channel Sender Key and distributed to members.", "sys");
+    this.cb.onNotice(
+      channel,
+      "Rotated E2EE channel Sender Key and distributed to members.",
+      "sys",
+    );
   }
 
   resetDevice(): void {
@@ -383,12 +398,22 @@ export class E2eeManager {
         this.identity = Identity.fromJSON(d.identity);
         this.prekeys = PreKeys.fromJSON(d.prekeys);
         this.prekeysUploaded = !!d.prekeysUploaded;
-        for (const [k, v] of d.sessions || []) this.sessions.set(k, DoubleRatchet.fromJSON(v));
-        for (const [k, v] of d.awaitingReply || []) this.awaitingReply.set(k, fromB64(v));
+        for (const [k, v] of d.sessions || []) {
+          this.sessions.set(k, DoubleRatchet.fromJSON(v));
+        }
+        for (const [k, v] of d.awaitingReply || []) {
+          this.awaitingReply.set(k, fromB64(v));
+        }
         for (const [k, v] of d.trusted || []) this.trusted.set(k, fromB64(v));
-        for (const [k, v] of d.senderKeys || []) this.senderKeys.set(k, SenderKey.fromJSON(v));
-        for (const [k, v] of d.receivedKeys || []) this.receivedKeys.set(k, SenderKey.fromJSON(v));
-        for (const [k, list] of d.sharedWith || []) this.sharedWith.set(k, new Set(list));
+        for (const [k, v] of d.senderKeys || []) {
+          this.senderKeys.set(k, SenderKey.fromJSON(v));
+        }
+        for (const [k, v] of d.receivedKeys || []) {
+          this.receivedKeys.set(k, SenderKey.fromJSON(v));
+        }
+        for (const [k, list] of d.sharedWith || []) {
+          this.sharedWith.set(k, new Set(list));
+        }
         for (const b of d.enabledBuffers || []) this.enabledBuffers.add(b);
         return;
       }
@@ -398,23 +423,146 @@ export class E2eeManager {
     this.createFreshState();
   }
 
-  private saveState(): void {
-    if (!this.account || !this.identity || !this.prekeys) return;
-    const data: PersistedState = {
+  exportBackup(passphrase: string): { filename: string; content: string } {
+    if (!this.account || !this.identity || !this.prekeys) {
+      throw new CryptoError("No E2EE keys initialized for this account");
+    }
+    const payload = JSON.stringify({
+      account: this.account,
+      state: this.serializeState(),
+    });
+    const content = encryptKeyBackup(payload, passphrase);
+    const safeAcct = this.account.replace(/[^a-zA-Z0-9._-]/g, "_");
+    return {
+      filename: `ircd-e2ee-${safeAcct}-${this.deviceId}.json`,
+      content,
+    };
+  }
+
+  importBackup(
+    backupText: string,
+    passphrase: string,
+  ): { account: string; deviceId: number } {
+    const plain = decryptKeyBackup(backupText, passphrase);
+    let parsed: { account?: string; state?: PersistedState };
+    try {
+      parsed = JSON.parse(plain) as {
+        account?: string;
+        state?: PersistedState;
+      };
+    } catch {
+      throw new CryptoError("Corrupted backup payload");
+    }
+    if (
+      !parsed.account || !parsed.state || !parsed.state.identity ||
+      !parsed.state.prekeys
+    ) {
+      throw new CryptoError("Incomplete E2EE backup payload");
+    }
+    if (
+      this.account &&
+      parsed.account.toLowerCase() !== this.account.toLowerCase()
+    ) {
+      throw new CryptoError(
+        `Backup belongs to account "${parsed.account}", but you are logged in as "${this.account}"`,
+      );
+    }
+
+    const d = parsed.state;
+    if (
+      typeof d.deviceId !== "number" ||
+      !Number.isInteger(d.deviceId) ||
+      d.deviceId < 1 ||
+      d.deviceId > 0x7fffffff
+    ) {
+      throw new CryptoError("Invalid device ID in backup");
+    }
+
+    // Validate & deserialize all cryptographic objects before mutating live state
+    const identity = Identity.fromJSON(d.identity);
+    const prekeys = PreKeys.fromJSON(d.prekeys);
+    const sessions = new Map<string, DoubleRatchet>();
+    for (const [k, v] of d.sessions || []) {
+      sessions.set(k, DoubleRatchet.fromJSON(v));
+    }
+    const awaitingReply = new Map<string, Uint8Array>();
+    for (const [k, v] of d.awaitingReply || []) {
+      awaitingReply.set(k, fromB64(v));
+    }
+    const trusted = new Map<string, Uint8Array>();
+    for (const [k, v] of d.trusted || []) trusted.set(k, fromB64(v));
+    const senderKeys = new Map<string, SenderKey>();
+    for (const [k, v] of d.senderKeys || []) {
+      senderKeys.set(k, SenderKey.fromJSON(v));
+    }
+    const receivedKeys = new Map<string, SenderKey>();
+    for (const [k, v] of d.receivedKeys || []) {
+      receivedKeys.set(k, SenderKey.fromJSON(v));
+    }
+    const sharedWith = new Map<string, Set<string>>();
+    for (const [k, list] of d.sharedWith || []) {
+      sharedWith.set(k, new Set(list));
+    }
+    const enabledBuffers = new Set<string>(d.enabledBuffers || []);
+
+    if (!this.account) this.account = parsed.account;
+    this.deviceId = d.deviceId;
+    this.identity = identity;
+    this.prekeys = prekeys;
+    this.prekeysUploaded = false;
+    this.sessions = sessions;
+    this.awaitingReply = awaitingReply;
+    this.trusted = trusted;
+    this.senderKeys = senderKeys;
+    this.receivedKeys = receivedKeys;
+    this.sharedWith = sharedWith;
+    this.needsRotation.clear();
+    this.enabledBuffers = enabledBuffers;
+    this.bound = false;
+    this.saveState();
+    if (this.serverSupported && this.account) {
+      this.publishAndBind();
+    }
+    this.cb.onStateChange();
+    return { account: this.account, deviceId: this.deviceId };
+  }
+
+  private serializeState(): PersistedState {
+    return {
       deviceId: this.deviceId,
-      identity: this.identity.toJSON(),
-      prekeys: this.prekeys.toJSON(),
+      identity: this.identity!.toJSON(),
+      prekeys: this.prekeys!.toJSON(),
       prekeysUploaded: this.prekeysUploaded,
-      sessions: Array.from(this.sessions.entries()).map(([k, v]) => [k, v.toJSON()]),
-      awaitingReply: Array.from(this.awaitingReply.entries()).map(([k, v]) => [k, toB64(v)]),
-      trusted: Array.from(this.trusted.entries()).map(([k, v]) => [k, toB64(v)]),
-      senderKeys: Array.from(this.senderKeys.entries()).map(([k, v]) => [k, v.toJSON()]),
-      receivedKeys: Array.from(this.receivedKeys.entries()).map(([k, v]) => [k, v.toJSON()]),
-      sharedWith: Array.from(this.sharedWith.entries()).map(([k, s]) => [k, Array.from(s)]),
+      sessions: Array.from(this.sessions.entries()).map((
+        [k, v],
+      ) => [k, v.toJSON()]),
+      awaitingReply: Array.from(this.awaitingReply.entries()).map((
+        [k, v],
+      ) => [k, toB64(v)]),
+      trusted: Array.from(this.trusted.entries()).map((
+        [k, v],
+      ) => [k, toB64(v)]),
+      senderKeys: Array.from(this.senderKeys.entries()).map((
+        [k, v],
+      ) => [k, v.toJSON()]),
+      receivedKeys: Array.from(this.receivedKeys.entries()).map((
+        [k, v],
+      ) => [k, v.toJSON()]),
+      sharedWith: Array.from(this.sharedWith.entries()).map((
+        [k, s],
+      ) => [k, Array.from(s)]),
       enabledBuffers: Array.from(this.enabledBuffers),
     };
+  }
+
+  private saveState(): void {
+    if (!this.account || !this.identity || !this.prekeys) return;
+    const data = this.serializeState();
     try {
-      localStorage.setItem(STORAGE_PREFIX + this.account.toLowerCase(), JSON.stringify(data));
+      localStorage.setItem(
+        STORAGE_PREFIX + this.account.toLowerCase(),
+        JSON.stringify(data),
+      );
     } catch {
       // ignore quota errors
     }
@@ -427,7 +575,9 @@ export class E2eeManager {
     const ik = toB64(this.identity.publicKey);
     const spk = toB64(this.prekeys.spk.publicKey);
     const sig = toB64(this.prekeys.signature);
-    this.cb.sendRaw(`E2EE PUBLISH ${this.deviceId} ${ik} ${this.prekeys.spkId}:${spk} ${sig}`);
+    this.cb.sendRaw(
+      `E2EE PUBLISH ${this.deviceId} ${ik} ${this.prekeys.spkId}:${spk} ${sig}`,
+    );
   }
 
   private uploadPrekeysMap(keys: Map<number, Uint8Array>): void {
@@ -489,7 +639,10 @@ export class E2eeManager {
     }
     if (command === "BATCH" && params[0]) {
       const ref = params[0].slice(1);
-      if (params[0].startsWith("+") && params[1] === "draft/multiline" && tags[TAG_TYPE]) {
+      if (
+        params[0].startsWith("+") && params[1] === "draft/multiline" &&
+        tags[TAG_TYPE]
+      ) {
         this.batches.set(ref, { start: msg, lines: [] });
         return true;
       }
@@ -498,16 +651,29 @@ export class E2eeManager {
         this.batches.delete(ref);
         const fullText = opened.lines.join("");
         const target = opened.start.params[2] || "*status";
-        this.receiveEnvelope(opened.start.tags, opened.start.nick, target, fullText);
+        this.receiveEnvelope(
+          opened.start.tags,
+          opened.start.nick,
+          target,
+          fullText,
+        );
         return true;
       }
     }
-    if ((command === "PRIVMSG" || command === "NOTICE") && tags.batch && this.batches.has(tags.batch)) {
+    if (
+      (command === "PRIVMSG" || command === "NOTICE") && tags.batch &&
+      this.batches.has(tags.batch)
+    ) {
       this.batches.get(tags.batch)!.lines.push(params[params.length - 1] || "");
       return true;
     }
     if (command === "PRIVMSG" && tags[TAG_TYPE]) {
-      this.receiveEnvelope(tags, msg.nick, params[0] || "*status", params[1] || "");
+      this.receiveEnvelope(
+        tags,
+        msg.nick,
+        params[0] || "*status",
+        params[1] || "",
+      );
       return true;
     }
     return false;
@@ -550,7 +716,9 @@ export class E2eeManager {
       const queued = parseInt(params[2] || "0", 10) || 0;
       this.cb.onNotice(
         "*status",
-        `E2EE active (device ${this.deviceId}${queued > 0 ? `, replaying ${queued} queued` : ""}).`,
+        `E2EE active (device ${this.deviceId}${
+          queued > 0 ? `, replaying ${queued} queued` : ""
+        }).`,
         "sys",
       );
       this.cb.onStateChange();
@@ -589,7 +757,11 @@ export class E2eeManager {
       return;
     }
     if (sub === "REMOVED") {
-      this.cb.onNotice("*status", `Removed E2EE device ${params[1] || ""}.`, "sys");
+      this.cb.onNotice(
+        "*status",
+        `Removed E2EE device ${params[1] || ""}.`,
+        "sys",
+      );
     }
   }
 
@@ -636,7 +808,9 @@ export class E2eeManager {
     }
 
     // Suppress echo-message of our own outbound encrypted envelopes
-    if (srcAccount === this.account.toLowerCase() && srcDevice === this.deviceId) {
+    if (
+      srcAccount === this.account.toLowerCase() && srcDevice === this.deviceId
+    ) {
       return;
     }
     if (senderNick) {
@@ -645,9 +819,24 @@ export class E2eeManager {
 
     try {
       if (kind === "sk" && isChan(target)) {
-        this.receiveChannel(target, senderNick, srcAccount, srcDevice, text, tags.time, !!qid);
+        this.receiveChannel(
+          target,
+          senderNick,
+          srcAccount,
+          srcDevice,
+          text,
+          tags.time,
+          !!qid,
+        );
       } else if (dst === String(this.deviceId)) {
-        this.receivePairwise(senderNick, srcAccount, srcDevice, text, tags.time, !!qid);
+        this.receivePairwise(
+          senderNick,
+          srcAccount,
+          srcDevice,
+          text,
+          tags.time,
+          !!qid,
+        );
       } else {
         return; // envelope intended for another device of our account
       }
@@ -657,11 +846,21 @@ export class E2eeManager {
     } catch (err) {
       const dest = isChan(target) ? target : senderNick || srcAccount;
       const reason = err instanceof Error ? err.message : String(err);
-      this.cb.onNotice(dest, `[E2EE] Could not decrypt message from ${senderNick || srcAccount}: ${reason}`, "err");
+      this.cb.onNotice(
+        dest,
+        `[E2EE] Could not decrypt message from ${
+          senderNick || srcAccount
+        }: ${reason}`,
+        "err",
+      );
     }
   }
 
-  private pinIdentity(account: string, device: number, idKey: Uint8Array): void {
+  private pinIdentity(
+    account: string,
+    device: number,
+    idKey: Uint8Array,
+  ): void {
     const key = `${account}:${device}`;
     const existing = this.trusted.get(key);
     if (existing) {
@@ -683,7 +882,9 @@ export class E2eeManager {
     time: string | undefined,
     queued: boolean,
   ): void {
-    if (!this.identity || !this.prekeys) throw new CryptoError("device not initialized");
+    if (!this.identity || !this.prekeys) {
+      throw new CryptoError("device not initialized");
+    }
     const env = parseEnvelope(fromB64(b64Text));
     const key = `${account}:${device}`;
     let plaintext: Uint8Array | null = null;
@@ -697,10 +898,16 @@ export class E2eeManager {
       }
     }
     if (plaintext === null) {
-      if (env.kind !== "prekey") throw new CryptoError("no session for message envelope");
+      if (env.kind !== "prekey") {
+        throw new CryptoError("no session for message envelope");
+      }
       const resp = x3dhRespond(this.identity, this.prekeys, env.header);
       this.pinIdentity(account, device, resp.theirIdentity);
-      const session = DoubleRatchet.responder(resp.shared, resp.ad, this.prekeys.spk);
+      const session = DoubleRatchet.responder(
+        resp.shared,
+        resp.ad,
+        this.prekeys.spk,
+      );
       plaintext = session.decrypt(env.ratchet);
       if (resp.opkId !== NO_OPK) {
         this.prekeys.oneTime.delete(resp.opkId);
@@ -715,7 +922,10 @@ export class E2eeManager {
     };
     if (payload.skd && payload.skd.channel) {
       const chanKey = payload.skd.channel.toLowerCase();
-      this.receivedKeys.set(`${chanKey}|${key}`, SenderKey.fromDistribution(payload.skd));
+      this.receivedKeys.set(
+        `${chanKey}|${key}`,
+        SenderKey.fromDistribution(payload.skd),
+      );
       this.saveState();
       this.cb.onStateChange();
       return;
@@ -770,7 +980,11 @@ export class E2eeManager {
 
   async sendEncrypted(target: string, text: string): Promise<boolean> {
     if (!this.isReady() || !this.identity) {
-      this.cb.onNotice(target, "E2EE is not ready (requires SASL login and server E2EE support).", "err");
+      this.cb.onNotice(
+        target,
+        "E2EE is not ready (requires SASL login and server E2EE support).",
+        "err",
+      );
       return false;
     }
     try {
@@ -835,12 +1049,15 @@ export class E2eeManager {
     knownAccount?: string,
   ): Promise<void> {
     if (!this.identity) throw new CryptoError("device not initialized");
-    let account = knownAccount?.toLowerCase() || this.nickToAccount.get(targetNick.toLowerCase());
+    let account = knownAccount?.toLowerCase() ||
+      this.nickToAccount.get(targetNick.toLowerCase());
     let devices = account ? this.sessionDevicesFor(account) : [];
 
     if (!account || devices.length === 0) {
       const bundles = await this.fetchBundles(account || targetNick);
-      if (bundles.length === 0) throw new Error(`No E2EE devices published for ${targetNick}`);
+      if (bundles.length === 0) {
+        throw new Error(`No E2EE devices published for ${targetNick}`);
+      }
       account = bundles[0].account;
       this.nickToAccount.set(targetNick.toLowerCase(), account);
       for (const b of bundles) {
@@ -862,7 +1079,12 @@ export class E2eeManager {
       const msg = ratchet.encrypt(ptBytes);
       const preHeader = this.awaitingReply.get(key);
       if (preHeader) {
-        this.sendEnvelope(targetNick, dev, prekeyEnvelope(preHeader, msg), "prekey");
+        this.sendEnvelope(
+          targetNick,
+          dev,
+          prekeyEnvelope(preHeader, msg),
+          "prekey",
+        );
       } else {
         this.sendEnvelope(targetNick, dev, messageEnvelope(msg), "msg");
       }
@@ -902,11 +1124,15 @@ export class E2eeManager {
       return;
     }
     const ref = `e2ee${this.batchSeq++}`;
-    this.cb.sendRaw(`${formatTags(tags)}BATCH +${ref} draft/multiline ${target}`);
+    this.cb.sendRaw(
+      `${formatTags(tags)}BATCH +${ref} draft/multiline ${target}`,
+    );
     for (let i = 0; i < text.length; i += CHUNK) {
       const lineTags: Record<string, string | null> = { batch: ref };
       if (i > 0) lineTags["draft/multiline-concat"] = null;
-      this.cb.sendRaw(`${formatTags(lineTags)}PRIVMSG ${target} :${text.slice(i, i + CHUNK)}`);
+      this.cb.sendRaw(
+        `${formatTags(lineTags)}PRIVMSG ${target} :${text.slice(i, i + CHUNK)}`,
+      );
     }
     this.cb.sendRaw(`BATCH -${ref}`);
   }
@@ -926,7 +1152,9 @@ export class E2eeManager {
     const timer = setTimeout(() => {
       if (this.activeFetch && this.activeFetch.resolve === next.resolve) {
         this.activeFetch = null;
-        next.reject(new Error(`Timed out fetching E2EE keys for ${next.target}`));
+        next.reject(
+          new Error(`Timed out fetching E2EE keys for ${next.target}`),
+        );
         this.pumpFetchQueue();
       }
     }, 10000) as unknown as number;
@@ -941,7 +1169,9 @@ export class E2eeManager {
     this.cb.sendRaw(`E2EE FETCH ${next.target}`);
   }
 
-  private queryChannelMembers(channel: string): Promise<Array<{ nick: string; account: string }>> {
+  private queryChannelMembers(
+    channel: string,
+  ): Promise<Array<{ nick: string; account: string }>> {
     return new Promise((resolve) => {
       const token = String(this.whoSeq);
       this.whoSeq = this.whoSeq >= 99 ? 42 : this.whoSeq + 1;

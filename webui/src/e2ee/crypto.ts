@@ -2,6 +2,7 @@ import nacl from "tweetnacl";
 import { sha256 } from "@noble/hashes/sha256";
 import { hmac } from "@noble/hashes/hmac";
 import { hkdf } from "@noble/hashes/hkdf";
+import { pbkdf2 } from "@noble/hashes/pbkdf2";
 import { gcm } from "@noble/ciphers/aes";
 
 export const VERSION = 1;
@@ -92,7 +93,10 @@ export function toHex(bytes: Uint8Array): string {
 }
 
 export function fromHex(hex: string): Uint8Array {
-  if (typeof hex !== "string" || hex.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(hex)) {
+  if (
+    typeof hex !== "string" || hex.length % 2 !== 0 ||
+    !/^[0-9a-fA-F]*$/.test(hex)
+  ) {
     throw new CryptoError("invalid hex");
   }
   const out = new Uint8Array(hex.length / 2);
@@ -206,16 +210,26 @@ export class Identity {
     return nacl.sign.detached(data, this.signing.secretKey);
   }
 
-  static verify(pub64: Uint8Array, data: Uint8Array, signature: Uint8Array): void {
+  static verify(
+    pub64: Uint8Array,
+    data: Uint8Array,
+    signature: Uint8Array,
+  ): void {
     if (pub64.length !== 64 || signature.length !== 64) {
       throw new CryptoError("invalid key or signature length");
     }
-    const ok = nacl.sign.detached.verify(data, signature, pub64.subarray(0, 32));
+    const ok = nacl.sign.detached.verify(
+      data,
+      signature,
+      pub64.subarray(0, 32),
+    );
     if (!ok) throw new CryptoError("bad signature");
   }
 
   static dhPublic(pub64: Uint8Array): Uint8Array {
-    if (pub64.length !== 64) throw new CryptoError("invalid identity key length");
+    if (pub64.length !== 64) {
+      throw new CryptoError("invalid identity key length");
+    }
     return pub64.subarray(32, 64);
   }
 
@@ -305,7 +319,10 @@ export function x3dhInitiate(
   identity: Identity,
   bundle: PreKeyBundle,
 ): { shared: Uint8Array; ad: Uint8Array; header: Uint8Array } {
-  if (bundle.identity.length !== 64 || bundle.spk.length !== 32 || bundle.signature.length !== 64) {
+  if (
+    bundle.identity.length !== 64 || bundle.spk.length !== 32 ||
+    bundle.signature.length !== 64
+  ) {
     throw new CryptoError("invalid prekey bundle key length");
   }
   if (bundle.opk !== null && bundle.opk.length !== 32) {
@@ -323,7 +340,12 @@ export function x3dhInitiate(
     parts.push(dhExchange(ephemeral.secretKey, bundle.opk));
     opkId = bundle.opkId;
   }
-  const shared = deriveHkdf(concatBytes(FF_32, ...parts), ZEROS_32, INFO_X3DH, 32);
+  const shared = deriveHkdf(
+    concatBytes(FF_32, ...parts),
+    ZEROS_32,
+    INFO_X3DH,
+    32,
+  );
   const ad = concatBytes(identity.publicKey, bundle.identity);
   const header = concatBytes(
     identity.publicKey,
@@ -338,7 +360,12 @@ export function x3dhRespond(
   identity: Identity,
   prekeys: PreKeys,
   header: Uint8Array,
-): { shared: Uint8Array; ad: Uint8Array; theirIdentity: Uint8Array; opkId: number } {
+): {
+  shared: Uint8Array;
+  ad: Uint8Array;
+  theirIdentity: Uint8Array;
+  opkId: number;
+} {
   if (header.length !== 104) throw new CryptoError("invalid prekey header");
   const theirIdentity = header.subarray(0, 64);
   const ephemeral = header.subarray(64, 96);
@@ -355,7 +382,12 @@ export function x3dhRespond(
     if (!opk) throw new CryptoError("one-time prekey already used");
     parts.push(dhExchange(opk.secretKey, ephemeral));
   }
-  const shared = deriveHkdf(concatBytes(FF_32, ...parts), ZEROS_32, INFO_X3DH, 32);
+  const shared = deriveHkdf(
+    concatBytes(FF_32, ...parts),
+    ZEROS_32,
+    INFO_X3DH,
+    32,
+  );
   const ad = concatBytes(theirIdentity, identity.publicKey);
   return { shared, ad, theirIdentity: new Uint8Array(theirIdentity), opkId };
 }
@@ -391,7 +423,11 @@ export class DoubleRatchet {
     this.root = new Uint8Array(shared);
   }
 
-  static initiator(shared: Uint8Array, ad: Uint8Array, remoteSpk: Uint8Array): DoubleRatchet {
+  static initiator(
+    shared: Uint8Array,
+    ad: Uint8Array,
+    remoteSpk: Uint8Array,
+  ): DoubleRatchet {
     const state = new DoubleRatchet(shared, ad);
     state.dhSelf = nacl.box.keyPair();
     state.dhRemote = new Uint8Array(remoteSpk);
@@ -403,7 +439,11 @@ export class DoubleRatchet {
     return state;
   }
 
-  static responder(shared: Uint8Array, ad: Uint8Array, spkPrivate: KeyPair): DoubleRatchet {
+  static responder(
+    shared: Uint8Array,
+    ad: Uint8Array,
+    spkPrivate: KeyPair,
+  ): DoubleRatchet {
     const state = new DoubleRatchet(shared, ad);
     state.dhSelf = spkPrivate;
     return state;
@@ -418,7 +458,11 @@ export class DoubleRatchet {
     if (!this.sendChain) throw new CryptoError("send chain not initialized");
     const [nextChain, key] = kdfChain(this.sendChain);
     this.sendChain = nextChain;
-    const header = concatBytes(this.dhSelf.publicKey, u32be(this.pn), u32be(this.ns));
+    const header = concatBytes(
+      this.dhSelf.publicKey,
+      u32be(this.pn),
+      u32be(this.ns),
+    );
     this.ns += 1;
     const ct = aeadEncrypt(key, plaintext, concatBytes(this.ad, header));
     return concatBytes(header, ct);
@@ -479,7 +523,9 @@ export class DoubleRatchet {
 
   private skip(until: number): void {
     if (!this.recvChain) {
-      if (until !== 0) throw new CryptoError("cannot skip before first DH step");
+      if (until !== 0) {
+        throw new CryptoError("cannot skip before first DH step");
+      }
       return;
     }
     if (until < this.nr || this.skipped.size + (until - this.nr) > MAX_SKIP) {
@@ -498,11 +544,15 @@ export class DoubleRatchet {
     this.ns = 0;
     this.nr = 0;
     this.dhRemote = new Uint8Array(dh);
-    const [r1, recvChain] = this.kdfRoot(dhExchange(this.dhSelf.secretKey, this.dhRemote));
+    const [r1, recvChain] = this.kdfRoot(
+      dhExchange(this.dhSelf.secretKey, this.dhRemote),
+    );
     this.root = r1;
     this.recvChain = recvChain;
     this.dhSelf = nacl.box.keyPair();
-    const [r2, sendChain] = this.kdfRoot(dhExchange(this.dhSelf.secretKey, this.dhRemote));
+    const [r2, sendChain] = this.kdfRoot(
+      dhExchange(this.dhSelf.secretKey, this.dhRemote),
+    );
     this.root = r2;
     this.sendChain = sendChain;
   }
@@ -527,7 +577,10 @@ export class DoubleRatchet {
 
   static fromJSON(d: SerializedRatchet): DoubleRatchet {
     const r = new DoubleRatchet(fromB64(d.root), fromB64(d.ad));
-    r.dhSelf = { publicKey: fromB64(d.dhSelfPub), secretKey: fromB64(d.dhSelfSec) };
+    r.dhSelf = {
+      publicKey: fromB64(d.dhSelfPub),
+      secretKey: fromB64(d.dhSelfSec),
+    };
     r.dhRemote = d.dhRemote ? fromB64(d.dhRemote) : null;
     r.sendChain = d.sendChain ? fromB64(d.sendChain) : null;
     r.recvChain = d.recvChain ? fromB64(d.recvChain) : null;
@@ -539,7 +592,10 @@ export class DoubleRatchet {
   }
 }
 
-export function prekeyEnvelope(header: Uint8Array, ratchetMessage: Uint8Array): Uint8Array {
+export function prekeyEnvelope(
+  header: Uint8Array,
+  ratchetMessage: Uint8Array,
+): Uint8Array {
   return concatBytes(new Uint8Array([VERSION, PREKEY]), header, ratchetMessage);
 }
 
@@ -549,13 +605,23 @@ export function messageEnvelope(ratchetMessage: Uint8Array): Uint8Array {
 
 export function parseEnvelope(
   data: Uint8Array,
-): { kind: "prekey"; header: Uint8Array; ratchet: Uint8Array } | { kind: "msg"; header: null; ratchet: Uint8Array } {
+): { kind: "prekey"; header: Uint8Array; ratchet: Uint8Array } | {
+  kind: "msg";
+  header: null;
+  ratchet: Uint8Array;
+} {
   if (data.length < 2 || data[0] !== VERSION) {
     throw new CryptoError("unknown envelope version");
   }
   if (data[1] === PREKEY) {
-    if (data.length < 2 + 104 + 56) throw new CryptoError("short prekey envelope");
-    return { kind: "prekey", header: data.subarray(2, 106), ratchet: data.subarray(106) };
+    if (data.length < 2 + 104 + 56) {
+      throw new CryptoError("short prekey envelope");
+    }
+    return {
+      kind: "prekey",
+      header: data.subarray(2, 106),
+      ratchet: data.subarray(106),
+    };
   }
   if (data[1] === MESSAGE) {
     if (data.length < 2 + 56) throw new CryptoError("short message envelope");
@@ -592,13 +658,21 @@ export class SenderKey {
     this.chain = new Uint8Array(chain);
     this.iteration = iteration;
     this.signingPublic = new Uint8Array(signingPublic);
-    this.signingPrivate = signingPrivate ? new Uint8Array(signingPrivate) : null;
+    this.signingPrivate = signingPrivate
+      ? new Uint8Array(signingPrivate)
+      : null;
   }
 
   static create(): SenderKey {
     const signing = nacl.sign.keyPair();
     const keyId = readU32be(randomBytes(4), 0) & 0x7fffffff;
-    return new SenderKey(keyId, randomBytes(32), 0, signing.publicKey, signing.secretKey);
+    return new SenderKey(
+      keyId,
+      randomBytes(32),
+      0,
+      signing.publicKey,
+      signing.secretKey,
+    );
   }
 
   distribution(channel?: string): SenderKeyDistribution {
@@ -621,7 +695,10 @@ export class SenderKey {
     ) {
       throw new CryptoError("invalid sender key id");
     }
-    if (typeof d.iteration !== "number" || !Number.isInteger(d.iteration) || d.iteration < 0) {
+    if (
+      typeof d.iteration !== "number" || !Number.isInteger(d.iteration) ||
+      d.iteration < 0
+    ) {
       throw new CryptoError("invalid sender key iteration");
     }
     const chain = fromHex(d.chain);
@@ -633,7 +710,9 @@ export class SenderKey {
   }
 
   encrypt(plaintext: Uint8Array, channel: string): Uint8Array {
-    if (!this.signingPrivate) throw new CryptoError("sender key has no private signing key");
+    if (!this.signingPrivate) {
+      throw new CryptoError("sender key has no private signing key");
+    }
     const [nextChain, key] = kdfChain(this.chain);
     this.chain = nextChain;
     const header = concatBytes(
@@ -642,14 +721,20 @@ export class SenderKey {
       u32be(this.iteration),
     );
     this.iteration += 1;
-    const ct = aeadEncrypt(key, plaintext, concatBytes(enc.encode(channel), header));
+    const ct = aeadEncrypt(
+      key,
+      plaintext,
+      concatBytes(enc.encode(channel), header),
+    );
     const body = concatBytes(header, ct);
     const sig = nacl.sign.detached(body, this.signingPrivate);
     return concatBytes(body, sig);
   }
 
   decrypt(data: Uint8Array, channel: string): Uint8Array {
-    if (data.length < 10 + 16 + 64) throw new CryptoError("short channel message");
+    if (data.length < 10 + 16 + 64) {
+      throw new CryptoError("short channel message");
+    }
     const body = data.subarray(0, data.length - 64);
     const sig = data.subarray(data.length - 64);
     if (!nacl.sign.detached.verify(body, sig, this.signingPublic)) {
@@ -688,7 +773,11 @@ export class SenderKey {
         key = k;
         this.iteration += 1;
       }
-      return aeadDecrypt(key, body.subarray(10), concatBytes(enc.encode(channel), header));
+      return aeadDecrypt(
+        key,
+        body.subarray(10),
+        concatBytes(enc.encode(channel), header),
+      );
     } catch (err) {
       this.chain = savedChain;
       this.iteration = savedIter;
@@ -736,8 +825,7 @@ export function safetyNumber(idA: Uint8Array, idB: Uint8Array): string {
   const digest = concatBytes(h1, h2);
   const groups: string[] = [];
   for (let i = 0; i < 60; i += 5) {
-    const val =
-      digest[i] * 4294967296 +
+    const val = digest[i] * 4294967296 +
       digest[i + 1] * 16777216 +
       digest[i + 2] * 65536 +
       digest[i + 3] * 256 +
@@ -745,4 +833,89 @@ export function safetyNumber(idA: Uint8Array, idB: Uint8Array): string {
     groups.push(String(val % 100000).padStart(5, "0"));
   }
   return groups.join(" ");
+}
+
+const BACKUP_FORMAT = "ircd-e2ee-backup";
+const BACKUP_VERSION = 1;
+const BACKUP_ITERATIONS = 100000;
+const BACKUP_AD = enc.encode("ircd-e2ee-backup-v1");
+const dec = new TextDecoder();
+
+interface EncryptedBackupEnvelope {
+  format: string;
+  version: number;
+  kdf: string;
+  iterations: number;
+  salt: string;
+  iv: string;
+  ciphertext: string;
+}
+
+export function encryptKeyBackup(
+  plaintextJson: string,
+  passphrase: string,
+): string {
+  if (!passphrase || passphrase.length < 6) {
+    throw new CryptoError("Backup passphrase must be at least 6 characters");
+  }
+  const salt = randomBytes(16);
+  const iv = randomBytes(12);
+  const key = pbkdf2(sha256, enc.encode(passphrase), salt, {
+    c: BACKUP_ITERATIONS,
+    dkLen: 32,
+  });
+  const ciphertext = gcm(key, iv, BACKUP_AD).encrypt(enc.encode(plaintextJson));
+  const envelope: EncryptedBackupEnvelope = {
+    format: BACKUP_FORMAT,
+    version: BACKUP_VERSION,
+    kdf: "pbkdf2-sha256",
+    iterations: BACKUP_ITERATIONS,
+    salt: toB64(salt),
+    iv: toB64(iv),
+    ciphertext: toB64(ciphertext),
+  };
+  return JSON.stringify(envelope, null, 2);
+}
+
+export function decryptKeyBackup(
+  backupJson: string,
+  passphrase: string,
+): string {
+  if (!passphrase) throw new CryptoError("Passphrase is required");
+  let env: Partial<EncryptedBackupEnvelope>;
+  try {
+    env = JSON.parse(backupJson) as Partial<EncryptedBackupEnvelope>;
+  } catch {
+    throw new CryptoError("Invalid backup file (not JSON)");
+  }
+  if (
+    env.format !== BACKUP_FORMAT ||
+    env.version !== BACKUP_VERSION ||
+    env.kdf !== "pbkdf2-sha256" ||
+    typeof env.iterations !== "number" ||
+    !Number.isInteger(env.iterations) ||
+    env.iterations < 10000 ||
+    env.iterations > 1000000 ||
+    typeof env.salt !== "string" ||
+    typeof env.iv !== "string" ||
+    typeof env.ciphertext !== "string"
+  ) {
+    throw new CryptoError("Unsupported or malformed E2EE backup file");
+  }
+  const salt = fromB64(env.salt);
+  const iv = fromB64(env.iv);
+  const ciphertext = fromB64(env.ciphertext);
+  if (salt.length !== 16 || iv.length !== 12 || ciphertext.length < 16) {
+    throw new CryptoError("Corrupted backup parameters");
+  }
+  const key = pbkdf2(sha256, enc.encode(passphrase), salt, {
+    c: env.iterations,
+    dkLen: 32,
+  });
+  try {
+    const pt = gcm(key, iv, BACKUP_AD).decrypt(ciphertext);
+    return dec.decode(pt);
+  } catch {
+    throw new CryptoError("Wrong passphrase or corrupted backup");
+  }
 }

@@ -36,4 +36,6 @@ for (const name of scssEntries) {
 }
 
 await esbuild.stop();
-console.log(`Built ${tsEntries.length} TS bundles and ${scssEntries.length} SCSS stylesheets into ${outDir}`);
+console.log(
+  `Built ${tsEntries.length} TS bundles and ${scssEntries.length} SCSS stylesheets into ${outDir}`,
+);

@@ -80,7 +80,10 @@ $<HTMLFormElement>("signup-form").addEventListener("submit", async (ev) => {
       showNotice(false, data.message || data.error || "Sign up failed.");
     }
   } catch (e) {
-    showNotice(false, `Request failed: ${e instanceof Error ? e.message : String(e)}`);
+    showNotice(
+      false,
+      `Request failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
   } finally {
     altcha.reset();
     btn.disabled = false;

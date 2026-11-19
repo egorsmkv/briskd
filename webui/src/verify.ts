@@ -54,7 +54,11 @@ $<HTMLFormElement>("verify-form").addEventListener("submit", async (ev) => {
       },
       body: JSON.stringify(payload),
     });
-    const data = (await res.json()) as { account?: string; message?: string; error?: string };
+    const data = (await res.json()) as {
+      account?: string;
+      message?: string;
+      error?: string;
+    };
     if (res.ok) {
       showNotice(
         true,
@@ -66,7 +70,10 @@ $<HTMLFormElement>("verify-form").addEventListener("submit", async (ev) => {
       showNotice(false, data.message || data.error || "Verification failed.");
     }
   } catch (e) {
-    showNotice(false, `Request failed: ${e instanceof Error ? e.message : String(e)}`);
+    showNotice(
+      false,
+      `Request failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
   } finally {
     altcha.reset();
     btn.disabled = false;

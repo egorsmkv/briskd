@@ -18,10 +18,30 @@ export const THEMES: ThemeMeta[] = [
   { id: "light", name: "Light", swatchBg: "#f4f6f9", swatchAccent: "#2563eb" },
   { id: "dark", name: "Dark", swatchBg: "#0c1118", swatchAccent: "#3b82f6" },
   { id: "nord", name: "Nord", swatchBg: "#2e3440", swatchAccent: "#88c0d0" },
-  { id: "solarized-light", name: "Solarized Light", swatchBg: "#fdf6e3", swatchAccent: "#268bd2" },
-  { id: "solarized-dark", name: "Solarized Dark", swatchBg: "#002b36", swatchAccent: "#2aa198" },
-  { id: "dracula", name: "Dracula", swatchBg: "#282a36", swatchAccent: "#bd93f9" },
-  { id: "high-contrast", name: "High Contrast", swatchBg: "#000000", swatchAccent: "#38bdf8" },
+  {
+    id: "solarized-light",
+    name: "Solarized Light",
+    swatchBg: "#fdf6e3",
+    swatchAccent: "#268bd2",
+  },
+  {
+    id: "solarized-dark",
+    name: "Solarized Dark",
+    swatchBg: "#002b36",
+    swatchAccent: "#2aa198",
+  },
+  {
+    id: "dracula",
+    name: "Dracula",
+    swatchBg: "#282a36",
+    swatchAccent: "#bd93f9",
+  },
+  {
+    id: "high-contrast",
+    name: "High Contrast",
+    swatchBg: "#000000",
+    swatchAccent: "#38bdf8",
+  },
 ];
 
 const VALID_THEMES = new Set<string>(THEMES.map((t) => t.id));
@@ -32,7 +52,10 @@ export function currentTheme(): Theme {
   return VALID_THEMES.has(attr) ? (attr as Theme) : "light";
 }
 
-export function applyTheme(theme: Theme, buttons: Array<HTMLElement | null> = []): void {
+export function applyTheme(
+  theme: Theme,
+  buttons: Array<HTMLElement | null> = [],
+): void {
   document.documentElement.setAttribute("data-theme", theme);
   const isLight = theme === "light" || theme === "solarized-light";
   const label = isLight ? "Dark" : "Light";
@@ -41,7 +64,10 @@ export function applyTheme(theme: Theme, buttons: Array<HTMLElement | null> = []
   }
 }
 
-export function setTheme(theme: Theme, buttons: Array<HTMLElement | null> = []): void {
+export function setTheme(
+  theme: Theme,
+  buttons: Array<HTMLElement | null> = [],
+): void {
   applyTheme(theme, buttons);
   try {
     localStorage.setItem(STORAGE_KEY, theme);
@@ -57,16 +83,20 @@ export function initTheme(buttons: Array<HTMLElement | null> = []): () => void {
   } catch {
     // Ignore storage errors in restricted contexts.
   }
-  const prefersDark =
-    typeof window.matchMedia === "function" &&
+  const prefersDark = typeof window.matchMedia === "function" &&
     window.matchMedia("(prefers-color-scheme: dark)").matches;
-  const initial: Theme =
-    saved && VALID_THEMES.has(saved) ? (saved as Theme) : prefersDark ? "dark" : "light";
+  const initial: Theme = saved && VALID_THEMES.has(saved)
+    ? (saved as Theme)
+    : prefersDark
+    ? "dark"
+    : "light";
   applyTheme(initial, buttons);
 
   const toggle = () => {
     const cur = currentTheme();
-    const next: Theme = cur === "light" || cur === "solarized-light" ? "dark" : "light";
+    const next: Theme = cur === "light" || cur === "solarized-light"
+      ? "dark"
+      : "light";
     setTheme(next, buttons);
   };
 

@@ -26,7 +26,9 @@ function roundedRect(
 function setIconHref(href: string, type: string): void {
   const head = document.head;
   if (!head) return;
-  const existing = head.querySelectorAll('link[rel="icon"], link[rel="shortcut icon"]');
+  const existing = head.querySelectorAll(
+    'link[rel="icon"], link[rel="shortcut icon"]',
+  );
   existing.forEach((el) => el.remove());
   const link = document.createElement("link");
   link.rel = "icon";
@@ -40,7 +42,9 @@ export function restoreDefaultFavicon(): void {
   lastKey = "default";
   const head = document.head;
   if (!head) return;
-  head.querySelectorAll('link[rel="icon"], link[rel="shortcut icon"]').forEach((el) => el.remove());
+  head.querySelectorAll('link[rel="icon"], link[rel="shortcut icon"]').forEach((
+    el,
+  ) => el.remove());
   const ico = document.createElement("link");
   ico.rel = "icon";
   ico.href = "/favicon.ico";
@@ -60,8 +64,16 @@ export function updateDynamicFavicon(state: FaviconState): void {
   }
 
   const badgeCount = state.mentions > 0 ? state.mentions : state.unread;
-  const badgeLabel = badgeCount > 9 ? "9+" : badgeCount > 0 ? String(badgeCount) : "";
-  const mode = state.mentions > 0 ? "mention" : state.unread > 0 ? "unread" : "online";
+  const badgeLabel = badgeCount > 9
+    ? "9+"
+    : badgeCount > 0
+    ? String(badgeCount)
+    : "";
+  const mode = state.mentions > 0
+    ? "mention"
+    : state.unread > 0
+    ? "unread"
+    : "online";
   const key = `${mode}:${badgeLabel}`;
   if (key === lastKey) return;
   lastKey = key;
@@ -117,7 +129,9 @@ export function updateDynamicFavicon(state: FaviconState): void {
     ctx.fill();
 
     ctx.fillStyle = "#ffffff";
-    ctx.font = badgeLabel.length > 1 ? "700 18px sans-serif" : "700 22px sans-serif";
+    ctx.font = badgeLabel.length > 1
+      ? "700 18px sans-serif"
+      : "700 22px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(badgeLabel, cx, cy + 1);

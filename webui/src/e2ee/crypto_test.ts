@@ -1,14 +1,16 @@
 /// <reference lib="deno.ns" />
 import {
   CryptoError,
+  decryptKeyBackup,
   DoubleRatchet,
+  encryptKeyBackup,
   fromHex,
   Identity,
   messageEnvelope,
   NO_OPK,
   parseEnvelope,
-  PreKeys,
   prekeyEnvelope,
+  PreKeys,
   safetyNumber,
   SenderKey,
   x3dhInitiate,
@@ -40,11 +42,21 @@ Deno.test("X3DH + Double Ratchet roundtrip with OPK, out-of-order, and serializa
   };
 
   const init = x3dhInitiate(aliceId, bundle);
-  const aliceRatchet = DoubleRatchet.initiator(init.shared, init.ad, bundle.spk);
+  const aliceRatchet = DoubleRatchet.initiator(
+    init.shared,
+    init.ad,
+    bundle.spk,
+  );
 
   // Alice sends 2 messages before Bob replies (test out-of-order delivery)
-  const env1 = prekeyEnvelope(init.header, aliceRatchet.encrypt(enc.encode("hello bob 1")));
-  const env2 = prekeyEnvelope(init.header, aliceRatchet.encrypt(enc.encode("hello bob 2")));
+  const env1 = prekeyEnvelope(
+    init.header,
+    aliceRatchet.encrypt(enc.encode("hello bob 1")),
+  );
+  const env2 = prekeyEnvelope(
+    init.header,
+    aliceRatchet.encrypt(enc.encode("hello bob 2")),
+  );
 
   // Bob receives message 2 first!
   const parsed2 = parseEnvelope(env2);
@@ -81,9 +93,14 @@ Deno.test("X3DH + Double Ratchet roundtrip with OPK, out-of-order, and serializa
   // Serialize & deserialize ratchet, then continue conversing
   const aliceRestored = DoubleRatchet.fromJSON(aliceRatchet.toJSON());
   const bobRestored = DoubleRatchet.fromJSON(bobRatchet.toJSON());
-  const env4 = messageEnvelope(aliceRestored.encrypt(enc.encode("after reload")));
+  const env4 = messageEnvelope(
+    aliceRestored.encrypt(enc.encode("after reload")),
+  );
   const parsed4 = parseEnvelope(env4);
-  assert(dec.decode(bobRestored.decrypt(parsed4.ratchet)) === "after reload", "reload failed");
+  assert(
+    dec.decode(bobRestored.decrypt(parsed4.ratchet)) === "after reload",
+    "reload failed",
+  );
 });
 
 Deno.test("X3DH without OPK", () => {
@@ -117,8 +134,14 @@ Deno.test("SenderKey channel encryption, out-of-order, and serialization", () =>
   const c2 = sender.encrypt(enc.encode("msg 2"), "#secret");
 
   // Receive out of order
-  assert(dec.decode(receiver.decrypt(c2, "#secret")) === "msg 2", "channel msg 2 failed");
-  assert(dec.decode(receiver.decrypt(c1, "#secret")) === "msg 1", "channel msg 1 failed");
+  assert(
+    dec.decode(receiver.decrypt(c2, "#secret")) === "msg 2",
+    "channel msg 2 failed",
+  );
+  assert(
+    dec.decode(receiver.decrypt(c1, "#secret")) === "msg 1",
+    "channel msg 1 failed",
+  );
 
   // Wrong channel AD must fail
   let failed = false;
@@ -134,7 +157,10 @@ Deno.test("SenderKey channel encryption, out-of-order, and serialization", () =>
   const sender2 = SenderKey.fromJSON(sender.toJSON());
   const receiver2 = SenderKey.fromJSON(receiver.toJSON());
   const c4 = sender2.encrypt(enc.encode("after reload"), "#secret");
-  assert(dec.decode(receiver2.decrypt(c4, "#secret")) === "after reload", "sk reload failed");
+  assert(
+    dec.decode(receiver2.decrypt(c4, "#secret")) === "after reload",
+    "sk reload failed",
+  );
 });
 
 Deno.test("Safety number is symmetric and 12 groups of 5 digits", () => {
@@ -193,4 +219,29 @@ Deno.test("Rejects low-order X25519 keys and malformed hex / sender key distribu
     rejectedDist = e instanceof CryptoError;
   }
   assert(rejectedDist, "SenderKey.fromDistribution must reject short keys");
+});
+
+Deno.test("Encrypted key backup roundtrip and wrong passphrase rejection", () => {
+  const payload = JSON.stringify({ account: "alice", deviceId: 12345 });
+  const backup = encryptKeyBackup(payload, "correct-horse-battery");
+  assert(
+    decryptKeyBackup(backup, "correct-horse-battery") === payload,
+    "backup decrypt roundtrip failed",
+  );
+
+  let rejectedWrongPass = false;
+  try {
+    decryptKeyBackup(backup, "wrong-passphrase");
+  } catch (e) {
+    rejectedWrongPass = e instanceof CryptoError;
+  }
+  assert(rejectedWrongPass, "must reject wrong passphrase");
+
+  let rejectedShort = false;
+  try {
+    encryptKeyBackup(payload, "123");
+  } catch (e) {
+    rejectedShort = e instanceof CryptoError;
+  }
+  assert(rejectedShort, "must reject short passphrase");
 });

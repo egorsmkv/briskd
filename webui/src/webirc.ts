@@ -26,8 +26,9 @@ function loadSettings(): WebircSettings {
     const parsed = JSON.parse(raw) as Partial<WebircSettings>;
     return {
       density: parsed.density === "compact" ? "compact" : "comfortable",
-      fontSize:
-        parsed.fontSize === "small" || parsed.fontSize === "large" ? parsed.fontSize : "normal",
+      fontSize: parsed.fontSize === "small" || parsed.fontSize === "large"
+        ? parsed.fontSize
+        : "normal",
       timestamps: parsed.timestamps !== false,
       joinPart: parsed.joinPart !== false,
       notifyMentions: parsed.notifyMentions === true,
@@ -141,7 +142,9 @@ function parseIrc(raw: string): IrcMessage | null {
     idx = sp + 1;
     while (raw[idx] === " ") idx++;
   }
-  const nick = prefix.includes("!") ? prefix.slice(0, prefix.indexOf("!")) : prefix;
+  const nick = prefix.includes("!")
+    ? prefix.slice(0, prefix.indexOf("!"))
+    : prefix;
   return { tags, prefix, nick, command, params };
 }
 
@@ -151,7 +154,10 @@ initTheme(themeButtons);
 const settings: WebircSettings = loadSettings();
 
 function applySettings(): void {
-  document.body.classList.toggle("density-compact", settings.density === "compact");
+  document.body.classList.toggle(
+    "density-compact",
+    settings.density === "compact",
+  );
   document.body.classList.toggle("hide-timestamps", !settings.timestamps);
   document.body.classList.toggle("font-small", settings.fontSize === "small");
   document.body.classList.toggle("font-large", settings.fontSize === "large");
@@ -234,7 +240,10 @@ $<HTMLInputElement>("opt-joinpart").onchange = (ev) => {
 };
 $<HTMLInputElement>("opt-notify").onchange = async (ev) => {
   const checked = (ev.target as HTMLInputElement).checked;
-  if (checked && typeof Notification !== "undefined" && Notification.permission === "default") {
+  if (
+    checked && typeof Notification !== "undefined" &&
+    Notification.permission === "default"
+  ) {
     try {
       await Notification.requestPermission();
     } catch {
@@ -309,7 +318,8 @@ function updateE2eeUi(): void {
   if (!buf || buf.name === "*status") {
     btn.style.display = "none";
     form.classList.remove("e2ee-active");
-    inp.placeholder = "Message or /help (Tab to complete nicks, Alt+Up/Down to switch)";
+    inp.placeholder =
+      "Message or /help (Tab to complete nicks, Alt+Up/Down to switch)";
     return;
   }
   btn.style.display = "inline-flex";
@@ -341,12 +351,14 @@ function renderE2eeModal(): void {
     banner.textContent = "Server does not advertise egorsmkv.github.io/e2ee.";
   } else if (!st.account) {
     banner.classList.add("warn");
-    banner.textContent = "Connect with a SASL account to publish device keys and use E2EE.";
+    banner.textContent =
+      "Connect with a SASL account to publish device keys and use E2EE.";
   } else if (!st.bound) {
     banner.textContent = "Publishing and binding E2EE device keys...";
   } else {
     banner.classList.add("ok");
-    banner.textContent = "E2EE active (X3DH + Double Ratchet for DMs, Sender Keys for channels).";
+    banner.textContent =
+      "E2EE active (X3DH + Double Ratchet for DMs, Sender Keys for channels).";
   }
 
   $("e2ee-account").textContent = st.account || "-";
@@ -357,6 +369,8 @@ function renderE2eeModal(): void {
 
   const buf = buffers.get(activeBuf);
   const canRotate = st.bound && !!buf && isChan(buf.name);
+  $<HTMLButtonElement>("btn-e2ee-export").disabled = !st.account;
+  $<HTMLButtonElement>("btn-e2ee-import").disabled = !st.account;
   $<HTMLButtonElement>("btn-e2ee-rotate").disabled = !canRotate;
   $<HTMLButtonElement>("btn-e2ee-replenish").disabled = !st.bound;
   $<HTMLButtonElement>("btn-e2ee-reset").disabled = !st.account;
@@ -366,7 +380,8 @@ function renderE2eeModal(): void {
   if (st.trustedPeers.length === 0) {
     const empty = document.createElement("div");
     empty.className = "e2ee-empty";
-    empty.textContent = "No peer devices pinned yet. Send or receive an encrypted message to establish sessions.";
+    empty.textContent =
+      "No peer devices pinned yet. Send or receive an encrypted message to establish sessions.";
     peersEl.appendChild(empty);
   } else {
     for (const p of st.trustedPeers) {
@@ -426,16 +441,71 @@ $("btn-close-e2ee").onclick = closeE2eeModal;
 $("e2ee-modal").addEventListener("click", (ev) => {
   if (ev.target === $("e2ee-modal")) closeE2eeModal();
 });
+$("btn-e2ee-export").onclick = () => {
+  const pass = prompt(
+    "Enter a passphrase (min 6 characters) to encrypt your E2EE key backup:",
+  );
+  if (pass === null) return;
+  try {
+    const { filename, content } = e2ee.exportBackup(pass);
+    const blob = new Blob([content], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    addLine("*status", {
+      text: `Downloaded encrypted E2EE key backup (${filename}).`,
+      kind: "sys",
+    });
+  } catch (err) {
+    alert(err instanceof Error ? err.message : String(err));
+  }
+};
+$("btn-e2ee-import").onclick = () => {
+  const fileInp = $<HTMLInputElement>("inp-e2ee-file");
+  fileInp.value = "";
+  fileInp.click();
+};
+$<HTMLInputElement>("inp-e2ee-file").onchange = async (ev) => {
+  const input = ev.target as HTMLInputElement;
+  const file = input.files && input.files[0];
+  if (!file) return;
+  const pass = prompt("Enter the passphrase for this E2EE key backup:");
+  if (pass === null) return;
+  try {
+    const text = await file.text();
+    const res = e2ee.importBackup(text, pass);
+    renderE2eeModal();
+    addLine("*status", {
+      text:
+        `Imported E2EE keys for ${res.account} (device ${res.deviceId}) and re-binding...`,
+      kind: "sys",
+    });
+  } catch (err) {
+    alert(err instanceof Error ? err.message : String(err));
+  }
+};
 $("btn-e2ee-replenish").onclick = () => {
   e2ee.replenishPrekeys(20);
-  addLine("*status", { text: "Uploaded 20 fresh E2EE one-time prekeys.", kind: "sys" });
+  addLine("*status", {
+    text: "Uploaded 20 fresh E2EE one-time prekeys.",
+    kind: "sys",
+  });
 };
 $("btn-e2ee-rotate").onclick = () => {
   const buf = buffers.get(activeBuf);
   if (buf && isChan(buf.name)) void e2ee.rotateChannelKey(buf.name);
 };
 $("btn-e2ee-reset").onclick = () => {
-  if (confirm("Reset your E2EE device keys and sessions? Peers will see a new identity key.")) {
+  if (
+    confirm(
+      "Reset your E2EE device keys and sessions? Peers will see a new identity key.",
+    )
+  ) {
     e2ee.resetDevice();
     renderE2eeModal();
   }
@@ -475,7 +545,14 @@ function ensureBuf(name: string): BufferState {
   const key = name.toLowerCase();
   let buf = buffers.get(key);
   if (!buf) {
-    buf = { name, topic: "", lines: [], unread: 0, mentions: 0, members: new Map() };
+    buf = {
+      name,
+      topic: "",
+      lines: [],
+      unread: 0,
+      mentions: 0,
+      members: new Map(),
+    };
     buffers.set(key, buf);
     renderBuffers();
   }
@@ -483,7 +560,9 @@ function ensureBuf(name: string): BufferState {
 }
 
 function isMention(text: string, sender: string): boolean {
-  if (!myNick || !sender || sender.toLowerCase() === myNick.toLowerCase()) return false;
+  if (!myNick || !sender || sender.toLowerCase() === myNick.toLowerCase()) {
+    return false;
+  }
   const escaped = myNick.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`(^|\\W)${escaped}(\\W|$)`, "i").test(text);
 }
@@ -514,7 +593,8 @@ function addLine(
   buf.lines.push(entry);
   if (buf.lines.length > 600) buf.lines.shift();
 
-  const isFromOther = !!entry.nick && entry.nick.toLowerCase() !== myNick.toLowerCase();
+  const isFromOther = !!entry.nick &&
+    entry.nick.toLowerCase() !== myNick.toLowerCase();
   const isDm = !isChan(bufName) && bufName !== "*status";
   const isAlert = mention || (isDm && isFromOther && !opts.kind);
 
@@ -545,8 +625,7 @@ function addLine(
 function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
   const wrap = $("messages");
   const atBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 60;
-  const grouped =
-    !entry.kind &&
+  const grouped = !entry.kind &&
     !!entry.nick &&
     !!prev &&
     !prev.kind &&
@@ -554,8 +633,7 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
     entry.epochMs - prev.epochMs < 180000;
 
   const row = document.createElement("div");
-  row.className =
-    "msg" +
+  row.className = "msg" +
     (entry.kind ? ` ${entry.kind}` : "") +
     (grouped ? " grouped" : "") +
     (entry.mention ? " mention" : "");
@@ -655,8 +733,11 @@ function switchBuf(key: string): void {
   activeBuf = key;
   buf.unread = 0;
   buf.mentions = 0;
-  $("active-title").textContent = buf.name === "*status" ? "Server Status" : buf.name;
-  $("active-topic").textContent = buf.topic || (isChan(buf.name) ? "No topic set" : "");
+  $("active-title").textContent = buf.name === "*status"
+    ? "Server Status"
+    : buf.name;
+  $("active-topic").textContent = buf.topic ||
+    (isChan(buf.name) ? "No topic set" : "");
   $("btn-topic").style.display = isChan(buf.name) ? "inline-flex" : "none";
 
   const wrap = $("messages");
@@ -686,7 +767,9 @@ function buildBufRow(buf: BufferState, key: string): HTMLElement {
     lock.textContent = "🔒";
     label.appendChild(lock);
   }
-  label.appendChild(document.createTextNode(buf.name === "*status" ? "Server" : buf.name));
+  label.appendChild(
+    document.createTextNode(buf.name === "*status" ? "Server" : buf.name),
+  );
   item.appendChild(label);
 
   const right = document.createElement("span");
@@ -865,12 +948,20 @@ function handleMessage(raw: string): void {
   }
   if (command === "903") {
     if (saslUser || myNick) e2ee.setAccount(saslUser || myNick);
-    addLine("*status", { time, text: params[1] || "SASL authentication successful", kind: "sys" });
+    addLine("*status", {
+      time,
+      text: params[1] || "SASL authentication successful",
+      kind: "sys",
+    });
     sendRaw("CAP END");
     return;
   }
   if (command === "904" || command === "905") {
-    addLine("*status", { time, text: `SASL failed: ${params[1] || ""}`, kind: "err" });
+    addLine("*status", {
+      time,
+      text: `SASL failed: ${params[1] || ""}`,
+      kind: "err",
+    });
     sendRaw("CAP END");
     return;
   }
@@ -893,7 +984,9 @@ function handleMessage(raw: string): void {
       switchBuf(chan.toLowerCase());
       sendRaw(`CHATHISTORY LATEST ${chan} * 50`);
     }
-    if (settings.joinPart) addLine(chan, { time, text: `${nick} joined ${chan}`, kind: "sys" });
+    if (settings.joinPart) {
+      addLine(chan, { time, text: `${nick} joined ${chan}`, kind: "sys" });
+    }
     renderMembers();
     return;
   }
@@ -909,7 +1002,11 @@ function handleMessage(raw: string): void {
       } else {
         e2ee.onMemberLeft(chan);
         if (settings.joinPart) {
-          addLine(chan, { time, text: `${nick} left (${params[1] || ""})`, kind: "sys" });
+          addLine(chan, {
+            time,
+            text: `${nick} left (${params[1] || ""})`,
+            kind: "sys",
+          });
         }
         renderMembers();
       }
@@ -922,7 +1019,11 @@ function handleMessage(raw: string): void {
         buf.members.delete(nick);
         if (isChan(buf.name)) e2ee.onMemberLeft(buf.name);
         if (settings.joinPart) {
-          addLine(buf.name, { time, text: `${nick} quit (${params[0] || ""})`, kind: "sys" });
+          addLine(buf.name, {
+            time,
+            text: `${nick} quit (${params[0] || ""})`,
+            kind: "sys",
+          });
         }
       }
     });
@@ -941,7 +1042,11 @@ function handleMessage(raw: string): void {
         const pfx = buf.members.get(nick) || "";
         buf.members.delete(nick);
         buf.members.set(next, pfx);
-        addLine(buf.name, { time, text: `${nick} is now known as ${next}`, kind: "sys" });
+        addLine(buf.name, {
+          time,
+          text: `${nick} is now known as ${next}`,
+          kind: "sys",
+        });
       }
     });
     renderMembers();
@@ -951,7 +1056,9 @@ function handleMessage(raw: string): void {
     const chan = params[1];
     const buf = ensureBuf(chan);
     buf.topic = params[2] || "";
-    if (activeBuf === chan.toLowerCase()) $("active-topic").textContent = buf.topic;
+    if (activeBuf === chan.toLowerCase()) {
+      $("active-topic").textContent = buf.topic;
+    }
     addLine(chan, { time, text: `Topic: ${buf.topic}`, kind: "sys" });
     return;
   }
@@ -959,8 +1066,14 @@ function handleMessage(raw: string): void {
     const chan = params[0];
     const buf = ensureBuf(chan);
     buf.topic = params[1] || "";
-    if (activeBuf === chan.toLowerCase()) $("active-topic").textContent = buf.topic;
-    addLine(chan, { time, text: `${nick} set topic: ${buf.topic}`, kind: "sys" });
+    if (activeBuf === chan.toLowerCase()) {
+      $("active-topic").textContent = buf.topic;
+    }
+    addLine(chan, {
+      time,
+      text: `${nick} set topic: ${buf.topic}`,
+      kind: "sys",
+    });
     return;
   }
   if (command === "353") {
@@ -983,12 +1096,20 @@ function handleMessage(raw: string): void {
       });
       sendRaw(`NAMES ${target}`);
     } else {
-      addLine("*status", { time, text: `Mode ${target} ${params.slice(1).join(" ")}`, kind: "sys" });
+      addLine("*status", {
+        time,
+        text: `Mode ${target} ${params.slice(1).join(" ")}`,
+        kind: "sys",
+      });
     }
     return;
   }
   if (command === "INVITE") {
-    addLine("*status", { time, text: `${nick} invited you to ${params[1]}`, kind: "sys" });
+    addLine("*status", {
+      time,
+      text: `${nick} invited you to ${params[1]}`,
+      kind: "sys",
+    });
     return;
   }
   if (command === "PRIVMSG" || command === "NOTICE") {
@@ -997,10 +1118,14 @@ function handleMessage(raw: string): void {
     const dest = isChan(target)
       ? target
       : nick.toLowerCase() === myNick.toLowerCase()
-        ? target
-        : nick || "*status";
+      ? target
+      : nick || "*status";
     if (text.startsWith("\x01ACTION ") && text.endsWith("\x01")) {
-      addLine(dest, { time, text: `* ${nick} ${text.slice(8, -1)}`, kind: "action" });
+      addLine(dest, {
+        time,
+        text: `* ${nick} ${text.slice(8, -1)}`,
+        kind: "action",
+      });
     } else {
       addLine(dest, {
         time,
@@ -1026,7 +1151,11 @@ function handleMessage(raw: string): void {
     return;
   }
   if (command === "ERROR" || command === "FAIL") {
-    addLine("*status", { time, text: `${command}: ${params.join(" ")}`, kind: "err" });
+    addLine("*status", {
+      time,
+      text: `${command}: ${params.join(" ")}`,
+      kind: "err",
+    });
     return;
   }
   if (command === "322") {
@@ -1038,8 +1167,14 @@ function handleMessage(raw: string): void {
     return;
   }
   if (/^\d{3}$/.test(command)) {
-    if (["366", "002", "003", "004", "005", "375", "376"].includes(command)) return;
-    addLine("*status", { time, text: `[${command}] ${params.slice(1).join(" ")}`, kind: "sys" });
+    if (["366", "002", "003", "004", "005", "375", "376"].includes(command)) {
+      return;
+    }
+    addLine("*status", {
+      time,
+      text: `[${command}] ${params.slice(1).join(" ")}`,
+      kind: "sys",
+    });
   }
 }
 
@@ -1172,7 +1307,9 @@ function runSlashCommand(raw: string, buf: BufferState | undefined): void {
       if (buf && isChan(buf.name) && rest) {
         const s2 = rest.indexOf(" ");
         if (s2 === -1) sendRaw(`KICK ${buf.name} ${rest}`);
-        else sendRaw(`KICK ${buf.name} ${rest.slice(0, s2)} :${rest.slice(s2 + 1)}`);
+        else {sendRaw(
+            `KICK ${buf.name} ${rest.slice(0, s2)} :${rest.slice(s2 + 1)}`,
+          );}
       }
       return;
     case "invite": {
@@ -1190,7 +1327,13 @@ function runSlashCommand(raw: string, buf: BufferState | undefined): void {
       if (rest) sendRaw(`WHOWAS ${rest}`);
       return;
     case "who":
-      sendRaw(rest ? `WHO ${rest}` : buf && isChan(buf.name) ? `WHO ${buf.name}` : "WHO");
+      sendRaw(
+        rest
+          ? `WHO ${rest}`
+          : buf && isChan(buf.name)
+          ? `WHO ${buf.name}`
+          : "WHO",
+      );
       return;
     case "names":
       if (rest) sendRaw(`NAMES ${rest}`);
@@ -1214,7 +1357,11 @@ function runSlashCommand(raw: string, buf: BufferState | undefined): void {
     case "history": {
       const limit = parseInt(rest, 10) || 50;
       if (buf && buf.name !== "*status") {
-        sendRaw(`CHATHISTORY LATEST ${buf.name} * ${Math.min(Math.max(limit, 1), 200)}`);
+        sendRaw(
+          `CHATHISTORY LATEST ${buf.name} * ${
+            Math.min(Math.max(limit, 1), 200)
+          }`,
+        );
       }
       return;
     }
@@ -1228,29 +1375,47 @@ function runSlashCommand(raw: string, buf: BufferState | undefined): void {
       const parts = rest.split(/\s+/).filter(Boolean);
       const sub = (parts[0] || "status").toLowerCase();
       if (sub === "on") {
-        if (buf && buf.name !== "*status" && e2ee.setBufferEncrypted(buf.name, true)) {
-          addLine(buf.name, { text: "End-to-end encryption enabled.", kind: "sys" });
+        if (
+          buf && buf.name !== "*status" &&
+          e2ee.setBufferEncrypted(buf.name, true)
+        ) {
+          addLine(buf.name, {
+            text: "End-to-end encryption enabled.",
+            kind: "sys",
+          });
         }
       } else if (sub === "off") {
         if (buf && buf.name !== "*status") {
           e2ee.setBufferEncrypted(buf.name, false);
-          addLine(buf.name, { text: "End-to-end encryption disabled.", kind: "sys" });
+          addLine(buf.name, {
+            text: "End-to-end encryption disabled.",
+            kind: "sys",
+          });
         }
       } else if (sub === "rotate") {
         if (buf && isChan(buf.name)) void e2ee.rotateChannelKey(buf.name);
-        else addLine(target, { text: "Switch to a channel to rotate its Sender Key.", kind: "err" });
+        else {addLine(target, {
+            text: "Switch to a channel to rotate its Sender Key.",
+            kind: "err",
+          });}
       } else if (sub === "verify") {
-        const who = (parts[1] || (!isChan(target) && target !== "*status" ? target : "")).toLowerCase();
+        const who =
+          (parts[1] || (!isChan(target) && target !== "*status" ? target : ""))
+            .toLowerCase();
         const st = e2ee.getStatus();
         const matches = who
           ? st.trustedPeers.filter((p) => p.account === who)
           : st.trustedPeers;
         if (matches.length === 0) {
-          addLine(target, { text: "No pinned E2EE peer devices found.", kind: "sys" });
+          addLine(target, {
+            text: "No pinned E2EE peer devices found.",
+            kind: "sys",
+          });
         } else {
           for (const p of matches) {
             addLine(target, {
-              text: `Safety # for ${p.account} (device ${p.device}): ${p.safetyNumber}`,
+              text:
+                `Safety # for ${p.account} (device ${p.device}): ${p.safetyNumber}`,
               kind: "sys",
             });
           }
@@ -1284,7 +1449,10 @@ function runSlashCommand(raw: string, buf: BufferState | undefined): void {
       sendRaw(`QUIT :${rest || "Leaving WebIRC"}`);
       return;
     default:
-      addLine(target, { text: `Unknown command: /${cmd} (try /help)`, kind: "err" });
+      addLine(target, {
+        text: `Unknown command: /${cmd} (try /help)`,
+        kind: "err",
+      });
   }
 }
 
@@ -1309,7 +1477,9 @@ $<HTMLFormElement>("connect-form").addEventListener("submit", (ev) => {
     switchBuf("*status");
     connectSocket(url);
   } catch (e) {
-    err.textContent = `Invalid WebSocket URL: ${e instanceof Error ? e.message : String(e)}`;
+    err.textContent = `Invalid WebSocket URL: ${
+      e instanceof Error ? e.message : String(e)
+    }`;
     err.style.display = "block";
     $("chat-view").classList.remove("active");
     $("connect-view").style.display = "flex";
@@ -1366,7 +1536,7 @@ msgInp.addEventListener("keydown", (ev) => {
     const prefix = val.slice(lastSpace + 1);
     if (!prefix) return;
     const match = Array.from(buf.members.keys()).find((n) =>
-      n.toLowerCase().startsWith(prefix.toLowerCase()),
+      n.toLowerCase().startsWith(prefix.toLowerCase())
     );
     if (match) {
       ev.preventDefault();
@@ -1417,7 +1587,10 @@ $<HTMLFormElement>("send-form").addEventListener("submit", (ev) => {
     return;
   }
   if (!buf || buf.name === "*status") {
-    addLine("*status", { text: "Join a channel first (e.g. /join #lobby) or type /help.", kind: "err" });
+    addLine("*status", {
+      text: "Join a channel first (e.g. /join #lobby) or type /help.",
+      kind: "err",
+    });
     return;
   }
   if (e2ee.isBufferEncrypted(buf.name)) {
