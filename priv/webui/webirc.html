@@ -34,39 +34,39 @@
     <div class="connect-top">
       <h1>__NETWORK_NAME__ WebIRC</h1>
       <div class="head-actions">
-        <button type="button" class="small" id="btn-share-1">Share</button>
-        <button type="button" class="small" id="btn-settings-1">Settings</button>
+        <button type="button" class="small" id="btn-share-1" data-i18n="btn.share">Share</button>
+        <button type="button" class="small" id="btn-settings-1" data-i18n="btn.settings">Settings</button>
       </div>
     </div>
-    <p class="sub">Team IRC workspace over IRCv3 WebSocket.</p>
+    <p class="sub" data-i18n="connect.sub">Team IRC workspace over IRCv3 WebSocket.</p>
     <div id="connect-err"></div>
     <form id="connect-form">
       <div class="field">
-        <label for="inp-nick">Nickname</label>
-        <input type="text" id="inp-nick" required maxlength="30" placeholder="alex">
+        <label for="inp-nick" data-i18n="connect.nick">Nickname</label>
+        <input type="text" id="inp-nick" required maxlength="30" placeholder="alex" data-i18n-placeholder="connect.nick.ph">
       </div>
       <div class="field">
-        <label for="inp-channels">Channels</label>
-        <input type="text" id="inp-channels" value="__DEFAULT_CHANNELS__" placeholder="#lobby">
+        <label for="inp-channels" data-i18n="connect.channels">Channels</label>
+        <input type="text" id="inp-channels" dir="ltr" value="__DEFAULT_CHANNELS__" placeholder="#lobby">
       </div>
       <div class="row-2">
         <div class="field">
-          <label for="inp-acct">SASL Account (optional)</label>
-          <input type="text" id="inp-acct" autocomplete="username" maxlength="64">
+          <label for="inp-acct" data-i18n="connect.acct">SASL Account (optional)</label>
+          <input type="text" id="inp-acct" dir="ltr" autocomplete="username" maxlength="64">
         </div>
         <div class="field">
-          <label for="inp-pass">SASL Password</label>
-          <input type="password" id="inp-pass" autocomplete="current-password" maxlength="256">
+          <label for="inp-pass" data-i18n="connect.pass">SASL Password</label>
+          <input type="password" id="inp-pass" dir="ltr" autocomplete="current-password" maxlength="256">
         </div>
       </div>
       <div class="field">
-        <label for="inp-ws">WebSocket URL</label>
-        <input type="text" id="inp-ws" required>
+        <label for="inp-ws" data-i18n="connect.ws">WebSocket URL</label>
+        <input type="text" id="inp-ws" dir="ltr" required>
       </div>
-      <button type="submit" class="primary btn-full">Connect</button>
+      <button type="submit" class="primary btn-full" data-i18n="connect.btn">Connect</button>
     </form>
     <p class="foot-links">
-      <a href="/signup">Create account</a> &middot; <a href="/verify">Verify account</a> &middot; <a href="/recover">Recover password</a>
+      <a href="/signup" data-i18n="foot.signup">Create account</a> &middot; <a href="/verify" data-i18n="foot.verify">Verify account</a> &middot; <a href="/recover" data-i18n="foot.recover">Recover password</a>
     </p>
   </div>
 </section>
@@ -79,14 +79,14 @@
       <button type="button" class="small mobile-only" id="btn-close-left" aria-label="Close channels">×</button>
     </div>
     <div class="buffer-scroll">
-      <div class="section-label">Channels</div>
+      <div class="section-label" data-i18n="sec.channels">Channels</div>
       <div id="channel-list"></div>
-      <div class="section-label">Direct Messages</div>
+      <div class="section-label" data-i18n="sec.dms">Direct Messages</div>
       <div id="dm-list"></div>
     </div>
     <form class="join-box" id="join-form">
-      <input type="text" id="inp-join" placeholder="#channel">
-      <button type="submit" class="small">Join</button>
+      <input type="text" id="inp-join" placeholder="#channel" data-i18n-placeholder="ph.join">
+      <button type="submit" class="small" data-i18n="btn.join">Join</button>
     </form>
   </aside>
 
@@ -94,40 +94,40 @@
     <div class="head-left">
       <button type="button" class="small mobile-only" id="btn-menu" aria-label="Toggle channels">☰</button>
       <span class="status-dot" id="status-dot"></span>
-      <span class="head-title" id="active-title">Server Status</span>
+      <span class="head-title" id="active-title" data-i18n="status.title">Server Status</span>
       <span class="head-topic" id="active-topic"></span>
-      <button type="button" class="small hidden" id="btn-topic">Edit topic</button>
+      <button type="button" class="small hidden" id="btn-topic" data-i18n="btn.topic">Edit topic</button>
       <button type="button" class="small btn-e2ee hidden" id="btn-e2ee" title="Toggle end-to-end encryption for this conversation">E2EE Off</button>
     </div>
     <div class="head-right">
       <span class="my-nick" id="my-nick"></span>
       <button type="button" class="small icon-mobile" id="btn-members" aria-label="Toggle members" title="Members">
         <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-        <span class="btn-label">Users</span>
+        <span class="btn-label" data-i18n="btn.users">Users</span>
       </button>
-      <button type="button" class="small primary hidden" id="btn-reconnect">Reconnect</button>
+      <button type="button" class="small primary hidden" id="btn-reconnect" data-i18n="btn.reconnect">Reconnect</button>
       <button type="button" class="small icon-mobile" id="btn-settings-2" aria-label="Settings" title="Settings">
         <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        <span class="btn-label">Settings</span>
+        <span class="btn-label" data-i18n="btn.settings">Settings</span>
       </button>
-      <button type="button" class="small danger" id="btn-disconnect">Disconnect</button>
+      <button type="button" class="small danger" id="btn-disconnect" data-i18n="btn.disconnect">Disconnect</button>
     </div>
   </header>
 
   <div class="messages" id="messages"></div>
 
   <form class="input-bar" id="send-form">
-    <input type="text" id="inp-msg" autocomplete="off" placeholder="Message or /help (Tab to complete nicks, Alt+Up/Down to switch)">
-    <button type="submit" class="primary">Send</button>
+    <input type="text" id="inp-msg" autocomplete="off" placeholder="Message or /help (Tab to complete nicks, Alt+Up/Down to switch)" data-i18n-placeholder="ph.msg">
+    <button type="submit" class="primary" data-i18n="btn.send">Send</button>
   </form>
 
   <aside class="sidebar-right" id="sidebar-right">
     <div class="members-head">
       <div class="members-head-top">
-        <div class="members-title" id="members-title">Members</div>
+        <div class="members-title" id="members-title" data-i18n="members.title">Members</div>
         <button type="button" class="small" id="btn-close-right" aria-label="Close members">×</button>
       </div>
-      <input type="text" id="inp-member-filter" placeholder="Filter members...">
+      <input type="text" id="inp-member-filter" placeholder="Filter members..." data-i18n-placeholder="ph.filter.members">
     </div>
     <div id="members-list"></div>
   </aside>
@@ -136,81 +136,88 @@
 <div class="modal-backdrop" id="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
   <div class="modal-card modal-wide">
     <div class="modal-head">
-      <h2 id="settings-title">Workspace Settings</h2>
+      <h2 id="settings-title" data-i18n="settings.title">Workspace Settings</h2>
       <button type="button" class="small" id="btn-close-settings" aria-label="Close settings">×</button>
     </div>
     <div class="modal-tabs" role="tablist">
-      <button type="button" class="modal-tab active" id="tab-settings-general" role="tab" aria-selected="true">General</button>
-      <button type="button" class="modal-tab" id="tab-settings-e2ee" role="tab" aria-selected="false">E2EE Keys</button>
+      <button type="button" class="modal-tab active" id="tab-settings-general" role="tab" aria-selected="true" data-i18n="settings.tab.general">General</button>
+      <button type="button" class="modal-tab" id="tab-settings-e2ee" role="tab" aria-selected="false" data-i18n="settings.tab.e2ee">E2EE Keys</button>
     </div>
     <div class="modal-body">
       <div class="modal-pane active" id="pane-settings-general" role="tabpanel">
         <div class="setting-group">
-          <div class="setting-label">Theme</div>
+          <div class="setting-label" data-i18n="settings.theme">Theme</div>
           <div class="theme-grid" id="theme-grid"></div>
         </div>
         <div class="setting-row">
-          <label for="opt-layout">Screen layout</label>
+          <label for="opt-lang" data-i18n="settings.lang">Language</label>
+          <select id="opt-lang">
+            <option value="en">English</option>
+            <option value="he">עברית (Hebrew)</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <label for="opt-layout" data-i18n="settings.layout">Screen layout</label>
           <select id="opt-layout">
-            <option value="auto">Auto (responsive)</option>
-            <option value="mobile">Mobile / iPhone</option>
-            <option value="desktop">Desktop</option>
+            <option value="auto" data-i18n="settings.layout.auto">Auto (responsive)</option>
+            <option value="mobile" data-i18n="settings.layout.mobile">Mobile / iPhone</option>
+            <option value="desktop" data-i18n="settings.layout.desktop">Desktop</option>
           </select>
         </div>
         <div class="setting-row">
-          <label for="opt-density">Message density</label>
+          <label for="opt-density" data-i18n="settings.density">Message density</label>
           <select id="opt-density">
-            <option value="comfortable">Comfortable (avatars)</option>
-            <option value="compact">Compact (classic IRC)</option>
+            <option value="comfortable" data-i18n="settings.density.comfortable">Comfortable (avatars)</option>
+            <option value="compact" data-i18n="settings.density.compact">Compact (classic IRC)</option>
           </select>
         </div>
         <div class="setting-row">
-          <label for="opt-fontsize">Font size</label>
+          <label for="opt-fontsize" data-i18n="settings.fontsize">Font size</label>
           <select id="opt-fontsize">
-            <option value="small">Small (13px)</option>
-            <option value="normal">Normal (14px)</option>
-            <option value="large">Large (15.5px)</option>
+            <option value="small" data-i18n="settings.fontsize.small">Small (13px)</option>
+            <option value="normal" data-i18n="settings.fontsize.normal">Normal (14px)</option>
+            <option value="large" data-i18n="settings.fontsize.large">Large (15.5px)</option>
           </select>
         </div>
         <label class="setting-check">
           <input type="checkbox" id="opt-timestamps" checked>
-          <span>Show message timestamps</span>
+          <span data-i18n="settings.timestamps">Show message timestamps</span>
         </label>
         <label class="setting-check">
           <input type="checkbox" id="opt-joinpart" checked>
-          <span>Show join, part, and quit events</span>
+          <span data-i18n="settings.joinpart">Show join, part, and quit events</span>
         </label>
         <label class="setting-check">
           <input type="checkbox" id="opt-notify">
-          <span>Desktop notifications on mentions</span>
+          <span data-i18n="settings.notify">Desktop notifications on mentions</span>
         </label>
         <div class="e2ee-actions">
-          <button type="button" class="small" id="btn-share-2">Share WebIRC Link</button>
+          <button type="button" class="small" id="btn-share-2" data-i18n="btn.share.link">Share WebIRC Link</button>
         </div>
       </div>
 
       <div class="modal-pane" id="pane-settings-e2ee" role="tabpanel">
         <div class="e2ee-status-banner" id="e2ee-status-banner"></div>
         <div class="e2ee-kv-grid">
-          <div class="e2ee-kv"><span class="k">Account</span><span class="v" id="e2ee-account">-</span></div>
-          <div class="e2ee-kv"><span class="k">Device ID</span><span class="v" id="e2ee-device">-</span></div>
-          <div class="e2ee-kv"><span class="k">One-time Prekeys</span><span class="v" id="e2ee-prekeys">-</span></div>
-          <div class="e2ee-kv"><span class="k">Active Sessions</span><span class="v" id="e2ee-sessions">-</span></div>
+          <div class="e2ee-kv"><span class="k" data-i18n="e2ee.account">Account</span><span class="v" id="e2ee-account">-</span></div>
+          <div class="e2ee-kv"><span class="k" data-i18n="e2ee.device">Device ID</span><span class="v" id="e2ee-device">-</span></div>
+          <div class="e2ee-kv"><span class="k" data-i18n="e2ee.prekeys">One-time Prekeys</span><span class="v" id="e2ee-prekeys">-</span></div>
+          <div class="e2ee-kv"><span class="k" data-i18n="e2ee.sessions">Active Sessions</span><span class="v" id="e2ee-sessions">-</span></div>
         </div>
         <div class="setting-group">
-          <div class="setting-label">Your Identity Fingerprint</div>
-          <div class="e2ee-fp" id="e2ee-fingerprint">-</div>
+          <div class="setting-label" data-i18n="e2ee.fingerprint">Your Identity Fingerprint</div>
+          <div class="e2ee-fp" dir="ltr" id="e2ee-fingerprint">-</div>
         </div>
         <div class="e2ee-actions">
-          <button type="button" class="small" id="btn-e2ee-export">Download Keys</button>
-          <button type="button" class="small" id="btn-e2ee-import">Upload Keys</button>
+          <button type="button" class="small" id="btn-e2ee-export" data-i18n="e2ee.download">Download Keys</button>
+          <button type="button" class="small" id="btn-e2ee-import" data-i18n="e2ee.upload">Upload Keys</button>
           <input type="file" id="inp-e2ee-file" accept=".json,application/json" class="hidden">
-          <button type="button" class="small" id="btn-e2ee-replenish">Upload Prekeys</button>
-          <button type="button" class="small" id="btn-e2ee-rotate">Rotate Channel Key</button>
-          <button type="button" class="small danger" id="btn-e2ee-reset">Reset Device Keys</button>
+          <button type="button" class="small" id="btn-e2ee-replenish" data-i18n="e2ee.replenish">Upload Prekeys</button>
+          <button type="button" class="small" id="btn-e2ee-rotate" data-i18n="e2ee.rotate">Rotate Channel Key</button>
+          <button type="button" class="small danger" id="btn-e2ee-reset" data-i18n="e2ee.reset">Reset Device Keys</button>
         </div>
         <div class="setting-group">
-          <div class="setting-label">Trusted Peer Devices (TOFU Safety Numbers)</div>
+          <div class="setting-label" data-i18n="e2ee.peers">Trusted Peer Devices (TOFU Safety Numbers)</div>
           <div class="e2ee-peers" id="e2ee-peers"></div>
         </div>
       </div>
@@ -221,17 +228,17 @@
 <div class="modal-backdrop" id="topic-modal" role="dialog" aria-modal="true" aria-labelledby="topic-modal-title">
   <div class="modal-card">
     <div class="modal-head">
-      <h2 id="topic-modal-title">Set Channel Topic</h2>
+      <h2 id="topic-modal-title" data-i18n="topic.modal.title">Set Channel Topic</h2>
       <button type="button" class="small" id="btn-close-topic" aria-label="Close topic dialog">×</button>
     </div>
     <form class="modal-body" id="topic-form">
       <div class="field">
-        <label for="inp-topic">Topic for <span id="topic-modal-chan">#channel</span></label>
-        <input type="text" id="inp-topic" maxlength="390" placeholder="Enter channel topic (leave blank to clear)">
+        <label for="inp-topic"><span data-i18n="topic.modal.label">Topic for</span> <span id="topic-modal-chan" dir="ltr">#channel</span></label>
+        <input type="text" id="inp-topic" maxlength="390" placeholder="Enter channel topic (leave blank to clear)" data-i18n-placeholder="topic.modal.ph">
       </div>
       <div class="e2ee-actions">
-        <button type="submit" class="primary small">Save Topic</button>
-        <button type="button" class="small" id="btn-cancel-topic">Cancel</button>
+        <button type="submit" class="primary small" data-i18n="btn.save.topic">Save Topic</button>
+        <button type="button" class="small" id="btn-cancel-topic" data-i18n="btn.cancel">Cancel</button>
       </div>
     </form>
   </div>

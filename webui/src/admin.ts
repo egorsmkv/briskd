@@ -160,8 +160,36 @@ async function postAction(action: string, args: string[] = []): Promise<void> {
   }
 }
 
-function makeTable(headers: string[], rows: CellValue[][]): HTMLElement {
+const PAGE_SIZE_KEY = "ircd-admin-page-size";
+const PAGE_SIZES = [10, 25, 50, 100];
+const tablePages: Record<string, number> = {};
+let lastOverview: OverviewPayload | null = null;
+let pageSize = (() => {
+  try {
+    const saved = parseInt(localStorage.getItem(PAGE_SIZE_KEY) || "", 10);
+    if (PAGE_SIZES.includes(saved)) return saved;
+  } catch {
+    // ignore
+  }
+  return 25;
+})();
+
+function makeTable(
+  key: string,
+  headers: string[],
+  rows: CellValue[][],
+): HTMLElement {
   if (!rows.length) return el("div", "None.", "empty");
+
+  const total = rows.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const page = Math.min(Math.max(tablePages[key] ?? 1, 1), totalPages);
+  tablePages[key] = page;
+  const start = (page - 1) * pageSize;
+  const end = Math.min(start + pageSize, total);
+  const slice = rows.slice(start, end);
+
+  const container = el("div", undefined, "table-wrap");
   const table = document.createElement("table");
   const thead = document.createElement("thead");
   const tr = document.createElement("tr");
@@ -170,7 +198,7 @@ function makeTable(headers: string[], rows: CellValue[][]): HTMLElement {
   table.appendChild(thead);
 
   const tbody = document.createElement("tbody");
-  for (const cells of rows) {
+  for (const cells of slice) {
     const r = document.createElement("tr");
     for (const cell of cells) {
       const td = document.createElement("td");
@@ -189,7 +217,62 @@ function makeTable(headers: string[], rows: CellValue[][]): HTMLElement {
     tbody.appendChild(r);
   }
   table.appendChild(tbody);
-  return table;
+  container.appendChild(table);
+
+  const pager = el("div", undefined, "pager");
+  pager.appendChild(
+    el("span", `Showing ${start + 1}–${end} of ${total}`, "muted"),
+  );
+
+  const controls = el("div", undefined, "pager-controls");
+  const sizeLabel = el("label", "Rows:", "muted pager-size");
+  const sizeSel = document.createElement("select");
+  sizeSel.setAttribute("aria-label", "Rows per page");
+  for (const sz of PAGE_SIZES) {
+    const opt = document.createElement("option");
+    opt.value = String(sz);
+    opt.textContent = String(sz);
+    if (sz === pageSize) opt.selected = true;
+    sizeSel.appendChild(opt);
+  }
+  sizeSel.onchange = () => {
+    pageSize = parseInt(sizeSel.value, 10) || 25;
+    try {
+      localStorage.setItem(PAGE_SIZE_KEY, String(pageSize));
+    } catch {
+      // ignore
+    }
+    tablePages[key] = 1;
+    if (lastOverview) render(lastOverview);
+  };
+  sizeLabel.appendChild(sizeSel);
+  controls.appendChild(sizeLabel);
+
+  const prevBtn = el("button", "Prev", "small");
+  prevBtn.type = "button";
+  prevBtn.disabled = page <= 1;
+  prevBtn.onclick = () => {
+    tablePages[key] = page - 1;
+    if (lastOverview) render(lastOverview);
+  };
+  controls.appendChild(prevBtn);
+
+  controls.appendChild(
+    el("span", `Page ${page} / ${totalPages}`, "pager-info"),
+  );
+
+  const nextBtn = el("button", "Next", "small");
+  nextBtn.type = "button";
+  nextBtn.disabled = page >= totalPages;
+  nextBtn.onclick = () => {
+    tablePages[key] = page + 1;
+    if (lastOverview) render(lastOverview);
+  };
+  controls.appendChild(nextBtn);
+
+  pager.appendChild(controls);
+  container.appendChild(pager);
+  return container;
 }
 
 function replace(id: string, node: Node): void {
@@ -199,6 +282,7 @@ function replace(id: string, node: Node): void {
 }
 
 function render(data: OverviewPayload): void {
+  lastOverview = data;
   const st = data.status ?? {};
   $("srv-name").textContent = st.name || "ircd";
   const badge = $("srv-status");
@@ -252,6 +336,7 @@ function render(data: OverviewPayload): void {
   replace(
     "clients-wrap",
     makeTable(
+      "clients",
       [
         "Nick",
         "User@Host",
@@ -296,6 +381,7 @@ function render(data: OverviewPayload): void {
   replace(
     "channels-wrap",
     makeTable(
+      "channels",
       ["Channel", "Local", "Remote", "Modes", "Predefined", "Topic", "Action"],
       channels.map((ch) => {
         const tbtn = el("button", "Set Topic", "small");
@@ -355,7 +441,7 @@ function render(data: OverviewPayload): void {
   }
   replace(
     "links-wrap",
-    makeTable(["Server", "State", "Info", "Action"], linkRows),
+    makeTable("links", ["Server", "State", "Info", "Action"], linkRows),
   );
 
   const accounts = data.accounts?.accounts ?? [];
@@ -363,6 +449,7 @@ function render(data: OverviewPayload): void {
   replace(
     "accounts-wrap",
     makeTable(
+      "accounts",
       ["Account", "Status", "Email", "CertFPs", "Action"],
       accounts.map((a) => {
         const wrap = el("span", undefined, "action-row");
@@ -396,6 +483,7 @@ function render(data: OverviewPayload): void {
   replace(
     "dronebl-wrap",
     makeTable(
+      "dronebl",
       ["IP", "Code", "Expires In", "Reason", "Action"],
       bans.map((b) => {
         const btn = el("button", "Unban", "small");

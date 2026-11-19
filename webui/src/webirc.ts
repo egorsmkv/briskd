@@ -1,4 +1,5 @@
 import { byId as $, errorMessage } from "./common/dom.ts";
+import { currentLang, initLang, setLang, t } from "./common/i18n.ts";
 import { currentTheme, initTheme, setTheme, THEMES } from "./common/theme.ts";
 import { updateDynamicFavicon } from "./common/favicon.ts";
 import { E2EE_CAP, E2eeManager } from "./e2ee/manager.ts";
@@ -155,6 +156,7 @@ initTheme([], {
   defaultTheme: "hacker",
   storageKey: "ircd-webirc-theme",
 });
+initLang();
 
 const settings: WebircSettings = loadSettings();
 
@@ -171,6 +173,7 @@ function applySettings(): void {
   document.body.classList.toggle("hide-timestamps", !settings.timestamps);
   document.body.classList.toggle("font-small", settings.fontSize === "small");
   document.body.classList.toggle("font-large", settings.fontSize === "large");
+  $<HTMLSelectElement>("opt-lang").value = currentLang();
   $<HTMLSelectElement>("opt-layout").value = settings.layout;
   $<HTMLSelectElement>("opt-density").value = settings.density;
   $<HTMLSelectElement>("opt-fontsize").value = settings.fontSize;
@@ -241,6 +244,22 @@ document.addEventListener("keydown", (ev) => {
   }
 });
 
+$<HTMLSelectElement>("opt-lang").onchange = (ev) => {
+  const v = (ev.target as HTMLSelectElement).value;
+  setLang(v === "he" ? "he" : "en");
+  updateE2eeUi();
+  renderBuffers();
+  renderMembers();
+  if ($("settings-modal").classList.contains("open")) renderE2eeModal();
+  const buf = buffers.get(activeBuf);
+  if (buf) {
+    $("active-title").textContent = buf.name === "*status"
+      ? t("status.title")
+      : buf.name;
+    $("active-topic").textContent = buf.topic ||
+      (isChan(buf.name) ? t("topic.none") : "");
+  }
+};
 $<HTMLSelectElement>("opt-layout").onchange = (ev) => {
   const v = (ev.target as HTMLSelectElement).value;
   settings.layout = v === "mobile" || v === "desktop" ? v : "auto";
@@ -394,28 +413,23 @@ function updateE2eeUi(): void {
   if (!buf || buf.name === "*status") {
     btn.style.display = "none";
     form.classList.remove("e2ee-active");
-    inp.placeholder =
-      "Message or /help (Tab to complete nicks, Alt+Up/Down to switch)";
+    inp.placeholder = t("ph.msg");
     return;
   }
   btn.style.display = "inline-flex";
   const on = e2ee.isBufferEncrypted(buf.name);
   const ready = e2ee.isReady();
   btn.classList.toggle("on", on);
-  btn.textContent = on ? "🔒 E2EE On" : "🔓 E2EE Off";
+  btn.textContent = on ? t("e2ee.on") : t("e2ee.off");
   if (!ready) {
     btn.title = e2ee.isServerSupported()
-      ? "Log in with a SASL account to enable E2EE"
-      : "Server does not have E2EE enabled";
+      ? t("e2ee.banner.noacct")
+      : t("e2ee.banner.unsupported");
   } else {
-    btn.title = on
-      ? "End-to-end encryption is active for this conversation (click to disable)"
-      : "Click to enable end-to-end encryption for this conversation";
+    btn.title = on ? t("e2ee.on") : t("e2ee.off");
   }
   form.classList.toggle("e2ee-active", on);
-  inp.placeholder = on
-    ? `Encrypted message to ${buf.name} (E2EE) or /help...`
-    : "Message or /help (Tab to complete nicks, Alt+Up/Down to switch)";
+  inp.placeholder = on ? t("ph.msg.e2ee", { target: buf.name }) : t("ph.msg");
 }
 
 function renderE2eeModal(): void {
@@ -424,17 +438,15 @@ function renderE2eeModal(): void {
   banner.className = "e2ee-status-banner";
   if (!st.serverSupported) {
     banner.classList.add("warn");
-    banner.textContent = "Server does not advertise egorsmkv.github.io/e2ee.";
+    banner.textContent = t("e2ee.banner.unsupported");
   } else if (!st.account) {
     banner.classList.add("warn");
-    banner.textContent =
-      "Connect with a SASL account to publish device keys and use E2EE.";
+    banner.textContent = t("e2ee.banner.noacct");
   } else if (!st.bound) {
-    banner.textContent = "Publishing and binding E2EE device keys...";
+    banner.textContent = t("e2ee.banner.binding");
   } else {
     banner.classList.add("ok");
-    banner.textContent =
-      "E2EE active (X3DH + Double Ratchet for DMs, Sender Keys for channels).";
+    banner.textContent = t("e2ee.banner.active");
   }
 
   $("e2ee-account").textContent = st.account || "-";
@@ -456,8 +468,7 @@ function renderE2eeModal(): void {
   if (st.trustedPeers.length === 0) {
     const empty = document.createElement("div");
     empty.className = "e2ee-empty";
-    empty.textContent =
-      "No peer devices pinned yet. Send or receive an encrypted message to establish sessions.";
+    empty.textContent = t("e2ee.peers.empty");
     peersEl.appendChild(empty);
   } else {
     for (const p of st.trustedPeers) {
@@ -467,17 +478,18 @@ function renderE2eeModal(): void {
       info.className = "e2ee-peer-info";
       const title = document.createElement("div");
       title.className = "peer-id";
-      title.textContent = `${p.account} (device ${p.device})`;
+      title.textContent = `${p.account} (${p.device})`;
       const sn = document.createElement("div");
       sn.className = "peer-sn";
-      sn.textContent = `Safety #: ${p.safetyNumber}`;
+      sn.dir = "ltr";
+      sn.textContent = p.safetyNumber;
       info.appendChild(title);
       info.appendChild(sn);
 
       const forget = document.createElement("button");
       forget.type = "button";
       forget.className = "small";
-      forget.textContent = "Forget";
+      forget.textContent = t("e2ee.forget");
       forget.title = "Forget pinned identity key and session for this device";
       forget.onclick = () => {
         e2ee.forgetPeer(p.key);
@@ -807,10 +819,10 @@ function switchBuf(key: string): void {
   buf.unread = 0;
   buf.mentions = 0;
   $("active-title").textContent = buf.name === "*status"
-    ? "Server Status"
+    ? t("status.title")
     : buf.name;
   $("active-topic").textContent = buf.topic ||
-    (isChan(buf.name) ? "No topic set" : "");
+    (isChan(buf.name) ? t("topic.none") : "");
   $("btn-topic").style.display = isChan(buf.name) ? "inline-flex" : "none";
 
   const wrap = $("messages");
@@ -841,7 +853,9 @@ function buildBufRow(buf: BufferState, key: string): HTMLElement {
     label.appendChild(lock);
   }
   label.appendChild(
-    document.createTextNode(buf.name === "*status" ? "Server" : buf.name),
+    document.createTextNode(
+      buf.name === "*status" ? t("status.short") : buf.name,
+    ),
   );
   item.appendChild(label);
 
@@ -910,7 +924,7 @@ function renderMembers(): void {
   const list = $("members-list");
   list.textContent = "";
   if (!buf || !isChan(buf.name)) {
-    $("members-title").textContent = "Members";
+    $("members-title").textContent = t("members.title");
     return;
   }
   const q = memberFilter.toLowerCase();
@@ -920,7 +934,9 @@ function renderMembers(): void {
       const r = roleRank(a[1]) - roleRank(b[1]);
       return r !== 0 ? r : a[0].localeCompare(b[0]);
     });
-  $("members-title").textContent = `Members (${buf.members.size})`;
+  $("members-title").textContent = t("members.count", {
+    count: buf.members.size,
+  });
   for (const [nick, prefix] of sorted) {
     const row = document.createElement("div");
     row.className = "member-item";

@@ -1,0 +1,225 @@
+export type Lang = "en" | "he";
+
+const STORAGE_KEY = "ircd-webirc-lang";
+
+const DICT: Record<Lang, Record<string, string>> = {
+  en: {
+    "connect.sub": "Team IRC workspace over IRCv3 WebSocket.",
+    "connect.nick": "Nickname",
+    "connect.nick.ph": "alex",
+    "connect.channels": "Channels",
+    "connect.acct": "SASL Account (optional)",
+    "connect.pass": "SASL Password",
+    "connect.ws": "WebSocket URL",
+    "connect.btn": "Connect",
+    "foot.signup": "Create account",
+    "foot.verify": "Verify account",
+    "foot.recover": "Recover password",
+    "btn.share": "Share",
+    "btn.share.link": "Share WebIRC Link",
+    "btn.copied": "Copied!",
+    "btn.settings": "Settings",
+    "btn.users": "Users",
+    "btn.reconnect": "Reconnect",
+    "btn.disconnect": "Disconnect",
+    "btn.join": "Join",
+    "btn.send": "Send",
+    "btn.topic": "Edit topic",
+    "btn.save.topic": "Save Topic",
+    "btn.cancel": "Cancel",
+    "sec.channels": "Channels",
+    "sec.dms": "Direct Messages",
+    "ph.join": "#channel",
+    "ph.filter.members": "Filter members...",
+    "ph.msg": "Message or /help (Tab to complete nicks, Alt+Up/Down to switch)",
+    "ph.msg.e2ee": "Encrypted message to {{target}} (E2EE) or /help...",
+    "status.title": "Server Status",
+    "status.short": "Server",
+    "topic.none": "No topic set",
+    "members.title": "Members",
+    "members.count": "Members ({{count}})",
+    "settings.title": "Workspace Settings",
+    "settings.tab.general": "General",
+    "settings.tab.e2ee": "E2EE Keys",
+    "settings.theme": "Theme",
+    "settings.lang": "Language",
+    "settings.layout": "Screen layout",
+    "settings.layout.auto": "Auto (responsive)",
+    "settings.layout.mobile": "Mobile / iPhone",
+    "settings.layout.desktop": "Desktop",
+    "settings.density": "Message density",
+    "settings.density.comfortable": "Comfortable (avatars)",
+    "settings.density.compact": "Compact (classic IRC)",
+    "settings.fontsize": "Font size",
+    "settings.fontsize.small": "Small (13px)",
+    "settings.fontsize.normal": "Normal (14px)",
+    "settings.fontsize.large": "Large (15.5px)",
+    "settings.timestamps": "Show message timestamps",
+    "settings.joinpart": "Show join, part, and quit events",
+    "settings.notify": "Desktop notifications on mentions",
+    "e2ee.on": "🔒 E2EE On",
+    "e2ee.off": "🔓 E2EE Off",
+    "e2ee.account": "Account",
+    "e2ee.device": "Device ID",
+    "e2ee.prekeys": "One-time Prekeys",
+    "e2ee.sessions": "Active Sessions",
+    "e2ee.fingerprint": "Your Identity Fingerprint",
+    "e2ee.peers": "Trusted Peer Devices (TOFU Safety Numbers)",
+    "e2ee.peers.empty":
+      "No peer devices pinned yet. Send or receive an encrypted message to establish sessions.",
+    "e2ee.download": "Download Keys",
+    "e2ee.upload": "Upload Keys",
+    "e2ee.replenish": "Upload Prekeys",
+    "e2ee.rotate": "Rotate Channel Key",
+    "e2ee.reset": "Reset Device Keys",
+    "e2ee.forget": "Forget",
+    "e2ee.banner.unsupported":
+      "Server does not advertise egorsmkv.github.io/e2ee.",
+    "e2ee.banner.noacct":
+      "Connect with a SASL account to publish device keys and use E2EE.",
+    "e2ee.banner.binding": "Publishing and binding E2EE device keys...",
+    "e2ee.banner.active":
+      "E2EE active (X3DH + Double Ratchet for DMs, Sender Keys for channels).",
+    "topic.modal.title": "Set Channel Topic",
+    "topic.modal.label": "Topic for",
+    "topic.modal.ph": "Enter channel topic (leave blank to clear)",
+  },
+  he: {
+    "connect.sub": "סביבת צ׳אט IRC בדפדפן על גבי IRCv3 WebSocket.",
+    "connect.nick": "כינוי",
+    "connect.nick.ph": "alex",
+    "connect.channels": "ערוצים",
+    "connect.acct": "חשבון SASL (אופציונלי)",
+    "connect.pass": "סיסמת SASL",
+    "connect.ws": "כתובת WebSocket",
+    "connect.btn": "התחברות",
+    "foot.signup": "יצירת חשבון",
+    "foot.verify": "אימות חשבון",
+    "foot.recover": "שחזור סיסמה",
+    "btn.share": "שיתוף",
+    "btn.share.link": "שיתוף קישור WebIRC",
+    "btn.copied": "הועתק!",
+    "btn.settings": "הגדרות",
+    "btn.users": "משתמשים",
+    "btn.reconnect": "התחברות מחדש",
+    "btn.disconnect": "התנתקות",
+    "btn.join": "הצטרפות",
+    "btn.send": "שליחה",
+    "btn.topic": "עריכת נושא",
+    "btn.save.topic": "שמירת נושא",
+    "btn.cancel": "ביטול",
+    "sec.channels": "ערוצים",
+    "sec.dms": "הודעות פרטיות",
+    "ph.join": "#ערוץ",
+    "ph.filter.members": "סינון משתמשים...",
+    "ph.msg": "הודעה או ‎/help (Tab להשלמת כינוי, Alt+חצים למעבר)",
+    "ph.msg.e2ee": "הודעה מוצפנת אל {{target}} (E2EE) או ‎/help...",
+    "status.title": "סטטוס שרת",
+    "status.short": "שרת",
+    "topic.none": "אין נושא מוגדר",
+    "members.title": "משתמשים",
+    "members.count": "משתמשים ({{count}})",
+    "settings.title": "הגדרות סביבת העבודה",
+    "settings.tab.general": "כללי",
+    "settings.tab.e2ee": "מפתחות E2EE",
+    "settings.theme": "ערכת עיצוב",
+    "settings.lang": "שפה",
+    "settings.layout": "פריסת מסך",
+    "settings.layout.auto": "אוטומטי (רספונסיבי)",
+    "settings.layout.mobile": "מובייל / iPhone",
+    "settings.layout.desktop": "מחשב שולחני",
+    "settings.density": "צפיפות הודעות",
+    "settings.density.comfortable": "נוח (אווטארים)",
+    "settings.density.compact": "דחוס (IRC קלאסי)",
+    "settings.fontsize": "גודל גופן",
+    "settings.fontsize.small": "קטן (13px)",
+    "settings.fontsize.normal": "רגיל (14px)",
+    "settings.fontsize.large": "גדול (15.5px)",
+    "settings.timestamps": "הצגת שעה ליד הודעות",
+    "settings.joinpart": "הצגת כניסות, יציאות והתנתקויות",
+    "settings.notify": "התראות שולחן עבודה באזכורים",
+    "e2ee.on": "🔒 E2EE פעיל",
+    "e2ee.off": "🔓 E2EE כבוי",
+    "e2ee.account": "חשבון",
+    "e2ee.device": "מזהה מכשיר",
+    "e2ee.prekeys": "מפתחות חד-פעמיים",
+    "e2ee.sessions": "שיחות פעילות",
+    "e2ee.fingerprint": "טביעת האצבע של הזהות שלך",
+    "e2ee.peers": "מכשירים מאומתים (מספרי אבטחה TOFU)",
+    "e2ee.peers.empty":
+      "אין עדיין מכשירים שמורים. שלח או קבל הודעה מוצפנת ליצירת חיבור.",
+    "e2ee.download": "הורדת מפתחות",
+    "e2ee.upload": "העלאת מפתחות",
+    "e2ee.replenish": "העלאת Prekeys",
+    "e2ee.rotate": "החלפת מפתח ערוץ",
+    "e2ee.reset": "איפוס מפתחות מכשיר",
+    "e2ee.forget": "שכח",
+    "e2ee.banner.unsupported": "השרת אינו תומך ב-egorsmkv.github.io/e2ee.",
+    "e2ee.banner.noacct":
+      "התחבר עם חשבון SASL כדי לפרסם מפתחות ולהשתמש בהצפנת E2EE.",
+    "e2ee.banner.binding": "מפרסם ומשייך מפתחות E2EE...",
+    "e2ee.banner.active":
+      "הצפנת E2EE פעילה (X3DH + Double Ratchet להודעות פרטיות, Sender Keys לערוצים).",
+    "topic.modal.title": "הגדרת נושא ערוץ",
+    "topic.modal.label": "נושא עבור",
+    "topic.modal.ph": "הזן נושא לערוץ (השאר ריק למחיקה)",
+  },
+};
+
+let activeLang: Lang = "en";
+
+export function currentLang(): Lang {
+  return activeLang;
+}
+
+export function t(key: string, vars?: Record<string, string | number>): string {
+  let str = DICT[activeLang][key] ?? DICT.en[key] ?? key;
+  if (vars) {
+    for (const [k, v] of Object.entries(vars)) {
+      str = str.replaceAll(`{{${k}}}`, String(v));
+    }
+  }
+  return str;
+}
+
+export function applyLang(lang: Lang): void {
+  activeLang = lang === "he" ? "he" : "en";
+  document.documentElement.lang = activeLang;
+  document.documentElement.dir = activeLang === "he" ? "rtl" : "ltr";
+
+  document.querySelectorAll<HTMLElement>("[data-i18n]").forEach((el) => {
+    const key = el.dataset.i18n;
+    if (key) el.textContent = t(key);
+  });
+  document
+    .querySelectorAll<HTMLInputElement>("[data-i18n-placeholder]")
+    .forEach((el) => {
+      const key = el.dataset.i18nPlaceholder;
+      if (key) el.placeholder = t(key);
+    });
+}
+
+export function setLang(lang: Lang): void {
+  applyLang(lang);
+  try {
+    localStorage.setItem(STORAGE_KEY, activeLang);
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
+export function initLang(): Lang {
+  let saved: string | null = null;
+  try {
+    saved = localStorage.getItem(STORAGE_KEY);
+  } catch {
+    // Ignore storage errors.
+  }
+  const initial: Lang = saved === "he" || saved === "en"
+    ? saved
+    : navigator.language?.toLowerCase().startsWith("he")
+    ? "he"
+    : "en";
+  applyLang(initial);
+  return initial;
+}
