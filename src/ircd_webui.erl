@@ -225,7 +225,12 @@ handle_verify(Socket, Query) ->
                                 true
                             ),
                             send_response(
-                                Socket, 200, <<"OK">>, <<"text/html; charset=utf-8">>, [], Page
+                                Socket,
+                                200,
+                                <<"OK">>,
+                                <<"text/html; charset=utf-8">>,
+                                [{<<"Content-Security-Policy">>, verify_csp()}],
+                                Page
                             );
                         error ->
                             Page = verify_page(
@@ -238,7 +243,7 @@ handle_verify(Socket, Query) ->
                                 400,
                                 <<"Bad Request">>,
                                 <<"text/html; charset=utf-8">>,
-                                [],
+                                [{<<"Content-Security-Policy">>, verify_csp()}],
                                 Page
                             )
                     end;
@@ -249,7 +254,12 @@ handle_verify(Socket, Query) ->
                         false
                     ),
                     send_response(
-                        Socket, 400, <<"Bad Request">>, <<"text/html; charset=utf-8">>, [], Page
+                        Socket,
+                        400,
+                        <<"Bad Request">>,
+                        <<"text/html; charset=utf-8">>,
+                        [{<<"Content-Security-Policy">>, verify_csp()}],
+                        Page
                     )
             end
     end.
@@ -303,7 +313,21 @@ escape_html(Bin) ->
     binary:replace(B4, <<"'">>, <<"&#39;">>, [global]).
 
 route(Socket, <<"GET">>, <<"/">>, _Headers, _Body, Html) ->
-    send_response(Socket, 200, <<"OK">>, <<"text/html; charset=utf-8">>, [], Html);
+    Nonce = base64:encode(crypto:strong_rand_bytes(16)),
+    Body = binary:replace(Html, <<"__CSP_NONCE__">>, Nonce, [global]),
+    Csp = <<
+        "default-src 'self'; style-src 'unsafe-inline'; script-src 'nonce-",
+        Nonce/binary,
+        "'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    >>,
+    send_response(
+        Socket,
+        200,
+        <<"OK">>,
+        <<"text/html; charset=utf-8">>,
+        [{<<"Content-Security-Policy">>, Csp}],
+        Body
+    );
 route(Socket, <<"GET">>, <<"/api/overview">>, _Headers, _Body, _Html) ->
     Payload = #{
         status => ctl_json([<<"status">>]),
@@ -516,7 +540,8 @@ read_body(Socket, Method, Path, Headers, Rest) ->
 read_exact(_Socket, Len, Buf, Method, Path, Headers) when byte_size(Buf) >= Len ->
     {ok, Method, Path, Headers, binary:part(Buf, 0, Len)};
 read_exact(Socket, Len, Buf, Method, Path, Headers) ->
-    case gen_tcp:recv(Socket, 0, ?IO_TIMEOUT_MS) of
+    Remaining = Len - byte_size(Buf),
+    case gen_tcp:recv(Socket, Remaining, ?IO_TIMEOUT_MS) of
         {ok, Chunk} ->
             read_exact(Socket, Len, <<Buf/binary, Chunk/binary>>, Method, Path, Headers);
         {error, Reason} ->
@@ -529,12 +554,23 @@ split_path(RawPath) ->
         [Path] -> {Path, <<>>}
     end.
 
+verify_csp() ->
+    <<
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; "
+        "object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    >>.
+
 send_json(Socket, Code, Reason, Map) ->
     Body = iolist_to_binary(json:encode(Map)),
     send_response(Socket, Code, Reason, <<"application/json; charset=utf-8">>, [], Body).
 
 send_response(Socket, Code, Reason, ContentType, ExtraHeaders, Body) ->
     Bin = iolist_to_binary(Body),
+    CspHeader =
+        case lists:keymember(<<"Content-Security-Policy">>, 1, ExtraHeaders) of
+            true -> [];
+            false -> [<<"Content-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\n">>]
+        end,
     Headers = [
         [<<"HTTP/1.1 ">>, integer_to_binary(Code), <<" ">>, Reason, <<"\r\n">>],
         [<<"Content-Type: ">>, ContentType, <<"\r\n">>],
@@ -544,7 +580,7 @@ send_response(Socket, Code, Reason, ContentType, ExtraHeaders, Body) ->
         <<"X-Content-Type-Options: nosniff\r\n">>,
         <<"X-Frame-Options: DENY\r\n">>,
         <<"Referrer-Policy: no-referrer\r\n">>,
-        <<"Content-Security-Policy: default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'\r\n">>
+        CspHeader
         | [[K, <<": ">>, V, <<"\r\n">>] || {K, V} <- ExtraHeaders]
     ],
     _ = gen_tcp:send(Socket, [Headers, <<"\r\n">>, Bin]),

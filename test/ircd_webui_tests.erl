@@ -64,17 +64,32 @@ live_webui() ->
             Port, <<"GET">>, <<"/api/overview">>, [{<<"Authorization">>, BadAuth}], <<>>
         ),
 
-        %% Authenticated GET / serves the HTML dashboard with security headers.
+        %% Authenticated GET / serves the HTML dashboard with strict nonce CSP.
         {200, HtmlHeaders, HtmlBody} = http_req(
             Port, <<"GET">>, <<"/">>, [{<<"Authorization">>, GoodAuth}], <<>>
         ),
         ?assertEqual(<<"DENY">>, maps:get(<<"x-frame-options">>, HtmlHeaders)),
         ?assertEqual(<<"nosniff">>, maps:get(<<"x-content-type-options">>, HtmlHeaders)),
+        Csp = maps:get(<<"content-security-policy">>, HtmlHeaders),
+        ?assert(binary:match(Csp, <<"script-src 'nonce-">>) =/= nomatch),
+        ?assertEqual(nomatch, binary:match(Csp, <<"script-src 'unsafe-inline'">>)),
+        ?assert(binary:match(Csp, <<"frame-ancestors 'none'">>) =/= nomatch),
+        ?assertEqual(nomatch, binary:match(HtmlBody, <<"__CSP_NONCE__">>)),
         ?assert(binary:match(HtmlBody, <<"<title>ircd admin</title>">>) =/= nomatch),
 
-        %% Authenticated GET /api/overview returns server stats and tables.
-        {200, _, OverviewBody} = http_req(
+        %% Second GET / issues a fresh per-request CSP nonce.
+        {200, HtmlHeaders2, _} = http_req(
+            Port, <<"GET">>, <<"/">>, [{<<"Authorization">>, GoodAuth}], <<>>
+        ),
+        ?assertNotEqual(Csp, maps:get(<<"content-security-policy">>, HtmlHeaders2)),
+
+        %% JSON API sets default-src 'none' CSP to block script execution even if opened directly.
+        {200, OverviewHeaders, OverviewBody} = http_req(
             Port, <<"GET">>, <<"/api/overview">>, [{<<"Authorization">>, GoodAuth}], <<>>
+        ),
+        ?assertEqual(
+            <<"default-src 'none'; frame-ancestors 'none'">>,
+            maps:get(<<"content-security-policy">>, OverviewHeaders)
         ),
         Overview = json:decode(OverviewBody),
         ?assertMatch(

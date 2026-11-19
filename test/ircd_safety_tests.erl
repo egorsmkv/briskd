@@ -138,7 +138,7 @@ config(Db) ->
     iolist_to_binary([
         <<"{\"name\":\"irc.test\",\"bind\":\"127.0.0.1\",\"tcp_port\":0,\"tls_port\":null,">>,
         <<"\"log_level\":\"error\",\"log_format\":\"text\",\"resource_delay\":0,">>,
-        <<"\"max_sendq\":100,\"mnesia_dir\":\"">>,
+        <<"\"max_sendq\":100,\"retention\":\"transient\",\"mnesia_dir\":\"">>,
         list_to_binary(Db),
         <<"\"}">>
     ]).

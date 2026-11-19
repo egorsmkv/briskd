@@ -766,7 +766,7 @@ config(Db, Extra) ->
         <<"\"log_level\":\"emergency\",">>,
         <<"\"log_format\":\"text\",">>,
         <<"\"max_clients\":500,">>,
-        <<"\"mnesia_dir\":\"">>,
+        <<"\"retention\":\"transient\",\"mnesia_dir\":\"">>,
         list_to_binary(Db),
         <<"\",">>,
         Extra,

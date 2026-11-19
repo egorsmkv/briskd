@@ -919,7 +919,7 @@ config(Db) ->
     end,
     iolist_to_binary([
         <<"{\"name\":\"irc.test\",\"bind\":\"127.0.0.1\",\"tcp_port\":0,\"tls_port\":null,">>,
-        <<"\"log_level\":\"emergency\",\"log_format\":\"text\",\"mnesia_dir\":\"">>,
+        <<"\"log_level\":\"emergency\",\"log_format\":\"text\",\"retention\":\"transient\",\"mnesia_dir\":\"">>,
         list_to_binary(Db),
         <<"\",\"operators\":[{\"name\":\"oper\",\"password\":\"opersecret\"}],">>,
         <<"\"server_links\":[">>,
