@@ -5,6 +5,7 @@
     command/3,
     command/4,
     command_as/5,
+    ctl/1,
     input_too_long/1,
     connect/1,
     connect/2,
@@ -176,6 +177,14 @@ not attached to `Primary` or the primary is gone.
 -spec command_as(pid(), binary(), [binary()], non_neg_integer(), list()) -> ok | quit.
 command_as(Primary, Command, Params, Bytes, Tags) ->
     gen_server:call(?MODULE, {command_as, Primary, Command, Params, Bytes, Tags}).
+
+-doc """
+Run an administrative control action from `m:ircd_ctl` inside the `ircd_state`
+process so state writes stay serialized.
+""".
+-spec ctl(term()) -> term().
+ctl(Action) ->
+    gen_server:call(?MODULE, {ctl, Action}, 15000).
 
 -doc """
 Answer an over-long tagged line from the calling session with
@@ -682,6 +691,8 @@ handle_call({register_adjacent, Name, Token, Kind}, {Pid, _}, Server) ->
     %% ircd_state_net:register_adjacent/4 records the caller as {Pid, Name}.
     Result = ircd_state_net:register_adjacent(Name, Token, Kind, Pid),
     {reply, Result, Server};
+handle_call({ctl, Action}, _From, Server) ->
+    {reply, ircd_ctl:handle_state_action(Action, Server), Server};
 handle_call({server_command, Peer, Prefix0, Command, Params, Tags}, From, Server) ->
     case burst_command(Command) of
         true -> ok;
@@ -1071,6 +1082,8 @@ redact_log_event(Event) ->
 
 redact_command({'$gen_call', From, Request}) ->
     {'$gen_call', From, redact_command(Request)};
+redact_command({ctl, {create_account, Name, _Password, Email}}) ->
+    {ctl, {create_account, Name, redacted, Email}};
 redact_command({command_as, Primary, Command, Params, Bytes, Tags}) ->
     {command, _, Redacted, _, _} = redact_command({command, Command, Params, Bytes, Tags}),
     {command_as, Primary, Command, Redacted, Bytes, Tags};

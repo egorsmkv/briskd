@@ -211,6 +211,30 @@ Key operational and security events to index and alert on:
 
 ### Healthchecks and runtime inspection
 
+- **DevOps CLI (`ircdctl`):**
+  The packaged release installs `/opt/ircd/bin/ircdctl` (also symlinked to
+  `/usr/local/bin/ircdctl` in `Dockerfile.prod` and available at `bin/ircdctl`
+  in the repository). It communicates with the running server over the local
+  Unix domain control socket (`$IRCD_CTL_SOCKET` or `<mnesia_dir>/ircdctl.sock`,
+  mode `0600`, owner-only) and supports `--json` on every command:
+  ```sh
+  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl status
+  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl status --json
+  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl ping
+  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl check-config /etc/ircd/ircd.json
+  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl rehash
+  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl reload-certs
+  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl log-level debug
+  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl clients
+  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl kick-client spammer "Excess spam"
+  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl channels
+  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl links
+  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl accounts
+  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl create-account ops strongpass ops@example.org
+  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl delete-account olduser
+  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl backup /var/lib/ircd/backup.bup
+  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl drain "Maintenance"
+  ```
 - **Container TCP probe (`docker-compose.prod.yml`):**
   ```sh
   exec 3<>/dev/tcp/127.0.0.1/6667 && printf 'QUIT\r\n' >&3 && timeout 3 grep -q ERROR <&3

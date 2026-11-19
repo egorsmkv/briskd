@@ -48,10 +48,11 @@ init(Config) ->
         #{id => Kind, start => {ircd_listener, start_link, [Kind, Port, Config]}}
      || Kind <- [tcp, tls, ws, wss], Port <- [maps:get(Kind, Config)], Port =/= null
     ],
-    %% Last, so a restart of the watcher affects nothing else (rest_for_one).
+    %% Last, so a restart of the watcher or control socket affects nothing else (rest_for_one).
     Certs = [
         #{id => ircd_certs, start => {ircd_certs, start_link, [Config]}}
      || maps:get(tls_options, Config, []) =/= [],
         maps:get(tls_reload_interval, Config, 60) > 0
     ],
-    {ok, {#{strategy => rest_for_one}, Children ++ Listeners ++ Certs}}.
+    Ctl = [#{id => ircd_ctl, start => {ircd_ctl, start_link, [Config]}}],
+    {ok, {#{strategy => rest_for_one}, Children ++ Listeners ++ Certs ++ Ctl}}.

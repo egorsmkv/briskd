@@ -15,6 +15,7 @@ RUN rebar3 as prod get-deps
 COPY src src
 COPY include include
 COPY config config
+COPY bin bin
 COPY bench/release.json bench/release.json
 RUN rebar3 as prod release
 
@@ -34,6 +35,7 @@ RUN apt-get update \
     && chown -R ircd:ircd /var/lib/ircd
 
 COPY --from=build --chown=ircd:ircd /build/_build/prod/rel/ircd /opt/ircd
+RUN ln -sf /opt/ircd/bin/ircdctl /usr/local/bin/ircdctl
 COPY config/ircd.prod.json /etc/ircd/ircd.json
 COPY config/motd.txt /etc/ircd/motd.txt
 

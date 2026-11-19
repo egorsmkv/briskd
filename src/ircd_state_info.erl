@@ -30,6 +30,7 @@ a successful `OPER`. Operator and administrator passwords are compared with
     oper/4,
     query_local_server/2,
     rehash/2,
+    rehash_server/1,
     note_user_counts/0,
     stats/3,
     trace/3,
@@ -492,6 +493,48 @@ rehash_config(NewConfig, Path, Client, Server) ->
             ircd_state_send:numeric(
                 Client, Server, <<"382">>, [unicode:characters_to_binary(Path)], <<"Rehashing">>
             )
+    end.
+
+-doc """
+Reload the configuration file from `m:ircd_ctl` without a client session.
+
+Returns `{ok, Path}` when accepted, `{error, restart_required}` when a static
+setting changed, or `{error, Reason}` when `ircd_config:load/1` rejected the
+file.
+""".
+-spec rehash_server(binary()) -> {ok, binary()} | {error, term()}.
+rehash_server(Server) ->
+    Path = persistent_term:get({ircd_state, config_path}),
+    case ircd_config:load(Path) of
+        {error, Reason} ->
+            logger:warning(#{event => rehash_failed, actor => <<"ircdctl">>, reason => Reason}),
+            {error, Reason};
+        {ok, NewConfig} ->
+            OldConfig = persistent_term:get({ircd_state, config}),
+            StaticKeys = [
+                name, ip, tcp, tls, ws, wss, tls_options, mnesia_dir, client_password, server_links
+            ],
+            SameStatic = lists:all(
+                fun(Key) -> maps:get(Key, OldConfig) =:= maps:get(Key, NewConfig) end, StaticKeys
+            ),
+            case SameStatic of
+                false ->
+                    logger:warning(#{
+                        event => ctl_rehash, result => restart_required
+                    }),
+                    {error, restart_required};
+                true ->
+                    Clients = [Pid || {Pid, _} <- ets:tab2list(ircd_caps)],
+                    Advertised = maps:from_list([{Pid, ircd_cap:advertised(Pid)} || Pid <- Clients]),
+                    Tokens = ircd_isupport:tokens(),
+                    logger:notice(#{event => ctl_rehash, result => accepted}),
+                    apply_rehash(NewConfig),
+                    ok = ircd_certs:check_async(),
+                    ircd_state_net:notify_cap_changes(Advertised, Server),
+                    notify_isupport_changes(Tokens, ircd_isupport:tokens(), Clients, Server),
+                    server_wallops([<<"ircdctl rehashed the configuration">>], Server),
+                    {ok, unicode:characters_to_binary(Path)}
+            end
     end.
 
 %% draft/extended-isupport: registered clients with the capability get the
