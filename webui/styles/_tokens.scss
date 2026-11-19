@@ -211,3 +211,12 @@
   --notice-err-border: #f87171;
   --shadow: 0 0 0 1px #525252;
 }
+
+:root[lang="he"] {
+  --font: "SF Pro Hebrew", "Heebo", "Rubik", "Assistant", "Noto Sans Hebrew", "Segoe UI", "Arial Hebrew", "DejaVu Sans", system-ui, -apple-system, sans-serif;
+  --mono: "IBM Plex Mono", "Noto Sans Mono", "Miriam Mono CLM", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+:root[lang="he"][data-theme="hacker"] {
+  --font: "SF Pro Hebrew", "Heebo", "Rubik", "Noto Sans Hebrew", "Segoe UI", "Arial Hebrew", "DejaVu Sans", system-ui, -apple-system, sans-serif;
+}

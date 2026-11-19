@@ -19,6 +19,23 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+:root[lang="he"] {
+  body {
+    font-size: 14.5px;
+    line-height: 1.6;
+  }
+  h1,
+  h2,
+  h3,
+  .section-label,
+  .setting-label,
+  .members-title,
+  .workspace-brand,
+  .e2ee-kv .k {
+    letter-spacing: 0;
+  }
+}
+
 :root[data-theme="hacker"] {
   body {
     background-image: repeating-linear-gradient(
