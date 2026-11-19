@@ -341,6 +341,15 @@ live_webui() ->
         {400, _, AlreadyBody} = post_action(Port, GoodAuth, <<"verify-account">>, [<<"penduser">>]),
         ?assertMatch(#{<<"error">> := <<"already_verified">>}, json:decode(AlreadyBody)),
 
+        %% Public GET /webirc serves the browser IRC client with ws/wss CSP when ws_port is enabled.
+        {200, WebircHdrs, WebircHtml} = http_req(Port, <<"GET">>, <<"/webirc">>, [], <<>>),
+        WebircCsp = maps:get(<<"content-security-policy">>, WebircHdrs),
+        ?assert(binary:match(WebircCsp, <<"connect-src 'self' ws: wss:">>) =/= nomatch),
+        ?assert(binary:match(WebircCsp, <<"script-src 'nonce-">>) =/= nomatch),
+        ?assert(binary:match(WebircHtml, <<"WebIRC">>) =/= nomatch),
+        ?assertEqual(nomatch, binary:match(WebircHtml, <<"__NETWORK_NAME__">>)),
+        ?assertEqual(nomatch, binary:match(WebircHtml, <<"__WS_PORT__">>)),
+
         %% 404 for unknown path.
         {404, _, _} = http_req(
             Port, <<"GET">>, <<"/nope">>, [{<<"Authorization">>, GoodAuth}], <<>>
@@ -422,7 +431,7 @@ parse_response(Raw) ->
 
 config_json(Db) ->
     iolist_to_binary([
-        <<"{\"name\":\"irc.test\",\"bind\":\"127.0.0.1\",\"tcp_port\":0,\"tls_port\":null,">>,
+        <<"{\"name\":\"irc.test\",\"bind\":\"127.0.0.1\",\"tcp_port\":0,\"tls_port\":null,\"ws_port\":0,">>,
         <<"\"log_level\":\"warning\",\"log_format\":\"text\",\"shutdown_grace\":2,">>,
         <<"\"webui\":{\"bind\":\"127.0.0.1\",\"port\":0,\"username\":\"admin\",\"password\":\"topsecret\"},">>,
         <<"\"mnesia_dir\":\"">>,

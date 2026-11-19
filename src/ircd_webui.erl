@@ -20,6 +20,8 @@ Opt-in via the `"webui"` configuration object (`bind`, `port`, `username`,
 - `GET /signup` and `POST /api/signup` — public (unauthenticated) user
   self-registration page and JSON endpoint, active when `account_registration`
   is `true` (rate-limited per IP and protected with CSRF header + CSP nonce).
+- `GET /webirc` — public (unauthenticated) browser IRC client over the
+  configured `ws` / `wss` IRCv3 WebSocket listener.
 
 Security controls:
 
@@ -94,7 +96,8 @@ init(#{webui := #{ip := IP, port := Port}}) ->
             Assets = #{
                 index => load_asset("index.html", <<"ircd admin UI asset missing">>),
                 signup => load_asset("signup.html", <<"ircd signup UI asset missing">>),
-                verify => load_asset("verify.html", <<"ircd verify UI asset missing">>)
+                verify => load_asset("verify.html", <<"ircd verify UI asset missing">>),
+                webirc => load_asset("webirc.html", <<"ircd webirc UI asset missing">>)
             },
             Counter = atomics:new(1, []),
             Acceptor = spawn_link(fun() -> accept_loop(Listen, Assets, Counter) end),
@@ -192,10 +195,14 @@ accept_loop(Listen, Assets, Counter) ->
             accept_loop(Listen, Assets, Counter)
     end.
 
-handle_connection(Socket, #{index := IndexHtml, signup := SignupHtml, verify := VerifyHtml}) ->
+handle_connection(
+    Socket, #{index := IndexHtml, signup := SignupHtml, verify := VerifyHtml, webirc := WebircHtml}
+) ->
     case read_request(Socket) of
         {ok, <<"GET">>, {<<"/api/altcha">>, _Query}, _Headers, _Body} ->
             send_json(Socket, 200, <<"OK">>, ircd_altcha:create_challenge());
+        {ok, <<"GET">>, {<<"/webirc">>, _Query}, _Headers, _Body} ->
+            handle_webirc_page(Socket, WebircHtml);
         {ok, <<"GET">>, {<<"/verify">>, Query}, _Headers, _Body} ->
             handle_verify_page(Socket, VerifyHtml, Query);
         {ok, <<"POST">>, {<<"/api/verify">>, _Query}, Headers, Body} ->
@@ -222,6 +229,40 @@ handle_connection(Socket, #{index := IndexHtml, signup := SignupHtml, verify := 
             send_json(Socket, 413, <<"Payload Too Large">>, #{error => <<"payload_too_large">>});
         {error, _} ->
             send_json(Socket, 400, <<"Bad Request">>, #{error => <<"bad_request">>})
+    end.
+
+handle_webirc_page(Socket, WebircHtml) ->
+    Config = persistent_term:get({ircd_state, config}, #{}),
+    WsPort = maps:get(ws, Config, null),
+    WssPort = maps:get(wss, Config, null),
+    case WsPort =:= null andalso WssPort =:= null of
+        true ->
+            send_json(Socket, 404, <<"Not Found">>, #{error => <<"webirc_disabled">>});
+        false ->
+            Network = escape_html(maps:get(network, Config, maps:get(name, Config, <<"IRC">>))),
+            WsBin = port_to_bin(WsPort),
+            WssBin = port_to_bin(WssPort),
+            DefaultChans = escape_html(default_channels(Config)),
+            P0 = binary:replace(WebircHtml, <<"__NETWORK_NAME__">>, Network, [global]),
+            P1 = binary:replace(P0, <<"__WS_PORT__">>, WsBin, [global]),
+            P2 = binary:replace(P1, <<"__WSS_PORT__">>, WssBin, [global]),
+            Page = binary:replace(P2, <<"__DEFAULT_CHANNELS__">>, DefaultChans, [global]),
+            send_nonce_html(Socket, Page, <<"connect-src 'self' ws: wss:; ">>)
+    end.
+
+port_to_bin(null) -> <<>>;
+port_to_bin(Port) when is_integer(Port) -> integer_to_binary(Port).
+
+default_channels(Config) ->
+    case maps:get(channels, Config, []) of
+        [] ->
+            <<"#lobby">>;
+        Chans ->
+            Names = [maps:get(name, C) || C <- lists:sublist(Chans, 5), is_map_key(name, C)],
+            case Names of
+                [] -> <<"#lobby">>;
+                _ -> iolist_to_binary(lists:join(<<",">>, Names))
+            end
     end.
 
 handle_signup_page(Socket, SignupHtml) ->
@@ -729,10 +770,15 @@ send_response(Socket, Code, Reason, ContentType, ExtraHeaders, Body) ->
     ok.
 
 send_nonce_html(Socket, Html) ->
+    send_nonce_html(Socket, Html, <<>>).
+
+send_nonce_html(Socket, Html, ExtraCsp) ->
     Nonce = base64:encode(crypto:strong_rand_bytes(16)),
     Body = binary:replace(Html, <<"__CSP_NONCE__">>, Nonce, [global]),
     Csp = <<
-        "default-src 'self'; style-src 'unsafe-inline'; script-src 'nonce-",
+        "default-src 'self'; ",
+        ExtraCsp/binary,
+        "style-src 'unsafe-inline'; script-src 'nonce-",
         Nonce/binary,
         "'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
     >>,

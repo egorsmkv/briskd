@@ -1,0 +1,802 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__NETWORK_NAME__ - WebIRC</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --surface-alt: #f0f3f7;
+    --hover: #e7ecf3;
+    --border: #d8dee6;
+    --text: #1c2430;
+    --muted: #5d6b7d;
+    --accent: #1d4ed8;
+    --accent-hover: #1e40af;
+    --danger: #b91c1c;
+    --ok: #15803d;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0f141b;
+    --surface: #171e28;
+    --surface-alt: #1c2532;
+    --hover: #243040;
+    --border: #2c384a;
+    --text: #e6edf5;
+    --muted: #93a3b8;
+    --accent: #3b82f6;
+    --accent-hover: #2563eb;
+    --danger: #ef4444;
+    --ok: #4ade80;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  button, input {
+    font: inherit;
+    padding: 7px 10px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+  }
+  button { cursor: pointer; font-weight: 500; }
+  button:hover { background: var(--hover); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { background: var(--accent-hover); }
+  button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+  button.small { padding: 4px 8px; font-size: 12px; }
+  a { color: var(--accent); }
+
+  /* Connect view */
+  #connect-view {
+    min-height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .connect-card {
+    width: 100%;
+    max-width: 420px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 22px 24px;
+  }
+  .connect-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .connect-top h1 { margin: 0; font-size: 19px; }
+  .sub { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+  .field { margin-bottom: 12px; }
+  .field label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 4px; }
+  .field input { width: 100%; }
+  .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  #connect-err {
+    display: none;
+    color: var(--danger);
+    font-size: 13px;
+    margin-bottom: 12px;
+  }
+
+  /* Chat view */
+  #chat-view {
+    display: none;
+    height: 100vh;
+    grid-template-columns: 210px 1fr 180px;
+    grid-template-rows: 46px 1fr 54px;
+    grid-template-areas:
+      "head head head"
+      "left main right"
+      "left input right";
+  }
+  #chat-view.active { display: grid; }
+  .chat-head {
+    grid-area: head;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 0 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .head-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .head-title { font-weight: 600; white-space: nowrap; }
+  .head-topic {
+    color: var(--muted);
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .head-right { display: flex; align-items: center; gap: 8px; }
+  .status-dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--ok); display: inline-block; flex-shrink: 0;
+  }
+  .status-dot.off { background: var(--danger); }
+
+  .sidebar-left {
+    grid-area: left;
+    background: var(--surface-alt);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .buffer-list { flex: 1; overflow-y: auto; padding: 8px; }
+  .buf-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 8px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 13px;
+    margin-bottom: 2px;
+  }
+  .buf-item:hover { background: var(--hover); }
+  .buf-item.active { background: var(--accent); color: #fff; font-weight: 600; }
+  .buf-badge {
+    background: var(--danger);
+    color: #fff;
+    border-radius: 999px;
+    font-size: 11px;
+    padding: 0 6px;
+    min-width: 18px;
+    text-align: center;
+  }
+  .join-box {
+    padding: 8px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 4px;
+  }
+  .join-box input { width: 100%; min-width: 0; padding: 5px 7px; font-size: 13px; }
+
+  .messages {
+    grid-area: main;
+    overflow-y: auto;
+    padding: 12px 16px;
+    background: var(--surface);
+    font-size: 13.5px;
+  }
+  .msg {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 4px;
+    word-break: break-word;
+  }
+  .msg-time {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+  .msg-nick {
+    font-weight: 600;
+    font-family: var(--mono);
+    font-size: 13px;
+    flex-shrink: 0;
+  }
+  .msg-text { white-space: pre-wrap; }
+  .msg.sys { color: var(--muted); font-style: italic; }
+  .msg.err { color: var(--danger); }
+
+  .input-bar {
+    grid-area: input;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding: 8px 12px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .input-bar input { flex: 1; }
+
+  .sidebar-right {
+    grid-area: right;
+    background: var(--surface-alt);
+    border-left: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 10px 8px;
+  }
+  .members-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+    padding: 0 6px 6px;
+  }
+  .member-item {
+    padding: 4px 6px;
+    border-radius: 4px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .member-item:hover { background: var(--hover); }
+
+  @media (max-width: 760px) {
+    #chat-view {
+      grid-template-columns: 150px 1fr;
+      grid-template-areas:
+        "head head"
+        "left main"
+        "left input";
+    }
+    .sidebar-right { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<section id="connect-view">
+  <div class="connect-card">
+    <div class="connect-top">
+      <h1>__NETWORK_NAME__ WebIRC</h1>
+      <button type="button" class="small" id="btn-theme-1">Dark</button>
+    </div>
+    <p class="sub">Connect directly to IRC over WebSocket (IRCv3).</p>
+    <div id="connect-err"></div>
+    <form id="connect-form">
+      <div class="field">
+        <label for="inp-nick">Nickname</label>
+        <input type="text" id="inp-nick" required maxlength="30" placeholder="guest123">
+      </div>
+      <div class="field">
+        <label for="inp-channels">Channels</label>
+        <input type="text" id="inp-channels" value="__DEFAULT_CHANNELS__" placeholder="#lobby">
+      </div>
+      <div class="row-2">
+        <div class="field">
+          <label for="inp-acct">SASL Account (optional)</label>
+          <input type="text" id="inp-acct" autocomplete="username" maxlength="64">
+        </div>
+        <div class="field">
+          <label for="inp-pass">SASL Password</label>
+          <input type="password" id="inp-pass" autocomplete="current-password" maxlength="256">
+        </div>
+      </div>
+      <div class="field">
+        <label for="inp-ws">WebSocket URL</label>
+        <input type="text" id="inp-ws" required>
+      </div>
+      <button type="submit" class="primary" style="width:100%;">Connect</button>
+    </form>
+    <p class="sub" style="margin-top:14px;margin-bottom:0;text-align:center;">
+      <a href="/signup">Create account</a> &middot; <a href="/verify">Verify account</a>
+    </p>
+  </div>
+</section>
+
+<section id="chat-view">
+  <header class="chat-head">
+    <div class="head-left">
+      <span class="status-dot" id="status-dot"></span>
+      <span class="head-title" id="active-title">Server</span>
+      <span class="head-topic" id="active-topic"></span>
+    </div>
+    <div class="head-right">
+      <span id="my-nick" style="font-family:var(--mono);font-size:12.5px;color:var(--muted);"></span>
+      <button type="button" class="small" id="btn-theme-2">Dark</button>
+      <button type="button" class="small danger" id="btn-disconnect">Disconnect</button>
+    </div>
+  </header>
+
+  <aside class="sidebar-left">
+    <div class="buffer-list" id="buffer-list"></div>
+    <form class="join-box" id="join-form">
+      <input type="text" id="inp-join" placeholder="#channel">
+      <button type="submit" class="small">Join</button>
+    </form>
+  </aside>
+
+  <div class="messages" id="messages"></div>
+
+  <form class="input-bar" id="send-form">
+    <input type="text" id="inp-msg" autocomplete="off" placeholder="Message or /join, /msg, /me, /nick, /topic, /part, /quit">
+    <button type="submit" class="primary">Send</button>
+  </form>
+
+  <aside class="sidebar-right">
+    <div class="members-title" id="members-title">Members</div>
+    <div id="members-list"></div>
+  </aside>
+</section>
+
+<script nonce="__CSP_NONCE__">
+(function() {
+  const $ = (id) => document.getElementById(id);
+  const WS_PORT = "__WS_PORT__";
+  const WSS_PORT = "__WSS_PORT__";
+
+  function applyTheme(theme) {
+    document.documentElement.setAttribute("data-theme", theme);
+    const label = theme === "dark" ? "Light" : "Dark";
+    $("btn-theme-1").textContent = label;
+    $("btn-theme-2").textContent = label;
+  }
+  function toggleTheme() {
+    const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    applyTheme(next);
+    try { localStorage.setItem("ircd-webui-theme", next); } catch (_) {}
+  }
+  (function initTheme() {
+    let saved = null;
+    try { saved = localStorage.getItem("ircd-webui-theme"); } catch (_) {}
+    const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    applyTheme(saved === "dark" || saved === "light" ? saved : (prefersDark ? "dark" : "light"));
+  })();
+  $("btn-theme-1").onclick = toggleTheme;
+  $("btn-theme-2").onclick = toggleTheme;
+
+  (function initWsUrl() {
+    const isHttps = location.protocol === "https:";
+    const host = location.hostname || "127.0.0.1";
+    if (isHttps && WSS_PORT) {
+      $("inp-ws").value = "wss://" + host + ":" + WSS_PORT + "/";
+    } else if (WS_PORT) {
+      $("inp-ws").value = "ws://" + host + ":" + WS_PORT + "/";
+    } else if (WSS_PORT) {
+      $("inp-ws").value = "wss://" + host + ":" + WSS_PORT + "/";
+    } else {
+      $("inp-ws").value = (isHttps ? "wss://" : "ws://") + location.host + "/";
+    }
+  })();
+
+  let ws = null;
+  let myNick = "";
+  let saslUser = "";
+  let saslPass = "";
+  let autoChannels = [];
+  let activeBuf = "*status";
+  const buffers = new Map();
+
+  function ensureBuf(name) {
+    const key = name.toLowerCase();
+    if (!buffers.has(key)) {
+      buffers.set(key, { name: name, topic: "", lines: [], unread: 0, members: new Map() });
+      renderBuffers();
+    }
+    return buffers.get(key);
+  }
+
+  function fmtTime(iso) {
+    const d = iso ? new Date(iso) : new Date();
+    if (isNaN(d.getTime())) return "";
+    return d.toTimeString().slice(0, 8);
+  }
+
+  function addLine(bufName, { time, nick, text, kind }) {
+    const buf = ensureBuf(bufName);
+    buf.lines.push({ time: fmtTime(time), nick: nick || "", text: text || "", kind: kind || "" });
+    if (buf.lines.length > 500) buf.lines.shift();
+    if (bufName.toLowerCase() === activeBuf) {
+      appendLineDom(buf.lines[buf.lines.length - 1]);
+    } else {
+      buf.unread += 1;
+      renderBuffers();
+    }
+  }
+
+  function appendLineDom(entry) {
+    const wrap = $("messages");
+    const row = document.createElement("div");
+    row.className = "msg" + (entry.kind ? " " + entry.kind : "");
+    const t = document.createElement("span");
+    t.className = "msg-time";
+    t.textContent = entry.time;
+    row.appendChild(t);
+    if (entry.nick) {
+      const n = document.createElement("span");
+      n.className = "msg-nick";
+      n.textContent = "<" + entry.nick + ">";
+      row.appendChild(n);
+    }
+    const body = document.createElement("span");
+    body.className = "msg-text";
+    body.textContent = entry.text;
+    row.appendChild(body);
+    wrap.appendChild(row);
+    wrap.scrollTop = wrap.scrollHeight;
+  }
+
+  function switchBuf(key) {
+    if (!buffers.has(key)) return;
+    activeBuf = key;
+    const buf = buffers.get(key);
+    buf.unread = 0;
+    $("active-title").textContent = buf.name === "*status" ? "Server" : buf.name;
+    $("active-topic").textContent = buf.topic || "";
+    const wrap = $("messages");
+    wrap.textContent = "";
+    buf.lines.forEach(appendLineDom);
+    renderBuffers();
+    renderMembers();
+    $("inp-msg").focus();
+  }
+
+  function renderBuffers() {
+    const list = $("buffer-list");
+    list.textContent = "";
+    buffers.forEach((buf, key) => {
+      const item = document.createElement("div");
+      item.className = "buf-item" + (key === activeBuf ? " active" : "");
+      const label = document.createElement("span");
+      label.textContent = buf.name === "*status" ? "Server" : buf.name;
+      item.appendChild(label);
+      if (buf.unread > 0) {
+        const b = document.createElement("span");
+        b.className = "buf-badge";
+        b.textContent = String(buf.unread);
+        item.appendChild(b);
+      }
+      item.onclick = () => switchBuf(key);
+      list.appendChild(item);
+    });
+  }
+
+  function renderMembers() {
+    const buf = buffers.get(activeBuf);
+    const list = $("members-list");
+    list.textContent = "";
+    if (!buf || !isChan(buf.name)) {
+      $("members-title").textContent = "Members";
+      return;
+    }
+    const sorted = Array.from(buf.members.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    $("members-title").textContent = "Members (" + sorted.length + ")";
+    sorted.forEach(([nick, prefix]) => {
+      const el = document.createElement("div");
+      el.className = "member-item";
+      el.textContent = (prefix || "") + nick;
+      el.onclick = () => { ensureBuf(nick); switchBuf(nick.toLowerCase()); };
+      list.appendChild(el);
+    });
+  }
+
+  function isChan(name) {
+    return /^[#&+!]/.test(name || "");
+  }
+
+  function sendRaw(line) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(line);
+    }
+  }
+
+  function parseIrc(raw) {
+    let idx = 0;
+    const tags = {};
+    if (raw[0] === "@") {
+      const sp = raw.indexOf(" ");
+      if (sp === -1) return null;
+      raw.slice(1, sp).split(";").forEach((pair) => {
+        const eq = pair.indexOf("=");
+        if (eq === -1) tags[pair] = "";
+        else tags[pair.slice(0, eq)] = pair.slice(eq + 1);
+      });
+      idx = sp + 1;
+      while (raw[idx] === " ") idx++;
+    }
+    let prefix = "";
+    if (raw[idx] === ":") {
+      const sp = raw.indexOf(" ", idx);
+      if (sp === -1) return null;
+      prefix = raw.slice(idx + 1, sp);
+      idx = sp + 1;
+      while (raw[idx] === " ") idx++;
+    }
+    const params = [];
+    let command = "";
+    while (idx < raw.length) {
+      if (raw[idx] === ":" && command) {
+        params.push(raw.slice(idx + 1));
+        break;
+      }
+      let sp = raw.indexOf(" ", idx);
+      if (sp === -1) sp = raw.length;
+      const tok = raw.slice(idx, sp);
+      if (!command) command = tok.toUpperCase();
+      else params.push(tok);
+      idx = sp + 1;
+      while (raw[idx] === " ") idx++;
+    }
+    const nick = prefix.includes("!") ? prefix.slice(0, prefix.indexOf("!")) : prefix;
+    return { tags, prefix, nick, command, params };
+  }
+
+  function handleMessage(raw) {
+    const msg = parseIrc(raw);
+    if (!msg) return;
+    const time = msg.tags.time;
+    const { command, params, nick } = msg;
+
+    if (command === "PING") {
+      sendRaw("PONG :" + (params[0] || ""));
+      return;
+    }
+    if (command === "CAP") {
+      const sub = (params[1] || "").toUpperCase();
+      if (sub === "LS") {
+        const caps = ["message-tags", "server-time", "echo-message", "batch", "draft/chathistory", "away-notify", "account-notify"];
+        if (saslPass) caps.push("sasl");
+        sendRaw("CAP REQ :" + caps.join(" "));
+      } else if (sub === "ACK") {
+        if (saslPass && (params[2] || "").includes("sasl")) {
+          sendRaw("AUTHENTICATE PLAIN");
+        } else {
+          sendRaw("CAP END");
+        }
+      } else if (sub === "NAK") {
+        sendRaw("CAP END");
+      }
+      return;
+    }
+    if (command === "AUTHENTICATE" && params[0] === "+") {
+      const auth = btoa("\0" + (saslUser || myNick) + "\0" + saslPass);
+      sendRaw("AUTHENTICATE " + auth);
+      return;
+    }
+    if (command === "903") {
+      addLine("*status", { time, text: params[1] || "SASL authentication successful", kind: "sys" });
+      sendRaw("CAP END");
+      return;
+    }
+    if (command === "904" || command === "905") {
+      addLine("*status", { time, text: "SASL failed: " + (params[1] || ""), kind: "err" });
+      sendRaw("CAP END");
+      return;
+    }
+    if (command === "001") {
+      myNick = params[0] || myNick;
+      $("my-nick").textContent = myNick;
+      addLine("*status", { time, text: params[1] || "Connected", kind: "sys" });
+      autoChannels.forEach((ch) => sendRaw("JOIN " + ch));
+      return;
+    }
+    if (command === "JOIN") {
+      const chan = params[0];
+      const buf = ensureBuf(chan);
+      buf.members.set(nick, "");
+      if (nick.toLowerCase() === myNick.toLowerCase()) {
+        switchBuf(chan.toLowerCase());
+        sendRaw("CHATHISTORY LATEST " + chan + " * 50");
+      }
+      addLine(chan, { time, text: "* " + nick + " joined " + chan, kind: "sys" });
+      renderMembers();
+      return;
+    }
+    if (command === "PART") {
+      const chan = params[0];
+      const buf = buffers.get(chan.toLowerCase());
+      if (buf) {
+        buf.members.delete(nick);
+        if (nick.toLowerCase() === myNick.toLowerCase()) {
+          buffers.delete(chan.toLowerCase());
+          if (activeBuf === chan.toLowerCase()) switchBuf("*status");
+          else renderBuffers();
+        } else {
+          addLine(chan, { time, text: "* " + nick + " left (" + (params[1] || "") + ")", kind: "sys" });
+          renderMembers();
+        }
+      }
+      return;
+    }
+    if (command === "QUIT") {
+      buffers.forEach((buf) => {
+        if (buf.members.has(nick)) {
+          buf.members.delete(nick);
+          addLine(buf.name, { time, text: "* " + nick + " quit (" + (params[0] || "") + ")", kind: "sys" });
+        }
+      });
+      renderMembers();
+      return;
+    }
+    if (command === "NICK") {
+      const next = params[0];
+      if (nick.toLowerCase() === myNick.toLowerCase()) {
+        myNick = next;
+        $("my-nick").textContent = myNick;
+      }
+      buffers.forEach((buf) => {
+        if (buf.members.has(nick)) {
+          const pfx = buf.members.get(nick);
+          buf.members.delete(nick);
+          buf.members.set(next, pfx);
+          addLine(buf.name, { time, text: "* " + nick + " is now known as " + next, kind: "sys" });
+        }
+      });
+      renderMembers();
+      return;
+    }
+    if (command === "332") {
+      const chan = params[1];
+      const buf = ensureBuf(chan);
+      buf.topic = params[2] || "";
+      if (activeBuf === chan.toLowerCase()) $("active-topic").textContent = buf.topic;
+      addLine(chan, { time, text: "Topic: " + buf.topic, kind: "sys" });
+      return;
+    }
+    if (command === "TOPIC") {
+      const chan = params[0];
+      const buf = ensureBuf(chan);
+      buf.topic = params[1] || "";
+      if (activeBuf === chan.toLowerCase()) $("active-topic").textContent = buf.topic;
+      addLine(chan, { time, text: "* " + nick + " changed topic to: " + buf.topic, kind: "sys" });
+      return;
+    }
+    if (command === "353") {
+      const chan = params[2];
+      const buf = ensureBuf(chan);
+      (params[3] || "").split(" ").filter(Boolean).forEach((entry) => {
+        const m = entry.match(/^([@+%~&]*)(.+)$/);
+        if (m) buf.members.set(m[2], m[1]);
+      });
+      renderMembers();
+      return;
+    }
+    if (command === "PRIVMSG" || command === "NOTICE") {
+      const target = params[0] || "*status";
+      let text = params[1] || "";
+      const dest = isChan(target)
+        ? target
+        : (nick.toLowerCase() === myNick.toLowerCase() ? target : (nick || "*status"));
+      if (text.startsWith("\x01ACTION ") && text.endsWith("\x01")) {
+        addLine(dest, { time, text: "* " + nick + " " + text.slice(8, -1), kind: "sys" });
+      } else {
+        addLine(dest, { time, nick: nick || msg.prefix, text, kind: command === "NOTICE" ? "sys" : "" });
+      }
+      return;
+    }
+    if (command === "KICK") {
+      const chan = params[0];
+      const victim = params[1];
+      const buf = buffers.get(chan.toLowerCase());
+      if (buf) buf.members.delete(victim);
+      addLine(chan, { time, text: "* " + victim + " was kicked by " + nick + " (" + (params[2] || "") + ")", kind: "err" });
+      renderMembers();
+      return;
+    }
+    if (command === "ERROR" || command === "FAIL") {
+      addLine("*status", { time, text: command + ": " + params.join(" "), kind: "err" });
+      return;
+    }
+    if (/^\d{3}$/.test(command)) {
+      if (["366", "002", "003", "004", "005", "375", "376"].includes(command)) return;
+      addLine("*status", { time, text: "[" + command + "] " + params.slice(1).join(" "), kind: "sys" });
+    }
+  }
+
+  $("connect-form").onsubmit = (ev) => {
+    ev.preventDefault();
+    const err = $("connect-err");
+    err.style.display = "none";
+    myNick = $("inp-nick").value.trim();
+    saslUser = $("inp-acct").value.trim();
+    saslPass = $("inp-pass").value;
+    autoChannels = $("inp-channels").value.split(",").map((s) => s.trim()).filter(Boolean);
+    const url = $("inp-ws").value.trim();
+    try {
+      ws = new WebSocket(url, ["text.ircv3.net"]);
+    } catch (e) {
+      err.textContent = "Invalid WebSocket URL: " + e.message;
+      err.style.display = "block";
+      return;
+    }
+    buffers.clear();
+    ensureBuf("*status");
+    $("connect-view").style.display = "none";
+    $("chat-view").classList.add("active");
+    $("my-nick").textContent = myNick;
+    $("status-dot").classList.remove("off");
+    switchBuf("*status");
+    addLine("*status", { text: "Connecting to " + url + "...", kind: "sys" });
+
+    ws.onopen = () => {
+      sendRaw("CAP LS 302");
+      sendRaw("NICK " + myNick);
+      sendRaw("USER " + myNick + " 0 * :" + myNick);
+    };
+    ws.onmessage = (e) => {
+      if (typeof e.data === "string") handleMessage(e.data);
+    };
+    ws.onerror = () => {
+      addLine("*status", { text: "WebSocket connection error.", kind: "err" });
+    };
+    ws.onclose = () => {
+      $("status-dot").classList.add("off");
+      addLine("*status", { text: "Disconnected from server.", kind: "err" });
+    };
+  };
+
+  $("btn-disconnect").onclick = () => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      sendRaw("QUIT :Leaving WebIRC");
+      ws.close();
+    }
+    ws = null;
+    $("chat-view").classList.remove("active");
+    $("connect-view").style.display = "flex";
+  };
+
+  $("join-form").onsubmit = (ev) => {
+    ev.preventDefault();
+    const ch = $("inp-join").value.trim();
+    if (!ch) return;
+    sendRaw("JOIN " + (isChan(ch) ? ch : "#" + ch));
+    $("inp-join").value = "";
+  };
+
+  $("send-form").onsubmit = (ev) => {
+    ev.preventDefault();
+    const raw = $("inp-msg").value;
+    if (!raw.trim()) return;
+    $("inp-msg").value = "";
+    const buf = buffers.get(activeBuf);
+    if (raw.startsWith("/")) {
+      const sp = raw.indexOf(" ");
+      const cmd = (sp === -1 ? raw.slice(1) : raw.slice(1, sp)).toLowerCase();
+      const rest = sp === -1 ? "" : raw.slice(sp + 1);
+      if (cmd === "join" && rest) {
+        sendRaw("JOIN " + rest);
+      } else if (cmd === "part") {
+        if (buf && isChan(buf.name)) sendRaw("PART " + buf.name + (rest ? " :" + rest : ""));
+      } else if (cmd === "msg" && rest) {
+        const sp2 = rest.indexOf(" ");
+        if (sp2 > 0) {
+          const target = rest.slice(0, sp2);
+          const text = rest.slice(sp2 + 1);
+          ensureBuf(target);
+          switchBuf(target.toLowerCase());
+          sendRaw("PRIVMSG " + target + " :" + text);
+        }
+      } else if (cmd === "me" && rest && buf && buf.name !== "*status") {
+        sendRaw("PRIVMSG " + buf.name + " :\x01ACTION " + rest + "\x01");
+      } else if (cmd === "nick" && rest) {
+        sendRaw("NICK " + rest.trim());
+      } else if (cmd === "topic" && buf && isChan(buf.name)) {
+        sendRaw("TOPIC " + buf.name + " :" + rest);
+      } else if (cmd === "whois" && rest) {
+        sendRaw("WHOIS " + rest.trim());
+      } else if (cmd === "list") {
+        sendRaw("LIST");
+      } else if (cmd === "raw" && rest) {
+        sendRaw(rest);
+      } else if (cmd === "quit") {
+        sendRaw("QUIT :" + (rest || "Leaving"));
+      } else {
+        addLine(buf ? buf.name : "*status", { text: "Unknown command: /" + cmd, kind: "err" });
+      }
+      return;
+    }
+    if (!buf || buf.name === "*status") {
+      addLine("*status", { text: "Join a channel first (e.g. /join #lobby).", kind: "err" });
+      return;
+    }
+    sendRaw("PRIVMSG " + buf.name + " :" + raw);
+  };
+})();
+</script>
+</body>
+</html>
