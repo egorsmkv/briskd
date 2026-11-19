@@ -18,8 +18,12 @@ logged.
 -export([
     send_verification/4,
     send_verification_sync/4,
+    send_password_reset/5,
+    send_password_reset_sync/5,
     verify_link/3,
+    reset_link/3,
     build_message/5,
+    build_reset_message/5,
     smtp_options/1
 ]).
 
@@ -131,6 +135,113 @@ build_message(From, To, Subject, Account, #{code := Code} = Opts) ->
         <<" ">>,
         Code,
         <<"\r\n">>
+    ]).
+
+-doc """
+Deliver a password recovery email asynchronously using the `smtp` section of
+`Verification`. Never logs the recovery code or SMTP credentials.
+""".
+-spec send_password_reset(map(), binary(), binary(), binary(), binary() | null) -> ok.
+send_password_reset(Verification, Account, Email, Code, RecoveryUrl) ->
+    _ = spawn(fun() ->
+        case send_password_reset_sync(Verification, Account, Email, Code, RecoveryUrl) of
+            {ok, _Receipt} ->
+                ok;
+            {error, Reason} ->
+                logger:warning(#{
+                    event => password_reset_mail_failed,
+                    account => Account,
+                    reason => Reason
+                })
+        end
+    end),
+    ok.
+
+-doc """
+Deliver a password recovery email synchronously via `gen_smtp_client:send_blocking/2`.
+""".
+-spec send_password_reset_sync(map(), binary(), binary(), binary(), binary() | null) ->
+    {ok, binary()} | {error, term()}.
+send_password_reset_sync(#{smtp := Smtp}, Account, Email, Code, RecoveryUrl) ->
+    From = maps:get(from, Smtp),
+    Subject = <<"Password recovery for your IRC account">>,
+    Body = build_reset_message(From, Email, Subject, Account, #{
+        code => Code,
+        email => Email,
+        recovery_url => RecoveryUrl
+    }),
+    Opts = smtp_options(Smtp),
+    try gen_smtp_client:send_blocking({From, [Email], Body}, Opts) of
+        Receipt when is_binary(Receipt) ->
+            {ok, Receipt};
+        {error, Type, Message} ->
+            {error, {Type, Message}};
+        {error, Reason} ->
+            {error, Reason}
+    catch
+        Class:Reason ->
+            {error, {Class, Reason}}
+    end.
+
+-doc """
+Build a password recovery URL by appending `email` and `code` query parameters
+to `BaseUrl`.
+""".
+-spec reset_link(binary(), binary(), binary()) -> binary().
+reset_link(BaseUrl, Email, Code) ->
+    Query = iolist_to_binary(
+        uri_string:compose_query([{<<"email">>, Email}, {<<"code">>, Code}])
+    ),
+    Sep =
+        case binary:match(BaseUrl, <<"?">>) of
+            nomatch -> <<"?">>;
+            _ -> <<"&">>
+        end,
+    <<BaseUrl/binary, Sep/binary, Query/binary>>.
+
+-doc """
+Format an RFC 5322 password recovery email body for `Account`.
+""".
+-spec build_reset_message(binary(), binary(), binary(), binary(), map()) -> binary().
+build_reset_message(From, To, Subject, Account, #{code := Code, email := Email} = Opts) ->
+    SafeFrom = sanitize_header(From),
+    SafeTo = sanitize_header(To),
+    SafeSubject = sanitize_header(Subject),
+    SafeAccount = sanitize_header(Account),
+    LinkLines =
+        case maps:get(recovery_url, Opts, null) of
+            BaseUrl when is_binary(BaseUrl), byte_size(BaseUrl) > 0 ->
+                Link = reset_link(BaseUrl, Email, Code),
+                [
+                    <<"Reset your password by opening this link:\r\n">>,
+                    Link,
+                    <<"\r\n\r\n">>
+                ];
+            _ ->
+                []
+        end,
+    iolist_to_binary([
+        <<"From: ">>,
+        SafeFrom,
+        <<"\r\n">>,
+        <<"To: ">>,
+        SafeTo,
+        <<"\r\n">>,
+        <<"Subject: ">>,
+        SafeSubject,
+        <<"\r\n">>,
+        <<"MIME-Version: 1.0\r\n">>,
+        <<"Content-Type: text/plain; charset=utf-8\r\n">>,
+        <<"\r\n">>,
+        <<"Hello ">>,
+        SafeAccount,
+        <<",\r\n\r\n">>,
+        <<"A password recovery was requested for your IRC account.\r\n\r\n">>,
+        LinkLines,
+        <<"Your recovery code is:\r\n">>,
+        Code,
+        <<"\r\n\r\n">>,
+        <<"If you did not request this, you can safely ignore this email.\r\n">>
     ]).
 
 -doc """

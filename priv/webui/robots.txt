@@ -4,3 +4,4 @@ Allow: /signup
 Disallow: /admin
 Disallow: /api/
 Disallow: /verify
+Disallow: /recover

@@ -35,6 +35,8 @@
     verify_account_web/2,
     verify_account_email_web/2,
     signup_account_web/4,
+    request_password_reset_web/3,
+    complete_password_reset_web/4,
     webirc/3
 ]).
 -include("ircd_state.hrl").
@@ -814,6 +816,118 @@ verify_account_email_web(Email, Code) when is_binary(Email), is_binary(Code) ->
             {ok, Actual};
         error ->
             error
+    end.
+
+-doc """
+Initiate email password recovery for a verified account. Runs inside
+`m:ircd_state`. Always returns `ok` for valid email addresses even when no
+account matches (to prevent email enumeration).
+""".
+-spec request_password_reset_web(binary(), binary() | null, binary()) ->
+    ok | {error, disabled | rate_limited | bad_email}.
+request_password_reset_web(Email0, RecoveryUrl, PeerIP) when is_binary(Email0) ->
+    Config = persistent_term:get({ircd_state, config}, #{}),
+    case maps:get(account_verification, Config, null) of
+        #{ttl := Ttl, smtp := _} = Verification ->
+            case ircd_flood:allow_register(PeerIP) of
+                false ->
+                    {error, rate_limited};
+                true ->
+                    case normalize_web_email(Email0, true) of
+                        {error, _} ->
+                            {error, bad_email};
+                        {ok, Email} ->
+                            maybe_send_reset(Verification, Ttl, Email, RecoveryUrl),
+                            ok
+                    end
+            end;
+        _ ->
+            {error, disabled}
+    end;
+request_password_reset_web(_, _, _) ->
+    {error, bad_email}.
+
+maybe_send_reset(Verification, Ttl, Email, RecoveryUrl) ->
+    case ircd_account:find_by_email(Email) of
+        {ok, #account{key = Folded, name = AccountName, email = StoredEmail}} ->
+            ensure_reset_table(),
+            Code = verification_code(),
+            Hash = crypto:hash(sha256, Code),
+            Expires = erlang:system_time(millisecond) + Ttl * 1000,
+            EmailKey = string:lowercase(StoredEmail),
+            ets:insert(ircd_password_reset, {EmailKey, Folded, AccountName, Hash, Expires}),
+            logger:info(#{event => password_reset_requested, account => AccountName}),
+            ircd_mail:send_password_reset(
+                Verification, AccountName, StoredEmail, Code, RecoveryUrl
+            );
+        error ->
+            ok
+    end.
+
+-doc """
+Complete email password recovery by checking the single-use reset code and
+updating the account's SCRAM-SHA-256 password verifier. Runs inside
+`m:ircd_state`.
+""".
+-spec complete_password_reset_web(binary(), binary(), binary(), binary()) ->
+    {ok, binary()} | {error, disabled | rate_limited | invalid_code | bad_password}.
+complete_password_reset_web(Email0, Code0, NewPassword, PeerIP) when
+    is_binary(Email0), is_binary(Code0), is_binary(NewPassword)
+->
+    Config = persistent_term:get({ircd_state, config}, #{}),
+    case maps:get(account_verification, Config, null) of
+        #{smtp := _} ->
+            case ircd_flood:allow_register(PeerIP) of
+                false ->
+                    {error, rate_limited};
+                true ->
+                    EmailKey = string:lowercase(string:trim(Email0)),
+                    CodeHash = crypto:hash(sha256, string:trim(Code0)),
+                    Now = erlang:system_time(millisecond),
+                    ensure_reset_table(),
+                    case ets:lookup(ircd_password_reset, EmailKey) of
+                        [{EmailKey, _Folded, AccountName, StoredHash, Expires}] when
+                            Now =< Expires
+                        ->
+                            case crypto:hash_equals(CodeHash, StoredHash) of
+                                true ->
+                                    case ircd_account:set_password(AccountName, NewPassword) of
+                                        {ok, #account{name = Actual} = Updated} ->
+                                            ets:delete(ircd_password_reset, EmailKey),
+                                            logger:info(#{
+                                                event => password_reset_completed,
+                                                account => Actual
+                                            }),
+                                            ircd_state_sync:account_created(Updated),
+                                            {ok, Actual};
+                                        {error, bad_password} ->
+                                            {error, bad_password};
+                                        {error, no_such_account} ->
+                                            ets:delete(ircd_password_reset, EmailKey),
+                                            {error, invalid_code}
+                                    end;
+                                false ->
+                                    {error, invalid_code}
+                            end;
+                        [{EmailKey, _, _, _, _}] ->
+                            ets:delete(ircd_password_reset, EmailKey),
+                            {error, invalid_code};
+                        [] ->
+                            {error, invalid_code}
+                    end
+            end;
+        _ ->
+            {error, disabled}
+    end;
+complete_password_reset_web(_, _, _, _) ->
+    {error, invalid_code}.
+
+ensure_reset_table() ->
+    case ets:whereis(ircd_password_reset) of
+        undefined ->
+            ets:new(ircd_password_reset, [named_table, set, public]);
+        _ ->
+            ok
     end.
 
 -doc """

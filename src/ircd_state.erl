@@ -39,6 +39,8 @@
     signup_account/4,
     verify_account/2,
     verify_account_by_email/2,
+    request_password_reset/3,
+    complete_password_reset/4,
     visible_member/3,
     wildcard_match/2
 ]).
@@ -294,6 +296,24 @@ Returns `{ok, AccountName}` on success or `error` when invalid or expired.
 -spec verify_account_by_email(binary(), binary()) -> {ok, binary()} | error.
 verify_account_by_email(Email, Code) when is_binary(Email), is_binary(Code) ->
     gen_server:call(?MODULE, {verify_account_by_email, Email, Code}, 5000).
+
+-doc """
+Request an email password recovery code for a verified account.
+""".
+-spec request_password_reset(binary(), binary() | null, binary()) ->
+    ok | {error, disabled | rate_limited | bad_email}.
+request_password_reset(Email, RecoveryUrl, PeerIP) when is_binary(Email), is_binary(PeerIP) ->
+    gen_server:call(?MODULE, {request_password_reset, Email, RecoveryUrl, PeerIP}, 5000).
+
+-doc """
+Complete email password recovery using the single-use recovery code and a new password.
+""".
+-spec complete_password_reset(binary(), binary(), binary(), binary()) ->
+    {ok, binary()} | {error, disabled | rate_limited | invalid_code | bad_password}.
+complete_password_reset(Email, Code, NewPassword, PeerIP) when
+    is_binary(Email), is_binary(Code), is_binary(NewPassword), is_binary(PeerIP)
+->
+    gen_server:call(?MODULE, {complete_password_reset, Email, Code, NewPassword, PeerIP}, 10000).
 
 -doc """
 Check an inbound server's name (RFC 1459 folded) and shared password against
@@ -927,6 +947,10 @@ other_call({verify_account, Name, Code}, _, Server) ->
     {reply, ircd_state_v3:verify_account_web(Name, Code), Server};
 other_call({verify_account_by_email, Email, Code}, _, Server) ->
     {reply, ircd_state_v3:verify_account_email_web(Email, Code), Server};
+other_call({request_password_reset, Email, RecoveryUrl, PeerIP}, _, Server) ->
+    {reply, ircd_state_v3:request_password_reset_web(Email, RecoveryUrl, PeerIP), Server};
+other_call({complete_password_reset, Email, Code, NewPassword, PeerIP}, _, Server) ->
+    {reply, ircd_state_v3:complete_password_reset_web(Email, Code, NewPassword, PeerIP), Server};
 other_call({server_disconnect, Peer}, _, Server) ->
     ircd_state_link:flush_netjoin(Peer),
     ircd_state_link:forget_peer_batches(Peer),
@@ -1148,6 +1172,8 @@ redact_command({verify_account, Account, _Code}) ->
     {verify_account, Account, redacted};
 redact_command({verify_account_by_email, Email, _Code}) ->
     {verify_account_by_email, Email, redacted};
+redact_command({complete_password_reset, Email, _Code, _NewPassword, PeerIP}) ->
+    {complete_password_reset, Email, redacted, redacted, PeerIP};
 redact_command({command, <<"VERIFY">>, [Account, _Code | Rest], Bytes, Tags}) ->
     {command, <<"VERIFY">>, [Account, redacted | Rest], Bytes, Tags};
 redact_command({command, <<"VERIFY">>, [Account, _Code | Rest], Bytes}) ->

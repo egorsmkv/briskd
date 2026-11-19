@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recover Password - ircd</title>
+<meta name="description" content="Recover your IRC account password using your verified email address.">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#2563eb">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/recover.css">
+</head>
+<body>
+<main class="card">
+  <div class="top">
+    <h1>Recover Password</h1>
+    <button type="button" class="small" id="btn-theme" aria-label="Toggle dark mode">Dark</button>
+  </div>
+  <p class="sub">Reset your IRC account password via your verified email address.</p>
+
+  <div class="step-tabs" role="tablist">
+    <button type="button" class="step-tab active" id="tab-request" role="tab" aria-selected="true">1. Request Code</button>
+    <button type="button" class="step-tab" id="tab-confirm" role="tab" aria-selected="false">2. Reset Password</button>
+  </div>
+
+  <div id="notice" role="status" aria-live="polite"></div>
+
+  <form id="recover-request-form" class="step-pane active">
+    <div class="field">
+      <label for="req-email">Email address</label>
+      <input type="email" id="req-email" name="email" autocomplete="email" required maxlength="254" value="__EMAIL_PREFILL__" placeholder="you@example.com">
+    </div>
+    <div class="field">
+      <div class="altcha-box">
+        <label class="altcha-left" for="altcha-req-check">
+          <input type="checkbox" id="altcha-req-check">
+          <span id="altcha-req-label">I'm not a robot</span>
+        </label>
+        <a class="altcha-brand" href="https://altcha.org/" target="_blank" rel="noopener noreferrer">ALTCHA</a>
+      </div>
+    </div>
+    <button type="submit" class="primary btn-full" id="btn-req-submit">Send Recovery Code</button>
+  </form>
+
+  <form id="recover-confirm-form" class="step-pane">
+    <div class="field">
+      <label for="cfm-email">Email address</label>
+      <input type="email" id="cfm-email" name="email" autocomplete="email" required maxlength="254" value="__EMAIL_PREFILL__" placeholder="you@example.com">
+    </div>
+    <div class="field">
+      <label for="cfm-code">Recovery code</label>
+      <input type="text" id="cfm-code" name="code" autocomplete="one-time-code" required maxlength="64" value="__CODE_PREFILL__" placeholder="Paste recovery code from email">
+    </div>
+    <div class="field">
+      <label for="cfm-password">New password</label>
+      <input type="password" id="cfm-password" name="password" autocomplete="new-password" required maxlength="256">
+    </div>
+    <div class="field">
+      <label for="cfm-confirm">Confirm new password</label>
+      <input type="password" id="cfm-confirm" name="confirm" autocomplete="new-password" required maxlength="256">
+    </div>
+    <div class="field">
+      <div class="altcha-box">
+        <label class="altcha-left" for="altcha-cfm-check">
+          <input type="checkbox" id="altcha-cfm-check">
+          <span id="altcha-cfm-label">I'm not a robot</span>
+        </label>
+        <a class="altcha-brand" href="https://altcha.org/" target="_blank" rel="noopener noreferrer">ALTCHA</a>
+      </div>
+    </div>
+    <button type="submit" class="primary btn-full" id="btn-cfm-submit">Reset Password</button>
+  </form>
+
+  <p class="foot-links">
+    <a href="/">Open WebIRC</a> &middot; <a href="/signup">Create account</a> &middot; <a href="/verify">Verify account</a>
+  </p>
+</main>
+
+<script src="/assets/recover.js" defer></script>
+</body>
+</html>

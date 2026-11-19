@@ -23,6 +23,9 @@ Opt-in via the `"webui"` configuration object (`bind`, `port`, `username`,
 - `GET /signup` and `POST /api/signup` — public (unauthenticated) user
   self-registration page and JSON endpoint (with ALTCHA), active when
   `account_registration` is `true`.
+- `GET /recover`, `POST /api/recover/request`, and `POST /api/recover/confirm`
+  — public (unauthenticated) email password recovery page and JSON endpoints
+  (with ALTCHA), active when `account_verification` SMTP is configured.
 - `GET /favicon.ico`, `GET /favicon.svg`, and `GET /robots.txt` — public
   favicon and crawler policy assets.
 
@@ -103,6 +106,7 @@ init(#{webui := #{ip := IP, port := Port}}) ->
                 index => load_asset("index.html", <<"ircd admin UI asset missing">>),
                 signup => load_asset("signup.html", <<"ircd signup UI asset missing">>),
                 verify => load_asset("verify.html", <<"ircd verify UI asset missing">>),
+                recover => load_asset("recover.html", <<"ircd recover UI asset missing">>),
                 webirc => load_asset("webirc.html", <<"ircd webirc UI asset missing">>),
                 favicon_ico => load_raw_asset("favicon.ico", <<>>),
                 favicon_svg => load_raw_asset("favicon.svg", <<>>),
@@ -212,6 +216,7 @@ handle_connection(
         index := IndexHtml,
         signup := SignupHtml,
         verify := VerifyHtml,
+        recover := RecoverHtml,
         webirc := WebircHtml,
         favicon_ico := FaviconIco,
         favicon_svg := FaviconSvg,
@@ -249,6 +254,12 @@ handle_connection(
             handle_signup_page(Socket, SignupHtml);
         {ok, <<"POST">>, {<<"/api/signup">>, _Query}, Headers, Body} ->
             handle_signup_api(Socket, Headers, Body);
+        {ok, <<"GET">>, {<<"/recover">>, Query}, _Headers, _Body} ->
+            handle_recover_page(Socket, RecoverHtml, Query);
+        {ok, <<"POST">>, {<<"/api/recover/request">>, _Query}, Headers, Body} ->
+            handle_recover_request_api(Socket, Headers, Body);
+        {ok, <<"POST">>, {<<"/api/recover/confirm">>, _Query}, Headers, Body} ->
+            handle_recover_confirm_api(Socket, Headers, Body);
         {ok, Method, {Path, _Query}, Headers, Body} ->
             case check_auth(Headers) of
                 ok ->
@@ -363,6 +374,144 @@ default_channels(Config) ->
                 [] -> <<"#lobby">>;
                 _ -> iolist_to_binary(lists:join(<<",">>, Names))
             end
+    end.
+
+handle_recover_page(Socket, RecoverHtml, Query) ->
+    Config = persistent_term:get({ircd_state, config}, #{}),
+    case maps:get(account_verification, Config, null) of
+        #{smtp := _} ->
+            {_, Email, Code} = prefill_verify_query(Query),
+            P1 = binary:replace(RecoverHtml, <<"__EMAIL_PREFILL__">>, escape_html(Email), [global]),
+            Page = binary:replace(P1, <<"__CODE_PREFILL__">>, escape_html(Code), [global]),
+            send_nonce_html(Socket, Page);
+        _ ->
+            send_json(Socket, 404, <<"Not Found">>, #{error => <<"recovery_disabled">>})
+    end.
+
+handle_recover_request_api(Socket, Headers, Body) ->
+    case maps:get(<<"x-requested-with">>, Headers, undefined) of
+        <<"ircd-webui">> ->
+            try json:decode(Body) of
+                #{<<"email">> := Email} = Req when is_binary(Email), byte_size(Email) > 0 ->
+                    case require_altcha(Req) of
+                        ok ->
+                            Config = persistent_term:get({ircd_state, config}, #{}),
+                            Origin = public_origin(Headers, Config),
+                            RecoveryUrl = <<Origin/binary, "/recover">>,
+                            PeerIP = peer_ip(Socket),
+                            case ircd_state:request_password_reset(Email, RecoveryUrl, PeerIP) of
+                                ok ->
+                                    send_json(Socket, 200, <<"OK">>, #{
+                                        status => <<"sent">>,
+                                        message =>
+                                            <<"If an account exists for that email, a recovery code has been sent.">>
+                                    });
+                                {error, disabled} ->
+                                    send_json(Socket, 404, <<"Not Found">>, #{
+                                        error => <<"recovery_disabled">>,
+                                        message => <<"Password recovery via email is not enabled.">>
+                                    });
+                                {error, rate_limited} ->
+                                    send_json(Socket, 429, <<"Too Many Requests">>, #{
+                                        error => <<"rate_limited">>,
+                                        message =>
+                                            <<"Too many recovery attempts. Please try again later.">>
+                                    });
+                                {error, bad_email} ->
+                                    send_json(Socket, 400, <<"Bad Request">>, #{
+                                        error => <<"invalid_email">>,
+                                        message => <<"Enter a valid email address.">>
+                                    })
+                            end;
+                        {error, Code, Msg} ->
+                            send_json(Socket, 400, <<"Bad Request">>, #{
+                                error => Code, message => Msg
+                            })
+                    end;
+                _ ->
+                    send_json(Socket, 400, <<"Bad Request">>, #{
+                        error => <<"invalid_request">>,
+                        message => <<"Email address is required.">>
+                    })
+            catch
+                _:_ ->
+                    send_json(Socket, 400, <<"Bad Request">>, #{
+                        error => <<"invalid_json">>,
+                        message => <<"Invalid JSON request.">>
+                    })
+            end;
+        _ ->
+            send_json(Socket, 403, <<"Forbidden">>, #{error => <<"missing_csrf_header">>})
+    end.
+
+handle_recover_confirm_api(Socket, Headers, Body) ->
+    case maps:get(<<"x-requested-with">>, Headers, undefined) of
+        <<"ircd-webui">> ->
+            try json:decode(Body) of
+                #{
+                    <<"email">> := Email,
+                    <<"code">> := Code,
+                    <<"password">> := Password
+                } = Req when
+                    is_binary(Email),
+                    byte_size(Email) > 0,
+                    is_binary(Code),
+                    byte_size(Code) > 0,
+                    is_binary(Password),
+                    byte_size(Password) > 0
+                ->
+                    case require_altcha(Req) of
+                        ok ->
+                            PeerIP = peer_ip(Socket),
+                            case
+                                ircd_state:complete_password_reset(Email, Code, Password, PeerIP)
+                            of
+                                {ok, AccountName} ->
+                                    send_json(Socket, 200, <<"OK">>, #{
+                                        status => <<"reset">>,
+                                        account => AccountName
+                                    });
+                                {error, disabled} ->
+                                    send_json(Socket, 404, <<"Not Found">>, #{
+                                        error => <<"recovery_disabled">>,
+                                        message => <<"Password recovery via email is not enabled.">>
+                                    });
+                                {error, rate_limited} ->
+                                    send_json(Socket, 429, <<"Too Many Requests">>, #{
+                                        error => <<"rate_limited">>,
+                                        message =>
+                                            <<"Too many recovery attempts. Please try again later.">>
+                                    });
+                                {error, bad_password} ->
+                                    send_json(Socket, 400, <<"Bad Request">>, #{
+                                        error => <<"bad_password">>,
+                                        message => <<"Password does not meet length requirements.">>
+                                    });
+                                {error, invalid_code} ->
+                                    send_json(Socket, 400, <<"Bad Request">>, #{
+                                        error => <<"invalid_code">>,
+                                        message => <<"Invalid or expired recovery code.">>
+                                    })
+                            end;
+                        {error, ErrCode, Msg} ->
+                            send_json(Socket, 400, <<"Bad Request">>, #{
+                                error => ErrCode, message => Msg
+                            })
+                    end;
+                _ ->
+                    send_json(Socket, 400, <<"Bad Request">>, #{
+                        error => <<"invalid_request">>,
+                        message => <<"Email, recovery code, and new password are required.">>
+                    })
+            catch
+                _:_ ->
+                    send_json(Socket, 400, <<"Bad Request">>, #{
+                        error => <<"invalid_json">>,
+                        message => <<"Invalid JSON request.">>
+                    })
+            end;
+        _ ->
+            send_json(Socket, 403, <<"Forbidden">>, #{error => <<"missing_csrf_header">>})
     end.
 
 handle_signup_page(Socket, SignupHtml) ->
@@ -921,6 +1070,8 @@ load_static_assets() ->
         {<<"signup.css">>, <<"text/css; charset=utf-8">>},
         {<<"verify.js">>, <<"application/javascript; charset=utf-8">>},
         {<<"verify.css">>, <<"text/css; charset=utf-8">>},
+        {<<"recover.js">>, <<"application/javascript; charset=utf-8">>},
+        {<<"recover.css">>, <<"text/css; charset=utf-8">>},
         {<<"webirc.js">>, <<"application/javascript; charset=utf-8">>},
         {<<"webirc.css">>, <<"text/css; charset=utf-8">>}
     ],

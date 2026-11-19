@@ -24,87 +24,79 @@
   </div>
 </header>
 
+<nav class="page-nav" id="tabs" role="tablist" aria-label="Admin sections">
+  <div class="page-nav-inner">
+    <button type="button" class="tab active" data-tab="overview" role="tab" aria-selected="true">Overview</button>
+    <button type="button" class="tab" data-tab="clients" role="tab" aria-selected="false">Clients <span class="tab-count" id="cnt-clients">0</span></button>
+    <button type="button" class="tab" data-tab="channels" role="tab" aria-selected="false">Channels <span class="tab-count" id="cnt-channels">0</span></button>
+    <button type="button" class="tab" data-tab="links" role="tab" aria-selected="false">Links <span class="tab-count" id="cnt-links">0</span></button>
+    <button type="button" class="tab" data-tab="accounts" role="tab" aria-selected="false">Accounts <span class="tab-count" id="cnt-accounts">0</span></button>
+    <button type="button" class="tab" data-tab="dronebl" role="tab" aria-selected="false">DroneBL <span class="tab-count" id="cnt-dronebl">0</span></button>
+    <button type="button" class="tab" data-tab="operations" role="tab" aria-selected="false">Operations</button>
+  </div>
+</nav>
+
 <main>
-  <div id="notice"></div>
+  <div id="notice" role="status" aria-live="polite"></div>
 
-  <section class="grid" id="stats-grid">
-    <div class="card">
-      <div class="label">Sessions</div>
-      <div class="value" id="st-sessions">-</div>
-      <div class="sub" id="st-sessions-sub"></div>
-    </div>
-    <div class="card">
-      <div class="label">Channels</div>
-      <div class="value" id="st-channels">-</div>
-      <div class="sub" id="st-channels-sub"></div>
-    </div>
-    <div class="card">
-      <div class="label">Network</div>
-      <div class="value" id="st-network">-</div>
-      <div class="sub" id="st-network-sub"></div>
-    </div>
-    <div class="card">
-      <div class="label">Accounts</div>
-      <div class="value" id="st-accounts">-</div>
-      <div class="sub" id="st-retention"></div>
-    </div>
-    <div class="card">
-      <div class="label">DroneBL</div>
-      <div class="value" id="st-dronebl">-</div>
-      <div class="sub" id="st-dronebl-sub"></div>
-    </div>
-    <div class="card">
-      <div class="label">Database</div>
-      <div class="value" id="st-db">-</div>
-      <div class="sub" id="st-db-sub"></div>
-    </div>
-    <div class="card">
-      <div class="label">Erlang VM</div>
-      <div class="value" id="st-memory">-</div>
-      <div class="sub" id="st-procs"></div>
+  <section class="page active" id="panel-overview" role="tabpanel">
+    <div class="grid" id="stats-grid">
+      <div class="card">
+        <div class="label">Sessions</div>
+        <div class="value" id="st-sessions">-</div>
+        <div class="sub" id="st-sessions-sub"></div>
+      </div>
+      <div class="card">
+        <div class="label">Channels</div>
+        <div class="value" id="st-channels">-</div>
+        <div class="sub" id="st-channels-sub"></div>
+      </div>
+      <div class="card">
+        <div class="label">Network</div>
+        <div class="value" id="st-network">-</div>
+        <div class="sub" id="st-network-sub"></div>
+      </div>
+      <div class="card">
+        <div class="label">Accounts</div>
+        <div class="value" id="st-accounts">-</div>
+        <div class="sub" id="st-retention"></div>
+      </div>
+      <div class="card">
+        <div class="label">DroneBL</div>
+        <div class="value" id="st-dronebl">-</div>
+        <div class="sub" id="st-dronebl-sub"></div>
+      </div>
+      <div class="card">
+        <div class="label">Database</div>
+        <div class="value" id="st-db">-</div>
+        <div class="sub" id="st-db-sub"></div>
+      </div>
+      <div class="card">
+        <div class="label">Erlang VM</div>
+        <div class="value" id="st-memory">-</div>
+        <div class="sub" id="st-procs"></div>
+      </div>
     </div>
   </section>
 
-  <section class="toolbar">
-    <button type="button" class="primary" id="btn-rehash">Rehash Config</button>
-    <button type="button" id="btn-check-config">Check Config</button>
-    <button type="button" id="btn-reload-certs">Reload TLS Certs</button>
-    <button type="button" id="btn-notice-all">Broadcast Notice</button>
-    <select id="sel-log-level" aria-label="Log level">
-      <option value="debug">debug</option>
-      <option value="info">info</option>
-      <option value="notice">notice</option>
-      <option value="warning">warning</option>
-      <option value="error">error</option>
-      <option value="critical">critical</option>
-      <option value="alert">alert</option>
-      <option value="emergency">emergency</option>
-    </select>
-    <button type="button" id="btn-log-level">Set Log Level</button>
-    <input type="text" id="inp-backup" placeholder="/tmp/mnesia.bak" size="18">
-    <button type="button" id="btn-backup">Backup Mnesia</button>
-    <span class="spacer"></span>
-    <button type="button" class="danger" id="btn-drain">Drain</button>
-    <button type="button" class="danger" id="btn-stop">Stop Server</button>
-  </section>
-
-  <nav class="tabs" id="tabs">
-    <button type="button" class="tab active" data-tab="clients">Clients (<span id="cnt-clients">0</span>)</button>
-    <button type="button" class="tab" data-tab="channels">Channels (<span id="cnt-channels">0</span>)</button>
-    <button type="button" class="tab" data-tab="links">Links (<span id="cnt-links">0</span>)</button>
-    <button type="button" class="tab" data-tab="accounts">Accounts (<span id="cnt-accounts">0</span>)</button>
-    <button type="button" class="tab" data-tab="dronebl">DroneBL (<span id="cnt-dronebl">0</span>)</button>
-  </nav>
-
-  <section class="panel active" id="panel-clients">
+  <section class="page panel" id="panel-clients" role="tabpanel">
+    <div class="page-head">
+      <h2>Connected Clients</h2>
+    </div>
     <div id="clients-wrap"></div>
   </section>
 
-  <section class="panel" id="panel-channels">
+  <section class="page panel" id="panel-channels" role="tabpanel">
+    <div class="page-head">
+      <h2>Active Channels</h2>
+    </div>
     <div id="channels-wrap"></div>
   </section>
 
-  <section class="panel" id="panel-links">
+  <section class="page panel" id="panel-links" role="tabpanel">
+    <div class="page-head">
+      <h2>Server Links</h2>
+    </div>
     <form class="inline-form" id="form-connect">
       <input type="text" id="inp-peer" placeholder="Configured peer name" required>
       <button type="submit" class="primary">Connect Peer</button>
@@ -112,7 +104,10 @@
     <div id="links-wrap"></div>
   </section>
 
-  <section class="panel" id="panel-accounts">
+  <section class="page panel" id="panel-accounts" role="tabpanel">
+    <div class="page-head">
+      <h2>SASL Accounts</h2>
+    </div>
     <form class="inline-form" id="form-account">
       <input type="text" id="inp-acct-name" placeholder="Account name" required>
       <input type="password" id="inp-acct-pass" placeholder="Password" required>
@@ -122,13 +117,67 @@
     <div id="accounts-wrap"></div>
   </section>
 
-  <section class="panel" id="panel-dronebl">
+  <section class="page panel" id="panel-dronebl" role="tabpanel">
+    <div class="page-head">
+      <h2>DroneBL Bans</h2>
+    </div>
     <form class="inline-form" id="form-ban-ip">
       <input type="text" id="inp-ban-ip" placeholder="IP address to ban" required>
       <input type="text" id="inp-ban-reason" placeholder="Reason (optional)">
       <button type="submit" class="danger">Ban IP</button>
     </form>
     <div id="dronebl-wrap"></div>
+  </section>
+
+  <section class="page" id="panel-operations" role="tabpanel">
+    <div class="ops-grid">
+      <div class="ops-card">
+        <h3>Configuration &amp; TLS</h3>
+        <p class="muted">Reload configuration or TLS certificates without disconnecting clients.</p>
+        <div class="ops-row">
+          <button type="button" class="primary" id="btn-rehash">Rehash Config</button>
+          <button type="button" id="btn-check-config">Check Config</button>
+          <button type="button" id="btn-reload-certs">Reload TLS Certs</button>
+        </div>
+      </div>
+
+      <div class="ops-card">
+        <h3>Logging &amp; Broadcast</h3>
+        <p class="muted">Adjust runtime logger verbosity or send a server-wide NOTICE.</p>
+        <div class="ops-row">
+          <select id="sel-log-level" aria-label="Log level">
+            <option value="debug">debug</option>
+            <option value="info">info</option>
+            <option value="notice">notice</option>
+            <option value="warning">warning</option>
+            <option value="error">error</option>
+            <option value="critical">critical</option>
+            <option value="alert">alert</option>
+            <option value="emergency">emergency</option>
+          </select>
+          <button type="button" id="btn-log-level">Set Log Level</button>
+          <button type="button" id="btn-notice-all">Broadcast Notice</button>
+        </div>
+      </div>
+
+      <div class="ops-card">
+        <h3>Mnesia Backup</h3>
+        <p class="muted">Write a consistent Mnesia database snapshot to disk.</p>
+        <div class="ops-row">
+          <input type="text" id="inp-backup" placeholder="/tmp/mnesia.bak" size="22">
+          <button type="button" id="btn-backup">Backup Mnesia</button>
+        </div>
+      </div>
+
+      <div class="ops-card danger-zone">
+        <h3>Server Lifecycle</h3>
+        <p class="muted">Gracefully drain connections or shut down the IRC daemon.</p>
+        <div class="ops-row">
+          <button type="button" class="danger" id="btn-drain">Drain Listeners</button>
+          <button type="button" class="danger" id="btn-stop">Stop Server</button>
+        </div>
+      </div>
+    </div>
   </section>
 </main>
 

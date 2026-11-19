@@ -184,6 +184,9 @@ live_webui() ->
         {200, CssHdrs, CssBody} = http_req(Port, <<"GET">>, <<"/assets/webirc.css">>, [], <<>>),
         ?assertEqual(<<"text/css; charset=utf-8">>, maps:get(<<"content-type">>, CssHdrs)),
         ?assert(byte_size(CssBody) > 100),
+        {200, _, RecJs} = http_req(Port, <<"GET">>, <<"/assets/recover.js">>, [], <<>>),
+        ?assert(byte_size(RecJs) > 100),
+        {404, _, _} = http_req(Port, <<"GET">>, <<"/recover">>, [], <<>>),
         {404, _, _} = http_req(Port, <<"GET">>, <<"/assets/../../etc/passwd">>, [], <<>>),
 
         {200, _, CreateBody} = post_action(

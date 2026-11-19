@@ -432,19 +432,43 @@ async function refresh(): Promise<void> {
 
 initTheme([$("btn-theme")]);
 
+const VALID_TABS = new Set([
+  "overview",
+  "clients",
+  "channels",
+  "links",
+  "accounts",
+  "dronebl",
+  "operations",
+]);
+
+function activateTab(tab: string, updateHash = true): void {
+  const next = VALID_TABS.has(tab) ? tab : "overview";
+  document.querySelectorAll<HTMLButtonElement>(".tab").forEach((t) => {
+    const active = t.dataset.tab === next;
+    t.classList.toggle("active", active);
+    t.setAttribute("aria-selected", String(active));
+  });
+  document.querySelectorAll<HTMLElement>(".page").forEach((p) => {
+    p.classList.toggle("active", p.id === `panel-${next}`);
+  });
+  if (updateHash && location.hash !== `#${next}`) {
+    history.replaceState(null, "", `#${next}`);
+  }
+}
+
 $("tabs").addEventListener("click", (ev) => {
   const target = ev.target as HTMLElement | null;
   const btn = target?.closest<HTMLButtonElement>(".tab");
   if (!btn || !btn.dataset.tab) return;
-  document.querySelectorAll(".tab").forEach((t) =>
-    t.classList.remove("active")
-  );
-  document.querySelectorAll(".panel").forEach((p) =>
-    p.classList.remove("active")
-  );
-  btn.classList.add("active");
-  $(`panel-${btn.dataset.tab}`).classList.add("active");
+  activateTab(btn.dataset.tab);
 });
+
+globalThis.addEventListener("hashchange", () => {
+  activateTab(location.hash.replace(/^#/, ""), false);
+});
+
+activateTab(location.hash.replace(/^#/, ""), false);
 
 $("btn-refresh").onclick = () => void refresh();
 $("btn-rehash").onclick = () => void postAction("rehash", []);

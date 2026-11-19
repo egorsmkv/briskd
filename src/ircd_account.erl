@@ -18,6 +18,8 @@
     store_new/5,
     validate_new/2,
     find/1,
+    find_by_email/1,
+    set_password/2,
     scram_credentials/1,
     valid_name/1,
     verifier/2
@@ -97,6 +99,62 @@ find(Name) ->
         {ok, #account{pending = undefined} = Account} -> {ok, Account};
         _ -> error
     end.
+
+-doc """
+Look up a usable (verified) account by email address (case-insensitive).
+""".
+-spec find_by_email(binary()) -> {ok, #account{}} | error.
+find_by_email(Email) when is_binary(Email) ->
+    Target = string:lowercase(string:trim(Email)),
+    find_verified_email(mnesia:dirty_all_keys(account), Target).
+
+find_verified_email([], _Target) ->
+    error;
+find_verified_email([Key | Rest], Target) ->
+    case mnesia:dirty_read(account, Key) of
+        [#account{pending = undefined, email = Stored} = Account] when is_binary(Stored) ->
+            case string:lowercase(Stored) =:= Target of
+                true -> {ok, Account};
+                false -> find_verified_email(Rest, Target)
+            end;
+        _ ->
+            find_verified_email(Rest, Target)
+    end.
+
+-doc """
+Replace the SCRAM-SHA-256 password verifier of an existing usable account.
+Returns `{ok, UpdatedAccount}` or `{error, bad_password | no_such_account}`.
+""".
+-spec set_password(binary(), binary()) ->
+    {ok, #account{}} | {error, bad_password | no_such_account}.
+set_password(Name, Password) when is_binary(Name), is_binary(Password) ->
+    Min = min_password(),
+    case byte_size(Password) >= Min andalso byte_size(Password) =< ?MAX_PASSWORD of
+        false ->
+            {error, bad_password};
+        true ->
+            case find(Name) of
+                {ok, #account{} = Account} ->
+                    #{
+                        salt := Salt,
+                        iterations := Iterations,
+                        stored_key := StoredKey,
+                        server_key := ServerKey
+                    } = new_verifier(Password),
+                    Updated = Account#account{
+                        salt = Salt,
+                        iterations = Iterations,
+                        stored_key = StoredKey,
+                        server_key = ServerKey
+                    },
+                    mnesia:dirty_write(Updated),
+                    {ok, Updated};
+                error ->
+                    {error, no_such_account}
+            end
+    end;
+set_password(_, _) ->
+    {error, bad_password}.
 
 %% Any row, including one waiting for verification. An expired pending row is
 %% treated as absent so the name can be registered again.

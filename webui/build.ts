@@ -4,8 +4,8 @@ import * as sass from "sass";
 const outDir = "../priv/webui/assets";
 await Deno.mkdir(outDir, { recursive: true });
 
-const tsEntries = ["admin", "signup", "verify", "webirc"];
-const scssEntries = ["admin", "signup", "verify", "webirc"];
+const tsEntries = ["admin", "signup", "verify", "recover", "webirc"];
+const scssEntries = ["admin", "signup", "verify", "recover", "webirc"];
 
 const browserTargets = ["chrome80", "firefox78", "safari13", "edge80"];
 

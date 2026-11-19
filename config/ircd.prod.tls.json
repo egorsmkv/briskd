@@ -17,6 +17,13 @@
   "retention": "channels",
   "history_limit": 500,
   "shutdown_grace": 10,
+  "e2ee": {
+    "max_devices": 8,
+    "max_prekeys": 100,
+    "queue_limit": 500,
+    "queue_ttl": 1209600,
+    "fetch_rate": 30
+  },
   "operators": [],
   "administrators": [],
   "channels": [
