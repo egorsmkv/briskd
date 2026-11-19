@@ -7,6 +7,8 @@
     broadcast/5,
     broadcast/6,
     clear_source/0,
+    resume_reply/1,
+    suspend_reply/0,
     echo/6,
     end_batch/0,
     end_label/1,
@@ -224,6 +226,34 @@ begin_label(Pid, Label) when is_binary(Label) ->
     ok;
 begin_label(_Pid, _) ->
     put(ircd_label, off),
+    ok.
+
+-doc """
+Take the current command's reply context (the labeled-response collector and
+the source set by `set_source/1`) out of this process, for a command whose
+reply is deferred (`m:ircd_deferred`). Pass the result to `resume_reply/1`
+before sending the rest of the reply.
+""".
+-spec suspend_reply() -> {term(), term()}.
+suspend_reply() ->
+    {erase(ircd_label), erase(ircd_source)}.
+
+-doc """
+Restore a reply context taken by `suspend_reply/0`; the command then finishes
+with `end_label/1` and `clear_source/0` as usual.
+""".
+-spec resume_reply({term(), term()}) -> ok.
+resume_reply({Label, Source}) ->
+    _ =
+        case Label of
+            undefined -> erase(ircd_label);
+            _ -> put(ircd_label, Label)
+        end,
+    _ =
+        case Source of
+            undefined -> erase(ircd_source);
+            _ -> put(ircd_source, Source)
+        end,
     ok.
 
 -doc """

@@ -97,11 +97,21 @@ accounts_unit() ->
     ok.
 
 sasl_unit() ->
-    ?assertEqual({success, <<"Unit1">>}, ircd_sasl:step(plain, <<0, "unit1", 0, "password1">>)),
+    %% PLAIN hands the password check to the caller (ircd_state runs the
+    %% PBKDF2 step in a worker); check_password/2 is the synchronous form.
     ?assertEqual(
-        {success, <<"Unit1">>}, ircd_sasl:step(plain, <<"UNIT1", 0, "unit1", 0, "password1">>)
+        {check_password, <<"unit1">>, <<"password1">>},
+        ircd_sasl:step(plain, <<0, "unit1", 0, "password1">>)
     ),
-    ?assertEqual({error, failed}, ircd_sasl:step(plain, <<0, "unit1", 0, "nope">>)),
+    ?assertEqual(
+        {check_password, <<"unit1">>, <<"password1">>},
+        ircd_sasl:step(plain, <<"UNIT1", 0, "unit1", 0, "password1">>)
+    ),
+    ?assertMatch(
+        {ok, #account{name = <<"Unit1">>}},
+        ircd_account:check_password(<<"unit1">>, <<"password1">>)
+    ),
+    ?assertEqual(error, ircd_account:check_password(<<"unit1">>, <<"nope">>)),
     ?assertEqual({success, <<"Unit1">>}, ircd_sasl:step({external, <<"abcdef">>}, <<>>)),
     ?assertEqual({success, <<"Unit1">>}, ircd_sasl:step({external, <<"abcdef">>}, <<"unit1">>)),
     ?assertEqual({error, failed}, ircd_sasl:step({external, <<"abcdef">>}, <<"other">>)),

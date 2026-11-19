@@ -56,24 +56,28 @@ start(Mechanism, Context) ->
 Apply one decoded client response to `State`.
 
 Returns `{continue, Challenge, Next}` to send another challenge,
-`{success, AccountName}` with the stored spelling of the account, or
+`{success, AccountName}` with the stored spelling of the account,
+`{check_password, AccountName, Password}` for PLAIN once the message is
+well formed (the caller verifies the password, see
+`ircd_account:check_password/2`; this keeps the module free of the costly
+PBKDF2 step), or
 `{error, failed}` for a bad credential, malformed message, or mismatched
 authorization identity. SCRAM ends with the server signature
 (`v=...`) as a challenge, and succeeds on the client's empty reply.
 """.
 -spec step(state(), binary()) ->
-    {continue, binary(), state()} | {success, binary()} | {error, failed}.
+    {continue, binary(), state()}
+    | {success, binary()}
+    | {check_password, binary(), binary()}
+    | {error, failed}.
 step(plain, Data) ->
     case binary:split(Data, <<0>>, [global]) of
         [Authz, Authc, Password] when Authc =/= <<>> ->
             case authz_ok(Authz, Authc) of
-                true ->
-                    case ircd_account:check_password(Authc, Password) of
-                        {ok, #account{name = Name}} -> {success, Name};
-                        error -> {error, failed}
-                    end;
-                false ->
-                    {error, failed}
+                %% The PBKDF2 check is the caller's: `ircd_state` runs it in
+                %% a worker so it never blocks the state process.
+                true -> {check_password, Authc, Password};
+                false -> {error, failed}
             end;
         _ ->
             {error, failed}

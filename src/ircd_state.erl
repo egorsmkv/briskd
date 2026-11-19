@@ -864,7 +864,7 @@ other_call({command_as, Primary, Command, Params, Bytes, Tags}, {Caller, Ref}, S
 other_call({command, Command, Params, Bytes, Tags}, {Pid, Ref}, Server) ->
     case mnesia:dirty_read(client, Pid) of
         [_] ->
-            client_command(Command, Params, Bytes, Tags, Pid, Server);
+            client_command(Command, Params, Bytes, Tags, {Pid, Ref}, Server);
         [] ->
             %% multiclient: finish_attach/2 dropped this connection's client
             %% row, but lines the session read before it saw {attach, Holder}
@@ -880,7 +880,7 @@ other_call({command, Command, Params, Bytes, Tags}, {Pid, Ref}, Server) ->
             end
     end.
 
-client_command(Command, Params, Bytes, Tags, Pid, Server) ->
+client_command(Command, Params, Bytes, Tags, {Pid, _} = From, Server) ->
     count_command(Pid, Command, Bytes),
     Client = ircd_state_client:client(Pid),
     ircd_log:client_command(Client#client.nick, Command, Params),
@@ -894,15 +894,29 @@ client_command(Command, Params, Bytes, Tags, Pid, Server) ->
     Reply =
         try
             dispatch(Command, Params, Client, Server, Tags)
-        after
-            ircd_state_send:end_label(Server),
-            ircd_state_send:clear_source()
+        catch
+            Class:Reason:Stack ->
+                _ = ircd_deferred:take(),
+                end_reply(Server),
+                erlang:raise(Class, Reason, Stack)
         end,
-    case Reply of
-        quit -> ok;
-        _ -> ircd_state_client:touch_activity(Pid)
-    end,
-    {reply, Reply, Server}.
+    case ircd_deferred:take() of
+        none ->
+            end_reply(Server),
+            case Reply of
+                quit -> ok;
+                _ -> ircd_state_client:touch_activity(Pid)
+            end,
+            {reply, Reply, Server};
+        {Work, Then} ->
+            %% Costly work (PBKDF2) runs in a worker; the reply follows when
+            %% it finishes (ircd_deferred:resume/3 from handle_info 'DOWN').
+            ircd_deferred:start(From, Pid, Work, Then, Server)
+    end.
+
+end_reply(Server) ->
+    ircd_state_send:end_label(Server),
+    ircd_state_send:clear_source().
 
 %% `true` when Target is the adjacent Peer or a known server reached through
 %% it, `false` for the local server or a server routed through another link,
@@ -931,13 +945,11 @@ link_source(_Peer, Prefix) -> Prefix.
 handle_cast(_, State) -> {noreply, State}.
 
 -doc false.
-handle_info({'DOWN', _, process, Pid, _}, State) ->
-    ets:delete(ircd_attached, Pid),
-    case mnesia:dirty_read(client, Pid) of
-        [Client] -> ircd_state_client:disconnect(Client, <<"Connection closed">>, State);
-        [] -> ok
-    end,
-    {noreply, State};
+handle_info({'DOWN', Ref, process, Pid, Reason}, State) ->
+    case ircd_deferred:resume(Ref, Reason, State) of
+        handled -> {noreply, State};
+        not_ours -> session_down(Pid, State)
+    end;
 handle_info({flush_netjoin, Peer}, Server) ->
     ircd_state_link:flush_netjoin(Peer),
     {noreply, Server};
@@ -946,9 +958,18 @@ handle_info(reop_tick, Server) ->
     ok = ircd_state_net:expire_holds(),
     erlang:send_after(1000, self(), reop_tick),
     {noreply, Server};
-%% Ignore unknown messages. Session DOWN, `reop_tick`, and `flush_netjoin` are
-%% the only expected info events.
+%% Ignore unknown messages. Session and worker DOWN, `reop_tick`, and
+%% `flush_netjoin` are the only expected info events.
 handle_info(_, State) ->
+    {noreply, State}.
+
+%% A session process ended: drop its attachment and client state.
+session_down(Pid, State) ->
+    ets:delete(ircd_attached, Pid),
+    case mnesia:dirty_read(client, Pid) of
+        [Client] -> ircd_state_client:disconnect(Client, <<"Connection closed">>, State);
+        [] -> ok
+    end,
     {noreply, State}.
 
 -doc """

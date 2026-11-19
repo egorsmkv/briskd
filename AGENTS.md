@@ -90,6 +90,7 @@ src/ircd_state_net.erl       # known servers, services, netsplits, and holds
 src/ircd_route.erl           # pure hop, loop, burst-order, and numeric decisions
 src/ircd_state_info.erl      # operator, statistics, and server query commands
 src/ircd_state_send.erl      # numeric replies, tag filtering, batches, client delivery
+src/ircd_deferred.erl        # deferred replies: PBKDF2 and other slow work in bounded workers
 src/ircd_state_v3.erl        # IRCv3 accounts, SASL, identity, and notifications
 src/ircd_state_monitor.erl   # MONITOR and extended-monitor
 src/ircd_state_history.erl   # chathistory, read markers, redaction

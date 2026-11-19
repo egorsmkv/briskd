@@ -95,6 +95,10 @@ in the referenced RFC.
   - Expired nickname and channel holds are deleted.
   - `MARKREAD` targets must be a channel or a nickname.
   - Mask matching is linear in mask times value length.
+  - PBKDF2 for SASL `PLAIN` and `REGISTER` runs in bounded worker processes
+    (`ircd_deferred`, at most 32 at once; over that the attempt fails fast
+    with 904 or `FAIL REGISTER TEMPORARILY_UNAVAILABLE`), so `ircd_state`
+    keeps serving other clients while a password is checked.
   - Peer-supplied identities, topics, keys, and masks are copied before they
     are stored, so they do not keep receive buffers alive.
 - [ ] Remaining bounds from the memory audit: an expiry or cap for empty safe

@@ -7,12 +7,26 @@
     by_certfp/1,
     check_password/2,
     create/5,
+    derive_stored_key/3,
+    new_verifier/1,
+    password_matches/4,
+    password_params/1,
+    store_new/5,
+    validate_new/2,
     find/1,
     scram_credentials/1,
     valid_name/1,
     verifier/2
 ]).
 -include("ircd_account.hrl").
+-export_type([verifier/0]).
+
+-type verifier() :: #{
+    salt := binary(),
+    iterations := pos_integer(),
+    stored_key := binary(),
+    server_key := binary()
+}.
 
 -moduledoc """
 Account storage for [SASL](https://ircv3.net/specs/extensions/sasl-3.2) and
@@ -157,6 +171,18 @@ Errors: `bad_account_name` (`valid_name/1`), `weak_password` (shorter than
     {ok, #account{}}
     | {error, bad_account_name | account_exists | weak_password | unacceptable_password}.
 create(Name, Email, Password, CertFps, Pending) ->
+    case validate_new(Name, Password) of
+        ok -> store_new(Name, Email, new_verifier(Password), CertFps, Pending);
+        {error, _} = Error -> Error
+    end.
+
+-doc """
+Cheap checks for a new account, done before any PBKDF2 work: the name is
+valid (`valid_name/1`) and free, and the password length is acceptable.
+""".
+-spec validate_new(binary(), binary()) ->
+    ok | {error, bad_account_name | account_exists | weak_password | unacceptable_password}.
+validate_new(Name, Password) ->
     case
         {
             valid_name(Name),
@@ -165,22 +191,53 @@ create(Name, Email, Password, CertFps, Pending) ->
             lookup(Name)
         }
     of
-        {false, _, _, _} ->
+        {false, _, _, _} -> {error, bad_account_name};
+        {_, false, _, _} -> {error, weak_password};
+        {_, _, false, _} -> {error, unacceptable_password};
+        {_, _, _, {ok, _}} -> {error, account_exists};
+        {true, true, true, error} -> ok
+    end.
+
+-doc """
+A fresh SCRAM-SHA-256 verifier for `Password`: a random 16-byte salt, the
+standard iteration count, StoredKey, and ServerKey. This is the expensive
+PBKDF2 step; it touches no state, so `ircd_state` runs it in a worker
+process (`m:ircd_deferred`).
+""".
+-spec new_verifier(binary()) -> verifier().
+new_verifier(Password) ->
+    Salt = crypto:strong_rand_bytes(16),
+    {StoredKey, ServerKey} = verifier(Password, {Salt, ?ITERATIONS}),
+    #{salt => Salt, iterations => ?ITERATIONS, stored_key => StoredKey, server_key => ServerKey}.
+
+-doc """
+Write a new account from a verifier made by `new_verifier/1`. The name is
+checked again because another client may have registered it while the
+verifier was being derived; that case returns `{error, account_exists}`.
+""".
+-spec store_new(
+    binary(), undefined | binary(), verifier(), [binary()], undefined | {binary(), pos_integer()}
+) ->
+    {ok, #account{}} | {error, bad_account_name | account_exists}.
+store_new(Name, Email, Verifier, CertFps, Pending) ->
+    case {valid_name(Name), lookup(Name)} of
+        {false, _} ->
             {error, bad_account_name};
-        {_, false, _, _} ->
-            {error, weak_password};
-        {_, _, false, _} ->
-            {error, unacceptable_password};
-        {_, _, _, {ok, _}} ->
+        {_, {ok, _}} ->
             {error, account_exists};
-        {true, true, true, error} ->
-            Salt = crypto:strong_rand_bytes(16),
-            {StoredKey, ServerKey} = verifier(Password, {Salt, ?ITERATIONS}),
+        {true, error} ->
+            #{
+                salt := Salt,
+                iterations := Iterations,
+                stored_key := StoredKey,
+                server_key := ServerKey
+            } =
+                Verifier,
             Account = #account{
                 key = ircd_wire:fold(Name),
                 name = ircd_wire:retain(Name),
                 salt = Salt,
-                iterations = ?ITERATIONS,
+                iterations = Iterations,
                 stored_key = StoredKey,
                 server_key = ServerKey,
                 email = ircd_wire:retain(Email),
@@ -199,27 +256,53 @@ create(Name, Email, Password, CertFps, Pending) ->
     end.
 
 -doc """
-Verify a password for a usable account (SASL PLAIN) by deriving its
-SCRAM-SHA-256 StoredKey. The comparison is constant time. An unknown account
-runs the same PBKDF2 derivation with the iteration count `create/5` gives every
-new account (4096), so it costs the same time as a local account. An account
-imported from a peer with another iteration count is derived with its own
-count.
+Verify a password for a usable account (SASL PLAIN). Runs the PBKDF2
+derivation in the calling process; `ircd_state` uses the split form
+(`password_params/1`, `derive_stored_key/3`, `password_matches/4`) so the
+derivation runs in a worker instead.
 """.
 -spec check_password(binary(), binary()) -> {ok, #account{}} | error.
 check_password(Name, Password) ->
+    {Salt, Iterations} = password_params(Name),
+    password_matches(Name, Salt, Iterations, derive_stored_key(Password, Salt, Iterations)).
+
+-doc """
+Salt and PBKDF2 iteration count to derive a candidate key for `Name`. An
+unknown or unusable account gets a fixed 16-byte salt and the iteration count
+`create/5` gives every new account (4096), so the derivation costs the same
+time as for a local account. An account imported from a peer with another
+iteration count is derived with its own count.
+""".
+-spec password_params(binary()) -> {binary(), pos_integer()}.
+password_params(Name) ->
+    case find(Name) of
+        {ok, #account{salt = Salt, iterations = Iterations}} -> {Salt, Iterations};
+        error -> {<<0:128>>, ?ITERATIONS}
+    end.
+
+-doc """
+The candidate SCRAM StoredKey for `Password` (the expensive PBKDF2 step;
+pure, safe to run in a worker).
+""".
+-spec derive_stored_key(binary(), binary(), pos_integer()) -> binary().
+derive_stored_key(Password, Salt, Iterations) ->
+    {StoredKey, _} = verifier(Password, {Salt, Iterations}),
+    StoredKey.
+
+-doc """
+Compare a candidate StoredKey with the account's, in constant time. The
+account is read again: if it disappeared or its salt or iteration count
+changed since `password_params/1`, the check fails.
+""".
+-spec password_matches(binary(), binary(), pos_integer(), binary()) -> {ok, #account{}} | error.
+password_matches(Name, Salt, Iterations, Candidate) ->
     case find(Name) of
         {ok, #account{salt = Salt, iterations = Iterations, stored_key = Stored} = Account} ->
-            {Candidate, _} = verifier(Password, {Salt, Iterations}),
             case crypto:hash_equals(Candidate, Stored) of
                 true -> {ok, Account};
                 false -> error
             end;
-        error ->
-            %% Spend the same derivation time for an unknown account: the
-            %% same PBKDF2 path and ?ITERATIONS that create/5 stores, with a
-            %% fixed salt of the same 16-byte size.
-            _ = verifier(Password, {<<0:128>>, ?ITERATIONS}),
+        _ ->
             error
     end.
 

@@ -373,12 +373,36 @@ sasl_step(#client{pid = Pid} = Client, Server, State, Data) ->
             ircd_conn:put(Pid, sasl_buf, <<>>),
             send_challenge(Pid, Server, Challenge);
         {success, Account} ->
-            clear_sasl(Pid),
-            login(Client, Account, Server),
-            sasl_numeric(Client, Server, <<"903">>, [], <<"SASL authentication successful">>);
+            sasl_success(Client, Account, Server);
+        {check_password, Name, Password} ->
+            %% PLAIN: derive the candidate key in a worker (ircd_deferred) so
+            %% the PBKDF2 rounds never block ircd_state. Only the worker sees
+            %% the password; the continuation gets the derived key.
+            {Salt, Iterations} = ircd_account:password_params(Name),
+            ircd_deferred:request(
+                fun() -> ircd_account:derive_stored_key(Password, Salt, Iterations) end,
+                fun(Result) -> plain_checked(Pid, Server, Name, Salt, Iterations, Result) end
+            );
         {error, _} ->
             sasl_fail(Client, Server)
     end.
+
+plain_checked(Pid, Server, Name, Salt, Iterations, Result) ->
+    Client = ircd_state_client:client(Pid),
+    case Result of
+        {ok, Candidate} ->
+            case ircd_account:password_matches(Name, Salt, Iterations, Candidate) of
+                {ok, #account{name = Account}} -> sasl_success(Client, Account, Server);
+                error -> sasl_fail(Client, Server)
+            end;
+        {error, _} ->
+            sasl_fail(Client, Server)
+    end.
+
+sasl_success(#client{pid = Pid} = Client, Account, Server) ->
+    clear_sasl(Pid),
+    login(Client, Account, Server),
+    sasl_numeric(Client, Server, <<"903">>, [], <<"SASL authentication successful">>).
 
 sasl_fail(#client{pid = Pid, nick = Nick, host = Host} = Client, Server) ->
     clear_sasl(Pid),
@@ -530,48 +554,72 @@ register([Requested, Email, Password | _], #client{pid = Pid, nick = Current} = 
                     undefined -> [];
                     Fp -> [Fp]
                 end,
-            Pending =
-                case Verification of
-                    null -> undefined;
-                    #{ttl := Ttl} -> {verification_code(), Ttl * 1000}
-                end,
-            case ircd_account:create(Name, Stored, Password, CertFps, Pending) of
-                {ok, Account} when Pending =:= undefined ->
-                    logger:info(#{event => account_registered, account => Name}),
-                    ircd_state_sync:account_created(Account),
-                    ircd_state_send:send(
-                        Pid,
-                        Server,
-                        <<"REGISTER">>,
-                        [<<"SUCCESS">>, Name],
-                        <<"Account created">>
-                    ),
-                    login(Client, Name, Server);
-                {ok, _} ->
-                    {Code, _} = Pending,
-                    logger:info(#{event => account_verification_sent, account => Name}),
-                    send_verification(Verification, Name, Stored, Code),
-                    ircd_state_send:send(
-                        Pid,
-                        Server,
-                        <<"REGISTER">>,
-                        [<<"VERIFICATION_REQUIRED">>, Name],
-                        <<"Check your email for a verification code">>
+            case ircd_account:validate_new(Name, Password) of
+                ok ->
+                    %% The SCRAM verifier (PBKDF2) is derived in a worker
+                    %% (ircd_deferred); the account is written when it is done.
+                    ircd_deferred:request(
+                        fun() -> ircd_account:new_verifier(Password) end,
+                        fun(Result) ->
+                            register_derived(
+                                Result, Pid, Name, Stored, CertFps, Verification, Server
+                            )
+                        end
                     );
-                {error, account_exists} ->
-                    reg_fail(Pid, <<"ACCOUNT_EXISTS">>, Name, <<"Account already exists">>);
-                {error, bad_account_name} ->
-                    reg_fail(Pid, <<"BAD_ACCOUNT_NAME">>, Name, <<"Invalid account name">>);
-                {error, weak_password} ->
-                    reg_fail(Pid, <<"WEAK_PASSWORD">>, Name, <<"Password is too short">>);
-                {error, unacceptable_password} ->
-                    reg_fail(Pid, <<"UNACCEPTABLE_PASSWORD">>, Name, <<"Password is too long">>)
+                {error, _} = Invalid ->
+                    register_result(Invalid, Pid, Name, Stored, Verification, undefined, Server)
             end
     end;
 register(_, Client, Server) ->
     ircd_state_send:numeric(
         Client, Server, <<"461">>, [<<"REGISTER">>], <<"Not enough parameters">>
     ).
+
+register_derived({ok, Verifier}, Pid, Name, Stored, CertFps, Verification, Server) ->
+    Pending =
+        case Verification of
+            null -> undefined;
+            #{ttl := Ttl} -> {verification_code(), Ttl * 1000}
+        end,
+    Result = ircd_account:store_new(Name, Stored, Verifier, CertFps, Pending),
+    register_result(Result, Pid, Name, Stored, Verification, Pending, Server);
+register_derived({error, _}, Pid, Name, _Stored, _CertFps, _Verification, _Server) ->
+    reg_fail(Pid, <<"TEMPORARILY_UNAVAILABLE">>, Name, <<"Registration is busy, try again">>).
+
+register_result(Result, Pid, Name, Stored, Verification, Pending, Server) ->
+    Client = ircd_state_client:client(Pid),
+    case Result of
+        {ok, Account} when Pending =:= undefined ->
+            logger:info(#{event => account_registered, account => Name}),
+            ircd_state_sync:account_created(Account),
+            ircd_state_send:send(
+                Pid,
+                Server,
+                <<"REGISTER">>,
+                [<<"SUCCESS">>, Name],
+                <<"Account created">>
+            ),
+            login(Client, Name, Server);
+        {ok, _} ->
+            {Code, _} = Pending,
+            logger:info(#{event => account_verification_sent, account => Name}),
+            send_verification(Verification, Name, Stored, Code),
+            ircd_state_send:send(
+                Pid,
+                Server,
+                <<"REGISTER">>,
+                [<<"VERIFICATION_REQUIRED">>, Name],
+                <<"Check your email for a verification code">>
+            );
+        {error, account_exists} ->
+            reg_fail(Pid, <<"ACCOUNT_EXISTS">>, Name, <<"Account already exists">>);
+        {error, bad_account_name} ->
+            reg_fail(Pid, <<"BAD_ACCOUNT_NAME">>, Name, <<"Invalid account name">>);
+        {error, weak_password} ->
+            reg_fail(Pid, <<"WEAK_PASSWORD">>, Name, <<"Password is too short">>);
+        {error, unacceptable_password} ->
+            reg_fail(Pid, <<"UNACCEPTABLE_PASSWORD">>, Name, <<"Password is too long">>)
+    end.
 
 %% True when another local or remote client currently uses the nickname.
 nick_held_by_other(Name, Pid) ->
