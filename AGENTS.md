@@ -15,15 +15,15 @@ Build a **correct, interoperable, secure, observable, fault-contained, and opera
 5. Throughput, tail latency, and memory efficiency based on profiling.
 6. Maintainable, idiomatic OTP code.
 
-Do not trade off a MUST-level requirement of the implemented IRC specifications for speed. When a task is ambiguous, inspect the code, [README.md](README.md), [ROADMAP.md](ROADMAP.md), and the relevant RFC, then document the assumption. Never silently reinterpret wire formats. Explicitly distinguish **standards compliance**, **implementation policy**, and **operator configuration**.
+Do not trade off a MUST-level requirement of the implemented IRC specifications for speed. When a task is ambiguous, inspect the code, [README.md](README.md), the guides in `docs/`, [ROADMAP.md](ROADMAP.md), and the relevant RFC, then document the assumption. Never silently reinterpret wire formats. Explicitly distinguish **standards compliance**, **implementation policy**, and **operator configuration**.
 
-This tree implements **selected parts** of RFC 1459 and RFC 2810–2813. It is not a complete IRC daemon. `ROADMAP.md` is the coverage record: a checked item is present, and it does not mean every edge case in the cited RFC is done. Extend behavior only when the task asks for it, and update the roadmap and README when coverage changes.
+This tree implements **selected parts** of RFC 1459 and RFC 2810–2813. It is not a complete IRC daemon. `ROADMAP.md` is the coverage record: a checked item is present, and it does not mean every edge case in the cited RFC is done. Extend behavior only when the task asks for it, and update the roadmap and the matching guide in `docs/` (`irc-support.md`, `ircv3.md`, `configuration.md`) when coverage changes.
 
 Where RFC 1459 and RFC 2812 disagree, keep the choice already encoded in this server and name it in the change. Identity comparison uses the **RFC 1459** case mapping in `ircd_wire:fold/1` (`[\]^` fold to `{|}~`). IRCv3 support covers the specifications on <https://ircv3.net/irc/>, including the deprecated `STARTTLS`; `ROADMAP.md` lists each one. `CAP LS` advertises the set in `ircd_cap`, `CAP REQ` is atomic, and an unknown subcommand returns 410. Server tags are filtered per recipient in `ircd_state_send`. Keep draft capability names prefixed exactly as the specification publishes them, and change a draft only when the published draft changes.
 
 ## 2. Working protocol for the agent
 
-1. Inspect `README.md`, `ROADMAP.md`, `rebar.config`, `rebar.lock`, `src/`, `include/`, `test/`, `config/`, and CI before changing code.
+1. Inspect `README.md`, `docs/`, `ROADMAP.md`, `rebar.config`, `rebar.lock`, `src/`, `include/`, `test/`, `config/`, and CI before changing code.
 2. Treat ingress as two trust classes: **unregistered or registered clients** on the TCP/TLS listener, and **configured server peers** on direct links. Name the RFC section the change follows (client protocol RFC 2812 / RFC 1459, channels RFC 2811, server protocol RFC 2813, or the default port in RFC 7194).
 3. Write down invariants and failure modes for changes to the wire codec, registration, channel modes, numerics, timers, server-link routing, Mnesia persistence, or socket IO.
 4. Make the smallest coherent change. Preserve public APIs and on-wire behavior unless the task explicitly requires a breaking change.
@@ -210,11 +210,11 @@ Apply the [Efficiency Guide](https://www.erlang.org/docs/23/efficiency_guide/use
 | Original protocol and RFC 1459 case mapping | RFC 1459 | Case folding, nickname checks, and legacy command behavior where the code follows 1459 |
 | Architecture | RFC 2810 | Clients, channels, and directly connected servers |
 | Channel management | RFC 2811 | Implemented subset: membership, modes, masks, safe `!` channels, local `&` channels |
-| Client protocol | RFC 2812 | Implemented commands and numerics listed in the README |
+| Client protocol | RFC 2812 | Implemented commands and numerics listed in `docs/irc-support.md` |
 | Server protocol | RFC 2813 | Direct and multi-hop peers, `PASS`/`SERVER`, burst, routing, and netsplit cleanup |
 | Default port | RFC 7194 | TCP `6667` unless configured otherwise |
 
-Check errata and IANA IRC numeric/mode assignments before adding a numeric or a mode letter. Update `ROADMAP.md` and the README command list in the same change. Interoperability with a second `ircd` (or another RFC 2813 peer) is a separate gate from unit tests.
+Check errata and IANA IRC numeric/mode assignments before adding a numeric or a mode letter. Update `ROADMAP.md` and the command list in `docs/irc-support.md` in the same change. Interoperability with a second `ircd` (or another RFC 2813 peer) is a separate gate from unit tests.
 
 Parsers accept the grammar they claim and reject the rest with `error` or the RFC numeric for that command. Test legal variants that differ in spacing and trailing-parameter shape, plus truncated, overlong, empty, and prefix-spoofed lines.
 
@@ -266,7 +266,7 @@ Linking is RFC 2813 over configured direct peers, with introductions of servers 
 
 ## 10. Configuration, persistence, and operations
 
-- Runtime configuration is JSON, selected with `IRCD_CONFIG`, loaded by `ircd_config`. Reject invalid configuration at startup. Paths are relative to the process working directory unless absolute. Defaults and keys are documented in the README table (`name`, `bind`, `tcp_port`, `tls_port`, certificates, log level and format, `max_clients`, `client_password`, `operators`, `administrators`, `channels`, MOTD, admin fields, `reop_delay`, `mnesia_dir`, `retention`, `history_limit`, `server_links`).
+- Runtime configuration is JSON, selected with `IRCD_CONFIG`, loaded by `ircd_config`. Reject invalid configuration at startup. Paths are relative to the process working directory unless absolute. Defaults and keys are documented in the table in `docs/configuration.md` (`name`, `bind`, `tcp_port`, `tls_port`, certificates, log level and format, `max_clients`, `client_password`, `operators`, `administrators`, `channels`, MOTD, admin fields, `reop_delay`, `mnesia_dir`, `retention`, `history_limit`, `server_links`).
 - At least one of `tcp_port` and `tls_port` is set. Port `0` means an ephemeral port reported in the startup log. The development container uses `config/ircd.dev.json`.
 - Mnesia disk copies store WHOWAS history and safe-channel state under `mnesia_dir`. JSON `retention` is `transient` (default: ordinary channels are cleared on startup, then any `channels` entries that are missing are created) or `channels` (ordinary channel rows and a bounded channel `PRIVMSG`/`NOTICE` history survive; a configured channel is created only when its row is absent). Both policies clear client sessions, user modes, and imported peer state. A configured channel is kept when its last member leaves. `history_limit` caps that history. Backup, restore, and schema migration are documented in `docs/mnesia.md`. Document any new persisted record with its durability and what restart does to it.
 - Shutdown stops listeners, closes client and link sockets, and leaves durable Mnesia data consistent. Do not drop safe-channel rows on a normal stop.
@@ -328,7 +328,7 @@ Add `rebar3 dialyzer`, `rebar3 xref`, Common Test, and a release smoke test when
 A change is done only when the agent can answer **yes**, or explicitly report why not, for each item:
 
 - Did I check the modules involved and pin the RFC 1459 / 2810–2813 behavior, including the RFC 1459 case map where identity matters?
-- Did I keep the change inside the implemented subset, or update `ROADMAP.md` and the README when coverage grew?
+- Did I keep the change inside the implemented subset, or update `ROADMAP.md` and the guides in `docs/` when coverage grew?
 - Are line length, read buffers, session count, timers, and Mnesia writes bounded?
 - Are socket ownership, `ircd_state` ownership, supervision, and shutdown still coherent?
 - Are OTP 29 features used only when stable and useful on OTP 29, with experimental native records avoided?
@@ -348,7 +348,7 @@ This file is engineering policy for the repository. The RFCs and the code win on
 - RFC 2812, IRC client protocol: https://www.rfc-editor.org/rfc/rfc2812
 - RFC 2813, IRC server protocol: https://www.rfc-editor.org/rfc/rfc2813
 - RFC 7194, default IRC port: https://www.rfc-editor.org/rfc/rfc7194
-- Repository coverage: [README.md](README.md), [ROADMAP.md](ROADMAP.md)
+- Repository coverage: [README.md](README.md), the guides in [docs/](docs/), [ROADMAP.md](ROADMAP.md)
 - OTP 23 Efficiency Guide (historical background; verify against OTP 29): https://www.erlang.org/docs/23/efficiency_guide/users_guide.html
 - OTP 29 docs: https://www.erlang.org/docs/29/
 - `gen_server` and `gen_statem`: https://www.erlang.org/docs/29/apps/stdlib/gen_server.html and https://www.erlang.org/docs/29/apps/stdlib/gen_statem.html

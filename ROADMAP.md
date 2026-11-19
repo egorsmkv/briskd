@@ -264,8 +264,9 @@ always-on bouncer details, and Sable's PostgreSQL history server.
 
 ## Documentation and verification
 
-- [x] README documents run instructions, configuration, current protocol
-  coverage, persistence behavior, and known linking limitations.
+- [x] README documents run instructions and links the guides in `docs/`:
+  configuration, IRC and IRCv3 protocol coverage, deployment, development,
+  persistence behavior, and conformance testing.
 - [x] Erlang source formatting is available through `rebar3 fmt` and the
   `just format`/`just format-check` commands.
 - [x] GitHub Actions builds the development image and runs `just format-check`

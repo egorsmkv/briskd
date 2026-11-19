@@ -11,7 +11,7 @@ a rejected `REHASH` keeps the running configuration. Paths are relative to the
 process working directory unless absolute.
 
 The keys, their defaults, and their meaning are listed in the configuration
-table of the [README](readme.html#configuration). Notable checks:
+table in the [Configuration guide](configuration.html). Notable checks:
 
 - At least one of `tcp_port`, `tls_port`, `ws_port`, and `wss_port` is set.
   Ports are 0 to 65535, and `0` binds an ephemeral port.
