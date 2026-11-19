@@ -6,7 +6,5 @@ read markers, multiline messages, metadata, MONITOR, and WHOX.
 
 Getting started:
   /join #lobby                               say hello
-  /quote REGISTER <account> * <password>     create an account
-  /quote CAP LS 302                          list the IRCv3 capabilities
 
 Be kind, keep it on topic, and have fun.
