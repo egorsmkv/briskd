@@ -187,6 +187,8 @@ interface BufferState {
   unread: number;
   mentions: number;
   members: Map<string, string>;
+  modes: Set<string>;
+  bans: string[];
 }
 
 const AVATAR_COLORS = [
@@ -371,6 +373,7 @@ document.addEventListener("keydown", (ev) => {
     closeSettings();
     closeTopicModal();
     closeCodeModal();
+    closeModModal();
     clearComposeMode();
   }
 });
@@ -642,6 +645,7 @@ let activeBuf = "*status";
 let memberFilter = "";
 let advertisedCaps: string[] = [];
 let isRegistered = false;
+let isIrcOp = false;
 let hiddenUnread = 0;
 let hiddenMentions = 0;
 const buffers = new Map<string, BufferState>();
@@ -898,6 +902,8 @@ function ensureBuf(name: string): BufferState {
       unread: 0,
       mentions: 0,
       members: new Map(),
+      modes: new Set(),
+      bans: [],
     };
     buffers.set(key, buf);
     renderBuffers();
@@ -1158,7 +1164,8 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
     const canReply = featureOn("replies");
     const canEdit = featureOn("editing") && isMine && !entry.voiceId &&
       !entry.fileId && !entry.encrypted;
-    const canDelete = featureOn("redaction") && isMine;
+    const canDelete = featureOn("redaction") &&
+      (isMine || isOperatorInBuffer(buffers.get(activeBuf)));
     if (!canReact && !canReply && !canEdit && !canDelete) return null;
 
     const actions = document.createElement("div");
@@ -1339,6 +1346,25 @@ function renderActiveMessages(): void {
   wrap.scrollTop = atBottom ? wrap.scrollHeight : prevTop;
 }
 
+function isOperatorInBuffer(buf: BufferState | undefined): boolean {
+  if (!buf || !isChan(buf.name)) return false;
+  if (isIrcOp) return true;
+  const me = myNick.toLowerCase();
+  for (const [memberNick, prefix] of buf.members.entries()) {
+    if (memberNick.toLowerCase() === me) {
+      return /[@&~]/.test(prefix || "");
+    }
+  }
+  return false;
+}
+
+function updateTopicButton(): void {
+  const buf = buffers.get(activeBuf);
+  const isOp = isOperatorInBuffer(buf);
+  $("btn-topic").style.display = isOp ? "inline-flex" : "none";
+  $("btn-mod").style.display = isOp ? "inline-flex" : "none";
+}
+
 function switchBuf(key: string, updateUrl = true): void {
   const buf = buffers.get(key);
   if (!buf) return;
@@ -1353,7 +1379,7 @@ function switchBuf(key: string, updateUrl = true): void {
   const topicEl = $("active-topic");
   topicEl.dir = "auto";
   topicEl.textContent = buf.topic || (isChan(buf.name) ? t("topic.none") : "");
-  $("btn-topic").style.display = isChan(buf.name) ? "inline-flex" : "none";
+  updateTopicButton();
 
   const wrap = $("messages");
   wrap.textContent = "";
@@ -1474,6 +1500,7 @@ function renderMembers(): void {
   $("members-title").textContent = t("members.count", {
     count: buf.members.size,
   });
+  const amOp = isOperatorInBuffer(buf);
   for (const [nick, prefix] of sorted) {
     const row = document.createElement("div");
     row.className = "member-item";
@@ -1493,8 +1520,64 @@ function renderMembers(): void {
     name.textContent = nick;
     row.appendChild(name);
 
+    const isSelf = nick.toLowerCase() === myNick.toLowerCase();
+    if (amOp && !isSelf) {
+      const acts = document.createElement("div");
+      acts.className = "member-mod-actions";
+      const hasOp = /[@&~]/.test(prefix || "");
+      const hasVoice = /\+/.test(prefix || "");
+      const mkBtn = (
+        label: string,
+        title: string,
+        cls: string,
+        fn: () => void,
+      ): HTMLButtonElement => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = `member-mod-btn ${cls}`;
+        b.textContent = label;
+        b.title = title;
+        b.onclick = (ev) => {
+          ev.stopPropagation();
+          fn();
+        };
+        return b;
+      };
+      acts.appendChild(
+        mkBtn(
+          "@",
+          hasOp ? `Deop ${nick}` : `Op ${nick}`,
+          hasOp ? "active" : "",
+          () => sendRaw(`MODE ${buf.name} ${hasOp ? "-o" : "+o"} ${nick}`),
+        ),
+      );
+      acts.appendChild(
+        mkBtn(
+          "+",
+          hasVoice ? `Devoice ${nick}` : `Voice ${nick}`,
+          hasVoice ? "active" : "",
+          () => sendRaw(`MODE ${buf.name} ${hasVoice ? "-v" : "+v"} ${nick}`),
+        ),
+      );
+      acts.appendChild(
+        mkBtn(
+          "✕",
+          `Kick ${nick}`,
+          "danger",
+          () => sendRaw(`KICK ${buf.name} ${nick} :Removed by moderator`),
+        ),
+      );
+      acts.appendChild(
+        mkBtn("⊘", `Kick & Ban ${nick}`, "danger", () => {
+          sendRaw(`MODE ${buf.name} +b ${nick}!*@*`);
+          sendRaw(`KICK ${buf.name} ${nick} :Banned by moderator`);
+        }),
+      );
+      row.appendChild(acts);
+    }
+
     row.onclick = () => {
-      if (nick.toLowerCase() !== myNick.toLowerCase()) {
+      if (!isSelf) {
         ensureBuf(nick);
         switchBuf(nick.toLowerCase());
       }
@@ -1760,18 +1843,86 @@ function handleMessage(raw: string): void {
       if (m) buf.members.set(m[2], m[1]);
     }
     renderMembers();
+    updateTopicButton();
+    return;
+  }
+  if (command === "381") {
+    isIrcOp = true;
+    updateTopicButton();
+    addLine("*status", {
+      time,
+      text: params[1] || "You are now an IRC operator",
+      kind: "sys",
+    });
+    return;
+  }
+  if (command === "324") {
+    const chan = params[1];
+    const modeStr = params[2] || "";
+    const buf = ensureBuf(chan);
+    buf.modes.clear();
+    for (const ch of modeStr) {
+      if (/[a-zA-Z]/.test(ch)) buf.modes.add(ch);
+    }
+    if (
+      activeBuf === chan.toLowerCase() &&
+      $("mod-modal").classList.contains("open")
+    ) {
+      renderModModal();
+    }
+    return;
+  }
+  if (command === "367") {
+    const chan = params[1];
+    const mask = params[2];
+    if (chan && mask) {
+      const buf = ensureBuf(chan);
+      if (!buf.bans.includes(mask)) buf.bans.push(mask);
+      if (
+        activeBuf === chan.toLowerCase() &&
+        $("mod-modal").classList.contains("open")
+      ) {
+        renderModModal();
+      }
+    }
+    return;
+  }
+  if (command === "368") {
+    if ($("mod-modal").classList.contains("open")) renderModModal();
     return;
   }
   if (command === "MODE") {
     const target = params[0];
     if (isChan(target)) {
+      const buf = ensureBuf(target);
+      const modeStr = params[1] || "";
+      let sign = "+";
+      for (const ch of modeStr) {
+        if (ch === "+" || ch === "-") sign = ch;
+        else if (/[mitns]/.test(ch)) {
+          if (sign === "+") buf.modes.add(ch);
+          else buf.modes.delete(ch);
+        }
+      }
       addLine(target, {
         time,
         text: `${nick || msg.prefix} set mode ${params.slice(1).join(" ")}`,
         kind: "sys",
       });
       sendRaw(`NAMES ${target}`);
+      if (
+        activeBuf === target.toLowerCase() &&
+        $("mod-modal").classList.contains("open")
+      ) {
+        renderModModal();
+      }
     } else {
+      const modes = params[1] || "";
+      if (target.toLowerCase() === myNick.toLowerCase()) {
+        if (modes.includes("+") && modes.includes("o")) isIrcOp = true;
+        if (modes.includes("-") && modes.includes("o")) isIrcOp = false;
+        updateTopicButton();
+      }
       addLine("*status", {
         time,
         text: `Mode ${target} ${params.slice(1).join(" ")}`,
@@ -2257,6 +2408,7 @@ function startSession(opts: {
   const err = $("connect-err");
   err.style.display = "none";
   myNick = opts.nick;
+  isIrcOp = false;
   saslUser = opts.acct;
   saslPass = opts.pass;
   autoChannels = opts.channels;
@@ -3265,6 +3417,119 @@ $<HTMLFormElement>("code-form").addEventListener("submit", async (ev) => {
       text: t("file.err.upload", { reason: errorMessage(e) }),
       kind: "err",
     });
+  }
+});
+
+// Channel Moderation Modal (operators only)
+const MOD_MODES: Array<{ flag: string; label: string }> = [
+  { flag: "m", label: "+m Moderated" },
+  { flag: "i", label: "+i Invite-only" },
+  { flag: "t", label: "+t Op Topic" },
+  { flag: "n", label: "+n No External" },
+  { flag: "s", label: "+s Secret" },
+];
+
+function renderModModal(): void {
+  const buf = buffers.get(activeBuf);
+  if (!buf || !isChan(buf.name)) return;
+  $("mod-modal-title").textContent = `${t("mod.title")} — ${buf.name}`;
+
+  const grid = $("mod-mode-grid");
+  grid.textContent = "";
+  for (const m of MOD_MODES) {
+    const active = buf.modes.has(m.flag);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "small mod-mode-btn" + (active ? " active" : "");
+    btn.textContent = m.label;
+    btn.onclick = () => {
+      sendRaw(`MODE ${buf.name} ${active ? "-" : "+"}${m.flag}`);
+    };
+    grid.appendChild(btn);
+  }
+
+  const banWrap = $("mod-ban-list");
+  banWrap.textContent = "";
+  if (buf.bans.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "muted";
+    empty.textContent = t("mod.bans.empty");
+    banWrap.appendChild(empty);
+  } else {
+    for (const mask of buf.bans) {
+      const row = document.createElement("div");
+      row.className = "mod-ban-row";
+      const code = document.createElement("span");
+      code.className = "mono";
+      code.textContent = mask;
+      const unban = document.createElement("button");
+      unban.type = "button";
+      unban.className = "small";
+      unban.textContent = t("mod.unban");
+      unban.onclick = () => {
+        sendRaw(`MODE ${buf.name} -b ${mask}`);
+        buf.bans = buf.bans.filter((b) => b !== mask);
+        renderModModal();
+      };
+      row.appendChild(code);
+      row.appendChild(unban);
+      banWrap.appendChild(row);
+    }
+  }
+}
+
+function openModModal(): void {
+  const buf = buffers.get(activeBuf);
+  if (!buf || !isOperatorInBuffer(buf)) return;
+  buf.bans = [];
+  sendRaw(`MODE ${buf.name}`);
+  sendRaw(`MODE ${buf.name} +b`);
+  renderModModal();
+  $("mod-modal").classList.add("open");
+}
+
+function closeModModal(): void {
+  $("mod-modal").classList.remove("open");
+}
+
+$("btn-mod").onclick = openModModal;
+$("btn-close-mod").onclick = closeModModal;
+$("mod-modal").addEventListener("click", (ev) => {
+  if (ev.target === $("mod-modal")) closeModModal();
+});
+
+$<HTMLFormElement>("mod-invite-form").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const buf = buffers.get(activeBuf);
+  const inp = $<HTMLInputElement>("inp-mod-invite");
+  const targetNick = inp.value.trim();
+  if (buf && isChan(buf.name) && targetNick) {
+    sendRaw(`INVITE ${targetNick} ${buf.name}`);
+    inp.value = "";
+  }
+});
+
+$<HTMLFormElement>("mod-notice-form").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const buf = buffers.get(activeBuf);
+  const inp = $<HTMLInputElement>("inp-mod-notice");
+  const msg = inp.value.trim();
+  if (buf && isChan(buf.name) && msg) {
+    sendRaw(`NOTICE ${buf.name} :${msg}`);
+    inp.value = "";
+  }
+});
+
+$<HTMLFormElement>("mod-ban-form").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const buf = buffers.get(activeBuf);
+  const inp = $<HTMLInputElement>("inp-mod-ban");
+  const mask = inp.value.trim();
+  if (buf && isChan(buf.name) && mask) {
+    sendRaw(`MODE ${buf.name} +b ${mask}`);
+    if (!buf.bans.includes(mask)) buf.bans.push(mask);
+    inp.value = "";
+    renderModModal();
   }
 });
 
