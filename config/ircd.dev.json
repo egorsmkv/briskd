@@ -47,6 +47,18 @@
     "bind": "0.0.0.0",
     "port": 8081,
     "username": "admin",
-    "password": "change-me-strong-password"
+    "password": "change-me-strong-password",
+    "terms_url": "https://example.com/terms",
+    "privacy_url": "https://example.com/privacy"
+  },
+  "account_verification": {
+    "ttl": 900,
+    "verify_url": "http://localhost:8081/verify",
+    "smtp": {
+      "relay": "inbucket",
+      "port": 2500,
+      "from": "noreply@irc.dev",
+      "tls": "never"
+    }
   }
 }

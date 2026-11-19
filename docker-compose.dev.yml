@@ -1,10 +1,18 @@
 services:
+  inbucket:
+    image: inbucket/inbucket:latest
+    ports:
+      - "2500:2500"
+      - "9000:9000"
+
   ircd-dev:
     build:
       context: .
       dockerfile: Dockerfile
     working_dir: /workspace
     command: ["just", "run-config", "config/ircd.dev.json"]
+    depends_on:
+      - inbucket
     environment:
       IRCD_CONFIG: config/ircd.dev.json
     ports:

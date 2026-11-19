@@ -7,6 +7,7 @@
     list_all/0,
     force_verify/1,
     verify/2,
+    verify_by_email/2,
     by_certfp/1,
     check_password/2,
     create/5,
@@ -203,6 +204,39 @@ verify(Name, Code) ->
             end;
         _ ->
             error
+    end.
+
+-doc """
+Complete account verification by matching a pending account's email address
+(case-insensitive) and verification `Code`.
+""".
+-spec verify_by_email(binary(), binary()) -> {ok, #account{}} | error.
+verify_by_email(Email, Code) when is_binary(Email), is_binary(Code) ->
+    Target = string:lowercase(string:trim(Email)),
+    CodeHash = crypto:hash(sha256, string:trim(Code)),
+    Now = erlang:system_time(millisecond),
+    find_and_verify_email(mnesia:dirty_all_keys(account), Target, CodeHash, Now).
+
+find_and_verify_email([], _Target, _CodeHash, _Now) ->
+    error;
+find_and_verify_email([Key | Rest], Target, CodeHash, Now) ->
+    case mnesia:dirty_read(account, Key) of
+        [#account{email = StoredEmail, pending = {Hash, Expires}} = Account] when
+            is_binary(StoredEmail), Now =< Expires
+        ->
+            case
+                string:lowercase(StoredEmail) =:= Target andalso
+                    crypto:hash_equals(CodeHash, Hash)
+            of
+                true ->
+                    Verified = Account#account{pending = undefined},
+                    mnesia:dirty_write(Verified),
+                    {ok, Verified};
+                false ->
+                    find_and_verify_email(Rest, Target, CodeHash, Now)
+            end;
+        _ ->
+            find_and_verify_email(Rest, Target, CodeHash, Now)
     end.
 
 -doc """

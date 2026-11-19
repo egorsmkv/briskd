@@ -163,19 +163,59 @@ smtp_web_verify_integration() ->
                 byte_size(integer_to_binary(WebPort))
         ),
 
-        %% Visiting /verify without query parameters renders the verification form.
+        %% Visiting /verify without query parameters renders the email + code + ALTCHA form.
         {200, FormBody} = http_get(WebPort, <<"/verify">>),
         ?assert(has(FormBody, <<"<title>Verify Account - ircd</title>">>)),
-        ?assert(has(FormBody, <<"action=\"/verify\"">>)),
+        ?assert(has(FormBody, <<"name=\"email\"">>)),
+        ?assert(has(FormBody, <<"name=\"code\"">>)),
+        ?assert(has(FormBody, <<"altcha-check">>)),
 
-        %% Click the verification link over HTTP (no Basic Auth required).
-        {200, Body1} = http_get(WebPort, PathAndQuery),
-        ?assert(has(Body1, <<"Account verified">>)),
-        ?assert(has(Body1, <<"alice">>)),
+        %% Visiting /verify with email link prefills the form (and still requires ALTCHA on submit).
+        {200, PrefillBody} = http_get(WebPort, PathAndQuery),
+        ?assert(has(PrefillBody, <<"value=\"alice\"">>)),
 
-        %% Reusing the same link fails with 400.
-        {400, Body2} = http_get(WebPort, PathAndQuery),
-        ?assert(has(Body2, <<"Verification failed">>)),
+        %% Extract the code from the email link query string.
+        [_, QueryPart] = binary:split(PathAndQuery, <<"?">>),
+        Pairs = uri_string:dissect_query(QueryPart),
+        {_, AliceCode} = lists:keyfind(<<"code">>, 1, Pairs),
+
+        %% POST /api/verify without ALTCHA is rejected.
+        {400, NoAltchaV} = http_post_json(
+            WebPort, <<"/api/verify">>, #{account => <<"alice">>, code => AliceCode}
+        ),
+        ?assertMatch(#{<<"error">> := <<"altcha_required">>}, json:decode(NoAltchaV)),
+
+        %% Verify alice via POST /api/verify with valid server-generated test ALTCHA payload.
+        {200, Body1} = http_post_json(WebPort, <<"/api/verify">>, #{
+            account => <<"alice">>,
+            code => AliceCode,
+            altcha => test_altcha_payload(11)
+        }),
+        ?assertMatch(
+            #{<<"status">> := <<"verified">>, <<"account">> := <<"alice">>}, json:decode(Body1)
+        ),
+
+        %% Reusing the same verification code fails with 400.
+        {400, Body2} = http_post_json(WebPort, <<"/api/verify">>, #{
+            account => <<"alice">>,
+            code => AliceCode,
+            altcha => test_altcha_payload(12)
+        }),
+        ?assertMatch(#{<<"error">> := <<"invalid_code">>}, json:decode(Body2)),
+
+        %% Verify a second pending account by pasting email + code into /api/verify.
+        {ok, _} = ircd_account:create(
+            <<"bobmail">>, <<"Bob@Example.COM">>, <<"strongpass123">>, [], {<<"BOBCODE9">>, 60000}
+        ),
+        {200, EmailVerifyBody} = http_post_json(WebPort, <<"/api/verify">>, #{
+            email => <<"bob@example.com">>,
+            code => <<"BOBCODE9">>,
+            altcha => test_altcha_payload(13)
+        }),
+        ?assertMatch(
+            #{<<"status">> := <<"verified">>, <<"account">> := <<"bobmail">>},
+            json:decode(EmailVerifyBody)
+        ),
 
         %% Now log in via SASL PLAIN on IRC with the newly verified account.
         Sock2 = connect_tcp(IrcPort),
@@ -293,6 +333,35 @@ http_get(Port, Path) ->
     after
         gen_tcp:close(Sock)
     end.
+
+http_post_json(Port, Path, Map) ->
+    Body = iolist_to_binary(json:encode(Map)),
+    Sock = connect_tcp(Port),
+    try
+        ok = gen_tcp:send(Sock, [
+            <<"POST ">>,
+            Path,
+            <<" HTTP/1.1\r\nHost: 127.0.0.1\r\n">>,
+            <<"Content-Type: application/json\r\n">>,
+            <<"X-Requested-With: ircd-webui\r\n">>,
+            <<"Content-Length: ">>,
+            integer_to_binary(byte_size(Body)),
+            <<"\r\n\r\n">>,
+            Body
+        ]),
+        Raw = read_all(Sock, <<>>),
+        [Head, RespBody] = binary:split(Raw, <<"\r\n\r\n">>),
+        [StatusLine | _] = binary:split(Head, <<"\r\n">>, [global]),
+        [<<"HTTP/1.1">>, CodeBin | _] = binary:split(StatusLine, <<" ">>, [global]),
+        {binary_to_integer(CodeBin), RespBody}
+    after
+        gen_tcp:close(Sock)
+    end.
+
+test_altcha_payload(Number) ->
+    Key = persistent_term:get({ircd_altcha, hmac_key}),
+    Ch = ircd_altcha:build_challenge(Key, Number, erlang:system_time(second) + 300),
+    base64:encode(iolist_to_binary(json:encode(Ch#{number => Number}))).
 
 read_all(Sock, Acc) ->
     case gen_tcp:recv(Sock, 0, 5000) of

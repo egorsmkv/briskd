@@ -33,6 +33,7 @@
     valid_utf8/1,
     verify/3,
     verify_account_web/2,
+    verify_account_email_web/2,
     signup_account_web/4,
     webirc/3
 ]).
@@ -791,7 +792,22 @@ Runs inside `m:ircd_state`; returns `{ok, AccountName}` or `error`.
 """.
 -spec verify_account_web(binary(), binary()) -> {ok, binary()} | error.
 verify_account_web(Name, Code) when is_binary(Name), is_binary(Code) ->
-    case ircd_account:verify(Name, Code) of
+    case ircd_account:verify(string:trim(Name), string:trim(Code)) of
+        {ok, #account{name = Actual} = Account} ->
+            logger:info(#{event => account_registered, account => Actual, via => web}),
+            ircd_state_sync:account_created(Account),
+            {ok, Actual};
+        error ->
+            error
+    end.
+
+-doc """
+Activate a pending account via email address and verification code from `/verify`.
+Runs inside `m:ircd_state`; returns `{ok, AccountName}` or `error`.
+""".
+-spec verify_account_email_web(binary(), binary()) -> {ok, binary()} | error.
+verify_account_email_web(Email, Code) when is_binary(Email), is_binary(Code) ->
+    case ircd_account:verify_by_email(Email, Code) of
         {ok, #account{name = Actual} = Account} ->
             logger:info(#{event => account_registered, account => Actual, via => web}),
             ircd_state_sync:account_created(Account),

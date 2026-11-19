@@ -90,9 +90,11 @@ init(#{webui := #{ip := IP, port := Port}}) ->
     case gen_tcp:listen(Port, Opts) of
         {ok, Listen} ->
             {ok, {_, ActualPort}} = inet:sockname(Listen),
+            ok = ircd_altcha:init(),
             Assets = #{
                 index => load_asset("index.html", <<"ircd admin UI asset missing">>),
-                signup => load_asset("signup.html", <<"ircd signup UI asset missing">>)
+                signup => load_asset("signup.html", <<"ircd signup UI asset missing">>),
+                verify => load_asset("verify.html", <<"ircd verify UI asset missing">>)
             },
             Counter = atomics:new(1, []),
             Acceptor = spawn_link(fun() -> accept_loop(Listen, Assets, Counter) end),
@@ -190,10 +192,14 @@ accept_loop(Listen, Assets, Counter) ->
             accept_loop(Listen, Assets, Counter)
     end.
 
-handle_connection(Socket, #{index := IndexHtml, signup := SignupHtml}) ->
+handle_connection(Socket, #{index := IndexHtml, signup := SignupHtml, verify := VerifyHtml}) ->
     case read_request(Socket) of
+        {ok, <<"GET">>, {<<"/api/altcha">>, _Query}, _Headers, _Body} ->
+            send_json(Socket, 200, <<"OK">>, ircd_altcha:create_challenge());
         {ok, <<"GET">>, {<<"/verify">>, Query}, _Headers, _Body} ->
-            handle_verify(Socket, Query);
+            handle_verify_page(Socket, VerifyHtml, Query);
+        {ok, <<"POST">>, {<<"/api/verify">>, _Query}, Headers, Body} ->
+            handle_verify_api(Socket, Headers, Body);
         {ok, <<"GET">>, {<<"/signup">>, _Query}, _Headers, _Body} ->
             handle_signup_page(Socket, SignupHtml);
         {ok, <<"POST">>, {<<"/api/signup">>, _Query}, Headers, Body} ->
@@ -245,7 +251,14 @@ handle_signup_api(Socket, Headers, Body) ->
                 ->
                     case maps:get(<<"accept_terms">>, Req, false) of
                         true ->
-                            handle_signup_submit(Socket, Account, Password, Req);
+                            case require_altcha(Req) of
+                                ok ->
+                                    handle_signup_submit(Socket, Account, Password, Req);
+                                {error, AltchaErr, Msg} ->
+                                    send_json(Socket, 400, <<"Bad Request">>, #{
+                                        error => AltchaErr, message => Msg
+                                    })
+                            end;
                         _ ->
                             send_json(Socket, 400, <<"Bad Request">>, #{
                                 error => <<"terms_not_accepted">>,
@@ -327,140 +340,131 @@ peer_ip(Socket) ->
         _ -> <<"unknown">>
     end.
 
-handle_verify(Socket, <<>>) ->
+require_altcha(Req) ->
+    case maps:get(<<"altcha">>, Req, undefined) of
+        Payload when is_binary(Payload), byte_size(Payload) > 0 ->
+            case ircd_altcha:verify_payload(Payload) of
+                ok ->
+                    ok;
+                {error, expired} ->
+                    {error, <<"altcha_expired">>,
+                        <<"ALTCHA challenge expired. Please verify again.">>};
+                {error, replayed} ->
+                    {error, <<"altcha_replayed">>,
+                        <<"ALTCHA challenge already used. Please verify again.">>};
+                {error, invalid} ->
+                    {error, <<"altcha_invalid">>, <<"Invalid ALTCHA verification.">>}
+            end;
+        _ ->
+            {error, <<"altcha_required">>, <<"Please complete the ALTCHA verification.">>}
+    end.
+
+handle_verify_page(Socket, VerifyHtml, Query) ->
     Config = persistent_term:get({ircd_state, config}, #{}),
     case maps:get(account_verification, Config, null) of
         null ->
             send_json(Socket, 404, <<"Not Found">>, #{error => <<"verification_disabled">>});
         _ ->
-            send_response(
-                Socket,
-                200,
-                <<"OK">>,
-                <<"text/html; charset=utf-8">>,
-                [{<<"Content-Security-Policy">>, verify_csp()}],
-                verify_form_page(<<>>)
-            )
-    end;
-handle_verify(Socket, Query) ->
+            {Email, Account, Code} = prefill_verify_query(Query),
+            Page0 = binary:replace(VerifyHtml, <<"__EMAIL_PREFILL__">>, escape_html(Email), [
+                global
+            ]),
+            Page1 = binary:replace(Page0, <<"__ACCOUNT_PREFILL__">>, escape_html(Account), [
+                global
+            ]),
+            Page = binary:replace(Page1, <<"__CODE_PREFILL__">>, escape_html(Code), [global]),
+            send_nonce_html(Socket, Page)
+    end.
+
+handle_verify_api(Socket, Headers, Body) ->
     Config = persistent_term:get({ircd_state, config}, #{}),
     case maps:get(account_verification, Config, null) of
         null ->
-            send_json(Socket, 404, <<"Not Found">>, #{error => <<"verification_disabled">>});
+            send_json(Socket, 404, <<"Not Found">>, #{
+                error => <<"verification_disabled">>,
+                message => <<"Account verification is disabled.">>
+            });
         _ ->
-            case parse_verify_query(Query) of
-                {ok, Account, Code} ->
-                    case ircd_state:verify_account(Account, Code) of
-                        {ok, VerifiedName} ->
-                            Page = verify_page(
-                                <<"Account verified">>,
-                                <<"Your IRC account '", (escape_html(VerifiedName))/binary,
-                                    "' has been verified. You can now log in via SASL.">>,
-                                true
-                            ),
-                            send_response(
-                                Socket,
-                                200,
-                                <<"OK">>,
-                                <<"text/html; charset=utf-8">>,
-                                [{<<"Content-Security-Policy">>, verify_csp()}],
-                                Page
-                            );
-                        error ->
-                            Page = verify_page(
-                                <<"Verification failed">>,
-                                <<"The verification link is invalid or has expired.">>,
-                                false
-                            ),
-                            send_response(
-                                Socket,
-                                400,
-                                <<"Bad Request">>,
-                                <<"text/html; charset=utf-8">>,
-                                [{<<"Content-Security-Policy">>, verify_csp()}],
-                                Page
-                            )
+            case maps:get(<<"x-requested-with">>, Headers, undefined) of
+                <<"ircd-webui">> ->
+                    try json:decode(Body) of
+                        #{<<"code">> := Code} = Req when is_binary(Code), byte_size(Code) > 0 ->
+                            case require_altcha(Req) of
+                                ok ->
+                                    verify_from_json(Socket, Req, Code);
+                                {error, AltchaErr, Msg} ->
+                                    send_json(Socket, 400, <<"Bad Request">>, #{
+                                        error => AltchaErr, message => Msg
+                                    })
+                            end;
+                        _ ->
+                            send_json(Socket, 400, <<"Bad Request">>, #{
+                                error => <<"invalid_request">>,
+                                message => <<"Verification code is required.">>
+                            })
+                    catch
+                        _:_ ->
+                            send_json(Socket, 400, <<"Bad Request">>, #{
+                                error => <<"invalid_json">>,
+                                message => <<"Invalid JSON request.">>
+                            })
                     end;
-                error ->
-                    Page = verify_page(
-                        <<"Verification failed">>,
-                        <<"Missing account or verification code.">>,
-                        false
-                    ),
-                    send_response(
-                        Socket,
-                        400,
-                        <<"Bad Request">>,
-                        <<"text/html; charset=utf-8">>,
-                        [{<<"Content-Security-Policy">>, verify_csp()}],
-                        Page
-                    )
+                _ ->
+                    send_json(Socket, 403, <<"Forbidden">>, #{error => <<"missing_csrf_header">>})
             end
     end.
 
-parse_verify_query(Query) ->
-    try uri_string:dissect_query(Query) of
-        Pairs when is_list(Pairs) ->
-            case {lists:keyfind(<<"account">>, 1, Pairs), lists:keyfind(<<"code">>, 1, Pairs)} of
-                {{_, Account}, {_, Code}} when
-                    is_binary(Account),
-                    byte_size(Account) > 0,
-                    is_binary(Code),
-                    byte_size(Code) > 0
-                ->
-                    {ok, Account, Code};
-                _ ->
-                    error
-            end;
-        _ ->
-            error
-    catch
-        _:_ -> error
+verify_from_json(Socket, Req, Code) ->
+    Result =
+        case maps:get(<<"email">>, Req, undefined) of
+            Email when is_binary(Email), byte_size(Email) > 0 ->
+                ircd_state:verify_account_by_email(Email, Code);
+            _ ->
+                case maps:get(<<"account">>, Req, undefined) of
+                    Account when is_binary(Account), byte_size(Account) > 0 ->
+                        ircd_state:verify_account(Account, Code);
+                    _ ->
+                        missing_ident
+                end
+        end,
+    case Result of
+        {ok, VerifiedName} ->
+            send_json(Socket, 200, <<"OK">>, #{
+                status => <<"verified">>, account => VerifiedName
+            });
+        missing_ident ->
+            send_json(Socket, 400, <<"Bad Request">>, #{
+                error => <<"missing_identifier">>,
+                message => <<"Email address or account name is required.">>
+            });
+        error ->
+            send_json(Socket, 400, <<"Bad Request">>, #{
+                error => <<"invalid_code">>,
+                message => <<"The verification code is invalid or has expired.">>
+            })
     end.
 
-verify_form_page(AccountPrefill) ->
-    EscAcct = escape_html(AccountPrefill),
-    iolist_to_binary([
-        <<"<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">">>,
-        <<"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">">>,
-        <<"<title>Verify Account - ircd</title>">>,
-        <<"<style>:root{color-scheme:light dark}body{font-family:system-ui,sans-serif;max-width:420px;margin:64px auto;padding:0 20px;line-height:1.5}">>,
-        <<"label{display:block;font-size:13px;font-weight:500;margin:12px 0 4px}">>,
-        <<"input{width:100%;box-sizing:border-box;font:inherit;padding:8px 10px;border-radius:5px;border:1px solid #8886}">>,
-        <<"button{margin-top:16px;width:100%;font:inherit;padding:9px 14px;border-radius:5px;border:0;background:#1d4ed8;color:#fff;cursor:pointer;font-weight:500}</style></head><body>">>,
-        <<"<h1>Verify IRC Account</h1>">>,
-        <<"<p>Enter your account name and the verification code from your email.</p>">>,
-        <<"<form method=\"get\" action=\"/verify\">">>,
-        <<"<label for=\"account\">Account name</label>">>,
-        <<"<input id=\"account\" name=\"account\" required maxlength=\"64\" value=\"">>,
-        EscAcct,
-        <<"\">">>,
-        <<"<label for=\"code\">Verification code</label>">>,
-        <<"<input id=\"code\" name=\"code\" required maxlength=\"64\" autocomplete=\"one-time-code\">">>,
-        <<"<button type=\"submit\">Verify Account</button>">>,
-        <<"</form></body></html>">>
-    ]).
+prefill_verify_query(<<>>) ->
+    {<<>>, <<>>, <<>>};
+prefill_verify_query(Query) ->
+    try uri_string:dissect_query(Query) of
+        Pairs when is_list(Pairs) ->
+            {
+                query_bin(<<"email">>, Pairs),
+                query_bin(<<"account">>, Pairs),
+                query_bin(<<"code">>, Pairs)
+            };
+        _ ->
+            {<<>>, <<>>, <<>>}
+    catch
+        _:_ -> {<<>>, <<>>, <<>>}
+    end.
 
-verify_page(Title, Message, Ok) ->
-    Accent =
-        case Ok of
-            true -> <<"#15803d">>;
-            false -> <<"#b91c1c">>
-        end,
-    iolist_to_binary([
-        <<"<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">">>,
-        <<"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">">>,
-        <<"<title>">>,
-        Title,
-        <<" - ircd</title>">>,
-        <<"<style>:root{color-scheme:light dark}body{font-family:system-ui,sans-serif;max-width:480px;margin:64px auto;padding:0 20px;line-height:1.5}h1{color:">>,
-        Accent,
-        <<";font-size:20px}</style></head><body><h1>">>,
-        Title,
-        <<"</h1><p>">>,
-        Message,
-        <<"</p></body></html>">>
-    ]).
+query_bin(Key, Pairs) ->
+    case lists:keyfind(Key, 1, Pairs) of
+        {_, Val} when is_binary(Val), byte_size(Val) =< 254 -> Val;
+        _ -> <<>>
+    end.
 
 escape_html(Bin) ->
     B1 = binary:replace(Bin, <<"&">>, <<"&amp;">>, [global]),
@@ -697,12 +701,6 @@ split_path(RawPath) ->
         [Path, Query] -> {Path, Query};
         [Path] -> {Path, <<>>}
     end.
-
-verify_csp() ->
-    <<
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; "
-        "object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
-    >>.
 
 send_json(Socket, Code, Reason, Map) ->
     Body = iolist_to_binary(json:encode(Map)),

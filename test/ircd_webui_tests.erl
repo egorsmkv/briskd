@@ -152,6 +152,19 @@ live_webui() ->
         ?assertEqual([], ircd_dronebl:list_bans()),
 
         %% Public GET /signup works without Basic Auth and uses a CSP nonce.
+        %% Public GET /api/altcha returns a valid ALTCHA SHA-256 challenge.
+        {200, _, AltchaChBody} = http_req(Port, <<"GET">>, <<"/api/altcha">>, [], <<>>),
+        ?assertMatch(
+            #{
+                <<"algorithm">> := <<"SHA-256">>,
+                <<"challenge">> := _,
+                <<"maxnumber">> := _,
+                <<"salt">> := _,
+                <<"signature">> := _
+            },
+            json:decode(AltchaChBody)
+        ),
+
         {200, SignupHdrs, SignupHtml} = http_req(Port, <<"GET">>, <<"/signup">>, [], <<>>),
         ?assert(
             binary:match(
@@ -162,10 +175,11 @@ live_webui() ->
         ?assert(binary:match(SignupHtml, <<"<title>Sign Up - ircd</title>">>) =/= nomatch),
         ?assert(binary:match(SignupHtml, <<"https://example.com/terms">>) =/= nomatch),
         ?assert(binary:match(SignupHtml, <<"https://example.com/privacy">>) =/= nomatch),
+        ?assert(binary:match(SignupHtml, <<"altcha-check">>) =/= nomatch),
         ?assertEqual(nomatch, binary:match(SignupHtml, <<"__TERMS_URL__">>)),
         ?assertEqual(nomatch, binary:match(SignupHtml, <<"__PRIVACY_URL__">>)),
 
-        %% Public POST /api/signup enforces CSRF header, terms acceptance, and validates input.
+        %% Public POST /api/signup enforces CSRF, terms acceptance, and required ALTCHA.
         {403, _, _} = http_req(
             Port,
             <<"POST">>,
@@ -184,6 +198,29 @@ live_webui() ->
             <<"{\"account\":\"newuser\",\"password\":\"strongpass123\"}">>
         ),
         ?assertMatch(#{<<"error">> := <<"terms_not_accepted">>}, json:decode(NoTermsBody)),
+        {400, _, NoAltchaBody} = http_req(
+            Port,
+            <<"POST">>,
+            <<"/api/signup">>,
+            [
+                {<<"Content-Type">>, <<"application/json">>},
+                {<<"X-Requested-With">>, <<"ircd-webui">>}
+            ],
+            <<"{\"account\":\"newuser\",\"password\":\"strongpass123\",\"accept_terms\":true}">>
+        ),
+        ?assertMatch(#{<<"error">> := <<"altcha_required">>}, json:decode(NoAltchaBody)),
+        {400, _, BadAltchaBody} = http_req(
+            Port,
+            <<"POST">>,
+            <<"/api/signup">>,
+            [
+                {<<"Content-Type">>, <<"application/json">>},
+                {<<"X-Requested-With">>, <<"ircd-webui">>}
+            ],
+            <<"{\"account\":\"newuser\",\"password\":\"strongpass123\",\"accept_terms\":true,\"altcha\":\"bogus\"}">>
+        ),
+        ?assertMatch(#{<<"error">> := <<"altcha_invalid">>}, json:decode(BadAltchaBody)),
+        WeakPayload = test_altcha_payload(42, 300),
         {400, _, WeakBody} = http_req(
             Port,
             <<"POST">>,
@@ -192,9 +229,52 @@ live_webui() ->
                 {<<"Content-Type">>, <<"application/json">>},
                 {<<"X-Requested-With">>, <<"ircd-webui">>}
             ],
-            <<"{\"account\":\"newuser\",\"password\":\"123\",\"accept_terms\":true}">>
+            iolist_to_binary(
+                json:encode(#{
+                    account => <<"newuser">>,
+                    password => <<"123">>,
+                    accept_terms => true,
+                    altcha => WeakPayload
+                })
+            )
         ),
         ?assertMatch(#{<<"error">> := <<"weak_password">>}, json:decode(WeakBody)),
+        {400, _, ReplayBody} = http_req(
+            Port,
+            <<"POST">>,
+            <<"/api/signup">>,
+            [
+                {<<"Content-Type">>, <<"application/json">>},
+                {<<"X-Requested-With">>, <<"ircd-webui">>}
+            ],
+            iolist_to_binary(
+                json:encode(#{
+                    account => <<"newuser">>,
+                    password => <<"strongpass123">>,
+                    accept_terms => true,
+                    altcha => WeakPayload
+                })
+            )
+        ),
+        ?assertMatch(#{<<"error">> := <<"altcha_replayed">>}, json:decode(ReplayBody)),
+        {400, _, ExpBody} = http_req(
+            Port,
+            <<"POST">>,
+            <<"/api/signup">>,
+            [
+                {<<"Content-Type">>, <<"application/json">>},
+                {<<"X-Requested-With">>, <<"ircd-webui">>}
+            ],
+            iolist_to_binary(
+                json:encode(#{
+                    account => <<"newuser">>,
+                    password => <<"strongpass123">>,
+                    accept_terms => true,
+                    altcha => test_altcha_payload(7, -10)
+                })
+            )
+        ),
+        ?assertMatch(#{<<"error">> := <<"altcha_expired">>}, json:decode(ExpBody)),
         {201, _, SignupOk} = http_req(
             Port,
             <<"POST">>,
@@ -203,7 +283,15 @@ live_webui() ->
                 {<<"Content-Type">>, <<"application/json">>},
                 {<<"X-Requested-With">>, <<"ircd-webui">>}
             ],
-            <<"{\"account\":\"newuser\",\"password\":\"strongpass123\",\"email\":\"u@example.com\",\"accept_terms\":true}">>
+            iolist_to_binary(
+                json:encode(#{
+                    account => <<"newuser">>,
+                    password => <<"strongpass123">>,
+                    email => <<"u@example.com">>,
+                    accept_terms => true,
+                    altcha => test_altcha_payload(99, 300)
+                })
+            )
         ),
         ?assertMatch(
             #{<<"status">> := <<"created">>, <<"account">> := <<"newuser">>},
@@ -217,7 +305,14 @@ live_webui() ->
                 {<<"Content-Type">>, <<"application/json">>},
                 {<<"X-Requested-With">>, <<"ircd-webui">>}
             ],
-            <<"{\"account\":\"newuser\",\"password\":\"strongpass123\",\"accept_terms\":true}">>
+            iolist_to_binary(
+                json:encode(#{
+                    account => <<"newuser">>,
+                    password => <<"strongpass123">>,
+                    accept_terms => true,
+                    altcha => test_altcha_payload(100, 300)
+                })
+            )
         ),
         ?assertMatch(#{<<"error">> := <<"account_exists">>}, json:decode(DupBody)),
 
@@ -254,6 +349,11 @@ live_webui() ->
         _ = application:stop(ircd),
         os:unsetenv("IRCD_CONFIG")
     end.
+
+test_altcha_payload(Number, TtlOffset) ->
+    Key = persistent_term:get({ircd_altcha, hmac_key}),
+    Ch = ircd_altcha:build_challenge(Key, Number, erlang:system_time(second) + TtlOffset),
+    base64:encode(iolist_to_binary(json:encode(Ch#{number => Number}))).
 
 post_action(Port, Auth, Action, Args) ->
     Body = iolist_to_binary(json:encode(#{action => Action, args => Args})),
