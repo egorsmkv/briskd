@@ -195,6 +195,13 @@ live_webui() ->
         ?assertMatch(
             #{<<"status">> := <<"created">>, <<"account">> := <<"webops">>}, json:decode(CreateBody)
         ),
+        {200, _, ResetPassBody} = post_action(
+            Port, GoodAuth, <<"reset-password">>, [<<"webops">>, <<"newstrongpass456">>]
+        ),
+        ?assertMatch(
+            #{<<"status">> := <<"password_updated">>, <<"account">> := <<"webops">>},
+            json:decode(ResetPassBody)
+        ),
         {200, _, DelBody} = post_action(Port, GoodAuth, <<"delete-account">>, [<<"webops">>]),
         ?assertMatch(
             #{<<"status">> := <<"deleted">>, <<"account">> := <<"webops">>}, json:decode(DelBody)

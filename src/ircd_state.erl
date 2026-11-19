@@ -1174,6 +1174,8 @@ redact_command({verify_account_by_email, Email, _Code}) ->
     {verify_account_by_email, Email, redacted};
 redact_command({complete_password_reset, Email, _Code, _NewPassword, PeerIP}) ->
     {complete_password_reset, Email, redacted, redacted, PeerIP};
+redact_command({ctl, {reset_password, Name, _Password}}) ->
+    {ctl, {reset_password, Name, redacted}};
 redact_command({command, <<"VERIFY">>, [Account, _Code | Rest], Bytes, Tags}) ->
     {command, <<"VERIFY">>, [Account, redacted | Rest], Bytes, Tags};
 redact_command({command, <<"VERIFY">>, [Account, _Code | Rest], Bytes}) ->

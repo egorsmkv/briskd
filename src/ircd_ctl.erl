@@ -407,6 +407,28 @@ handle_state_action({set_topic, ChannelName, Topic}, Server) ->
             logger:notice(#{event => ctl_set_topic, channel => Actual}),
             {ok, #{status => <<"updated">>, channel => Actual, topic => Topic}}
     end;
+handle_state_action({notice_channel, ChannelName, Text}, Server) ->
+    Key = ircd_wire:fold(ChannelName),
+    case mnesia:dirty_read(channel, Key) of
+        [] ->
+            {error, {no_such_channel, ChannelName}};
+        [#channel{name = Actual, members = Members}] ->
+            Pids = maps:keys(Members),
+            ircd_state_send:broadcast(Pids, Server, <<"NOTICE">>, [Actual], Text),
+            logger:notice(#{
+                event => ctl_notice_channel, channel => Actual, recipients => length(Pids)
+            }),
+            {ok, #{status => <<"sent">>, channel => Actual, recipients => length(Pids)}}
+    end;
+handle_state_action({reset_password, Name, Password}, _Server) ->
+    case ircd_account:set_password(Name, Password) of
+        {ok, #account{name = Actual} = Updated} ->
+            logger:notice(#{event => ctl_password_reset, account => Actual}),
+            ircd_state_sync:account_created(Updated),
+            {ok, #{status => <<"password_updated">>, account => Actual}};
+        {error, Reason} ->
+            {error, Reason}
+    end;
 handle_state_action({verify_account, Name}, _Server) ->
     case ircd_account:force_verify(Name) of
         {ok, #account{name = Actual} = Account} ->
@@ -549,6 +571,16 @@ dispatch([<<"notice-all">>, Text | _], Format) when byte_size(Text) > 0, byte_si
 dispatch([<<"set-topic">>, Channel, Topic | _], Format) when byte_size(Topic) =< 390 ->
     cmd_state_call({set_topic, Channel, Topic}, Format, fun(#{channel := C}) ->
         <<"Updated topic for ", C/binary>>
+    end);
+dispatch([<<"notice-channel">>, Channel, Text | _], Format) when
+    byte_size(Text) > 0, byte_size(Text) =< 400
+->
+    cmd_state_call({notice_channel, Channel, Text}, Format, fun(#{channel := C, recipients := N}) ->
+        <<"Sent notice to ", C/binary, " (", (integer_to_binary(N))/binary, " users)">>
+    end);
+dispatch([<<"reset-password">>, Name, Password | _], Format) ->
+    cmd_state_call({reset_password, Name, Password}, Format, fun(#{account := A}) ->
+        <<"Updated password for ", A/binary>>
     end);
 dispatch([<<"verify-account">>, Name | _], Format) ->
     cmd_state_call({verify_account, Name}, Format, fun(#{account := A}) ->

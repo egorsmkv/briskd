@@ -41,27 +41,27 @@
 
   <section class="page active" id="panel-overview" role="tabpanel">
     <div class="grid" id="stats-grid">
-      <div class="card">
+      <div class="card clickable" data-goto="clients">
         <div class="label">Sessions</div>
         <div class="value" id="st-sessions">-</div>
         <div class="sub" id="st-sessions-sub"></div>
       </div>
-      <div class="card">
+      <div class="card clickable" data-goto="channels">
         <div class="label">Channels</div>
         <div class="value" id="st-channels">-</div>
         <div class="sub" id="st-channels-sub"></div>
       </div>
-      <div class="card">
+      <div class="card clickable" data-goto="links">
         <div class="label">Network</div>
         <div class="value" id="st-network">-</div>
         <div class="sub" id="st-network-sub"></div>
       </div>
-      <div class="card">
+      <div class="card clickable" data-goto="accounts">
         <div class="label">Accounts</div>
         <div class="value" id="st-accounts">-</div>
         <div class="sub" id="st-retention"></div>
       </div>
-      <div class="card">
+      <div class="card clickable" data-goto="dronebl">
         <div class="label">DroneBL</div>
         <div class="value" id="st-dronebl">-</div>
         <div class="sub" id="st-dronebl-sub"></div>
@@ -82,6 +82,7 @@
   <section class="page panel" id="panel-clients" role="tabpanel">
     <div class="page-head">
       <h2>Connected Clients</h2>
+      <input type="search" class="filter-input" id="filter-clients" placeholder="Filter by nick, host, account...">
     </div>
     <div id="clients-wrap"></div>
   </section>
@@ -89,6 +90,7 @@
   <section class="page panel" id="panel-channels" role="tabpanel">
     <div class="page-head">
       <h2>Active Channels</h2>
+      <input type="search" class="filter-input" id="filter-channels" placeholder="Filter by channel, topic, modes...">
     </div>
     <div id="channels-wrap"></div>
   </section>
@@ -96,6 +98,7 @@
   <section class="page panel" id="panel-links" role="tabpanel">
     <div class="page-head">
       <h2>Server Links</h2>
+      <input type="search" class="filter-input" id="filter-links" placeholder="Filter peers...">
     </div>
     <form class="inline-form" id="form-connect">
       <input type="text" id="inp-peer" placeholder="Configured peer name" required>
@@ -107,6 +110,7 @@
   <section class="page panel" id="panel-accounts" role="tabpanel">
     <div class="page-head">
       <h2>SASL Accounts</h2>
+      <input type="search" class="filter-input" id="filter-accounts" placeholder="Filter by account, email, status...">
     </div>
     <form class="inline-form" id="form-account">
       <input type="text" id="inp-acct-name" placeholder="Account name" required>
@@ -120,6 +124,7 @@
   <section class="page panel" id="panel-dronebl" role="tabpanel">
     <div class="page-head">
       <h2>DroneBL Bans</h2>
+      <input type="search" class="filter-input" id="filter-dronebl" placeholder="Filter by IP or reason...">
     </div>
     <form class="inline-form" id="form-ban-ip">
       <input type="text" id="inp-ban-ip" placeholder="IP address to ban" required>
@@ -180,6 +185,25 @@
     </div>
   </section>
 </main>
+
+<div class="modal-backdrop" id="admin-modal" role="dialog" aria-modal="true" aria-labelledby="admin-modal-title">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="admin-modal-title">Action</h2>
+      <button type="button" class="small" id="btn-close-modal" aria-label="Close dialog">×</button>
+    </div>
+    <form class="modal-body" id="admin-modal-form">
+      <div class="modal-field">
+        <label for="admin-modal-input" id="admin-modal-label">Value</label>
+        <input type="text" id="admin-modal-input" maxlength="400">
+      </div>
+      <div class="modal-actions">
+        <button type="submit" class="primary" id="admin-modal-submit">Confirm</button>
+        <button type="button" id="btn-cancel-modal">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
 
 <script src="/assets/admin.js" defer></script>
 </body>
