@@ -36,6 +36,7 @@
     predefined_channel/1,
     store_accounts/1,
     seed_channels/0,
+    signup_account/4,
     verify_account/2,
     visible_member/3,
     wildcard_match/2
@@ -262,6 +263,17 @@ server_disconnect(Peer) ->
         exit:shutdown -> ok;
         exit:{shutdown, _} -> ok
     end.
+
+-doc """
+Register a new IRC account from the public WebUI sign-up page.
+Returns `{ok, created | verification_required, AccountName}` or `{error, Reason}`.
+""".
+-spec signup_account(binary(), undefined | binary(), binary(), binary()) ->
+    {ok, created | verification_required, binary()} | {error, atom()}.
+signup_account(Name, Email, Password, PeerIP) when
+    is_binary(Name), is_binary(Password), is_binary(PeerIP)
+->
+    gen_server:call(?MODULE, {signup_account, Name, Email, Password, PeerIP}, 10000).
 
 -doc """
 Verify a pending account registration via the web verification link.
@@ -897,6 +909,8 @@ other_call({server_command, Peer, Prefix, <<"KILL">>, [Nick | Rest]}, _, Server)
     end;
 other_call({server_command, _Peer, _Prefix, _Command, _Params}, _, Server) ->
     {reply, ok, Server};
+other_call({signup_account, Name, Email, Password, PeerIP}, _, Server) ->
+    {reply, ircd_state_v3:signup_account_web(Name, Email, Password, PeerIP), Server};
 other_call({verify_account, Name, Code}, _, Server) ->
     {reply, ircd_state_v3:verify_account_web(Name, Code), Server};
 other_call({server_disconnect, Peer}, _, Server) ->
@@ -1114,6 +1128,8 @@ redact_command({command, <<"REGISTER">>, [Account, Email, _Password | Rest], Byt
     {command, <<"REGISTER">>, [Account, Email, redacted | Rest], Bytes, Tags};
 redact_command({command, <<"REGISTER">>, [Account, Email, _Password | Rest], Bytes}) ->
     {command, <<"REGISTER">>, [Account, Email, redacted | Rest], Bytes};
+redact_command({signup_account, Account, Email, _Password, PeerIP}) ->
+    {signup_account, Account, Email, redacted, PeerIP};
 redact_command({verify_account, Account, _Code}) ->
     {verify_account, Account, redacted};
 redact_command({command, <<"VERIFY">>, [Account, _Code | Rest], Bytes, Tags}) ->

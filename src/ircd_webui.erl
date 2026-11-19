@@ -17,6 +17,9 @@ Opt-in via the `"webui"` configuration object (`bind`, `port`, `username`,
 - `GET /verify?account=<name>&code=<code>` — public (unauthenticated)
   account verification landing page, active when `account_verification` is
   configured.
+- `GET /signup` and `POST /api/signup` — public (unauthenticated) user
+  self-registration page and JSON endpoint, active when `account_registration`
+  is `true` (rate-limited per IP and protected with CSRF header + CSP nonce).
 
 Security controls:
 
@@ -87,9 +90,12 @@ init(#{webui := #{ip := IP, port := Port}}) ->
     case gen_tcp:listen(Port, Opts) of
         {ok, Listen} ->
             {ok, {_, ActualPort}} = inet:sockname(Listen),
-            Html = load_index_html(),
+            Assets = #{
+                index => load_asset("index.html", <<"ircd admin UI asset missing">>),
+                signup => load_asset("signup.html", <<"ircd signup UI asset missing">>)
+            },
             Counter = atomics:new(1, []),
-            Acceptor = spawn_link(fun() -> accept_loop(Listen, Html, Counter) end),
+            Acceptor = spawn_link(fun() -> accept_loop(Listen, Assets, Counter) end),
             logger:notice(#{
                 event => webui_listening,
                 ip => list_to_binary(inet:ntoa(IP)),
@@ -98,7 +104,7 @@ init(#{webui := #{ip := IP, port := Port}}) ->
             {ok, #{
                 socket => Listen,
                 port => ActualPort,
-                html => Html,
+                assets => Assets,
                 counter => Counter,
                 acceptor => Acceptor
             }};
@@ -119,9 +125,9 @@ handle_cast(_, State) ->
 -doc false.
 handle_info(
     {'EXIT', Pid, _Reason},
-    #{acceptor := Pid, socket := Listen, html := Html, counter := Counter} = State
+    #{acceptor := Pid, socket := Listen, assets := Assets, counter := Counter} = State
 ) ->
-    Next = spawn_link(fun() -> accept_loop(Listen, Html, Counter) end),
+    Next = spawn_link(fun() -> accept_loop(Listen, Assets, Counter) end),
     {noreply, State#{acceptor := Next}};
 handle_info(_, State) ->
     {noreply, State}.
@@ -150,14 +156,14 @@ terminate(_, _) ->
 
 %%% Accept & HTTP handling
 
-accept_loop(Listen, Html, Counter) ->
+accept_loop(Listen, Assets, Counter) ->
     case gen_tcp:accept(Listen) of
         {ok, Socket} ->
             case atomics:add_get(Counter, 1, 1) of
                 N when N =< ?MAX_CONNECTIONS ->
                     _ = spawn(fun() ->
                         try
-                            handle_connection(Socket, Html)
+                            handle_connection(Socket, Assets)
                         after
                             atomics:sub(Counter, 1, 1),
                             gen_tcp:close(Socket)
@@ -176,22 +182,26 @@ accept_loop(Listen, Html, Counter) ->
                     ),
                     gen_tcp:close(Socket)
             end,
-            accept_loop(Listen, Html, Counter);
+            accept_loop(Listen, Assets, Counter);
         {error, closed} ->
             ok;
         {error, _} ->
             timer:sleep(100),
-            accept_loop(Listen, Html, Counter)
+            accept_loop(Listen, Assets, Counter)
     end.
 
-handle_connection(Socket, Html) ->
+handle_connection(Socket, #{index := IndexHtml, signup := SignupHtml}) ->
     case read_request(Socket) of
         {ok, <<"GET">>, {<<"/verify">>, Query}, _Headers, _Body} ->
             handle_verify(Socket, Query);
+        {ok, <<"GET">>, {<<"/signup">>, _Query}, _Headers, _Body} ->
+            handle_signup_page(Socket, SignupHtml);
+        {ok, <<"POST">>, {<<"/api/signup">>, _Query}, Headers, Body} ->
+            handle_signup_api(Socket, Headers, Body);
         {ok, Method, {Path, _Query}, Headers, Body} ->
             case check_auth(Headers) of
                 ok ->
-                    route(Socket, Method, Path, Headers, Body, Html);
+                    route(Socket, Method, Path, Headers, Body, IndexHtml);
                 unauthorized ->
                     send_response(
                         Socket,
@@ -206,6 +216,95 @@ handle_connection(Socket, Html) ->
             send_json(Socket, 413, <<"Payload Too Large">>, #{error => <<"payload_too_large">>});
         {error, _} ->
             send_json(Socket, 400, <<"Bad Request">>, #{error => <<"bad_request">>})
+    end.
+
+handle_signup_page(Socket, SignupHtml) ->
+    Config = persistent_term:get({ircd_state, config}, #{}),
+    case maps:get(account_registration, Config, true) of
+        true ->
+            send_nonce_html(Socket, SignupHtml);
+        false ->
+            send_json(Socket, 404, <<"Not Found">>, #{error => <<"registration_disabled">>})
+    end.
+
+handle_signup_api(Socket, Headers, Body) ->
+    case maps:get(<<"x-requested-with">>, Headers, undefined) of
+        <<"ircd-webui">> ->
+            try json:decode(Body) of
+                #{<<"account">> := Account, <<"password">> := Password} = Req when
+                    is_binary(Account), is_binary(Password)
+                ->
+                    Email =
+                        case maps:get(<<"email">>, Req, undefined) of
+                            undefined -> undefined;
+                            null -> undefined;
+                            E when is_binary(E) -> E;
+                            _ -> invalid
+                        end,
+                    case Email of
+                        invalid ->
+                            send_json(Socket, 400, <<"Bad Request">>, #{
+                                error => <<"invalid_email">>,
+                                message => <<"Invalid email address.">>
+                            });
+                        _ ->
+                            PeerIP = peer_ip(Socket),
+                            case ircd_state:signup_account(Account, Email, Password, PeerIP) of
+                                {ok, created, Name} ->
+                                    send_json(Socket, 201, <<"Created">>, #{
+                                        status => <<"created">>, account => Name
+                                    });
+                                {ok, verification_required, Name} ->
+                                    send_json(Socket, 202, <<"Accepted">>, #{
+                                        status => <<"verification_required">>, account => Name
+                                    });
+                                {error, registration_disabled} ->
+                                    send_json(Socket, 404, <<"Not Found">>, #{
+                                        error => <<"registration_disabled">>,
+                                        message => <<"Account registration is disabled.">>
+                                    });
+                                {error, rate_limited} ->
+                                    send_json(Socket, 429, <<"Too Many Requests">>, #{
+                                        error => <<"rate_limited">>,
+                                        message =>
+                                            <<"Too many registration attempts. Try again later.">>
+                                    });
+                                {error, Reason} ->
+                                    send_json(Socket, 400, <<"Bad Request">>, #{
+                                        error => atom_to_binary(Reason),
+                                        message => signup_error_message(Reason)
+                                    })
+                            end
+                    end;
+                _ ->
+                    send_json(Socket, 400, <<"Bad Request">>, #{
+                        error => <<"invalid_request">>,
+                        message => <<"Account name and password are required.">>
+                    })
+            catch
+                _:_ ->
+                    send_json(Socket, 400, <<"Bad Request">>, #{
+                        error => <<"invalid_json">>,
+                        message => <<"Invalid JSON request.">>
+                    })
+            end;
+        _ ->
+            send_json(Socket, 403, <<"Forbidden">>, #{error => <<"missing_csrf_header">>})
+    end.
+
+signup_error_message(account_exists) -> <<"That account name is already taken.">>;
+signup_error_message(bad_account_name) -> <<"Invalid account name.">>;
+signup_error_message(weak_password) -> <<"Password is too short.">>;
+signup_error_message(unacceptable_password) -> <<"Password is too long.">>;
+signup_error_message(email_required) -> <<"A valid email address is required.">>;
+signup_error_message(invalid_email) -> <<"Invalid email address.">>;
+signup_error_message(account_limit_reached) -> <<"Server account limit reached.">>;
+signup_error_message(_) -> <<"Could not create account.">>.
+
+peer_ip(Socket) ->
+    case inet:peername(Socket) of
+        {ok, {Addr, _}} -> list_to_binary(inet:ntoa(Addr));
+        _ -> <<"unknown">>
     end.
 
 handle_verify(Socket, Query) ->
@@ -313,21 +412,7 @@ escape_html(Bin) ->
     binary:replace(B4, <<"'">>, <<"&#39;">>, [global]).
 
 route(Socket, <<"GET">>, <<"/">>, _Headers, _Body, Html) ->
-    Nonce = base64:encode(crypto:strong_rand_bytes(16)),
-    Body = binary:replace(Html, <<"__CSP_NONCE__">>, Nonce, [global]),
-    Csp = <<
-        "default-src 'self'; style-src 'unsafe-inline'; script-src 'nonce-",
-        Nonce/binary,
-        "'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
-    >>,
-    send_response(
-        Socket,
-        200,
-        <<"OK">>,
-        <<"text/html; charset=utf-8">>,
-        [{<<"Content-Security-Policy">>, Csp}],
-        Body
-    );
+    send_nonce_html(Socket, Html);
 route(Socket, <<"GET">>, <<"/api/overview">>, _Headers, _Body, _Html) ->
     Payload = #{
         status => ctl_json([<<"status">>]),
@@ -586,20 +671,37 @@ send_response(Socket, Code, Reason, ContentType, ExtraHeaders, Body) ->
     _ = gen_tcp:send(Socket, [Headers, <<"\r\n">>, Bin]),
     ok.
 
-load_index_html() ->
+send_nonce_html(Socket, Html) ->
+    Nonce = base64:encode(crypto:strong_rand_bytes(16)),
+    Body = binary:replace(Html, <<"__CSP_NONCE__">>, Nonce, [global]),
+    Csp = <<
+        "default-src 'self'; style-src 'unsafe-inline'; script-src 'nonce-",
+        Nonce/binary,
+        "'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    >>,
+    send_response(
+        Socket,
+        200,
+        <<"OK">>,
+        <<"text/html; charset=utf-8">>,
+        [{<<"Content-Security-Policy">>, Csp}],
+        Body
+    ).
+
+load_asset(File, Fallback) ->
     Candidates = [
         case code:priv_dir(ircd) of
-            {error, _} -> "priv/webui/index.html";
-            Dir -> filename:join([Dir, "webui", "index.html"])
+            {error, _} -> filename:join(["priv", "webui", File]);
+            Dir -> filename:join([Dir, "webui", File])
         end,
-        "priv/webui/index.html"
+        filename:join(["priv", "webui", File])
     ],
-    read_first(Candidates).
+    read_first(Candidates, Fallback).
 
-read_first([Path | Rest]) ->
+read_first([Path | Rest], Fallback) ->
     case file:read_file(Path) of
         {ok, Bin} -> Bin;
-        {error, _} -> read_first(Rest)
+        {error, _} -> read_first(Rest, Fallback)
     end;
-read_first([]) ->
-    <<"<!doctype html><title>ircd admin</title><h1>ircd admin UI asset missing</h1>">>.
+read_first([], Fallback) ->
+    <<"<!doctype html><title>ircd</title><h1>", Fallback/binary, "</h1>">>.

@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign Up - ircd</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --hover: #eef2f6;
+    --border: #d8dee6;
+    --text: #1c2430;
+    --muted: #5d6b7d;
+    --accent: #1d4ed8;
+    --accent-hover: #1e40af;
+    --danger: #b91c1c;
+    --ok: #15803d;
+    --notice-ok-bg: #f0fdf4;
+    --notice-ok-border: #86efac;
+    --notice-err-bg: #fef2f2;
+    --notice-err-border: #fca5a5;
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0f141b;
+    --surface: #171e28;
+    --hover: #243040;
+    --border: #2c384a;
+    --text: #e6edf5;
+    --muted: #93a3b8;
+    --accent: #3b82f6;
+    --accent-hover: #2563eb;
+    --danger: #ef4444;
+    --ok: #4ade80;
+    --notice-ok-bg: #112a1d;
+    --notice-ok-border: #22543d;
+    --notice-err-bg: #2e1518;
+    --notice-err-border: #7f1d1d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.45;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .card {
+    width: 100%;
+    max-width: 400px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 22px 24px;
+  }
+  .top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 6px;
+  }
+  h1 { margin: 0; font-size: 19px; }
+  .sub { margin: 0 0 18px; color: var(--muted); font-size: 13px; }
+  label {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    margin-bottom: 4px;
+  }
+  .field { margin-bottom: 14px; }
+  input {
+    width: 100%;
+    font: inherit;
+    padding: 8px 10px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+  }
+  button {
+    font: inherit;
+    padding: 8px 12px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+    font-weight: 500;
+  }
+  button:hover { background: var(--hover); }
+  button.primary {
+    width: 100%;
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    padding: 9px 14px;
+  }
+  button.primary:hover { background: var(--accent-hover); }
+  button.primary:disabled { opacity: 0.65; cursor: not-allowed; }
+  button.small { padding: 4px 9px; font-size: 12px; }
+  #notice {
+    display: none;
+    padding: 10px 12px;
+    border-radius: 6px;
+    margin-bottom: 14px;
+    border: 1px solid var(--border);
+    font-size: 13px;
+  }
+  #notice.ok {
+    display: block;
+    border-color: var(--notice-ok-border);
+    background: var(--notice-ok-bg);
+    color: var(--ok);
+  }
+  #notice.err {
+    display: block;
+    border-color: var(--notice-err-border);
+    background: var(--notice-err-bg);
+    color: var(--danger);
+  }
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="top">
+    <h1>Create IRC Account</h1>
+    <button type="button" class="small" id="btn-theme" aria-label="Toggle dark mode">Dark</button>
+  </div>
+  <p class="sub">Register an account for SASL authentication on this IRC server.</p>
+
+  <div id="notice" role="status" aria-live="polite"></div>
+
+  <form id="signup-form">
+    <div class="field">
+      <label for="account">Account name</label>
+      <input type="text" id="account" name="account" autocomplete="username" required maxlength="64">
+    </div>
+    <div class="field">
+      <label for="email">Email <span id="email-hint" class="sub">(if required by server)</span></label>
+      <input type="email" id="email" name="email" autocomplete="email" maxlength="254">
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" autocomplete="new-password" required maxlength="256">
+    </div>
+    <div class="field">
+      <label for="confirm">Confirm password</label>
+      <input type="password" id="confirm" name="confirm" autocomplete="new-password" required maxlength="256">
+    </div>
+    <button type="submit" class="primary" id="btn-submit">Create Account</button>
+  </form>
+</main>
+
+<script nonce="__CSP_NONCE__">
+(function() {
+  const $ = (id) => document.getElementById(id);
+
+  function applyTheme(theme) {
+    document.documentElement.setAttribute("data-theme", theme);
+    $("btn-theme").textContent = theme === "dark" ? "Light" : "Dark";
+  }
+
+  (function initTheme() {
+    let saved = null;
+    try { saved = localStorage.getItem("ircd-webui-theme"); } catch (_) {}
+    const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    applyTheme(saved === "dark" || saved === "light" ? saved : (prefersDark ? "dark" : "light"));
+  })();
+
+  $("btn-theme").onclick = () => {
+    const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    applyTheme(next);
+    try { localStorage.setItem("ircd-webui-theme", next); } catch (_) {}
+  };
+
+  function showNotice(ok, text) {
+    const n = $("notice");
+    n.className = ok ? "ok" : "err";
+    n.textContent = text;
+  }
+
+  $("signup-form").onsubmit = async (ev) => {
+    ev.preventDefault();
+    const account = $("account").value.trim();
+    const email = $("email").value.trim();
+    const password = $("password").value;
+    const confirm = $("confirm").value;
+    if (password !== confirm) {
+      showNotice(false, "Passwords do not match.");
+      return;
+    }
+    const btn = $("btn-submit");
+    btn.disabled = true;
+    try {
+      const payload = { account: account, password: password };
+      if (email) payload.email = email;
+      const res = await fetch("/api/signup", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Requested-With": "ircd-webui"
+        },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (res.ok) {
+        if (data.status === "verification_required") {
+          showNotice(
+            true,
+            "Account '" + data.account + "' created. Check your email for the verification link or code."
+          );
+        } else {
+          showNotice(
+            true,
+            "Account '" + data.account + "' created. You can now log in via SASL in your IRC client."
+          );
+        }
+        $("signup-form").reset();
+      } else {
+        showNotice(false, data.message || data.error || "Sign up failed.");
+      }
+    } catch (e) {
+      showNotice(false, "Request failed: " + e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  };
+})();
+</script>
+</body>
+</html>

@@ -143,6 +143,61 @@ live_webui() ->
         ?assertMatch(#{<<"status">> := <<"unbanned">>}, json:decode(UnbanBody)),
         ?assertEqual([], ircd_dronebl:list_bans()),
 
+        %% Public GET /signup works without Basic Auth and uses a CSP nonce.
+        {200, SignupHdrs, SignupHtml} = http_req(Port, <<"GET">>, <<"/signup">>, [], <<>>),
+        ?assert(
+            binary:match(
+                maps:get(<<"content-security-policy">>, SignupHdrs), <<"script-src 'nonce-">>
+            ) =/=
+                nomatch
+        ),
+        ?assert(binary:match(SignupHtml, <<"<title>Sign Up - ircd</title>">>) =/= nomatch),
+
+        %% Public POST /api/signup enforces CSRF header, validates input, and creates accounts.
+        {403, _, _} = http_req(
+            Port,
+            <<"POST">>,
+            <<"/api/signup">>,
+            [{<<"Content-Type">>, <<"application/json">>}],
+            <<"{\"account\":\"newuser\",\"password\":\"strongpass123\"}">>
+        ),
+        {400, _, WeakBody} = http_req(
+            Port,
+            <<"POST">>,
+            <<"/api/signup">>,
+            [
+                {<<"Content-Type">>, <<"application/json">>},
+                {<<"X-Requested-With">>, <<"ircd-webui">>}
+            ],
+            <<"{\"account\":\"newuser\",\"password\":\"123\"}">>
+        ),
+        ?assertMatch(#{<<"error">> := <<"weak_password">>}, json:decode(WeakBody)),
+        {201, _, SignupOk} = http_req(
+            Port,
+            <<"POST">>,
+            <<"/api/signup">>,
+            [
+                {<<"Content-Type">>, <<"application/json">>},
+                {<<"X-Requested-With">>, <<"ircd-webui">>}
+            ],
+            <<"{\"account\":\"newuser\",\"password\":\"strongpass123\",\"email\":\"u@example.com\"}">>
+        ),
+        ?assertMatch(
+            #{<<"status">> := <<"created">>, <<"account">> := <<"newuser">>},
+            json:decode(SignupOk)
+        ),
+        {400, _, DupBody} = http_req(
+            Port,
+            <<"POST">>,
+            <<"/api/signup">>,
+            [
+                {<<"Content-Type">>, <<"application/json">>},
+                {<<"X-Requested-With">>, <<"ircd-webui">>}
+            ],
+            <<"{\"account\":\"newuser\",\"password\":\"strongpass123\"}">>
+        ),
+        ?assertMatch(#{<<"error">> := <<"account_exists">>}, json:decode(DupBody)),
+
         %% 404 for unknown path.
         {404, _, _} = http_req(
             Port, <<"GET">>, <<"/nope">>, [{<<"Authorization">>, GoodAuth}], <<>>

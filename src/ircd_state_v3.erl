@@ -33,6 +33,7 @@
     valid_utf8/1,
     verify/3,
     verify_account_web/2,
+    signup_account_web/4,
     webirc/3
 ]).
 -include("ircd_state.hrl").
@@ -798,6 +799,84 @@ verify_account_web(Name, Code) when is_binary(Name), is_binary(Code) ->
         error ->
             error
     end.
+
+-doc """
+Create an IRC account from the public WebUI sign-up page.
+
+Runs inside `m:ircd_state`. Enforces `account_registration`, per-IP
+`ircd_flood:allow_register/1`, email requirements, and optional
+`account_verification` (sending the verification email/link when enabled).
+Returns `{ok, created | verification_required, AccountName}` or `{error, Reason}`.
+""".
+-spec signup_account_web(binary(), undefined | binary(), binary(), binary()) ->
+    {ok, created | verification_required, binary()} | {error, atom()}.
+signup_account_web(Name, Email0, Password, PeerIP) ->
+    Config = persistent_term:get({ircd_state, config}, #{}),
+    case maps:get(account_registration, Config, true) of
+        false ->
+            {error, registration_disabled};
+        true ->
+            case ircd_flood:allow_register(PeerIP) of
+                false ->
+                    {error, rate_limited};
+                true ->
+                    Verification = maps:get(account_verification, Config, null),
+                    EmailRequired =
+                        Verification =/= null orelse
+                            maps:get(account_registration_email_required, Config, false),
+                    case normalize_web_email(Email0, EmailRequired) of
+                        {error, Reason} ->
+                            {error, Reason};
+                        {ok, StoredEmail} ->
+                            Pending =
+                                case Verification of
+                                    #{ttl := Ttl} ->
+                                        {verification_code(), erlang:system_time(second) + Ttl};
+                                    null ->
+                                        undefined
+                                end,
+                            case ircd_account:create(Name, StoredEmail, Password, [], Pending) of
+                                {ok, #account{name = Actual} = Account} when
+                                    Pending =:= undefined
+                                ->
+                                    logger:info(#{
+                                        event => account_registered, account => Actual, via => web
+                                    }),
+                                    ircd_state_sync:account_created(Account),
+                                    {ok, created, Actual};
+                                {ok, #account{name = Actual}} ->
+                                    {Code, _} = Pending,
+                                    logger:info(#{
+                                        event => account_verification_sent,
+                                        account => Actual,
+                                        via => web
+                                    }),
+                                    send_verification(Verification, Actual, StoredEmail, Code),
+                                    {ok, verification_required, Actual};
+                                {error, Reason} ->
+                                    {error, Reason}
+                            end
+                    end
+            end
+    end.
+
+normalize_web_email(undefined, true) ->
+    {error, email_required};
+normalize_web_email(<<>>, true) ->
+    {error, email_required};
+normalize_web_email(undefined, false) ->
+    {ok, undefined};
+normalize_web_email(<<>>, false) ->
+    {ok, undefined};
+normalize_web_email(<<"*">>, _) ->
+    {error, invalid_email};
+normalize_web_email(Email, _) when is_binary(Email) ->
+    case valid_email(Email) of
+        true -> {ok, Email};
+        false -> {error, invalid_email}
+    end;
+normalize_web_email(_, _) ->
+    {error, invalid_email}.
 
 %%% setname, chghost, pre-away
 
