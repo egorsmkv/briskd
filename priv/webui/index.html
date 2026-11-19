@@ -6,8 +6,11 @@
 <title>ircd admin</title>
 <style>
   :root {
+    color-scheme: light;
     --bg: #f6f7f9;
     --surface: #ffffff;
+    --surface-alt: #fafbfc;
+    --hover: #eef2f6;
     --border: #d8dee6;
     --text: #1c2430;
     --muted: #5d6b7d;
@@ -17,7 +20,35 @@
     --danger-hover: #991b1b;
     --ok: #15803d;
     --warn: #b45309;
+    --badge-ok-bg: #dcfce7;
+    --badge-off-bg: #fee2e2;
+    --notice-ok-bg: #f0fdf4;
+    --notice-ok-border: #86efac;
+    --notice-err-bg: #fef2f2;
+    --notice-err-border: #fca5a5;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0f141b;
+    --surface: #171e28;
+    --surface-alt: #1d2633;
+    --hover: #243040;
+    --border: #2c384a;
+    --text: #e6edf5;
+    --muted: #93a3b8;
+    --accent: #3b82f6;
+    --accent-hover: #2563eb;
+    --danger: #ef4444;
+    --danger-hover: #dc2626;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --badge-ok-bg: #143322;
+    --badge-off-bg: #3b171b;
+    --notice-ok-bg: #112a1d;
+    --notice-ok-border: #22543d;
+    --notice-err-bg: #2e1518;
+    --notice-err-border: #7f1d1d;
   }
   * { box-sizing: border-box; }
   body {
@@ -46,10 +77,10 @@
     border-radius: 999px;
     font-size: 12px;
     font-weight: 600;
-    background: #dcfce7;
+    background: var(--badge-ok-bg);
     color: var(--ok);
   }
-  .badge.off { background: #fee2e2; color: var(--danger); }
+  .badge.off { background: var(--badge-off-bg); color: var(--danger); }
   .header-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   main { max-width: 1180px; margin: 18px auto; padding: 0 18px 40px; }
   .grid {
@@ -91,7 +122,7 @@
     cursor: pointer;
     font-weight: 500;
   }
-  button:hover { background: #eef2f6; }
+  button:hover { background: var(--hover); }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.primary:hover { background: var(--accent-hover); }
   button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
@@ -108,8 +139,8 @@
     font-size: 12px;
     white-space: pre-wrap;
   }
-  #notice.ok { border-color: #86efac; background: #f0fdf4; color: var(--ok); display: block; }
-  #notice.err { border-color: #fca5a5; background: #fef2f2; color: var(--danger); display: block; }
+  #notice.ok { border-color: var(--notice-ok-border); background: var(--notice-ok-bg); color: var(--ok); display: block; }
+  #notice.err { border-color: var(--notice-err-border); background: var(--notice-err-bg); color: var(--danger); display: block; }
   .tabs {
     display: flex;
     gap: 4px;
@@ -148,7 +179,7 @@
     border-bottom: 1px solid var(--border);
     vertical-align: middle;
   }
-  th { font-size: 12px; color: var(--muted); font-weight: 600; background: #fafbfc; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; background: var(--surface-alt); }
   td.mono { font-family: var(--mono); font-size: 12px; }
   .empty { color: var(--muted); padding: 14px 4px; }
   .inline-form {
@@ -170,6 +201,7 @@
   </div>
   <div class="header-controls">
     <label class="muted"><input type="checkbox" id="auto-refresh" checked> Auto-refresh (5s)</label>
+    <button type="button" id="btn-theme" aria-label="Toggle dark mode">Dark</button>
     <button type="button" id="btn-refresh">Refresh</button>
   </div>
 </header>
@@ -395,7 +427,7 @@
     const clients = (data.clients && data.clients.clients) || [];
     $("cnt-clients").textContent = String(clients.length);
     replace("clients-wrap", makeTable(
-      ["Nick", "User@Host", "Account", "Modes", "TLS", "Channels", "Action"],
+      ["Nick", "User@Host", "Account", "Oper", "TLS", "Channels", "Idle", "Action"],
       clients.map((c) => {
         const btn = el("button", "Kick", "danger small");
         btn.type = "button";
@@ -403,13 +435,15 @@
           const reason = prompt("Kick reason for " + c.nick + ":", "Disconnected by administrator");
           if (reason !== null) postAction("kick-client", [c.nick, reason]);
         };
+        const chDisplay = Array.isArray(c.channels) ? c.channels.join(", ") : String(c.channels ?? 0);
         return [
           { text: c.nick || "*", cls: "mono" },
           { text: (c.user || "-") + "@" + (c.host || "-"), cls: "mono" },
           c.account || "-",
-          { text: c.modes || "+", cls: "mono" },
-          c.tls ? "yes" : "no",
-          (c.channels || []).join(", "),
+          c.operator ? "yes" : "no",
+          c.secure ? "yes" : "no",
+          chDisplay,
+          (c.idle_seconds ?? 0) + "s",
           c.nick ? btn : ""
         ];
       })
@@ -435,21 +469,22 @@
     $("cnt-links").textContent = String(connected.length);
     const linkRows = [];
     connected.forEach((l) => {
+      const srvName = l.name || l.server || "";
       const btn = el("button", "SQUIT", "danger small");
       btn.type = "button";
       btn.onclick = () => {
-        const reason = prompt("SQUIT reason for " + l.server + ":", "Operator disconnect");
-        if (reason !== null) postAction("squit", [l.server, reason]);
+        const reason = prompt("SQUIT reason for " + srvName + ":", "Operator disconnect");
+        if (reason !== null) postAction("squit", [srvName, reason]);
       };
       linkRows.push([
-        { text: l.server, cls: "mono" },
-        "connected (hop " + (l.hopcount ?? 1) + ")",
+        { text: srvName, cls: "mono" },
+        "connected (hop " + (l.hop ?? 1) + ")",
         l.info || "",
         btn
       ]);
     });
     configured.forEach((cfg) => {
-      const isUp = connected.some((l) => l.server === cfg.name);
+      const isUp = connected.some((l) => (l.name || l.server) === cfg.name);
       if (!isUp) {
         const btn = el("button", "Connect", "primary small");
         btn.type = "button";
@@ -467,7 +502,7 @@
     const accounts = (data.accounts && data.accounts.accounts) || [];
     $("cnt-accounts").textContent = String(accounts.length);
     replace("accounts-wrap", makeTable(
-      ["Account", "Verified", "Email", "Action"],
+      ["Account", "Email", "CertFPs", "Action"],
       accounts.map((a) => {
         const btn = el("button", "Delete", "danger small");
         btn.type = "button";
@@ -478,8 +513,8 @@
         };
         return [
           { text: a.name, cls: "mono" },
-          a.verified ? "yes" : "no",
           a.email || "-",
+          a.certfps ?? 0,
           btn
         ];
       })
@@ -524,6 +559,24 @@
     btn.classList.add("active");
     $("panel-" + btn.dataset.tab).classList.add("active");
   });
+
+  function applyTheme(theme) {
+    document.documentElement.setAttribute("data-theme", theme);
+    $("btn-theme").textContent = theme === "dark" ? "Light" : "Dark";
+  }
+
+  (function initTheme() {
+    let saved = null;
+    try { saved = localStorage.getItem("ircd-webui-theme"); } catch (_) {}
+    const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    applyTheme(saved === "dark" || saved === "light" ? saved : (prefersDark ? "dark" : "light"));
+  })();
+
+  $("btn-theme").onclick = () => {
+    const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    applyTheme(next);
+    try { localStorage.setItem("ircd-webui-theme", next); } catch (_) {}
+  };
 
   $("btn-refresh").onclick = refresh;
   $("btn-rehash").onclick = () => postAction("rehash", []);
