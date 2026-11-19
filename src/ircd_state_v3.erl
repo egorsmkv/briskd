@@ -32,6 +32,7 @@
     remote_source_info/1,
     valid_utf8/1,
     verify/3,
+    verify_account_web/2,
     webirc/3
 ]).
 -include("ircd_state.hrl").
@@ -668,34 +669,57 @@ verification_code() ->
     Alphabet = <<"ABCDEFGHJKLMNPQRSTUVWXYZ23456789">>,
     <<<<(binary:at(Alphabet, B rem 32))>> || <<B>> <= crypto:strong_rand_bytes(8)>>.
 
-%% Deliver a verification code with the configured program. The code, account,
-%% and address are passed in the environment (IRCD_ACCOUNT, IRCD_EMAIL,
-%% IRCD_CODE) rather than argv, so other users cannot read them from the
-%% process list. The program runs in a short-lived process that owns the port
-%% and is bounded by a timeout; the code is never logged.
-send_verification(#{command := [Exe | Args]}, Account, Email, Code) ->
-    spawn(fun() ->
-        try
-            Port = open_port({spawn_executable, Exe}, [
-                {args, Args},
-                {env, [
-                    {"IRCD_ACCOUNT", binary_to_list(Account)},
-                    {"IRCD_EMAIL", binary_to_list(Email)},
-                    {"IRCD_CODE", binary_to_list(Code)}
-                ]},
-                exit_status,
-                use_stdio,
-                stderr_to_stdout
-            ]),
-            wait_sender(Port, Account)
-        catch
-            error:Reason ->
-                logger:warning(#{
-                    event => account_verification_failed, account => Account, reason => Reason
-                })
-        end
-    end),
-    ok.
+%% Deliver a verification code via configured `smtp` (gen_smtp) and/or external
+%% `command` program. For `command`, the code, account, address, and optional
+%% web link are passed in the environment (IRCD_ACCOUNT, IRCD_EMAIL, IRCD_CODE,
+%% IRCD_VERIFY_URL) rather than argv. The code is never logged.
+send_verification(Verification, Account, Email, Code) ->
+    case maps:is_key(smtp, Verification) of
+        true -> ircd_mail:send_verification(Verification, Account, Email, Code);
+        false -> ok
+    end,
+    case maps:find(command, Verification) of
+        {ok, [Exe | Args]} ->
+            ExtraEnv =
+                case maps:get(verify_url, Verification, null) of
+                    BaseUrl when is_binary(BaseUrl), byte_size(BaseUrl) > 0 ->
+                        [
+                            {
+                                "IRCD_VERIFY_URL",
+                                binary_to_list(ircd_mail:verify_link(BaseUrl, Account, Code))
+                            }
+                        ];
+                    _ ->
+                        []
+                end,
+            _ = spawn(fun() ->
+                try
+                    Port = open_port({spawn_executable, Exe}, [
+                        {args, Args},
+                        {env, [
+                            {"IRCD_ACCOUNT", binary_to_list(Account)},
+                            {"IRCD_EMAIL", binary_to_list(Email)},
+                            {"IRCD_CODE", binary_to_list(Code)}
+                            | ExtraEnv
+                        ]},
+                        exit_status,
+                        use_stdio,
+                        stderr_to_stdout
+                    ]),
+                    wait_sender(Port, Account)
+                catch
+                    error:Reason ->
+                        logger:warning(#{
+                            event => account_verification_failed,
+                            account => Account,
+                            reason => Reason
+                        })
+                end
+            end),
+            ok;
+        error ->
+            ok
+    end.
 
 wait_sender(Port, Account) ->
     receive
@@ -759,6 +783,21 @@ verify([Requested, Code | _], #client{pid = Pid, nick = Nick} = Client, Server) 
     end;
 verify(_, Client, Server) ->
     ircd_state_send:numeric(Client, Server, <<"461">>, [<<"VERIFY">>], <<"Not enough parameters">>).
+
+-doc """
+Activate a pending account via the web verification link.
+Runs inside `m:ircd_state`; returns `{ok, AccountName}` or `error`.
+""".
+-spec verify_account_web(binary(), binary()) -> {ok, binary()} | error.
+verify_account_web(Name, Code) when is_binary(Name), is_binary(Code) ->
+    case ircd_account:verify(Name, Code) of
+        {ok, #account{name = Actual} = Account} ->
+            logger:info(#{event => account_registered, account => Actual, via => web}),
+            ircd_state_sync:account_created(Account),
+            {ok, Actual};
+        error ->
+            error
+    end.
 
 %%% setname, chghost, pre-away
 

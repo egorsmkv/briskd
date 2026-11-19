@@ -370,20 +370,105 @@ sts(Map) when is_map(Map) ->
 sts(Value) ->
     erlang:error({invalid_sts, Value}).
 
-%% Email verification for draft/account-registration. `command` is the
-%% program (absolute path, then arguments) that delivers a code; `ttl` is how
-%% long a code stays valid, in seconds.
+%% Email verification for draft/account-registration. Supports either an
+%% external `command` (absolute path + args), an `smtp` relay (via gen_smtp),
+%% or both, with an optional `verify_url` web link and `ttl` in seconds.
 account_verification(null) ->
     null;
 account_verification(Map) when is_map(Map) ->
-    [Exe | Args] = Command = maps:get(<<"command">>, Map),
-    true = lists:all(fun(Part) -> is_binary(Part) andalso byte_size(Part) > 0 end, Command),
-    true = filename:pathtype(Exe) =:= absolute,
     Ttl = maps:get(<<"ttl">>, Map, 900),
     true = is_integer(Ttl) andalso Ttl > 0 andalso Ttl =< 86400,
-    #{command => [binary_to_list(Exe) | [binary_to_list(A) || A <- Args]], ttl => Ttl};
+    HasCmd = maps:is_key(<<"command">>, Map),
+    HasSmtp = maps:is_key(<<"smtp">>, Map) andalso maps:get(<<"smtp">>, Map) =/= null,
+    true = HasCmd orelse HasSmtp,
+    Base0 = #{ttl => Ttl},
+    Base1 =
+        case HasCmd of
+            true ->
+                [Exe | Args] = Command = maps:get(<<"command">>, Map),
+                true = lists:all(
+                    fun(Part) -> is_binary(Part) andalso byte_size(Part) > 0 end, Command
+                ),
+                true = filename:pathtype(Exe) =:= absolute,
+                Base0#{command => [binary_to_list(Exe) | [binary_to_list(A) || A <- Args]]};
+            false ->
+                Base0
+        end,
+    Base2 =
+        case HasSmtp of
+            true -> Base1#{smtp => smtp_config(maps:get(<<"smtp">>, Map))};
+            false -> Base1
+        end,
+    case maps:get(<<"verify_url">>, Map, null) of
+        null ->
+            Base2;
+        Url ->
+            Base2#{verify_url => verify_url(Url)}
+    end;
 account_verification(Value) ->
     erlang:error({invalid_account_verification, Value}).
+
+smtp_config(Map) when is_map(Map) ->
+    Relay = maps:get(<<"relay">>, Map),
+    true =
+        is_binary(Relay) andalso byte_size(Relay) > 0 andalso byte_size(Relay) =< 253 andalso
+            binary:match(Relay, [<<0>>, <<" ">>, <<"\r">>, <<"\n">>]) =:= nomatch,
+    Port = maps:get(<<"port">>, Map, 587),
+    true = is_integer(Port, 1, 65535),
+    From = maps:get(<<"from">>, Map),
+    true =
+        is_binary(From) andalso byte_size(From) > 0 andalso byte_size(From) =< 254 andalso
+            binary:match(From, [<<0>>, <<"\r">>, <<"\n">>]) =:= nomatch andalso
+            binary:match(From, <<"@">>) =/= nomatch,
+    Tls = smtp_tls(maps:get(<<"tls">>, Map, <<"if_available">>)),
+    Ssl = boolean_setting(smtp_ssl, maps:get(<<"ssl">>, Map, false)),
+    Subject = text_value(Map, <<"subject">>, <<"Verify your IRC account">>),
+    User = optional_smtp_cred(maps:get(<<"username">>, Map, null)),
+    Pass = optional_smtp_cred(maps:get(<<"password">>, Map, null)),
+    true = (User =:= null andalso Pass =:= null) orelse (is_binary(User) andalso is_binary(Pass)),
+    #{
+        relay => ircd_wire:retain(Relay),
+        port => Port,
+        from => ircd_wire:retain(From),
+        tls => Tls,
+        ssl => Ssl,
+        subject => ircd_wire:retain(Subject),
+        username =>
+            case User of
+                null -> null;
+                _ -> ircd_wire:retain(User)
+            end,
+        password =>
+            case Pass of
+                null -> null;
+                _ -> retain_secret(Pass)
+            end
+    };
+smtp_config(Value) ->
+    erlang:error({invalid_smtp_config, Value}).
+
+smtp_tls(<<"always">>) -> always;
+smtp_tls(<<"if_available">>) -> if_available;
+smtp_tls(<<"never">>) -> never;
+smtp_tls(Value) -> erlang:error({invalid_smtp_tls, Value}).
+
+optional_smtp_cred(null) ->
+    null;
+optional_smtp_cred(Bin) when is_binary(Bin), byte_size(Bin) > 0, byte_size(Bin) =< 256 ->
+    nomatch = binary:match(Bin, [<<0>>, <<"\r">>, <<"\n">>]),
+    Bin;
+optional_smtp_cred(Value) ->
+    erlang:error({invalid_smtp_credential, Value}).
+
+verify_url(Url) when is_binary(Url), byte_size(Url) =< 2048 ->
+    nomatch = binary:match(Url, [<<0>>, <<" ">>, <<"\r">>, <<"\n">>]),
+    case Url of
+        <<"https://", Rest/binary>> when byte_size(Rest) > 0 -> ircd_wire:retain(Url);
+        <<"http://", Rest/binary>> when byte_size(Rest) > 0 -> ircd_wire:retain(Url);
+        _ -> erlang:error({invalid_verify_url, Url})
+    end;
+verify_url(Value) ->
+    erlang:error({invalid_verify_url, Value}).
 
 %% Trusted WebIRC gateways. `hosts` lists gateway IP addresses that may send
 %% WEBIRC with `password`. A missing `hosts` list does not trust any address.

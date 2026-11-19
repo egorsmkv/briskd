@@ -36,6 +36,7 @@
     predefined_channel/1,
     store_accounts/1,
     seed_channels/0,
+    verify_account/2,
     visible_member/3,
     wildcard_match/2
 ]).
@@ -261,6 +262,14 @@ server_disconnect(Peer) ->
         exit:shutdown -> ok;
         exit:{shutdown, _} -> ok
     end.
+
+-doc """
+Verify a pending account registration via the web verification link.
+Returns `{ok, AccountName}` on success or `error` when invalid or expired.
+""".
+-spec verify_account(binary(), binary()) -> {ok, binary()} | error.
+verify_account(Name, Code) when is_binary(Name), is_binary(Code) ->
+    gen_server:call(?MODULE, {verify_account, Name, Code}, 5000).
 
 -doc """
 Check an inbound server's name (RFC 1459 folded) and shared password against
@@ -888,6 +897,8 @@ other_call({server_command, Peer, Prefix, <<"KILL">>, [Nick | Rest]}, _, Server)
     end;
 other_call({server_command, _Peer, _Prefix, _Command, _Params}, _, Server) ->
     {reply, ok, Server};
+other_call({verify_account, Name, Code}, _, Server) ->
+    {reply, ircd_state_v3:verify_account_web(Name, Code), Server};
 other_call({server_disconnect, Peer}, _, Server) ->
     ircd_state_link:flush_netjoin(Peer),
     ircd_state_link:forget_peer_batches(Peer),
@@ -1103,6 +1114,8 @@ redact_command({command, <<"REGISTER">>, [Account, Email, _Password | Rest], Byt
     {command, <<"REGISTER">>, [Account, Email, redacted | Rest], Bytes, Tags};
 redact_command({command, <<"REGISTER">>, [Account, Email, _Password | Rest], Bytes}) ->
     {command, <<"REGISTER">>, [Account, Email, redacted | Rest], Bytes};
+redact_command({verify_account, Account, _Code}) ->
+    {verify_account, Account, redacted};
 redact_command({command, <<"VERIFY">>, [Account, _Code | Rest], Bytes, Tags}) ->
     {command, <<"VERIFY">>, [Account, redacted | Rest], Bytes, Tags};
 redact_command({command, <<"VERIFY">>, [Account, _Code | Rest], Bytes}) ->

@@ -14,6 +14,9 @@ Opt-in via the `"webui"` configuration object (`bind`, `port`, `username`,
   management action (`rehash`, `reload-certs`, `log-level`, `kick-client`,
   `connect`, `squit`, `create-account`, `delete-account`, `backup`,
   `dronebl-unban`, `drain`, `stop`).
+- `GET /verify?account=<name>&code=<code>` — public (unauthenticated)
+  account verification landing page, active when `account_verification` is
+  configured.
 
 Security controls:
 
@@ -183,7 +186,9 @@ accept_loop(Listen, Html, Counter) ->
 
 handle_connection(Socket, Html) ->
     case read_request(Socket) of
-        {ok, Method, Path, Headers, Body} ->
+        {ok, <<"GET">>, {<<"/verify">>, Query}, _Headers, _Body} ->
+            handle_verify(Socket, Query);
+        {ok, Method, {Path, _Query}, Headers, Body} ->
             case check_auth(Headers) of
                 ok ->
                     route(Socket, Method, Path, Headers, Body, Html);
@@ -202,6 +207,100 @@ handle_connection(Socket, Html) ->
         {error, _} ->
             send_json(Socket, 400, <<"Bad Request">>, #{error => <<"bad_request">>})
     end.
+
+handle_verify(Socket, Query) ->
+    Config = persistent_term:get({ircd_state, config}, #{}),
+    case maps:get(account_verification, Config, null) of
+        null ->
+            send_json(Socket, 404, <<"Not Found">>, #{error => <<"verification_disabled">>});
+        _ ->
+            case parse_verify_query(Query) of
+                {ok, Account, Code} ->
+                    case ircd_state:verify_account(Account, Code) of
+                        {ok, VerifiedName} ->
+                            Page = verify_page(
+                                <<"Account verified">>,
+                                <<"Your IRC account '", (escape_html(VerifiedName))/binary,
+                                    "' has been verified. You can now log in via SASL.">>,
+                                true
+                            ),
+                            send_response(
+                                Socket, 200, <<"OK">>, <<"text/html; charset=utf-8">>, [], Page
+                            );
+                        error ->
+                            Page = verify_page(
+                                <<"Verification failed">>,
+                                <<"The verification link is invalid or has expired.">>,
+                                false
+                            ),
+                            send_response(
+                                Socket,
+                                400,
+                                <<"Bad Request">>,
+                                <<"text/html; charset=utf-8">>,
+                                [],
+                                Page
+                            )
+                    end;
+                error ->
+                    Page = verify_page(
+                        <<"Verification failed">>,
+                        <<"Missing account or verification code.">>,
+                        false
+                    ),
+                    send_response(
+                        Socket, 400, <<"Bad Request">>, <<"text/html; charset=utf-8">>, [], Page
+                    )
+            end
+    end.
+
+parse_verify_query(Query) ->
+    try uri_string:dissect_query(Query) of
+        Pairs when is_list(Pairs) ->
+            case {lists:keyfind(<<"account">>, 1, Pairs), lists:keyfind(<<"code">>, 1, Pairs)} of
+                {{_, Account}, {_, Code}} when
+                    is_binary(Account),
+                    byte_size(Account) > 0,
+                    is_binary(Code),
+                    byte_size(Code) > 0
+                ->
+                    {ok, Account, Code};
+                _ ->
+                    error
+            end;
+        _ ->
+            error
+    catch
+        _:_ -> error
+    end.
+
+verify_page(Title, Message, Ok) ->
+    Accent =
+        case Ok of
+            true -> <<"#15803d">>;
+            false -> <<"#b91c1c">>
+        end,
+    iolist_to_binary([
+        <<"<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">">>,
+        <<"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">">>,
+        <<"<title>">>,
+        Title,
+        <<" - ircd</title>">>,
+        <<"<style>:root{color-scheme:light dark}body{font-family:system-ui,sans-serif;max-width:480px;margin:64px auto;padding:0 20px;line-height:1.5}h1{color:">>,
+        Accent,
+        <<";font-size:20px}</style></head><body><h1>">>,
+        Title,
+        <<"</h1><p>">>,
+        Message,
+        <<"</p></body></html>">>
+    ]).
+
+escape_html(Bin) ->
+    B1 = binary:replace(Bin, <<"&">>, <<"&amp;">>, [global]),
+    B2 = binary:replace(B1, <<"<">>, <<"&lt;">>, [global]),
+    B3 = binary:replace(B2, <<">">>, <<"&gt;">>, [global]),
+    B4 = binary:replace(B3, <<"\"">>, <<"&quot;">>, [global]),
+    binary:replace(B4, <<"'">>, <<"&#39;">>, [global]).
 
 route(Socket, <<"GET">>, <<"/">>, _Headers, _Body, Html) ->
     send_response(Socket, 200, <<"OK">>, <<"text/html; charset=utf-8">>, [], Html);
@@ -376,7 +475,7 @@ parse_headers(Socket, HeaderBlock, Rest) ->
         [ReqLine | HeaderLines] ->
             case binary:split(ReqLine, <<" ">>, [global]) of
                 [Method, RawPath, <<"HTTP/1.", _>>] ->
-                    Path = strip_query(RawPath),
+                    Path = split_path(RawPath),
                     Headers = parse_header_lines(HeaderLines, #{}),
                     read_body(Socket, Method, Path, Headers, Rest);
                 _ ->
@@ -424,10 +523,10 @@ read_exact(Socket, Len, Buf, Method, Path, Headers) ->
             {error, Reason}
     end.
 
-strip_query(RawPath) ->
+split_path(RawPath) ->
     case binary:split(RawPath, <<"?">>) of
-        [Path, _] -> Path;
-        [Path] -> Path
+        [Path, Query] -> {Path, Query};
+        [Path] -> {Path, <<>>}
     end.
 
 send_json(Socket, Code, Reason, Map) ->
