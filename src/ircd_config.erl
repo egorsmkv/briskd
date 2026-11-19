@@ -98,6 +98,7 @@ load(Path) ->
             webui => webui(maps:get(<<"webui">>, Json, null)),
             e2ee => e2ee(maps:get(<<"e2ee">>, Json, null)),
             voice => voice(maps:get(<<"voice">>, Json, null)),
+            files => files(maps:get(<<"files">>, Json, null)),
             max_accounts => positive_limit(maps:get(<<"max_accounts">>, Json, 100000)),
             max_empty_channels => positive_limit(maps:get(<<"max_empty_channels">>, Json, 1000)),
             empty_channel_ttl => empty_channel_ttl(maps:get(<<"empty_channel_ttl">>, Json, 86400)),
@@ -890,3 +891,32 @@ voice_int(_Key, Val, Min, Max) when is_integer(Val, Min, Max) ->
     Val;
 voice_int(Key, Val, _Min, _Max) ->
     erlang:error({invalid_voice, Key, Val}).
+
+%% File sharing stored in S3-compatible object storage (e.g. RustFS).
+%% Disabled when `null` or `false`.
+files(null) ->
+    null;
+files(false) ->
+    null;
+files(Map) when is_map(Map) ->
+    Endpoint = webui_url(endpoint, maps:get(<<"endpoint">>, Map)),
+    Region = voice_token(region, maps:get(<<"region">>, Map, <<"us-east-1">>), 1, 64),
+    Bucket = voice_bucket(maps:get(<<"bucket">>, Map, <<"ircd-files">>)),
+    AccessKey = voice_secret(access_key_id, maps:get(<<"access_key_id">>, Map)),
+    SecretKey = voice_secret(secret_access_key, maps:get(<<"secret_access_key">>, Map)),
+    MaxBytes = files_int(max_bytes, maps:get(<<"max_bytes">>, Map, 10485760), 1024, 104857600),
+    #{
+        endpoint => Endpoint,
+        region => Region,
+        bucket => Bucket,
+        access_key_id => AccessKey,
+        secret_access_key => SecretKey,
+        max_bytes => MaxBytes
+    };
+files(Value) ->
+    erlang:error({invalid_files, Value}).
+
+files_int(_Key, Val, Min, Max) when is_integer(Val, Min, Max) ->
+    Val;
+files_int(Key, Val, _Min, _Max) ->
+    erlang:error({invalid_files, Key, Val}).

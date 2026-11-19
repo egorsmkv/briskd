@@ -3,6 +3,7 @@ import { dayKey, formatDayLabel, renderIrcMessage } from "./common/format.ts";
 import { currentLang, initLang, setLang, t } from "./common/i18n.ts";
 import { currentTheme, initTheme, setTheme, THEMES } from "./common/theme.ts";
 import { updateDynamicFavicon } from "./common/favicon.ts";
+import { createFileCard, formatBytes } from "./common/file_card.ts";
 import { createVoicePlayer } from "./common/voice_player.ts";
 import { E2EE_CAP, E2eeManager } from "./e2ee/manager.ts";
 
@@ -73,12 +74,21 @@ interface ChatLine {
   encrypted?: boolean;
   voiceId?: string;
   voiceDur?: number;
+  fileId?: string;
+  fileName?: string;
+  fileSize?: number;
 }
 
 const VOICE_CAP = "egorsmkv.github.io/voice";
 const VOICE_TAG = "+egorsmkv.github.io/voice";
 const VOICE_DUR_TAG = "+egorsmkv.github.io/voice-dur";
 const VOICE_ID_RE = /^[0-9a-f]{32}\.(ogg|webm)$/;
+
+const FILES_CAP = "egorsmkv.github.io/files";
+const FILE_TAG = "+egorsmkv.github.io/file";
+const FILE_NAME_TAG = "+egorsmkv.github.io/file-name";
+const FILE_SIZE_TAG = "+egorsmkv.github.io/file-size";
+const FILE_ID_RE = /^[0-9a-f]{32}\.[a-z0-9]{1,8}$/;
 
 function fmtDuration(sec?: number): string {
   const s = Math.max(0, Math.floor(sec || 0));
@@ -780,6 +790,9 @@ function addLine(
     encrypted?: boolean;
     voiceId?: string;
     voiceDur?: number;
+    fileId?: string;
+    fileName?: string;
+    fileSize?: number;
   },
 ): void {
   const buf = ensureBuf(bufName);
@@ -795,6 +808,9 @@ function addLine(
     encrypted: opts.encrypted,
     voiceId: opts.voiceId,
     voiceDur: opts.voiceDur,
+    fileId: opts.fileId,
+    fileName: opts.fileName,
+    fileSize: opts.fileSize,
   };
   const prev = buf.lines[buf.lines.length - 1];
   buf.lines.push(entry);
@@ -873,6 +889,14 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
         voiceId: entry.voiceId,
         durationSec: entry.voiceDur,
         label: t("voice.label"),
+      });
+    }
+    if (entry.fileId && FILE_ID_RE.test(entry.fileId)) {
+      return createFileCard({
+        fileId: entry.fileId,
+        fileName: entry.fileName || entry.fileId,
+        fileSize: entry.fileSize,
+        downloadLabel: t("file.download"),
       });
     }
     return renderIrcMessage(entry.text, fmtOpts);
@@ -1169,7 +1193,15 @@ function handleMessage(raw: string): void {
       const listStr = more ? params[3] || "" : params[2] || "";
       for (const tok of listStr.split(" ").filter(Boolean)) {
         const eq = tok.indexOf("=");
-        advertisedCaps.push(eq === -1 ? tok : tok.slice(0, eq));
+        const capName = eq === -1 ? tok : tok.slice(0, eq);
+        advertisedCaps.push(capName);
+        if (capName === FILES_CAP && eq !== -1) {
+          const m = /max-bytes=(\d+)/.exec(tok.slice(eq + 1));
+          if (m) {
+            const parsed = parseInt(m[1], 10);
+            if (Number.isFinite(parsed) && parsed > 0) filesMaxBytes = parsed;
+          }
+        }
       }
       if (more) return;
       const wanted = [
@@ -1184,6 +1216,7 @@ function handleMessage(raw: string): void {
         "account-tag",
         "extended-join",
         E2EE_CAP,
+        FILES_CAP,
         VOICE_CAP,
       ];
       if (saslPass) wanted.push("sasl");
@@ -1193,6 +1226,10 @@ function handleMessage(raw: string): void {
     } else if (sub === "ACK") {
       const acked = (params[2] || "").split(" ").filter(Boolean);
       if (acked.includes(E2EE_CAP)) e2ee.setServerSupported(true);
+      if (acked.includes(FILES_CAP)) {
+        filesSupported = true;
+        updateFileButton();
+      }
       if (acked.includes(VOICE_CAP)) {
         voiceSupported = true;
         updateVoiceButton();
@@ -1410,6 +1447,20 @@ function handleMessage(raw: string): void {
       const voiceDur = Number.isFinite(rawDur) && rawDur > 0 && rawDur <= 600
         ? rawDur
         : undefined;
+      const rawFileId = msg.tags[FILE_TAG] || "";
+      const fileId = FILE_ID_RE.test(rawFileId) ? rawFileId : undefined;
+      let fileName: string | undefined;
+      if (fileId && msg.tags[FILE_NAME_TAG]) {
+        try {
+          fileName = decodeURIComponent(msg.tags[FILE_NAME_TAG]);
+        } catch {
+          fileName = msg.tags[FILE_NAME_TAG];
+        }
+      }
+      const rawFileSize = parseInt(msg.tags[FILE_SIZE_TAG] || "", 10);
+      const fileSize = Number.isFinite(rawFileSize) && rawFileSize > 0
+        ? rawFileSize
+        : undefined;
       addLine(dest, {
         time,
         nick: nick || msg.prefix,
@@ -1417,6 +1468,9 @@ function handleMessage(raw: string): void {
         kind: command === "NOTICE" ? "notice" : "",
         voiceId,
         voiceDur,
+        fileId,
+        fileName,
+        fileSize,
       });
     }
     return;
@@ -2133,6 +2187,129 @@ $("btn-voice-cancel").addEventListener("click", () => {
     voiceRecorder.stop();
   } else {
     resetVoiceUi();
+  }
+});
+
+let filesSupported = false;
+let filesMaxBytes = 10485760;
+
+function updateFileButton(): void {
+  const btn = $("btn-file");
+  btn.classList.toggle("hidden", !filesSupported);
+  btn.title = `${t("file.attach")} (max ${formatBytes(filesMaxBytes)})`;
+}
+
+async function uploadAndSendFile(file: File, target: string): Promise<void> {
+  if (!filesSupported) return;
+  if (file.size <= 0) return;
+  if (file.size > filesMaxBytes) {
+    addLine(target, {
+      text: t("file.err.tooLarge", { max: formatBytes(filesMaxBytes) }),
+      kind: "err",
+    });
+    return;
+  }
+  const btn = $<HTMLButtonElement>("btn-file");
+  btn.disabled = true;
+  btn.classList.add("uploading");
+  try {
+    const resp = await fetch("/api/files", {
+      method: "POST",
+      headers: {
+        "X-Requested-With": "ircd-webui",
+        "Content-Type": "application/octet-stream",
+        "X-File-Name": encodeURIComponent(file.name || "file.bin"),
+      },
+      body: file,
+    });
+    const data = await resp.json().catch(() => ({})) as {
+      id?: string;
+      name?: string;
+      bytes?: number;
+      error?: string;
+      message?: string;
+    };
+    if (!resp.ok || !data.id || !FILE_ID_RE.test(data.id)) {
+      const reason = data.message || data.error || `HTTP ${resp.status}`;
+      addLine(target, {
+        text: t("file.err.upload", { reason }),
+        kind: "err",
+      });
+      return;
+    }
+    const cleanName = data.name || file.name || data.id;
+    const size = typeof data.bytes === "number" && data.bytes > 0
+      ? data.bytes
+      : file.size;
+    const encodedName = encodeURIComponent(cleanName);
+    sendRaw(
+      `@${FILE_TAG}=${data.id};${FILE_NAME_TAG}=${encodedName};${FILE_SIZE_TAG}=${size} PRIVMSG ${target} :[File: ${cleanName} (${
+        formatBytes(size)
+      })] /api/files/${data.id}`,
+    );
+  } catch (e) {
+    addLine(target, {
+      text: t("file.err.upload", { reason: errorMessage(e) }),
+      kind: "err",
+    });
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("uploading");
+  }
+}
+
+function shareFileInActiveBuffer(file: File): void {
+  const buf = buffers.get(activeBuf);
+  if (!buf || buf.name === "*status") {
+    addLine("*status", { text: t("file.err.target"), kind: "err" });
+    return;
+  }
+  void uploadAndSendFile(file, buf.name);
+}
+
+const fileInp = $<HTMLInputElement>("inp-file");
+$("btn-file").addEventListener("click", () => {
+  const buf = buffers.get(activeBuf);
+  if (!buf || buf.name === "*status") {
+    addLine("*status", { text: t("file.err.target"), kind: "err" });
+    return;
+  }
+  fileInp.value = "";
+  fileInp.click();
+});
+
+fileInp.addEventListener("change", () => {
+  const file = fileInp.files?.[0];
+  if (file) shareFileInActiveBuffer(file);
+});
+
+const messagesDropZone = $("messages");
+messagesDropZone.addEventListener("dragover", (ev) => {
+  if (!filesSupported) return;
+  if (ev.dataTransfer?.types.includes("Files")) {
+    ev.preventDefault();
+    messagesDropZone.classList.add("drag-over");
+  }
+});
+messagesDropZone.addEventListener("dragleave", () => {
+  messagesDropZone.classList.remove("drag-over");
+});
+messagesDropZone.addEventListener("drop", (ev) => {
+  messagesDropZone.classList.remove("drag-over");
+  if (!filesSupported) return;
+  const file = ev.dataTransfer?.files?.[0];
+  if (file) {
+    ev.preventDefault();
+    shareFileInActiveBuffer(file);
+  }
+});
+
+msgInp.addEventListener("paste", (ev) => {
+  if (!filesSupported) return;
+  const file = ev.clipboardData?.files?.[0];
+  if (file) {
+    ev.preventDefault();
+    shareFileInActiveBuffer(file);
   }
 });
 

@@ -6,7 +6,7 @@
     "lint": "deno lint src build.ts",
     "fmt": "deno fmt src build.ts",
     "fmt-check": "deno fmt --check src build.ts",
-    "test": "deno test src/e2ee/crypto_test.ts src/common/format_test.ts src/common/voice_player_test.ts"
+    "test": "deno test src/e2ee/crypto_test.ts src/common/format_test.ts src/common/voice_player_test.ts src/common/file_card_test.ts"
   },
   "compilerOptions": {
     "lib": ["dom", "dom.iterable", "es2022"],

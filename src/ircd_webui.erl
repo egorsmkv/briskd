@@ -268,6 +268,10 @@ handle_connection(
             handle_voice_upload(Socket, Headers, Body);
         {ok, <<"GET">>, {<<"/api/voice/", VoiceId/binary>>, _Query}, _Headers, _Body} ->
             handle_voice_download(Socket, VoiceId);
+        {ok, <<"POST">>, {<<"/api/files">>, _Query}, Headers, Body} ->
+            handle_file_upload(Socket, Headers, Body);
+        {ok, <<"GET">>, {<<"/api/files/", FileId/binary>>, _Query}, _Headers, _Body} ->
+            handle_file_download(Socket, FileId);
         {ok, Method, {Path, _Query}, Headers, Body} ->
             case check_auth(Headers) of
                 ok ->
@@ -699,6 +703,70 @@ parse_voice_duration(Bin) when is_binary(Bin) ->
         _:_ -> undefined
     end.
 
+handle_file_upload(Socket, Headers, Body) ->
+    case maps:get(<<"x-requested-with">>, Headers, undefined) of
+        <<"ircd-webui">> ->
+            RawName = decode_header_filename(maps:get(<<"x-file-name">>, Headers, undefined)),
+            case ircd_files:store(Body, RawName) of
+                {ok, Meta} ->
+                    send_json(Socket, 201, <<"Created">>, Meta);
+                {error, disabled} ->
+                    send_json(Socket, 404, <<"Not Found">>, #{error => <<"files_disabled">>});
+                {error, empty} ->
+                    send_json(Socket, 400, <<"Bad Request">>, #{error => <<"empty_file">>});
+                {error, too_large} ->
+                    send_json(Socket, 413, <<"Payload Too Large">>, #{
+                        error => <<"payload_too_large">>
+                    });
+                {error, Reason} ->
+                    ircd_log:warning(file_upload_failed, #{reason => Reason}),
+                    send_json(Socket, 502, <<"Bad Gateway">>, #{error => <<"storage_error">>})
+            end;
+        _ ->
+            send_json(Socket, 403, <<"Forbidden">>, #{error => <<"missing_csrf_header">>})
+    end.
+
+handle_file_download(Socket, FileId) ->
+    case ircd_files:fetch(FileId) of
+        {ok, Bytes, Mime, InlinePreview} ->
+            Disp =
+                case InlinePreview of
+                    true -> <<"inline">>;
+                    false -> <<"attachment">>
+                end,
+            send_response(
+                Socket,
+                200,
+                <<"OK">>,
+                Mime,
+                [
+                    {<<"Cache-Control">>, <<"public, max-age=86400">>},
+                    {<<"Content-Disposition">>, Disp},
+                    {<<"Content-Security-Policy">>, <<"default-src 'none'; sandbox">>}
+                ],
+                Bytes
+            );
+        {error, disabled} ->
+            send_json(Socket, 404, <<"Not Found">>, #{error => <<"files_disabled">>});
+        {error, invalid_id} ->
+            send_json(Socket, 400, <<"Bad Request">>, #{error => <<"invalid_file_id">>});
+        {error, not_found} ->
+            send_json(Socket, 404, <<"Not Found">>, #{error => <<"not_found">>});
+        {error, Reason} ->
+            ircd_log:warning(file_download_failed, #{id => FileId, reason => Reason}),
+            send_json(Socket, 502, <<"Bad Gateway">>, #{error => <<"storage_error">>})
+    end.
+
+decode_header_filename(undefined) ->
+    undefined;
+decode_header_filename(Bin) when is_binary(Bin) ->
+    try uri_string:percent_decode(Bin) of
+        Decoded when is_binary(Decoded) -> Decoded;
+        _ -> Bin
+    catch
+        _:_ -> Bin
+    end.
+
 peer_ip(Socket) ->
     case inet:peername(Socket) of
         {ok, {Addr, _}} -> list_to_binary(inet:ntoa(Addr));
@@ -1082,6 +1150,8 @@ read_body(Socket, Method, Path, Headers, Rest) ->
 
 max_body_bytes(<<"POST">>, {<<"/api/voice">>, _}) ->
     ircd_voice:max_bytes();
+max_body_bytes(<<"POST">>, {<<"/api/files">>, _}) ->
+    ircd_files:max_bytes();
 max_body_bytes(_, _) ->
     ?MAX_REQUEST_BYTES.
 

@@ -92,6 +92,11 @@ const DICT: Record<Lang, Record<string, string>> = {
     "voice.err.upload": "Voice upload failed: {{reason}}",
     "voice.err.target":
       "Select a channel or DM before sending a voice message.",
+    "file.attach": "Attach file",
+    "file.download": "Download file",
+    "file.err.target": "Select a channel or DM before sharing a file.",
+    "file.err.tooLarge": "File is too large (max {{max}}).",
+    "file.err.upload": "File upload failed: {{reason}}",
   },
   he: {
     "connect.sub": "סביבת צ׳אט IRC בדפדפן על גבי IRCv3 WebSocket.",
@@ -180,6 +185,11 @@ const DICT: Record<Lang, Record<string, string>> = {
     "voice.err.mic": "הגישה למיקרופון נדחתה או אינה זמינה.",
     "voice.err.upload": "העלאת ההודעה הקולית נכשלה: {{reason}}",
     "voice.err.target": "יש לבחור ערוץ או הודעה פרטית לפני שליחת הודעה קולית.",
+    "file.attach": "צירוף קובץ",
+    "file.download": "הורדת קובץ",
+    "file.err.target": "יש לבחור ערוץ או הודעה פרטית לפני שיתוף קובץ.",
+    "file.err.tooLarge": "הקובץ גדול מדי (מקסימום {{max}}).",
+    "file.err.upload": "העלאת הקובץ נכשלה: {{reason}}",
   },
 };
 
