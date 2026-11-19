@@ -1,6 +1,5 @@
 -module(ircd_account).
 -export([
-    add_certfp/2,
     min_password/0,
     import/1,
     list/0,
@@ -201,8 +200,11 @@ create(Name, Email, Password, CertFps, Pending) ->
 
 -doc """
 Verify a password for a usable account (SASL PLAIN) by deriving its
-SCRAM-SHA-256 StoredKey. The comparison is constant time, and an unknown
-account spends the same derivation time.
+SCRAM-SHA-256 StoredKey. The comparison is constant time. An unknown account
+runs the same PBKDF2 derivation with the iteration count `create/5` gives every
+new account (4096), so it costs the same time as a local account. An account
+imported from a peer with another iteration count is derived with its own
+count.
 """.
 -spec check_password(binary(), binary()) -> {ok, #account{}} | error.
 check_password(Name, Password) ->
@@ -214,7 +216,9 @@ check_password(Name, Password) ->
                 false -> error
             end;
         error ->
-            %% Spend the same derivation time for an unknown account.
+            %% Spend the same derivation time for an unknown account: the
+            %% same PBKDF2 path and ?ITERATIONS that create/5 stores, with a
+            %% fixed salt of the same 16-byte size.
             _ = verifier(Password, {<<0:128>>, ?ITERATIONS}),
             error
     end.
@@ -278,19 +282,4 @@ by_certfp(Fingerprint) ->
     of
         [Account | _] -> {ok, Account};
         [] -> error
-    end.
-
--doc """
-Add a client certificate fingerprint (stored lowercase) to a usable
-account. Returns `error` when the account does not exist.
-""".
--spec add_certfp(binary(), binary()) -> ok | error.
-add_certfp(Name, Fingerprint) ->
-    case find(Name) of
-        {ok, #account{certfps = Fps} = Account} ->
-            Fp = string:lowercase(Fingerprint),
-            mnesia:dirty_write(Account#account{certfps = lists:usort([Fp | Fps])}),
-            ok;
-        error ->
-            error
     end.

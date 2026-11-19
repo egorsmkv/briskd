@@ -110,14 +110,15 @@ motd_and_stats(Alice) ->
     Messages = cmd(Alice, <<"STATS m">>),
     ?assert(has(Messages, <<" 212 alice VERSION 3 ">>)),
     ?assert(has(Messages, <<" 219 alice m ">>)),
+    %% A non-operator sees only its own STATS l line and no O-lines.
     Links = cmd(Alice, <<"STATS l">>),
     ?assert(has(Links, <<" 211 alice alice 0 ">>)),
-    ?assert(has(Links, <<" 211 alice bob 0 ">>)),
+    ?assertNot(has(Links, <<" 211 alice bob ">>)),
     ?assert(has(Links, <<" 219 alice l ">>)),
     Opers = cmd(Alice, <<"STATS o">>),
-    ?assert(has(Opers, <<" 243 alice O * * oper">>)),
-    ?assert(has(Opers, <<" 243 alice O * * admin">>)),
-    ?assertNot(has(Opers, <<"opersecret">>)),
+    ?assert(has(Opers, <<" 481 alice :Permission Denied">>)),
+    ?assertNot(has(Opers, <<" 243 ">>)),
+    ?assert(has(Opers, <<" 219 alice o ">>)),
     ?assert(has(cmd(Alice, <<"STATS q">>), <<" 219 alice q :End of STATS report">>)),
     ?assert(has(cmd(Alice, <<"STATS">>), <<" 219 alice * ">>)).
 
@@ -137,6 +138,8 @@ lusers_before_oper(Alice) ->
     ?assert(has(cmd(Alice, <<"LUSERS * no.such">>), <<" 402 alice no.such ">>)),
     ?assert(has(cmd(Alice, <<"MODE alice +i">>), <<"+i">>)),
     ?assert(has(cmd(Alice, <<"LUSERS">>), <<"There are 1 users and 1 invisible">>)),
+    %% A non-matching mask zeroes the invisible count too.
+    ?assert(has(cmd(Alice, <<"LUSERS nomatch.*">>), <<"There are 0 users and 0 invisible">>)),
     ?assert(has(cmd(Alice, <<"MODE alice -i">>), <<"-i">>)).
 
 trace_before_oper(Alice) ->
@@ -181,6 +184,15 @@ oper_login(Alice) ->
 
 after_oper(Alice, Bob) ->
     ?assert(has(cmd(Alice, <<"LUSERS">>), <<" 252 alice 1 :operator(s) online">>)),
+    %% An operator sees every connection and the O-lines (never passwords).
+    Links = cmd(Alice, <<"STATS l">>),
+    ?assert(has(Links, <<" 211 alice alice 0 ">>)),
+    ?assert(has(Links, <<" 211 alice bob 0 ">>)),
+    Opers = cmd(Alice, <<"STATS o">>),
+    ?assert(has(Opers, <<" 243 alice O * * oper">>)),
+    ?assert(has(Opers, <<" 243 alice O * * admin">>)),
+    ?assertNot(has(Opers, <<"opersecret">>)),
+    ?assert(has(Opers, <<" 219 alice o ">>)),
     Trace = cmd(Alice, <<"TRACE">>),
     ?assert(has(Trace, <<" 204 alice Oper 0 alice">>)),
     ?assert(has(Trace, <<" 205 alice User 0 bob">>)),

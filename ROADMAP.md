@@ -59,6 +59,12 @@ in the referenced RFC.
 - [x] Safe `!` channels, creator role, `+r` reop behavior, and configurable
   randomized reop delay.
 - [x] Anonymous `+a` behavior on local `&` and safe `!` channels.
+- [x] Channel operators can change `+o`/`+v` on, and kick, members homed on
+  another server; the safe-channel reop is propagated to peers.
+- [x] List visibility policy: ban list public, exception and invite lists for
+  channel operators; bare `MODE #chan b|e|I` lists.
+- [x] `KNOCK` numerics 713 (open channel) and 714 (already on channel), common
+  ircd extensions rather than RFC numerics.
 - [x] Complete RFC 2811 channel creation and abuse-window rules, nickname
   collision handling, and channel lifecycle edge cases.
 - [x] Expand mode behavior and numeric coverage for all supported channel types
@@ -80,6 +86,9 @@ in the referenced RFC.
   - A client whose outgoing queue passes `max_sendq` lines is disconnected
     with `Max SendQ exceeded`. An outbound link that stops reading is
     dropped after a 30 s send timeout or 50000 queued lines and reconnects.
+  - Outbound links reconnect with exponential backoff from 5 s to a 300 s cap
+    (up to 10% jitter), reset after a successful handshake, logged at a low
+    rate.
   - WHOWAS keeps the newest 10 entries per nickname and 10000 in all.
   - Ban, exception, and invite lists hold 100 masks each (`MAXLIST=beI:100`,
     ERR_BANLISTFULL 478); a peer's additions past that are dropped.

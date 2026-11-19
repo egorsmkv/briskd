@@ -58,15 +58,23 @@ decode_and_fragmentation_test() ->
     ),
     First = masked(1, 0, <<"PRIV">>),
     Last = masked(0, 1, <<"MSG x :y">>),
-    ?assertEqual({ok, [], First}, ircd_websocket:decode(First, 8703)),
+    %% The unfinished message is kept as one frame and completes on a later read.
+    {ok, [], Kept} = ircd_websocket:decode(First, 8703),
+    ?assertEqual(
+        {ok, [{text, <<"PRIVMSG x :y">>}], <<>>},
+        ircd_websocket:decode(<<Kept/binary, Last/binary>>, 8703)
+    ),
     ?assertEqual(
         {ok, [{text, <<"PRIVMSG x :y">>}], <<>>},
         ircd_websocket:decode(<<First/binary, Last/binary>>, 8703)
     ),
     Partial = binary:part(Last, 0, 3),
+    {ok, [], Kept2} = ircd_websocket:decode(<<First/binary, Partial/binary>>, 8703),
     ?assertEqual(
-        {ok, [], <<First/binary, Partial/binary>>},
-        ircd_websocket:decode(<<First/binary, Partial/binary>>, 8703)
+        {ok, [{text, <<"PRIVMSG x :y">>}], <<>>},
+        ircd_websocket:decode(
+            <<Kept2/binary, (binary:part(Last, 3, byte_size(Last) - 3))/binary>>, 8703
+        )
     ),
     ?assertEqual({error, unmasked_frame}, ircd_websocket:decode(<<16#81, 1, $a>>, 8703)),
     ?assertEqual({error, too_large}, ircd_websocket:decode(masked(2, 1, <<"abcdef">>), 4)).

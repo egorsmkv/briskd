@@ -65,10 +65,11 @@ join_restrictions(Port) ->
     cmd(A, <<"MODE #jr +I jr_dave!*@*">>, <<"+I jr_dave!*@*">>),
     want(cmd(D, <<"JOIN #jr">>, <<" 366 ">>), <<"JOIN #jr">>),
     cmd(D, <<"PART #jr">>, <<"PART #jr">>),
-    %% Invite exception list is readable by any member; others are op-only.
-    Invites = cmd(B, <<"MODE #jr +I">>, <<" 347 ">>),
-    want(Invites, <<" 346 jr_bob #jr jr_dave!*@*">>),
-    want(cmd(B, <<"MODE #jr +b">>, <<" 482 ">>), <<"You're not channel operator">>),
+    %% The ban list is readable by anyone; exception lists are op-only.
+    want(cmd(B, <<"MODE #jr +I">>, <<" 482 ">>), <<"You're not channel operator">>),
+    want(cmd(B, <<"MODE #jr +b">>, <<" 368 ">>), <<" 368 jr_bob #jr :End of channel ban">>),
+    Invites = cmd(A, <<"MODE #jr +I">>, <<" 347 ">>),
+    want(Invites, <<" 346 jr_alice #jr jr_dave!*@*">>),
     cmd(A, <<"MODE #jr -iI jr_dave!*@*">>, <<"MODE #jr -iI jr_dave!*@*">>),
     %% Ban and ban exception.
     cmd(A, <<"MODE #jr +b jr_dave!*@*">>, <<"+b jr_dave!*@*">>),
@@ -266,7 +267,7 @@ invite_and_knock(Port) ->
     %% KNOCK.
     want(cmd(C, <<"KNOCK">>, <<" 461 ">>), <<"KNOCK :Not enough parameters">>),
     want(cmd(C, <<"KNOCK #void">>, <<" 403 ">>), <<"#void :No such channel">>),
-    want(cmd(A, <<"KNOCK #ik">>, <<" 442 ">>), <<"You're already on that channel">>),
+    want(cmd(A, <<"KNOCK #ik">>, <<" 714 ">>), <<"#ik :You're already on that channel">>),
     want(cmd(C, <<"KNOCK #ik :let me in">>, <<"PONG">>), <<"PONG">>),
     want(recv_until(A, <<"KNOCK">>), <<"KNOCK #ik :let me in">>),
     ?assertNot(has(sync(B), <<"KNOCK">>)),
@@ -275,7 +276,10 @@ invite_and_knock(Port) ->
     cmd(A, <<"MODE #ik +K">>, <<"MODE #ik +K">>),
     want(cmd(C, <<"KNOCK #ik">>, <<" 480 ">>), <<"Cannot knock on channel">>),
     cmd(A, <<"MODE #ik -Ki">>, <<"MODE #ik -Ki">>),
+    want(cmd(C, <<"KNOCK #ik">>, <<" 713 ">>), <<"#ik :Channel is open">>),
+    cmd(A, <<"MODE #ik +k knockkey">>, <<"+k">>),
     want(cmd(C, <<"KNOCK #ik">>, <<" 480 ">>), <<"Channel is not invite-only">>),
+    cmd(A, <<"MODE #ik -k knockkey">>, <<"-k">>),
     cmd(A, <<"MODE #ik +i">>, <<"MODE #ik +i">>),
     cmd(A, <<"PART #ik">>, <<"PART">>),
     want(cmd(C, <<"KNOCK #ik">>, <<" 480 ">>), <<"No channel operators available">>),

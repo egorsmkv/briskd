@@ -9,8 +9,10 @@ name folded with `ircd_wire:fold/1` (RFC 1459 case mapping) and holds only
 **local** members, as a map of session pid to roles (`operator`, `voice`,
 `creator`, or `member`). Members on other servers live in `remote_channel`
 rows maintained by `m:ircd_state_link`; changes made here are propagated to
-server peers through that module. In every handler `Client` is the requesting
-`client` record and `Server` is this server's name, used as the numeric prefix.
+server peers through that module. A local channel operator's
+`MODE +o/-o/+v/-v` and `KICK` on such a member update that `remote_channel`
+row here. In every handler `Client` is the requesting `client` record and
+`Server` is this server's name, used as the numeric prefix.
 
 Implements the RFC 2811 channel model and the RFC 2812 section 3.2 and 3.3
 commands. `JOIN` checks run in this order: channel name (403), netsplit hold
@@ -21,6 +23,12 @@ matched by `+e` (474). Sending to a channel fails with 404 for an outsider on a
 channel or matching a ban. The `b`, `e`, and `I` lists hold at most
 `?MAX_LIST_ENTRIES` (100) masks each, advertised as `MAXLIST=beI:100`; adding
 past that gives 478 ERR_BANLISTFULL.
+
+Listing (`MODE <channel> b`, `e`, or `I`, with or without `+`): the ban list
+is shown to anyone (RFC 2812 section 3.2.3), except that a non-member of a
+`+s` or `+p` channel gets only 368 RPL_ENDOFBANLIST; the exception (348/349)
+and invite-exception (346/347) lists need channel operator status, otherwise
+482 ERR_CHANOPRIVSNEEDED. This split is implementation policy.
 
 Visibility: `+p` and `+s` hide a channel's members from non-members; `+a`
 (anonymous, only on `&` and `!` channels, RFC 2811 section 4.2.1) shows every
@@ -179,8 +187,8 @@ Called once per second from the state process's `reop_tick` timer. For each
 non-empty channel with mode `+r`: a pending deadline is cleared when an
 operator is present, a deadline is started when none is pending, and once the
 monotonic deadline passes a uniformly chosen local member is given
-`operator` and the local members see `MODE <channel> +o <nick>` from
-`Server`.
+`operator`; the local members see `MODE <channel> +o <nick>` from
+`Server`, and the same line, with `Server` as prefix, goes to every peer.
 """.
 -spec reop_channels(binary()) -> ok.
 reop_channels(Server) ->
@@ -238,6 +246,13 @@ maybe_reop_opless(#channel{opless_since = ReopAt, members = Members} = Channel, 
                     }),
                     ircd_state_send:broadcast(
                         Pids, Server, <<"MODE">>, [Channel#channel.name, <<"+o">>, Nick], none
+                    ),
+                    %% Peers learn the new operator from this server (RFC 2813
+                    %% section 4.2.3), so their remote membership stays in step.
+                    ircd_state_link:server_broadcast(
+                        ircd_wire:line(
+                            Server, <<"MODE">>, [Channel#channel.name, <<"+o">>, Nick], none
+                        )
                     )
             end
     end.
@@ -418,8 +433,14 @@ join_checked(
     Channel, #client{pid = Pid, channels = Channels} = Client, Server, NewMembers, Members, Password
 ) ->
     Canonical = Channel#channel.name,
+    %% Constant-time key comparison so the key does not leak through timing.
+    KeyAccepted =
+        case Channel#channel.password of
+            undefined -> true;
+            Required -> is_binary(Password) andalso ircd_config:secret_match(Password, Required)
+        end,
     case Channel of
-        #channel{password = Required} when Required =/= undefined, Required =/= Password ->
+        _ when not KeyAccepted ->
             ircd_state_send:numeric(
                 Client, Server, <<"475">>, [Canonical], <<"Cannot join channel (+k)">>
             );
@@ -571,11 +592,12 @@ Handle `KICK <channel> <nick>[,<nick>...] [<comment>]` (RFC 2812 section 3.2.8).
 `Name` is the channel, `Nicks` the targets in order, and `Reason` the comment.
 An unknown channel gets 403 ERR_NOSUCHCHANNEL, a requester who is not a
 member 442 ERR_NOTONCHANNEL, and one without operator status 482
-ERR_CHANOPRIVSNEEDED. For each target, an unknown local nickname gets 401
-ERR_NOSUCHNICK and a non-member 441 ERR_USERNOTINCHANNEL. A kicked member is
-announced to the channel (only to the kicker and target on a `+q` channel),
-recorded in history, propagated to peers, and removed. Only local members can
-be kicked.
+ERR_CHANOPRIVSNEEDED. For each target, a nickname unknown locally and on the
+network gets 401 ERR_NOSUCHNICK and a non-member 441 ERR_USERNOTINCHANNEL. A
+kicked member is announced to the channel (only to the kicker and target on a
+`+q` channel), recorded in history, propagated to peers, and removed. A
+member on another server is removed from the `remote_channel` row; its home
+server removes it there when the propagated `KICK` arrives.
 """.
 -spec kick(term(), [binary()], term(), term(), term()) -> ok.
 kick(_, [], _, _, _) ->
@@ -621,7 +643,23 @@ kick_member(
 ) ->
     case ircd_state_client:find_nick(Nick) of
         undefined ->
-            ircd_state_send:numeric(Client, Server, <<"401">>, [Nick], <<"No such nick">>),
+            NickKey = ircd_wire:fold(Nick),
+            case remote_target(NickKey, Canonical) of
+                no_such_nick ->
+                    ircd_state_send:numeric(Client, Server, <<"401">>, [Nick], <<"No such nick">>);
+                not_on_channel ->
+                    ircd_state_send:numeric(
+                        Client,
+                        Server,
+                        <<"441">>,
+                        [Nick, Canonical],
+                        <<"They aren't on that channel">>
+                    );
+                {ok, Actual, RemoteChannel} ->
+                    kick_remote_member(
+                        NickKey, Actual, RemoteChannel, Reason, Client, Key, Canonical, Channel
+                    )
+            end,
             kick(Canonical, Nicks, Reason, Client, Server);
         #client{pid = TargetPid, nick = Actual} = Target ->
             case maps:is_key(TargetPid, Members) of
@@ -668,6 +706,41 @@ kick_member(
                     }),
                     kick(Canonical, Nicks, Reason, Client, Server)
             end
+    end.
+
+%% KICK of a member of another server (RFC 2812 section 3.2.8): local members
+%% see it, the member is dropped from the `remote_channel` row, and the peers
+%% get the KICK so the target's home server removes it there.
+kick_remote_member(
+    NickKey,
+    Actual,
+    #remote_channel{key = RemoteKey, members = Remote} = RemoteChannel,
+    Reason,
+    Client,
+    Key,
+    Canonical,
+    #channel{members = Members} = Channel
+) ->
+    {KickTags, KickMeta} = ircd_state_history:event_tags(),
+    ircd_state_send:broadcast(
+        case maps:is_key($q, Channel#channel.flags) of
+            true -> [Client#client.pid];
+            false -> maps:keys(Members)
+        end,
+        channel_origin_prefix(Channel, Client),
+        <<"KICK">>,
+        [Canonical, Actual],
+        Reason,
+        KickTags
+    ),
+    ircd_state_history:note_event(
+        Key, <<"KICK">>, channel_origin_prefix(Channel, Client), [Actual], Reason, KickMeta
+    ),
+    ircd_state_link:propagate_channel_kick(Client, Canonical, Actual, Reason),
+    Left = maps:remove(NickKey, Remote),
+    case map_size(Left) of
+        0 -> mnesia:dirty_delete(remote_channel, RemoteKey);
+        _ -> mnesia:dirty_write(RemoteChannel#remote_channel{members = Left})
     end.
 
 -doc """
@@ -986,11 +1059,11 @@ replay_channel_history(Key, Name, Pid) ->
 Handle `TOPIC <channel> [<topic>]` (RFC 2812 section 3.2.4).
 
 `Rest` is the optional new topic as a parameter list. A query replies with
-332 RPL_TOPIC and 333 RPL_TOPICWHOTIME, or 331 RPL_NOTOPIC. A local `+s`
-channel the requester is not on, a remote-only `+p` or `+s` channel, or an
-unknown channel gives 403 ERR_NOSUCHCHANNEL. Setting requires membership (442
-ERR_NOTONCHANNEL) and, with `+t`, operator status (482
-ERR_CHANOPRIVSNEEDED). A new topic is stored with its setter and time,
+332 RPL_TOPIC and 333 RPL_TOPICWHOTIME, or 331 RPL_NOTOPIC. A `+p` or `+s`
+channel the requester is not on (local or remote-only alike), or an unknown
+channel, gives 403 ERR_NOSUCHCHANNEL, for both a query and a change.
+Setting requires membership (442 ERR_NOTONCHANNEL) and, with `+t`, operator
+status (482 ERR_CHANOPRIVSNEEDED). A new topic is stored with its setter and time,
 broadcast to members, recorded in history, and propagated to peers. When the
 local row has no topic, the topic reported by a peer is shown.
 """.
@@ -999,7 +1072,9 @@ topic(Name, Rest, #client{pid = Pid} = Client, Server) ->
     case mnesia:dirty_read(channel, ircd_wire:fold(Name)) of
         [#channel{name = Canonical, members = Members, flags = Flags} = Channel] ->
             Operator = lists:member(operator, maps:get(Pid, Members, [])),
-            Hidden = maps:is_key($s, Flags) andalso not maps:is_key(Pid, Members),
+            Hidden =
+                (maps:is_key($s, Flags) orelse maps:is_key($p, Flags)) andalso
+                    not maps:is_key(Pid, Members),
             case {Hidden, maps:is_key(Pid, Members), Rest} of
                 {true, _, _} ->
                     ircd_state_send:numeric(
@@ -1406,8 +1481,11 @@ glob(_Mask, _Value, _Star) ->
 Handle `KNOCK <channel> [<message>]`: ask the operators of an invite-only channel for an invite.
 
 `ReasonParams` holds the optional message. An unknown channel gets 403
-ERR_NOSUCHCHANNEL and a member 442. A channel with `+K` (no knock), one that
-is not `+i`, or one without a local operator gets 480 with a matching text.
+ERR_NOSUCHCHANNEL and a member 714 ERR_KNOCKONCHAN. A channel with no `+i`,
+`+k`, `+l`, or `+K` gets 713 ERR_CHANOPEN. A channel with `+K` (no knock), one
+that is `+k` or `+l` but not `+i`, or one without a local operator gets 480
+with a matching text. 713 and 714 are the numerics common ircds use for
+`KNOCK`; they are not assigned by RFC 2812.
 Otherwise the local channel operators receive `KNOCK <channel> :<message>`
 from the requester.
 """.
@@ -1422,13 +1500,20 @@ knock(Name, ReasonParams, #client{pid = Pid} = Client, Server) ->
         [] ->
             ircd_state_send:numeric(Client, Server, <<"403">>, [Name], <<"No such channel">>);
         [#channel{name = Canonical, members = Members, flags = Flags} = Channel] ->
+            Open =
+                Channel#channel.password =:= undefined andalso
+                    Channel#channel.limit =:= undefined,
             case maps:is_key(Pid, Members) of
                 true ->
                     ircd_state_send:numeric(
-                        Client, Server, <<"442">>, [Canonical], <<"You're already on that channel">>
+                        Client, Server, <<"714">>, [Canonical], <<"You're already on that channel">>
                     );
                 false ->
                     case {maps:is_key($K, Flags), maps:is_key($i, Flags)} of
+                        {false, false} when Open ->
+                            ircd_state_send:numeric(
+                                Client, Server, <<"713">>, [Canonical], <<"Channel is open">>
+                            );
                         {true, _} ->
                             ircd_state_send:numeric(
                                 Client,
@@ -1645,9 +1730,11 @@ be set and cleared; `-o` drops operator (and administrator) status; `+o` gets
 get 501 ERR_UMODEUNKNOWNFLAG. Each change is echoed to the user and
 propagated to peers.
 
-Channel modes: an unknown channel gets 403. A bare `+b`, `+e`, or `+I`
-lists the ban (367/368), exception (348/349), or invite (346/347) list; the
-ban and exception lists require channel operator status. No mode string
+Channel modes: an unknown channel gets 403. A bare `b`, `e`, or `I` (with or
+without `+`) lists the ban (367/368), exception (348/349), or invite
+(346/347) list; the exception and invite lists require channel operator
+status (482), and a non-member of a `+s` or `+p` channel sees an empty ban
+list. No mode string
 replies with 324 RPL_CHANNELMODEIS (the key only to members) and 329
 RPL_CREATIONTIME. Changes require operator or creator status (482
 ERR_CHANOPRIVSNEEDED) and are applied letter by letter: `+r` and `+a` on a
@@ -1655,7 +1742,9 @@ safe channel need the creator, `+a` exists only on `&` and `!` channels and
 `+r` only on `!` channels (472 otherwise), `q` is server-only (481), an
 invalid key or limit gets 696 ERR_INVALIDMODEPARAM, a full list 478
 ERR_BANLISTFULL, a missing argument 461, `+o`/`+v` on a non-member 441 or
-401, and an unknown letter 472 ERR_UNKNOWNMODE. Applied changes are announced
+401, and an unknown letter 472 ERR_UNKNOWNMODE. `+o`/`+v` on a member of the
+channel that is on another server updates its roles in the `remote_channel`
+row. Applied changes are announced
 as one `MODE` line to members, recorded in history (except key changes), and
 propagated to peers.
 """.
@@ -1771,14 +1860,23 @@ change_user_modes([_Mode | Rest], Action, Modes, Nick, Client, Server) ->
     change_user_modes(Rest, Action, Modes, Nick, Client, Server).
 
 %% Query or update channel flags, lists, keys, limits, and member roles.
+%% `MODE <channel> b` and `+b` (and `e`, `I`) without a mask list the entries.
 channel_mode(Name, [Mode], #client{pid = Pid} = Client, Server) when
-    Mode =:= <<"+b">>; Mode =:= <<"+e">>; Mode =:= <<"+I">>
+    Mode =:= <<"+b">>;
+    Mode =:= <<"+e">>;
+    Mode =:= <<"+I">>;
+    Mode =:= <<"b">>;
+    Mode =:= <<"e">>;
+    Mode =:= <<"I">>
 ->
     Type =
         case Mode of
             <<"+b">> -> ban;
+            <<"b">> -> ban;
             <<"+e">> -> exception;
-            <<"+I">> -> invite
+            <<"e">> -> exception;
+            <<"+I">> -> invite;
+            <<"I">> -> invite
         end,
     list_mode(Type, Name, Pid, Client, Server);
 channel_mode(Name, Rest, #client{pid = Pid} = Client, Server) ->
@@ -1807,10 +1905,17 @@ channel_mode(Name, Rest, #client{pid = Pid} = Client, Server) ->
             ircd_state_send:numeric(Client, Server, <<"403">>, [Name], <<"No such channel">>)
     end.
 
+%% List policy (implementation policy, see the module documentation): the ban
+%% list is readable by anyone (RFC 2812 section 3.2.3), but a non-member of a
+%% `+s` or `+p` channel gets only the end-of-list reply; the exception and
+%% invite-exception lists need channel operator (482 ERR_CHANOPRIVSNEEDED).
 list_mode(Type, Name, Pid, Client, Server) ->
     case mnesia:dirty_read(channel, ircd_wire:fold(Name)) of
-        [#channel{name = Canonical, members = Members, lists = Lists}] ->
-            case Type =:= invite orelse lists:member(operator, maps:get(Pid, Members, [])) of
+        [#channel{name = Canonical, members = Members, lists = Lists, flags = Flags}] ->
+            Member = maps:is_key(Pid, Members),
+            Operator = lists:member(operator, maps:get(Pid, Members, [])),
+            Hidden = not Member andalso (maps:is_key($s, Flags) orelse maps:is_key($p, Flags)),
+            case Type =:= ban orelse Operator of
                 false ->
                     ircd_state_send:numeric(
                         Client, Server, <<"482">>, [Canonical], <<"You're not channel operator">>
@@ -1826,11 +1931,16 @@ list_mode(Type, Name, Pid, Client, Server) ->
                             invite ->
                                 {<<"346">>, <<"347">>, <<"End of channel invite list">>}
                         end,
+                    Entries =
+                        case Hidden of
+                            true -> [];
+                            false -> maps:get(Type, Lists, [])
+                        end,
                     lists:foreach(
                         fun(Entry) ->
                             ircd_state_send:numeric(Client, Server, Item, [Canonical, Entry], none)
                         end,
-                        maps:get(Type, Lists, [])
+                        Entries
                     ),
                     ircd_state_send:numeric(Client, Server, End, [Canonical], Text)
             end;
@@ -1925,9 +2035,44 @@ change_modes([Mode | Rest], Action, Args, Channel, Client, Server) ->
                     ok
             end,
             change_modes(Rest, Action, Tail, New, Client, Server);
+        {_, true, {remote, Updated, Tail, Parameters}} ->
+            %% `+o`/`+v` on a member of another server: the role lives in the
+            %% `remote_channel` row; the change is announced like a local one.
+            case mnesia:dirty_read(remote_channel, Updated#remote_channel.key) of
+                [Updated] ->
+                    ok;
+                _ ->
+                    mnesia:dirty_write(Updated),
+                    Sign =
+                        case Action of
+                            add -> $+;
+                            remove -> $-
+                        end,
+                    put(ircd_mode_changes, [{Sign, Mode, Parameters} | get(ircd_mode_changes)])
+            end,
+            change_modes(Rest, Action, Tail, Channel, Client, Server);
         {_, true, {error, Code, Params, Message, Tail}} ->
             ircd_state_send:numeric(Client, Server, Code, Params, Message),
             change_modes(Rest, Action, Tail, Channel, Client, Server)
+    end.
+
+%% A nickname that is not a local client, looked up as a member of the
+%% channel `Name` on another server: `{ok, WireNick, RemoteChannel}`,
+%% `not_on_channel` when the user exists elsewhere but is not in the channel,
+%% or `no_such_nick`.
+remote_target(NickKey, Name) ->
+    case mnesia:dirty_read(remote_client, NickKey) of
+        [] ->
+            no_such_nick;
+        [#remote_client{nick = Actual}] ->
+            case mnesia:dirty_read(remote_channel, ircd_wire:fold(Name)) of
+                [#remote_channel{members = Remote} = RemoteChannel] when
+                    is_map_key(NickKey, Remote)
+                ->
+                    {ok, Actual, RemoteChannel};
+                _ ->
+                    not_on_channel
+            end
     end.
 
 %% Announce the collected changes of one MODE command as a single line to
@@ -2093,9 +2238,23 @@ apply_mode(Mode, Action, [Nick | Args], #channel{name = Name, members = Members}
                 end,
             {ok, Channel#channel{members = Members#{Pid := New}}, Args, [Actual]};
         undefined ->
-            case mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) of
-                [] -> {error, <<"401">>, [Nick], <<"No such nick/channel">>, Args};
-                _ -> {error, <<"441">>, [Nick, Name], <<"They aren't on that channel">>, Args}
+            NickKey = ircd_wire:fold(Nick),
+            case remote_target(NickKey, Name) of
+                no_such_nick ->
+                    {error, <<"401">>, [Nick], <<"No such nick/channel">>, Args};
+                not_on_channel ->
+                    {error, <<"441">>, [Nick, Name], <<"They aren't on that channel">>, Args};
+                {ok, Actual, #remote_channel{members = Remote} = RemoteChannel} ->
+                    {Peer, Roles} = maps:get(NickKey, Remote),
+                    New =
+                        case Action of
+                            add -> lists:usort([Role | Roles]);
+                            remove -> lists:delete(Role, Roles)
+                        end,
+                    Updated = RemoteChannel#remote_channel{
+                        members = Remote#{NickKey := {Peer, New}}
+                    },
+                    {remote, Updated, Args, [Actual]}
             end;
         _ ->
             {error, <<"441">>, [Nick, Name], <<"They aren't on that channel">>, Args}
@@ -2166,8 +2325,6 @@ rename([Old, New | Rest], #client{pid = Pid} = Client, Server) ->
                     ircd_state_send:numeric(
                         Client, Server, <<"442">>, [Canonical], <<"You're not on that channel">>
                     );
-                not is_list(Roles) ->
-                    ok;
                 true ->
                     case lists:member(operator, Roles) of
                         false ->

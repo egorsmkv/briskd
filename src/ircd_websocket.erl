@@ -13,9 +13,10 @@ message carries exactly one IRC line without CR LF. A text-mode client only
 receives valid UTF-8 (`utf8_safe/1`).
 
 Bounds: the upgrade request is at most 8192 bytes, client frames must be
-masked (RFC 6455 section 5.1), control frames carry at most 125 bytes, and a
-frame or reassembled message larger than the caller's `MaxMessage` is an error
-(the session passes `MAX_WIRE_LINE`, 8703 bytes).
+masked (RFC 6455 section 5.1), control frames carry at most 125 bytes and are
+never fragmented (section 5.5), reserved opcodes are refused, and a frame or
+reassembled message larger than the caller's `MaxMessage` is an error (the
+session passes `MAX_WIRE_LINE`, 8703 bytes).
 """.
 -export([decode/2, encode/2, handshake/2, utf8_safe/1]).
 
@@ -154,74 +155,94 @@ Decode the complete client frames at the start of `Buffer` (RFC 6455 section 5).
 
 Returns `{ok, Frames, Rest}`. `Frames` lists, in arrival order, data messages
 as `{text | binary, Message}` with fragments already joined, and control
-frames as `{close | ping | pong, Payload}`; reserved control opcodes are
-reported as `close`. `Rest` is the input to keep for the next read. While a
-fragmented message is incomplete, `Rest` starts at its first fragment, so the
-whole message is decoded again when more bytes arrive. A control frame that
-arrives between the fragments of a message is skipped and not returned.
+frames as `{close | ping | pong, Payload}`. `Rest` is the input to keep for the
+next read. Control frames may arrive between the fragments of a message
+(RFC 6455 section 5.4); they are returned at once so the caller can answer a
+`ping` or handle a `close`, and the message keeps assembling. While a
+fragmented message is incomplete, `Rest` starts with the fragments received so
+far, re-encoded as one unfinished masked frame, followed by the unread bytes,
+so a control frame that was already returned is not returned again.
 
 `MaxMessage` caps both a single frame's payload and a reassembled message.
 `{error, Reason}` means the connection should be closed (the session sends
 close code 1002). `Reason` is one of `unmasked_frame`, `reserved_bits`,
-`control_too_large` (over 125 bytes), `too_large`, `unexpected_continuation`,
+`control_too_large` (over 125 bytes), `fragmented_control` (a control frame
+without FIN, RFC 6455 section 5.5), `too_large`, `unexpected_continuation`,
 `interleaved_message` (a new data frame before the previous message ended), or
-`bad_opcode`.
+`bad_opcode` (a reserved opcode, 3 to 7 or 11 to 15).
 """.
 -spec decode(binary(), pos_integer()) -> {ok, [frame()], binary()} | {error, atom()}.
 decode(Buffer, MaxMessage) ->
-    decode(Buffer, MaxMessage, undefined, Buffer, []).
+    decode(Buffer, MaxMessage, undefined, []).
 
-%% `Start` is the buffer position where an unfinished fragmented message
-%% began; when more bytes are needed the whole message is decoded again later.
-decode(Buffer, Max, Partial, Start, Acc) ->
+%% `Partial` is `{Type, Data}` for a fragmented message that has not ended.
+decode(Buffer, Max, Partial, Acc) ->
     case frame(Buffer, Max) of
         more when Partial =:= undefined ->
             {ok, lists:reverse(Acc), Buffer};
         more ->
-            {ok, lists:reverse(Acc), Start};
+            {ok, lists:reverse(Acc), <<(unfinished(Partial))/binary, Buffer/binary>>};
         {error, Reason} ->
             {error, Reason};
         {ok, Fin, Opcode, Payload, Rest} ->
             case {Opcode, Fin, Partial} of
-                {Control, _, undefined} when Control >= 8 ->
-                    decode(Rest, Max, undefined, Rest, [control(Control, Payload) | Acc]);
-                {Control, _, _} when Control >= 8 ->
-                    %% A control frame between fragments is answered when the
-                    %% message completes, so the fragments can be re-read.
-                    decode(Rest, Max, Partial, Start, Acc);
+                {Control, false, _} when Control >= 8, Control =< 10 ->
+                    {error, fragmented_control};
+                {Control, true, _} when Control >= 8, Control =< 10 ->
+                    %% RFC 6455 section 5.4: a control frame may arrive between
+                    %% fragments; return it now and keep assembling.
+                    decode(Rest, Max, Partial, [control(Control, Payload) | Acc]);
                 {0, _, undefined} ->
                     {error, unexpected_continuation};
                 {0, true, {Type, Data}} ->
                     Whole = <<Data/binary, Payload/binary>>,
                     case byte_size(Whole) > Max of
                         true -> {error, too_large};
-                        false -> decode(Rest, Max, undefined, Rest, [{Type, Whole} | Acc])
+                        false -> decode(Rest, Max, undefined, [{Type, Whole} | Acc])
                     end;
                 {0, false, {Type, Data}} ->
                     Whole = <<Data/binary, Payload/binary>>,
                     case byte_size(Whole) > Max of
                         true -> {error, too_large};
-                        false -> decode(Rest, Max, {Type, Whole}, Start, Acc)
+                        false -> decode(Rest, Max, {Type, Whole}, Acc)
                     end;
                 {Data, _, {_, _}} when Data =:= 1; Data =:= 2 ->
                     {error, interleaved_message};
                 {1, true, undefined} ->
-                    decode(Rest, Max, undefined, Rest, [{text, Payload} | Acc]);
+                    decode(Rest, Max, undefined, [{text, Payload} | Acc]);
                 {2, true, undefined} ->
-                    decode(Rest, Max, undefined, Rest, [{binary, Payload} | Acc]);
+                    decode(Rest, Max, undefined, [{binary, Payload} | Acc]);
                 {1, false, undefined} ->
-                    decode(Rest, Max, {text, Payload}, Buffer, Acc);
+                    decode(Rest, Max, {text, Payload}, Acc);
                 {2, false, undefined} ->
-                    decode(Rest, Max, {binary, Payload}, Buffer, Acc);
+                    decode(Rest, Max, {binary, Payload}, Acc);
                 _ ->
+                    %% Reserved opcodes 3-7 and 11-15 (RFC 6455 section 5.2).
                     {error, bad_opcode}
             end
     end.
 
 control(8, Payload) -> {close, Payload};
 control(9, Payload) -> {ping, Payload};
-control(10, Payload) -> {pong, Payload};
-control(_, Payload) -> {close, Payload}.
+control(10, Payload) -> {pong, Payload}.
+
+%% The fragments of an unfinished message as one masked frame without FIN,
+%% with an all-zero mask so the payload bytes stay as they are. The payload is
+%% at most `MaxMessage`, so it decodes again under the same limit.
+unfinished({Type, Data}) ->
+    Opcode =
+        case Type of
+            text -> 1;
+            binary -> 2
+        end,
+    Len = byte_size(Data),
+    Header =
+        if
+            Len < 126 -> <<0:1, 0:3, Opcode:4, 1:1, Len:7>>;
+            Len < 65536 -> <<0:1, 0:3, Opcode:4, 1:1, 126:7, Len:16>>;
+            true -> <<0:1, 0:3, Opcode:4, 1:1, 127:7, Len:64>>
+        end,
+    <<Header/binary, 0:32, Data/binary>>.
 
 frame(<<Fin:1, 0:3, Opcode:4, 1:1, Len:7, Rest/binary>>, Max) ->
     case {Len, Rest} of

@@ -159,7 +159,6 @@ handle_info({Tag, Socket, Reason}, {_, Socket, _, _, _} = State) when
 ->
     logger:warning(#{event => socket_error, peer => peer_of(State), reason => Reason}),
     {stop, normal, State};
-%% Ignore socket traffic and timers that belong to a previous connection state.
 %% multiclient: this connection was attached to the session that holds the
 %% same account's nickname. Its commands now run as that client and every
 %% line the primary session receives is mirrored here.
@@ -184,6 +183,7 @@ handle_info({'DOWN', _, process, Primary, _}, {Kind, Socket, _, _, {attached, Pr
 handle_info({'DOWN', _, process, Pid, _}, State) ->
     put(ircd_attached, lists:delete(Pid, attached())),
     {noreply, State};
+%% Ignore socket traffic and timers that belong to a previous connection state.
 handle_info(_, State) ->
     {noreply, State}.
 

@@ -1050,14 +1050,88 @@ unknown_msgid(Pid, Target, MsgId) ->
 `:nick!user@host REDACT <channel> <msgid> [:reason]` from a peer: remove
 the entry from the local channel history, tell local members with
 draft/message-redaction, and relay to the other peers.
+
+The rules of a local `REDACT` apply. `Prefix` must be the exact
+`nick!user@host` of a remote user reached through `Peer`, and that user must
+be a member of the channel through `Peer`. A channel operator may redact any
+message; anyone else only their own (same account, or the same
+`nick!user@host` when the message was sent without an account). A message
+missing from the local history cannot be checked here, so a non-operator's
+redaction of it changes nothing locally and is only relayed; the servers that
+hold it apply the same check.
+
+Errors: `invalid_redact_message`, `unknown_remote_source`,
+`remote_user_not_on_channel`, and `redact_forbidden`.
 """.
--spec receive_remote_redact(binary(), binary(), [binary()]) -> ok | {error, term()}.
+-spec receive_remote_redact(binary(), binary(), [binary()]) ->
+    ok
+    | {error,
+        invalid_redact_message
+        | redact_forbidden
+        | remote_user_not_on_channel
+        | unknown_remote_source}.
 receive_remote_redact(Peer, Prefix, [Target, MsgId | Rest]) ->
     Reason =
         case Rest of
             [Text | _] -> Text;
             [] -> none
         end,
+    Key = ircd_wire:fold(Target),
+    case {remote_sender(Peer, Prefix), mnesia:dirty_read(remote_channel, Key)} of
+        {error, _} ->
+            {error, unknown_remote_source};
+        {{ok, #remote_client{key = NickKey} = Remote}, [#remote_channel{members = Members}]} ->
+            case maps:find(NickKey, Members) of
+                {ok, {Peer, Roles}} ->
+                    Operator = lists:member(operator, Roles),
+                    case
+                        remote_redact_allowed(Operator, Remote, Prefix, find({channel, Key}, MsgId))
+                    of
+                        true -> apply_remote_redact(Peer, Prefix, Target, MsgId, Reason);
+                        false -> {error, redact_forbidden}
+                    end;
+                _ ->
+                    {error, remote_user_not_on_channel}
+            end;
+        {{ok, _}, []} ->
+            {error, remote_user_not_on_channel}
+    end;
+receive_remote_redact(_, _, _) ->
+    {error, invalid_redact_message}.
+
+%% The remote user behind Peer whose exact nick!user@host is Prefix.
+remote_sender(Peer, Prefix) ->
+    case binary:split(Prefix, <<"!">>) of
+        [Nick, _] ->
+            case mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) of
+                [#remote_client{peer = Peer, nick = Nick, user = User, host = Host} = Remote] when
+                    Prefix =:= <<Nick/binary, "!", User/binary, "@", Host/binary>>
+                ->
+                    {ok, Remote};
+                _ ->
+                    error
+            end;
+        _ ->
+            error
+    end.
+
+%% An operator may redact anything. Otherwise the stored entry must be the
+%% sender's own, as in own_entry/3; an entry this server does not hold
+%% cannot be checked and is left to the servers that hold it.
+remote_redact_allowed(true, _Remote, _Prefix, _Found) ->
+    true;
+remote_redact_allowed(false, _Remote, _Prefix, error) ->
+    true;
+remote_redact_allowed(false, #remote_client{account = Mine}, Prefix, {ok, Entry}) ->
+    #{account := Account, prefix := EntryPrefix} = Entry,
+    case {Mine, Account} of
+        {undefined, undefined} -> EntryPrefix =:= Prefix;
+        {_, undefined} -> false;
+        {undefined, _} -> false;
+        _ -> ircd_wire:fold(Mine) =:= ircd_wire:fold(Account)
+    end.
+
+apply_remote_redact(Peer, Prefix, Target, MsgId, Reason) ->
     case mnesia:dirty_read(channel, ircd_wire:fold(Target)) of
         [#channel{key = Key, name = Name, members = Members}] ->
             remove({channel, Key}, MsgId),
@@ -1072,9 +1146,7 @@ receive_remote_redact(Peer, Prefix, [Target, MsgId | Rest]) ->
     ircd_state_link:relay_except(
         Peer, ircd_wire:line(Prefix, <<"REDACT">>, [Target, MsgId], Reason)
     ),
-    ok;
-receive_remote_redact(_, _, _) ->
-    {error, invalid_redact_message}.
+    ok.
 
 server() ->
     maps:get(name, persistent_term:get({ircd_state, config})).

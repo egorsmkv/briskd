@@ -280,7 +280,6 @@ init(#{name := Name} = Config) ->
     ensure_ets(ircd_admins),
     ensure_ets(ircd_conn),
     ensure_ets(ircd_chan_meta),
-    ensure_ets(ircd_dm_history),
     ensure_bag(ircd_monitor),
     ensure_ets(ircd_attached),
     ensure_ets(ircd_account_channels),
@@ -653,15 +652,18 @@ handle_call(registered, {Pid, _}, Server) ->
 handle_call(server_burst, _, Server) ->
     {reply, ircd_state_link:server_burst_lines(Server), Server};
 handle_call({register_adjacent, Name, Token, Kind}, {Pid, _}, Server) ->
-    %% Inbound registration records the calling session. Outbound links are
-    %% found through the link supervisor, so the caller pid is not stored.
+    %% Both inbound sessions and outbound link workers register here, and
+    %% ircd_state_net:register_adjacent/4 records the caller as {Pid, Name}.
     Result = ircd_state_net:register_adjacent(Name, Token, Kind, Pid),
     {reply, Result, Server};
-handle_call({server_command, Peer, Prefix, Command, Params, Tags}, From, Server) ->
+handle_call({server_command, Peer, Prefix0, Command, Params, Tags}, From, Server) ->
     case burst_command(Command) of
         true -> ok;
         false -> ircd_state_link:flush_netjoin(Peer)
     end,
+    %% RFC 2813 3.3: a line without a prefix comes from the link itself, so
+    %% every handler below sees a binary source and never `undefined`.
+    Prefix = link_source(Peer, Prefix0),
     ircd_state_send:set_source(ircd_state_v3:remote_source_info(Prefix)),
     %% UTF8ONLY: text from peers reaches local clients only as valid UTF-8;
     %% invalid bytes become U+FFFD.
@@ -804,8 +806,19 @@ other_call({server_command, Peer, _Prefix, <<"SQUIT">>, [Target | Rest]}, _, Ser
             [Text | _] -> Text;
             [] -> <<"SQUIT">>
         end,
-    ircd_state_net:split(Target, Reason, Peer),
-    {reply, ok, Server};
+    %% A peer may only split itself or a server it introduced (RFC 2813
+    %% 4.1.6); any other target would let it remove servers it does not route.
+    %% An unknown target is a stale SQUIT that crossed a split and is ignored.
+    case behind_peer(Peer, Target) of
+        true ->
+            ircd_state_net:split(Target, Reason, Peer),
+            {reply, ok, Server};
+        unknown ->
+            {reply, ok, Server};
+        false ->
+            logger:warning(#{event => squit_rejected, peer => Peer, target => Target}),
+            {reply, {error, squit_not_behind_peer}, Server}
+    end;
 other_call({server_command, Peer, Prefix, <<"INVITE">>, [Nick, Name | _]}, _, Server) ->
     {reply, ircd_state_link:receive_remote_invite(Peer, Prefix, Nick, Name), Server};
 other_call({server_command, Peer, Prefix, <<"SERVICE">>, Params}, _, Server) ->
@@ -813,7 +826,7 @@ other_call({server_command, Peer, Prefix, <<"SERVICE">>, Params}, _, Server) ->
 other_call({server_command, Peer, Prefix, <<"SQUERY">>, Params}, _, Server) when
     is_binary(Prefix)
 ->
-    {reply, ircd_state_link:receive_remote_message(Peer, Prefix, <<"SQUERY">>, Params), Server};
+    {reply, ircd_state_net:remote_squery(Peer, Prefix, Params), Server};
 other_call({server_command, Peer, _Prefix, <<"KILL">>, [Nick | Rest]}, _, Server) ->
     Reason =
         case Rest of
@@ -825,6 +838,7 @@ other_call({server_command, _Peer, _Prefix, _Command, _Params}, _, Server) ->
     {reply, ok, Server};
 other_call({server_disconnect, Peer}, _, Server) ->
     ircd_state_link:flush_netjoin(Peer),
+    ircd_state_link:forget_peer_batches(Peer),
     ircd_state_net:split(Peer, <<"Netsplit ", Peer/binary>>, Peer),
     {reply, ok, Server};
 other_call({input_too_long, Tags}, {Pid, _}, Server) ->
@@ -889,6 +903,24 @@ client_command(Command, Params, Bytes, Tags, Pid, Server) ->
         _ -> ircd_state_client:touch_activity(Pid)
     end,
     {reply, Reply, Server}.
+
+%% `true` when Target is the adjacent Peer or a known server reached through
+%% it, `false` for the local server or a server routed through another link,
+%% and `unknown` for a name that is not a known server.
+behind_peer(Peer, Target) ->
+    Folded = ircd_wire:fold(Peer),
+    Local = ircd_wire:fold(maps:get(name, persistent_term:get({?MODULE, config}))),
+    case ircd_wire:fold(Target) of
+        Folded ->
+            true;
+        Local ->
+            false;
+        Key ->
+            case mnesia:dirty_read(known_server, Key) of
+                [#known_server{adjacent = Adjacent}] -> ircd_wire:fold(Adjacent) =:= Folded;
+                [] -> unknown
+            end
+    end.
 
 %% A server message without a prefix comes from the link it arrived on
 %% (RFC 2813 3.3), so relays name that server as the source.

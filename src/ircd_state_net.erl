@@ -34,7 +34,8 @@ them over immediately.
     service_count/0,
     remove_remote_user/1,
     split/3,
-    squery/3
+    squery/3,
+    remote_squery/3
 ]).
 -include("ircd_state.hrl").
 
@@ -452,6 +453,52 @@ squery([Name, Text | _], Client, Server) ->
             _ = ircd_links:send(Peer, Line),
             ok
     end.
+
+-doc """
+Handle an `SQUERY` (RFC 2812 section 3.5.2) that arrived from the peer `Peer`.
+
+`Prefix` must be a remote user reached through `Peer`
+(`ircd_state_link:remote_source/2`). A service registered on this server
+delivers the text as a `NOTICE` from that user to every local operator, as a
+local `SQUERY` does; no 401 is routed back when no operator is online. A
+service learned from another peer gets the `SQUERY` forwarded there, never
+back to `Peer`. Any other target goes to
+`ircd_state_link:receive_remote_message/4` as before.
+
+Errors: `unknown_remote_source` and those of
+`ircd_state_link:receive_remote_message/4`.
+""".
+-spec remote_squery(binary(), binary(), [binary()]) -> ok | {error, atom()}.
+remote_squery(Peer, Prefix, [Name, Text | _] = Params) when Text =/= <<>> ->
+    case mnesia:dirty_read(service, ircd_wire:fold(Name)) of
+        [] ->
+            ircd_state_link:receive_remote_message(Peer, Prefix, <<"SQUERY">>, Params);
+        [#service{peer = ServicePeer, name = ServiceName}] ->
+            case ircd_state_link:remote_source(Peer, Prefix) of
+                {ok, _} when ServicePeer =:= undefined ->
+                    Operators = [
+                        Pid
+                     || Pid <- mnesia:dirty_all_keys(client),
+                        maps:is_key($o, ircd_state_client:user_modes(Pid))
+                    ],
+                    ircd_state_send:broadcast(
+                        Operators, Prefix, <<"NOTICE">>, [ServiceName], Text
+                    );
+                {ok, _} ->
+                    case ircd_route:should_forward(Peer, ServicePeer) of
+                        true ->
+                            Line = ircd_wire:line(Prefix, <<"SQUERY">>, [ServiceName], Text),
+                            _ = ircd_links:send(ServicePeer, Line),
+                            ok;
+                        false ->
+                            ok
+                    end;
+                error ->
+                    {error, unknown_remote_source}
+            end
+    end;
+remote_squery(Peer, Prefix, Params) ->
+    ircd_state_link:receive_remote_message(Peer, Prefix, <<"SQUERY">>, Params).
 
 -doc """
 Import a `SERVICE` introduction (RFC 2813 section 4.1.4) from the peer

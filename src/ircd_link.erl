@@ -25,9 +25,16 @@ it drops the link if no `PONG` arrives within 30 seconds.
 Any socket error or close, malformed or oversized input, peer `ERROR`, failed
 send (30-second send timeout), missed `PONG`, or a backlog of more than 50000
 queued messages closes the socket. If the link had authenticated,
-`ircd_state:server_disconnect/1` then removes everything behind it. The
-worker reconnects after a fixed 5-second delay. Timer messages carry a
-connection generation, so a timer from an earlier connection is ignored.
+`ircd_state:server_disconnect/1` then removes everything behind it.
+
+The worker then reconnects with a bounded exponential backoff: the base
+delay starts at 5 seconds and doubles after each failed attempt up to 300
+seconds, and each wait is the base delay less up to
+10% of random jitter so peers do not reconnect in lockstep. A link that
+authenticates resets the backoff. A retry is logged at `warning` on the first
+failure, whenever the base delay changes, and on every 10th attempt; other
+retries are logged at `debug`. Timer messages carry a connection generation,
+so a timer from an earlier connection is ignored.
 """.
 -behaviour(gen_server).
 -export([
@@ -45,6 +52,12 @@ connection generation, so a timer from an earlier connection is ignored.
 -define(SEND_TIMEOUT_MS, 30000).
 %% Lines queued for the peer before the link is dropped and reconnected.
 -define(MAX_SENDQ, 50000).
+%% Reconnect backoff in milliseconds: first delay and cap. The delay doubles
+%% after each failed attempt.
+-define(BACKOFF_MIN_MS, 5000).
+-define(BACKOFF_MAX_MS, 300000).
+%% With an unchanged delay, a retry is logged at warning every this many attempts.
+-define(RETRY_LOG_EVERY, 10).
 
 -doc """
 Start the worker for one configured peer, linked to the caller.
@@ -66,6 +79,8 @@ init({Config, Peer}) ->
             socket => undefined,
             buffer => <<>>,
             timer_gen => 0,
+            attempts => 0,
+            backoff => undefined,
             liveness_timer => undefined,
             ping_timer => undefined
         },
@@ -295,10 +310,13 @@ handle_server_line(
             valid_number(Token)
     of
         true ->
+            %% An authenticated link resets the reconnect backoff.
             Authenticated = State#{
                 phase := authenticated,
                 peer_hopcount => binary_to_integer(Hop),
-                peer_token => binary_to_integer(Token)
+                peer_token => binary_to_integer(Token),
+                attempts => 0,
+                backoff => undefined
             },
             case send_burst(ircd_state:server_burst(), Authenticated) of
                 ok ->
@@ -411,7 +429,21 @@ close(#{kind := tls, socket := Socket}) -> ssl:close(Socket);
 close(_) -> ok.
 
 retry(State, Reason) ->
-    logger:warning(#{event => server_link_retry, peer => peer_name(State), reason => Reason}),
+    Attempt = maps:get(attempts, State, 0) + 1,
+    Previous = maps:get(backoff, State, undefined),
+    Backoff = next_backoff(Previous),
+    Delay = jitter(Backoff),
+    Event = #{
+        event => server_link_retry,
+        peer => peer_name(State),
+        reason => Reason,
+        attempt => Attempt,
+        delay_ms => Delay
+    },
+    case Attempt =:= 1 orelse Backoff =/= Previous orelse Attempt rem ?RETRY_LOG_EVERY =:= 0 of
+        true -> logger:warning(Event);
+        false -> logger:debug(Event)
+    end,
     %% A connector that never authenticated must not clear an inbound session
     %% that is using the same peer name.
     case maps:get(phase, State, disconnected) of
@@ -421,8 +453,10 @@ retry(State, Reason) ->
     cancel_timers(State),
     _ = close(State),
     Gen = maps:get(timer_gen, State) + 1,
-    Reconnect = erlang:send_after(5000, self(), {reconnect, Gen}),
+    Reconnect = erlang:send_after(Delay, self(), {reconnect, Gen}),
     {noreply, State#{
+        attempts => Attempt,
+        backoff => Backoff,
         socket := undefined,
         kind => undefined,
         phase => disconnected,
@@ -434,6 +468,14 @@ retry(State, Reason) ->
         ping_timer => undefined,
         reconnect_timer => Reconnect
     }}.
+
+%% Base reconnect delay in milliseconds after the previous one.
+next_backoff(undefined) -> ?BACKOFF_MIN_MS;
+next_backoff(Previous) -> min(Previous * 2, ?BACKOFF_MAX_MS).
+
+%% The base delay less up to 10% random jitter, so the wait never exceeds the cap.
+jitter(Backoff) ->
+    Backoff - (rand:uniform(Backoff div 10) - 1).
 
 arm_liveness(State) ->
     cancel_timer(maps:get(liveness_timer, State, undefined)),

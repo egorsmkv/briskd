@@ -65,9 +65,6 @@ accounts_unit() ->
     ?assertEqual(error, ircd_account:scram_credentials(<<"nobodyx">>)),
     ?assertMatch({ok, #account{name = <<"Unit1">>}}, ircd_account:by_certfp(<<"ABCDEF">>)),
     ?assertEqual(error, ircd_account:by_certfp(<<"0000">>)),
-    ?assertEqual(ok, ircd_account:add_certfp(<<"unit1">>, <<"FFEE">>)),
-    ?assertMatch({ok, #account{name = <<"Unit1">>}}, ircd_account:by_certfp(<<"ffee">>)),
-    ?assertEqual(error, ircd_account:add_certfp(<<"nobodyx">>, <<"aa">>)),
     %% A pending account holds its name until verified or expired.
     {ok, _} = ircd_account:create(
         <<"Pend1">>, <<"p@example.org">>, <<"password1">>, [], {<<"CODE1234">>, 60000}
@@ -105,9 +102,9 @@ sasl_unit() ->
         {success, <<"Unit1">>}, ircd_sasl:step(plain, <<"UNIT1", 0, "unit1", 0, "password1">>)
     ),
     ?assertEqual({error, failed}, ircd_sasl:step(plain, <<0, "unit1", 0, "nope">>)),
-    ?assertEqual({success, <<"Unit1">>}, ircd_sasl:step({external, <<"ffee">>}, <<>>)),
-    ?assertEqual({success, <<"Unit1">>}, ircd_sasl:step({external, <<"ffee">>}, <<"unit1">>)),
-    ?assertEqual({error, failed}, ircd_sasl:step({external, <<"ffee">>}, <<"other">>)),
+    ?assertEqual({success, <<"Unit1">>}, ircd_sasl:step({external, <<"abcdef">>}, <<>>)),
+    ?assertEqual({success, <<"Unit1">>}, ircd_sasl:step({external, <<"abcdef">>}, <<"unit1">>)),
+    ?assertEqual({error, failed}, ircd_sasl:step({external, <<"abcdef">>}, <<"other">>)),
     ?assertEqual({error, failed}, ircd_sasl:step({external, <<"1234">>}, <<>>)),
     ?assertEqual(
         {error, failed}, ircd_sasl:step({scram_first, undefined}, <<"n,,n=nobodyx,r=abc">>)
@@ -891,7 +888,11 @@ remote_paths(Port) ->
     %% Remote REDACT.
     ok = Call(Far3, <<"REDACT">>, [<<"#remote">>, <<"someid">>, <<"why">>]),
     ?assert(has(sync(Local), <<"REDACT #remote someid :why">>)),
-    ok = Call(Far3, <<"REDACT">>, [<<"#nochannel">>, <<"someid">>]),
+    %% A peer may only redact for a remote user who is on that channel.
+    ?assertEqual(
+        {error, remote_user_not_on_channel},
+        Call(Far3, <<"REDACT">>, [<<"#nochannel">>, <<"someid">>])
+    ),
     ?assertEqual(
         {error, invalid_redact_message},
         ircd_state_history:receive_remote_redact(?PEER, Far3, [<<"#remote">>])

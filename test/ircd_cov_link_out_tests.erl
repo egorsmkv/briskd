@@ -38,6 +38,8 @@ outbound() ->
         send(Up, <<"SERVER up.test 1 1 :Up">>),
         ?assert(has(recv_until(Up, <<"NJOIN #room">>), <<"NICK alice 0 alice ">>)),
         wait_until(fun() -> maps:get(phase, sys:get_state(Link)) =:= authenticated end),
+        %% An authenticated link resets the reconnect backoff.
+        ?assertMatch(#{attempts := 0, backoff := undefined}, sys:get_state(Link)),
         %% Server PING is answered with the local and the origin name.
         send(Up, <<"PING up.test">>),
         recv_until(Up, <<"PONG irc.test up.test">>),

@@ -151,12 +151,16 @@ Supported queries:
 - `u`: 242 RPL_STATSUPTIME (uptime from monotonic time);
 - `m`: 212 RPL_STATSCOMMANDS per command, from `ircd_command_stats`;
 - `l`: 211 RPL_STATSLINKINFO per local connection (send queue reported as 0,
-  byte counts in KiB, open time in seconds);
+  byte counts in KiB, open time in seconds). An operator (`+o`) sees every
+  local connection; anyone else sees only the line for their own connection;
 - `o`: 243 RPL_STATSOLINE per configured operator name (never the password).
+  Operator only: anyone else gets 481 ERR_NOPRIVILEGES and no 243 lines.
 
-Each query, including an unsupported letter or no query at all, ends with 219
-RPL_ENDOFSTATS. A target that does not match this server gets 402
-ERR_NOSUCHSERVER. No operator privilege is required.
+Each query, including an unsupported letter, no query at all, and a refused
+`o`, ends with 219 RPL_ENDOFSTATS. A target that does not match this server
+gets 402 ERR_NOSUCHSERVER. `u` and `m` need no operator privilege
+(implementation policy: `l` and `o` expose other users' connections and the
+operator account names, so they are restricted).
 """.
 -spec stats([binary()], #client{}, binary()) -> ok.
 stats(Params, Client, Server) ->
@@ -210,7 +214,12 @@ report_stats(<<"m">>, Client, Server) ->
         lists:sort(ets:tab2list(ircd_command_stats))
     ),
     ircd_state_send:numeric(Client, Server, <<"219">>, [<<"m">>], <<"End of STATS report">>);
-report_stats(<<"l">>, Client, Server) ->
+report_stats(<<"l">>, #client{pid = Self} = Client, Server) ->
+    Pids =
+        case is_operator(Self) of
+            true -> mnesia:dirty_all_keys(client);
+            false -> [Self]
+        end,
     lists:foreach(
         fun(Pid) ->
             case {mnesia:dirty_read(client, Pid), ircd_state_client:connection_stats(Pid)} of
@@ -244,21 +253,31 @@ report_stats(<<"l">>, Client, Server) ->
                     ok
             end
         end,
-        mnesia:dirty_all_keys(client)
+        Pids
     ),
     ircd_state_send:numeric(Client, Server, <<"219">>, [<<"l">>], <<"End of STATS report">>);
-report_stats(<<"o">>, Client, Server) ->
-    lists:foreach(
-        fun({Name, _Password}) ->
+report_stats(<<"o">>, #client{pid = Self} = Client, Server) ->
+    case is_operator(Self) of
+        true ->
+            lists:foreach(
+                fun({Name, _Password}) ->
+                    ircd_state_send:numeric(
+                        Client, Server, <<"243">>, [<<"O">>, <<"*">>, <<"*">>, Name], none
+                    )
+                end,
+                persistent_term:get({ircd_state, operators}, [])
+            );
+        false ->
             ircd_state_send:numeric(
-                Client, Server, <<"243">>, [<<"O">>, <<"*">>, <<"*">>, Name], none
+                Client, Server, <<"481">>, [], <<"Permission Denied- You're not an IRC operator">>
             )
-        end,
-        persistent_term:get({ircd_state, operators}, [])
-    ),
+    end,
     ircd_state_send:numeric(Client, Server, <<"219">>, [<<"o">>], <<"End of STATS report">>);
 report_stats(Query, Client, Server) ->
     ircd_state_send:numeric(Client, Server, <<"219">>, [Query], <<"End of STATS report">>).
+
+is_operator(Pid) ->
+    maps:is_key($o, ircd_state_client:user_modes(Pid)).
 
 two_digits(Value) when Value < 10 -> <<$0, ($0 + Value)>>;
 two_digits(Value) -> integer_to_binary(Value).
@@ -340,9 +359,10 @@ Requires user mode `+o` on the local session, otherwise 481
 ERR_NOPRIVILEGES. Missing parameters give 461 ERR_NEEDMOREPARAMS and a
 nickname that is not a local client gives 401 ERR_NOSUCHNICK. The target is
 sent the `KILL` line and closed, users with `+w` receive a `WALLOPS` naming
-the operator and target, and the target is removed through
-`ircd_state_client:disconnect/3` with the comment as the quit reason (which
-also propagates `QUIT` to peers). Returns `quit` when an operator killed its
+the operator and target, an `oper_kill` audit event is logged at `notice`
+with the operator and target nicknames (not the comment), and the target is
+removed through `ircd_state_client:disconnect/3` with the comment as the quit
+reason (which also propagates `QUIT` to peers). Returns `quit` when an operator killed its
 own session, otherwise `ok`.
 """.
 -spec kill([binary()], #client{}, binary()) -> ok | quit.
@@ -367,6 +387,9 @@ kill_target([Nick, Reason | _], Client, Server) ->
                 [<<"Oper ">>, Client#client.nick, <<" used KILL on ">>, Actual, <<": ">>, Reason],
                 Server
             ),
+            logger:notice(#{
+                event => oper_kill, nick => Client#client.nick, target => Actual
+            }),
             ircd_state_client:disconnect(Target, Reason, Server),
             case TargetPid =:= Client#client.pid of
                 true -> quit;
@@ -390,8 +413,12 @@ When accepted, the new configuration replaces the operator, administrator,
 and predefined-channel lists (creating missing predefined channels), the MOTD
 path, admin info, `reop_delay`, `max_clients`, and log format and level.
 Clients with `cap-notify` or `draft/extended-isupport` are told about changed
-capabilities and ISUPPORT tokens, `+w` users get a `WALLOPS`, and the operator
-gets 382 RPL_REHASHING with the file path.
+capabilities and ISUPPORT tokens, `+w` users get a `WALLOPS`, an
+`oper_rehash` audit event (`result => accepted`, logged just before the new
+configuration, including its log level, is applied) at `notice` with the
+operator nickname, and the operator gets 382 RPL_REHASHING with the file path.
+A refused reload is logged as `oper_rehash` with `result => restart_required`,
+or `rehash_failed` with the load error, both at `warning`.
 """.
 -spec rehash(#client{}, binary()) -> ok.
 rehash(#client{pid = Pid} = Client, Server) ->
@@ -410,7 +437,9 @@ rehash(#client{pid = Pid} = Client, Server) ->
                 {ok, NewConfig} ->
                     rehash_config(NewConfig, Path, Client, Server);
                 {error, Reason} ->
-                    logger:warning(#{event => rehash_failed, reason => Reason}),
+                    logger:warning(#{
+                        event => rehash_failed, nick => Client#client.nick, reason => Reason
+                    }),
                     ircd_state_send:numeric(
                         Client,
                         Server,
@@ -436,17 +465,24 @@ rehash_config(NewConfig, Path, Client, Server) ->
                 <<"400">>,
                 [<<"REHASH">>],
                 <<"Listener and database changes require a restart">>
-            );
+            ),
+            logger:warning(#{
+                event => oper_rehash, nick => Client#client.nick, result => restart_required
+            });
         true ->
             Clients = [Pid || {Pid, _} <- ets:tab2list(ircd_caps)],
             Advertised = maps:from_list([{Pid, ircd_cap:advertised(Pid)} || Pid <- Clients]),
             Tokens = ircd_isupport:tokens(),
+            %% Logged before the new log level takes effect, so the audit
+            %% event is not lost when the reload lowers the level.
+            logger:notice(#{event => oper_rehash, nick => Client#client.nick, result => accepted}),
             apply_rehash(NewConfig),
             ircd_state_net:notify_cap_changes(Advertised, Server),
             notify_isupport_changes(Tokens, ircd_isupport:tokens(), Clients, Server),
             server_wallops(
                 [<<"Oper ">>, Client#client.nick, <<" rehashed the configuration">>], Server
             ),
+
             ircd_state_send:numeric(
                 Client, Server, <<"382">>, [unicode:characters_to_binary(Path)], <<"Rehashing">>
             )
@@ -740,8 +776,8 @@ RPL_LUSEROP, 253 RPL_LUSERUNKNOWN, and 254 RPL_LUSERCHANNELS when their
 counts are non-zero, 255 RPL_LUSERME, and 265 RPL_LOCALUSERS and 266
 RPL_GLOBALUSERS with their maxima. Network counts include users, operators,
 and channels known through server links. A mask that does not match this
-server zeroes those counts; the invisible, local, and global figures are
-still reported.
+server zeroes those counts, including the invisible count in 251; the local
+and global figures in 265 and 266 are still reported.
 """.
 -spec lusers([binary()], #client{}, binary()) -> ok.
 lusers(Params, Client, Server) ->
@@ -811,7 +847,11 @@ lusers(Params, Client, Server) ->
                         {0, 0, 0, 0, 0, 0}
                 end,
             {LocalUsers, GlobalUsers} = note_user_counts(),
-            Invisible = invisible_count(),
+            Invisible =
+                case Included of
+                    true -> invisible_count();
+                    false -> 0
+                end,
             %% RFC 2812 RPL_LUSERCLIENT: visible users, invisible users, servers.
             ircd_state_send:numeric(
                 Client,

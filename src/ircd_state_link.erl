@@ -30,6 +30,7 @@ have members in the channel. The burst for a new peer is built by
     receive_remote_invite/4,
     import_remote_njoin/3,
     flush_netjoin/1,
+    forget_peer_batches/1,
     propagate_away/2,
     propagate_channel_kick/4,
     propagate_channel_message/5,
@@ -50,6 +51,7 @@ have members in the channel. The burst for a new peer is built by
     remote_names_entries/3,
     remote_names_listing/3,
     remote_nick_exists/1,
+    remote_source/2,
     remote_user_local_recipients/1,
     remote_user_visible_to_requester/3,
     receive_remote_kill/3,
@@ -64,6 +66,9 @@ have members in the channel. The burst for a new peer is built by
     update_remote_topic/4
 ]).
 -include("ircd_state.hrl").
+
+%% Open draft/multiline batches kept per peer link.
+-define(MAX_PEER_BATCHES, 10).
 
 -doc """
 Every line of the state burst sent to a newly authenticated peer (RFC 2813
@@ -537,8 +542,11 @@ prefix, which must be the exact `nick!user@host` of a remote user reached
 through `Peer`. The new nickname must be
 valid, not `anonymous`, and unused by any local or other remote user. The
 `remote_client` row, channel memberships, metadata, and MONITOR presence move
-to the new name and the change is relayed to the other peers. A change that
-only alters case updates the stored spelling without relaying it.
+to the new name, local clients sharing a channel with the user (outside `+a`
+and `+q` channels) see the `NICK`, and the change is relayed to the other
+peers. A change that only alters case updates the stored spelling and is
+shown and relayed the same way, without MONITOR notifications; a `NICK` to
+the current spelling changes nothing.
 
 Errors: `unknown_remote_nick` for an untrusted prefix, `invalid_nickname`,
 `reserved_nickname`, and `nickname_collision` (no kill is issued).
@@ -558,6 +566,7 @@ rename_remote_nick(Peer, Prefix, Nick) ->
                 }
             of
                 {true, true, undefined, []} ->
+                    show_remote_event(OldKey, Prefix, <<"NICK">>, Nick),
                     mnesia:dirty_delete(remote_client, OldKey),
                     mnesia:dirty_write(
                         ircd_wire:retain_fields(Remote#remote_client{key = NewKey, nick = Nick})
@@ -572,8 +581,14 @@ rename_remote_nick(Peer, Prefix, Nick) ->
                     ),
                     relay_except(Peer, ircd_wire:line(Prefix, <<"NICK">>, [Nick], none)),
                     ok;
+                {true, true, undefined, [#remote_client{key = OldKey, peer = Peer}]} when
+                    Nick =:= Remote#remote_client.nick
+                ->
+                    ok;
                 {true, true, undefined, [#remote_client{key = OldKey, peer = Peer}]} ->
+                    show_remote_event(OldKey, Prefix, <<"NICK">>, Nick),
                     mnesia:dirty_write(ircd_wire:retain_fields(Remote#remote_client{nick = Nick})),
+                    relay_except(Peer, ircd_wire:line(Prefix, <<"NICK">>, [Nick], none)),
                     ok;
                 {true, true, undefined, [#remote_client{peer = Peer}]} ->
                     {error, nickname_collision};
@@ -593,7 +608,8 @@ Apply a `QUIT` by a remote user.
 
 `Peer` is the adjacent link the line arrived on and `Prefix` its source
 prefix, which must be the exact `nick!user@host` of a remote user reached
-through `Peer`. The `QUIT` is relayed to
+through `Peer`. Local clients sharing a channel with the user (outside
+`+a` and `+q` channels) see the `QUIT`, it is relayed to
 the other peers, and the user's row, metadata, MONITOR presence, and channel
 memberships through `Peer` are removed; a remote channel left empty is
 deleted. Returns `{error, unknown_remote_nick}` for an untrusted prefix.
@@ -602,6 +618,7 @@ deleted. Returns `{error, unknown_remote_nick}` for an untrusted prefix.
 remove_remote_nick(Peer, Prefix, Reason) ->
     case remote_source(Peer, Prefix) of
         {ok, #remote_client{key = Key, nick = Nick}} ->
+            show_remote_event(Key, Prefix, <<"QUIT">>, Reason),
             relay_except(Peer, ircd_wire:line(Prefix, <<"QUIT">>, [], Reason)),
             mnesia:dirty_delete(remote_client, Key),
             ircd_state_monitor:offline(Nick),
@@ -651,6 +668,20 @@ set_remote_away(Peer, Prefix, Params) ->
             {error, unknown_remote_nick}
     end.
 
+%% Show a remote user's NICK or QUIT to the local clients that share a
+%% channel with it. Anonymous and quiet channels are skipped, as in
+%% remote_user_local_recipients/1, so the real prefix is never exposed there.
+%% ircd_state has already set the message source to Prefix for this line.
+show_remote_event(Key, Prefix, Command, Tail) ->
+    ircd_state_send:broadcast(remote_user_local_recipients(Key), Prefix, Command, [], Tail).
+
+-doc """
+The remote user that `Prefix` names, when it may speak on the link `Peer`.
+
+`Prefix` must be the exact `nick!user@host` of a `remote_client` row whose
+adjacent link is `Peer`; anything else, including a server name, is `error`.
+""".
+-spec remote_source(binary(), binary()) -> {ok, #remote_client{}} | error.
 remote_source(Peer, Prefix) ->
     case binary:split(Prefix, <<"!">>) of
         [Nick, _UserHost] ->
@@ -819,7 +850,7 @@ remove_remote_memberships(Peer, NickKey) ->
 Import an `NJOIN` (RFC 2813 section 4.2.2) for channel `Name` from `Peer`.
 
 `Members` is the comma-separated member list; `@@` marks the channel creator,
-`@` an operator, and `+` a voiced member. Every nickname must be a remote
+`@` an operator, and `+` a voiced member, stacked as `@@+` or `@+`. Every nickname must be a remote
 user reached through `Peer`. Members are added to the remote channel. Members
 that are new are shown to local channel members as `JOIN`s collected into one
 IRCv3 `netjoin` batch per peer, sent by `flush_netjoin/1` when the peer sends
@@ -828,13 +859,12 @@ collected join. The `NJOIN` is relayed to the other peers with this server as
 prefix.
 
 Errors: `invalid_channel`, `empty_njoin`, `unknown_remote_member`, and
-`remote_member_from_other_peer`. The spec also lists an `{ok, List}` result,
-which is not returned.
+`remote_member_from_other_peer`.
 """.
--spec import_remote_njoin(binary(), binary(), map()) ->
+-spec import_remote_njoin(binary(), binary(), binary()) ->
     ok
-    | {error, empty_njoin | invalid_channel | remote_member_from_other_peer | unknown_remote_member}
-    | {ok, [{term(), term()}, ...]}.
+    | {error,
+        empty_njoin | invalid_channel | remote_member_from_other_peer | unknown_remote_member}.
 import_remote_njoin(Peer, Name, Members) ->
     case ircd_wire:channel(Name) of
         false ->
@@ -863,7 +893,7 @@ import_remote_njoin(Peer, Name, Members) ->
                     ok;
                 {ok, []} ->
                     {error, empty_njoin};
-                Error ->
+                {error, _} = Error ->
                     Error
             end
     end.
@@ -1182,7 +1212,11 @@ parse_remote_members(Peer, [RawMember | Rest], Acc) ->
             {error, unknown_remote_member}
     end.
 
+%% RFC 2813 4.2.2: "@@" (creator), "@" (operator), and "+" (voice); the
+%% status prefixes may be stacked as "@@+" and "@+".
+remote_member(<<"@@+", Nick/binary>>) -> {[creator, operator, voice], Nick};
 remote_member(<<"@@", Nick/binary>>) -> {[creator, operator], Nick};
+remote_member(<<"@+", Nick/binary>>) -> {[operator, voice], Nick};
 remote_member(<<$@, Nick/binary>>) -> {[operator], Nick};
 remote_member(<<$+, Nick/binary>>) -> {[voice], Nick};
 remote_member(Nick) -> {[member], Nick}.
@@ -1197,7 +1231,10 @@ burst. A user prefix must be an operator or creator member reached through
 `a i m n p q r s t K`, `k <key>`, `l <limit>` (positive), `b`/`e`/`I <mask>`
 (each list capped at the server's list limit), and `o`/`v`/`O <nick>`. The
 result is stored on the remote channel, copied to the local channel of the
-same name, and relayed to the other peers.
+same name, and relayed to the other peers. An `o`/`v`/`O` target that is not
+a remote member may be a local member of the local channel of the same name:
+its roles (or, for `O`, the channel creator) are updated there, and the
+change is shown to local members even when the source is a server.
 
 For a user target, `Prefix` must be that remote user; letters `a i o w B` are
 applied and others ignored, local users sharing a channel see the change, and
@@ -1266,22 +1303,27 @@ update_remote_channel_modes(Peer, Prefix, Name, ModeString, Args) ->
                     {error, remote_mode_requires_operator};
                 true ->
                     case
+                        %% Letters before any sign are additions, as in the
+                        %% local MODE handler.
                         apply_remote_modes(
-                            binary_to_list(ModeString), undefined, Args, ChannelRecord
+                            binary_to_list(ModeString), add, Args, ChannelRecord, []
                         )
                     of
-                        {ok, Updated, []} ->
+                        {ok, Updated, [], LocalRoles} ->
                             mnesia:dirty_write(Updated),
                             synchronize_local_channel(Updated),
+                            apply_local_roles(Key, LocalRoles),
                             relay_except(
                                 Peer,
                                 ircd_wire:line(Prefix, <<"MODE">>, [Name, ModeString | Args], none)
                             ),
-                            case TrustedServer of
+                            %% A server MODE is stored silently, as in a burst,
+                            %% unless it changes the status of a local member.
+                            case TrustedServer andalso LocalRoles =:= [] of
                                 true -> ok;
                                 false -> broadcast_remote_mode(Name, Prefix, ModeString, Args)
                             end;
-                        {ok, _Updated, Remaining} ->
+                        {ok, _Updated, Remaining, _LocalRoles} ->
                             {error, {extra_mode_arguments, Remaining}};
                         Error ->
                             Error
@@ -1305,13 +1347,18 @@ synchronize_local_channel(#remote_channel{key = Key, flags = RemoteFlags}) ->
             ok
     end.
 
-apply_remote_modes([], _Action, Args, Channel) ->
-    {ok, Channel, Args};
-apply_remote_modes([$+ | Rest], _Action, Args, Channel) ->
-    apply_remote_modes(Rest, add, Args, Channel);
-apply_remote_modes([$- | Rest], _Action, Args, Channel) ->
-    apply_remote_modes(Rest, remove, Args, Channel);
-apply_remote_modes([Mode | Rest], Action, Args, #remote_channel{flags = Flags} = Channel) when
+%% Local accumulates {Pid, Role, Action} for `o`, `v`, and `O` changes that
+%% target a member of the local channel of the same name; they are applied by
+%% apply_local_roles/2 after the remote channel row is written.
+apply_remote_modes([], _Action, Args, Channel, Local) ->
+    {ok, Channel, Args, lists:reverse(Local)};
+apply_remote_modes([$+ | Rest], _Action, Args, Channel, Local) ->
+    apply_remote_modes(Rest, add, Args, Channel, Local);
+apply_remote_modes([$- | Rest], _Action, Args, Channel, Local) ->
+    apply_remote_modes(Rest, remove, Args, Channel, Local);
+apply_remote_modes(
+    [Mode | Rest], Action, Args, #remote_channel{flags = Flags} = Channel, Local
+) when
     Mode =:= $a;
     Mode =:= $i;
     Mode =:= $m;
@@ -1330,36 +1377,46 @@ apply_remote_modes([Mode | Rest], Action, Args, #remote_channel{flags = Flags} =
             {_, add} -> Flags#{Mode => true};
             {_, remove} -> maps:remove(Mode, Flags)
         end,
-    apply_remote_modes(Rest, Action, Args, Channel#remote_channel{flags = NewFlags});
-apply_remote_modes([$k | Rest], Action, [Key | Args], #remote_channel{flags = Flags} = Channel) ->
+    apply_remote_modes(Rest, Action, Args, Channel#remote_channel{flags = NewFlags}, Local);
+apply_remote_modes(
+    [$k | Rest], Action, [Key | Args], #remote_channel{flags = Flags} = Channel, Local
+) ->
     NewFlags =
         case Action of
             add -> Flags#{key => ircd_wire:retain(Key)};
             remove -> maps:remove(key, Flags)
         end,
-    apply_remote_modes(Rest, Action, Args, Channel#remote_channel{flags = NewFlags});
-apply_remote_modes([$l | Rest], Action, Args, #remote_channel{flags = Flags} = Channel) ->
+    apply_remote_modes(Rest, Action, Args, Channel#remote_channel{flags = NewFlags}, Local);
+apply_remote_modes([$l | Rest], Action, Args, #remote_channel{flags = Flags} = Channel, Local) ->
     case {Action, Args} of
         {add, [Value | Tail]} ->
             try binary_to_integer(Value) of
                 Limit when Limit > 0 ->
-                    apply_remote_modes(Rest, Action, Tail, Channel#remote_channel{
-                        flags = Flags#{limit => Limit}
-                    });
+                    apply_remote_modes(
+                        Rest,
+                        Action,
+                        Tail,
+                        Channel#remote_channel{flags = Flags#{limit => Limit}},
+                        Local
+                    );
                 _ ->
                     {error, invalid_channel_limit}
             catch
                 error:badarg -> {error, invalid_channel_limit}
             end;
         {remove, _} ->
-            apply_remote_modes(Rest, Action, Args, Channel#remote_channel{
-                flags = maps:remove(limit, Flags)
-            });
+            apply_remote_modes(
+                Rest,
+                Action,
+                Args,
+                Channel#remote_channel{flags = maps:remove(limit, Flags)},
+                Local
+            );
         _ ->
             {error, missing_channel_limit}
     end;
 apply_remote_modes(
-    [Mode | Rest], Action, [Mask | Args], #remote_channel{flags = Flags} = Channel
+    [Mode | Rest], Action, [Mask | Args], #remote_channel{flags = Flags} = Channel, Local
 ) when
     Mode =:= $b; Mode =:= $e; Mode =:= $I
 ->
@@ -1376,9 +1433,15 @@ apply_remote_modes(
             add -> lists:usort([ircd_wire:retain(Mask) | Existing]);
             remove -> lists:delete(Mask, Existing)
         end,
-    apply_remote_modes(Rest, Action, Args, Channel#remote_channel{flags = Flags#{Type => Updated}});
+    apply_remote_modes(
+        Rest, Action, Args, Channel#remote_channel{flags = Flags#{Type => Updated}}, Local
+    );
 apply_remote_modes(
-    [Mode | Rest], Action, [Nick | Args], #remote_channel{members = Members} = Channel
+    [Mode | Rest],
+    Action,
+    [Nick | Args],
+    #remote_channel{key = ChannelKey, members = Members} = Channel,
+    Local
 ) when
     Mode =:= $o; Mode =:= $v; Mode =:= $O
 ->
@@ -1396,18 +1459,72 @@ apply_remote_modes(
                     add -> lists:usort([Role | Roles]);
                     remove -> lists:delete(Role, Roles)
                 end,
-            apply_remote_modes(Rest, Action, Args, Channel#remote_channel{
-                members = Members#{Key := {Owner, NewRoles}}
-            });
+            apply_remote_modes(
+                Rest,
+                Action,
+                Args,
+                Channel#remote_channel{members = Members#{Key := {Owner, NewRoles}}},
+                Local
+            );
         error ->
-            {error, unknown_remote_mode_target}
+            %% The target may be a member homed on this server.
+            case local_member(ChannelKey, Nick) of
+                {ok, Pid} ->
+                    apply_remote_modes(Rest, Action, Args, Channel, [{Pid, Role, Action} | Local]);
+                error ->
+                    {error, unknown_remote_mode_target}
+            end
     end;
-apply_remote_modes([Mode | _], _Action, [], _Channel) when
+apply_remote_modes([Mode | _], _Action, [], _Channel, _Local) when
     Mode =:= $k; Mode =:= $o; Mode =:= $v; Mode =:= $O; Mode =:= $b; Mode =:= $e; Mode =:= $I
 ->
     {error, missing_mode_argument};
-apply_remote_modes([Mode | _], _Action, _Args, _Channel) ->
+apply_remote_modes([Mode | _], _Action, _Args, _Channel, _Local) ->
     {error, {unsupported_channel_mode, Mode}}.
+
+%% The pid of local user Nick when it is a member of the local channel Key.
+local_member(Key, Nick) ->
+    case {ircd_state_client:find_nick(Nick), mnesia:dirty_read(channel, Key)} of
+        {#client{pid = Pid}, [#channel{members = Members}]} when is_map_key(Pid, Members) ->
+            {ok, Pid};
+        _ ->
+            error
+    end.
+
+%% Apply `o`, `v`, and `O` changes from a peer to local members of channel
+%% Key, as a local MODE would: `o` and `v` edit the member's roles and `O`
+%% sets or clears the channel creator. The reop deadline is kept current.
+apply_local_roles(_Key, []) ->
+    ok;
+apply_local_roles(Key, Changes) ->
+    case mnesia:dirty_read(channel, Key) of
+        [#channel{} = Channel] ->
+            Updated = lists:foldl(fun apply_local_role/2, Channel, Changes),
+            mnesia:dirty_write(
+                ircd_state_channel:track_opless(Updated, Updated#channel.members)
+            );
+        [] ->
+            ok
+    end.
+
+apply_local_role({Pid, creator, add}, Channel) ->
+    Channel#channel{creator = Pid};
+apply_local_role({Pid, creator, remove}, #channel{creator = Pid} = Channel) ->
+    Channel#channel{creator = undefined};
+apply_local_role({_Pid, creator, remove}, Channel) ->
+    Channel;
+apply_local_role({Pid, Role, Action}, #channel{members = Members} = Channel) ->
+    case Members of
+        #{Pid := Roles} ->
+            NewRoles =
+                case Action of
+                    add -> lists:usort([Role | Roles]);
+                    remove -> lists:delete(Role, Roles)
+                end,
+            Channel#channel{members = Members#{Pid := NewRoles}};
+        #{} ->
+            Channel
+    end.
 
 broadcast_remote_mode(Name, Prefix, Modes, Args) ->
     case mnesia:dirty_read(channel, ircd_wire:fold(Name)) of
@@ -1600,11 +1717,16 @@ receive_remote_target(Peer, Remote, Prefix, Target, Text, Command, Tags) ->
         undefined ->
             case ircd_wire:channel(Target) of
                 true ->
-                    Result = receive_remote_channel_message(
-                        Peer, Remote, Prefix, Target, Text, Command, Tags
-                    ),
-                    forward_channel(Peer, Target, Prefix, Command, Text, Tags),
-                    Result;
+                    %% A message rejected here (unknown channel, sender not
+                    %% a member through Peer) is not passed on to other peers.
+                    case
+                        receive_remote_channel_message(
+                            Peer, Remote, Prefix, Target, Text, Command, Tags
+                        )
+                    of
+                        ok -> forward_channel(Peer, Target, Prefix, Command, Text, Tags);
+                        {error, _} = Error -> Error
+                    end;
                 false ->
                     forward_user(Peer, Prefix, Command, Target, Text, Tags)
             end
@@ -2121,13 +2243,21 @@ collected message to a local nickname or channel members, or forwards it
 toward a remote target, never back to `Peer`. Closing an unknown or empty
 batch does nothing. Other batch types are `{error, invalid_batch}`. Open
 batches are kept per peer and reference in the state process, each bounded by
-the multiline line limit.
+the multiline line limit. At most 10 batches may be open per peer; opening
+another is `{error, too_many_batches}`. `forget_peer_batches/1` discards a
+peer's open batches when its link is lost.
 """.
 -spec receive_remote_batch(binary(), binary(), [binary()], list()) -> ok | {error, term()}.
 receive_remote_batch(Peer, Prefix, [<<"+", Ref/binary>>, <<"draft/multiline">>, Target | _], Tags) ->
+    Open = peer_batch_keys(Peer),
+    Full =
+        length(Open) >= ?MAX_PEER_BATCHES andalso
+            not lists:member({ircd_peer_batch, Peer, Ref}, Open),
     case remote_source(Peer, Prefix) of
+        {ok, _} when Full ->
+            {error, too_many_batches};
         {ok, _} ->
-            put({ircd_peer_batch, Peer, Ref}, #{
+            put({ircd_peer_batch, Peer, ircd_wire:retain(Ref)}, #{
                 prefix => Prefix,
                 target => ircd_wire:retain(Target),
                 tags => trusted_server_tags(Tags) ++ ircd_cap:client_tags(Tags),
@@ -2148,6 +2278,19 @@ receive_remote_batch(Peer, _Prefix, [<<"-", Ref/binary>> | _], _Tags) ->
     end;
 receive_remote_batch(_Peer, _Prefix, _Params, _Tags) ->
     {error, invalid_batch}.
+
+-doc """
+Discard every `draft/multiline` batch that `Peer` opened and did not close.
+
+Called when the link to `Peer` is lost, so the state process does not keep
+partial batches for a link that is gone.
+""".
+-spec forget_peer_batches(binary()) -> ok.
+forget_peer_batches(Peer) ->
+    lists:foreach(fun erase/1, peer_batch_keys(Peer)).
+
+peer_batch_keys(Peer) ->
+    [Key || {ircd_peer_batch, P, _} = Key <- get_keys(), P =:= Peer].
 
 -doc """
 Add one `PRIVMSG` or `NOTICE` line to an open peer `draft/multiline` batch.

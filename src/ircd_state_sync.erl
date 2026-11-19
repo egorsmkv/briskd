@@ -50,9 +50,9 @@ Lines describing accounts, metadata, and read markers for a new peer's burst.
 
 The argument (the local server name) is unused. The result lists every
 account, then the metadata of each registered local user (prefixed by that
-user), then channel metadata (prefixed by this server), then every read
-marker. Data comes from dirty Mnesia reads and the `ircd_conn` and
-`ircd_chan_meta` ETS tables.
+user), then channel metadata (prefixed by this server, leaving out local `&`
+channels as `channel_metadata/3` does), then every read marker. Data comes
+from dirty Mnesia reads and the `ircd_conn` and `ircd_chan_meta` ETS tables.
 """.
 -spec burst_lines(binary()) -> [binary()].
 burst_lines(_Server) ->
@@ -68,7 +68,8 @@ burst_lines(_Server) ->
     ChannelMeta = [
         iolist_to_binary(metadata_line(server(), Name, Key, Value))
      || {ChannelKey, Map} <- ets:tab2list(ircd_chan_meta),
-        [#channel{name = Name}] <- [mnesia:dirty_read(channel, ChannelKey)],
+        [#channel{name = <<First, _/binary>> = Name}] <- [mnesia:dirty_read(channel, ChannelKey)],
+        First =/= $&,
         {Key, Value} <- maps:to_list(Map)
     ],
     Markers = [

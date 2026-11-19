@@ -106,20 +106,20 @@ control_frames_test() ->
     Frames = <<
         (frame(9, 1, <<"pi">>))/binary,
         (frame(10, 1, <<"po">>))/binary,
-        (frame(8, 1, <<3, 232, "bye">>))/binary,
-        (frame(11, 1, <<"x">>))/binary
+        (frame(8, 1, <<3, 232, "bye">>))/binary
     >>,
     ?assertEqual(
         {ok,
             [
                 {ping, <<"pi">>},
                 {pong, <<"po">>},
-                {close, <<3, 232, "bye">>},
-                {close, <<"x">>}
+                {close, <<3, 232, "bye">>}
             ],
             <<>>},
         ircd_websocket:decode(Frames, 1000)
     ),
+    %% Reserved control opcode 11 is a protocol error, not a close.
+    ?assertEqual({error, bad_opcode}, ircd_websocket:decode(frame(11, 1, <<"x">>), 1000)),
     %% Control frames over 125 bytes are rejected.
     ?assertEqual(
         {error, control_too_large},
@@ -165,11 +165,16 @@ fragmentation_with_control_test() ->
         (frame(0, 1, <<"x :y">>))/binary
     >>,
     ?assertEqual(
-        {ok, [{binary, <<"PRIVMSG x :y">>}], <<>>}, ircd_websocket:decode(Msg, 100)
+        {ok, [{ping, <<"hb">>}, {binary, <<"PRIVMSG x :y">>}], <<>>},
+        ircd_websocket:decode(Msg, 100)
     ),
-    %% Incomplete fragmented message keeps the whole message buffered.
+    %% An incomplete fragmented message stays buffered as one unfinished frame.
     Open = <<(frame(2, 0, <<"ab">>))/binary, (frame(0, 0, <<"cd">>))/binary>>,
-    ?assertEqual({ok, [], Open}, ircd_websocket:decode(Open, 100)),
+    {ok, [], Kept} = ircd_websocket:decode(Open, 100),
+    ?assertEqual(
+        {ok, [{binary, <<"abcdef">>}], <<>>},
+        ircd_websocket:decode(<<Kept/binary, (frame(0, 1, <<"ef">>))/binary>>, 100)
+    ),
     %% Odd payload lengths unmask the tail correctly.
     lists:foreach(
         fun(N) ->

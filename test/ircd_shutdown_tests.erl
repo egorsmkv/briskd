@@ -21,6 +21,9 @@ drain() ->
         Port = listener_port(),
         Alice = register_client(Port, <<"alice">>),
         Unregistered = connect(Port),
+        %% Both connections must have a session before the drain starts; a
+        %% connection still in the accept backlog has nothing to drain.
+        wait_sessions(2, 100),
         Started = erlang:monotonic_time(millisecond),
         ok = application:stop(ircd),
         Elapsed = erlang:monotonic_time(millisecond) - Started,
@@ -91,6 +94,18 @@ read_all(Sock, Acc) ->
     case gen_tcp:recv(Sock, 0, 5000) of
         {ok, Bin} -> read_all(Sock, <<Acc/binary, Bin/binary>>);
         {error, closed} -> Acc
+    end.
+
+wait_sessions(Count, Tries) ->
+    Live = [P || {_, P, _, _} <- supervisor:which_children(ircd_sessions), is_pid(P)],
+    case length(Live) >= Count of
+        true ->
+            ok;
+        false when Tries > 0 ->
+            timer:sleep(20),
+            wait_sessions(Count, Tries - 1);
+        false ->
+            ?assertEqual(Count, length(Live))
     end.
 
 has(Bin, Needle) ->

@@ -53,6 +53,10 @@ the RFC 1459 case mapping.
 
 -include("ircd_wire.hrl").
 
+%% IRCv3 message-tags: the tag section (`@`, the tags, and the separating
+%% space) of a server-sent line is at most 8191 bytes.
+-define(MAX_TAG_SECTION, 8191).
+
 -doc """
 Append one socket read to the buffered input that has no line end yet.
 
@@ -371,8 +375,11 @@ Encode one IRC message with an optional IRCv3 tag section in front of it.
 `Tags` is a list of `{Key, Value}` pairs. `undefined` writes the key alone, and
 values are escaped as the message-tags specification requires (`;`, space,
 `\`, CR, LF). With `[]` the result is exactly `line/4`. The part after the tags
-follows `line/4`, including its 512-octet limit. The tag section itself is
-neither truncated nor size-checked here; per-recipient tag filtering happens in
+follows `line/4`, including its 512-octet limit. The tag section is never
+truncated: when it would exceed 8191 bytes (`@`, the tags, and the separating
+space, the IRCv3 message-tags limit), or when `line/4` drops the message, the
+result is `[]` and nothing should be sent, so a tag section is never written
+without its message. Per-recipient tag filtering happens in
 `m:ircd_state_send`.
 
 ```erlang
@@ -380,6 +387,8 @@ neither truncated nor size-checked here; per-recipient tag filtering happens in
 [{<<"time">>,<<"2026-01-01T00:00:00.000Z">>}]
 2> iolist_to_binary(ircd_wire:message(Tags, <<"n!u@h">>, <<"PRIVMSG">>, [<<"#c">>], <<"hi">>)).
 <<"@time=2026-01-01T00:00:00.000Z :n!u@h PRIVMSG #c :hi\r\n">>
+3> ircd_wire:message(Tags, <<"n!u@h">>, <<"PRIVMSG">>, [binary:copy(<<"x">>, 600)], none).
+[]
 ```
 """.
 -spec message(
@@ -389,7 +398,12 @@ neither truncated nor size-checked here; per-recipient tag filtering happens in
 message([], Prefix, Command, Middle, Trailing) ->
     line(Prefix, Command, Middle, Trailing);
 message(Tags, Prefix, Command, Middle, Trailing) ->
-    [encode_tags(Tags), line(Prefix, Command, Middle, Trailing)].
+    TagSection = iolist_to_binary(encode_tags(Tags)),
+    case line(Prefix, Command, Middle, Trailing) of
+        [] -> [];
+        _ when byte_size(TagSection) > ?MAX_TAG_SECTION -> [];
+        Line -> [TagSection, Line]
+    end.
 
 -doc """
 Encode one prefixed IRC line within the 512-octet limit (RFC 2812 section 2.3).

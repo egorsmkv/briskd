@@ -251,6 +251,22 @@ Implemented client commands include `PASS`, `NICK`, `USER`, `JOIN`, `PART`,
 Operator `DIE` stops the node and operator `RESTART` restarts the runtime.
 Other clients receive numeric 481.
 
+Implementation policies on queries and channel lists:
+
+- `STATS u` and `STATS m` are public. `STATS l` shows a non-operator only their
+  own connection, and `STATS o` is operator-only (481); both end with 219.
+- The ban list (`MODE #chan b` or `+b`) is visible to anyone who can see the
+  channel. The exception (`e`) and invite-exception (`I`) lists need channel
+  operator status (482). Each list holds 100 masks (`MAXLIST=beI:100`, 478).
+- A non-member asking for the `TOPIC` of a `+s` or `+p` channel gets 403.
+- `KNOCK` answers 714 when the sender is already on the channel, 713 when the
+  channel is open, and 480 for other refusals. These are the common ircd
+  extension numerics; RFC 2812 does not define `KNOCK`.
+- A channel operator may change `+o`/`+v` on, and `KICK`, members who are on
+  another server; the change is propagated to the peers.
+- Successful `KILL` and `REHASH` are logged as `oper_kill` and `oper_rehash`
+  audit events (actor and target, never the reason text or secrets).
+
 A client may join at most ten channels (numeric 405). A nickname or channel
 released by a quit or a netsplit stays unavailable for 60 seconds (numeric
 437). A nickname introduced for an existing local or remote user kills both
