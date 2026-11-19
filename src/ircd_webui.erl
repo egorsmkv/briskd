@@ -106,6 +106,7 @@ init(#{webui := #{ip := IP, port := Port}}) ->
                 webirc => load_asset("webirc.html", <<"ircd webirc UI asset missing">>),
                 favicon_ico => load_raw_asset("favicon.ico", <<>>),
                 favicon_svg => load_raw_asset("favicon.svg", <<>>),
+                og_image => load_raw_asset("og-image.png", <<>>),
                 robots_txt => load_raw_asset("robots.txt", <<"User-agent: *\nDisallow: /admin\n">>),
                 static => load_static_assets()
             },
@@ -214,6 +215,7 @@ handle_connection(
         webirc := WebircHtml,
         favicon_ico := FaviconIco,
         favicon_svg := FaviconSvg,
+        og_image := OgImage,
         robots_txt := RobotsTxt,
         static := Static
     }
@@ -225,6 +227,8 @@ handle_connection(
             send_public_asset(
                 Socket, <<"image/svg+xml">>, <<"public, max-age=86400">>, FaviconSvg
             );
+        {ok, <<"GET">>, {<<"/og-image.png">>, _Query}, _Headers, _Body} ->
+            send_public_asset(Socket, <<"image/png">>, <<"public, max-age=86400">>, OgImage);
         {ok, <<"GET">>, {<<"/robots.txt">>, _Query}, _Headers, _Body} ->
             send_public_asset(
                 Socket, <<"text/plain; charset=utf-8">>, <<"public, max-age=3600">>, RobotsTxt
@@ -233,10 +237,10 @@ handle_connection(
             handle_static(Socket, Name, Static);
         {ok, <<"GET">>, {<<"/api/altcha">>, _Query}, _Headers, _Body} ->
             send_json(Socket, 200, <<"OK">>, ircd_altcha:create_challenge());
-        {ok, <<"GET">>, {Path, _Query}, _Headers, _Body} when
+        {ok, <<"GET">>, {Path, _Query}, Headers, _Body} when
             Path =:= <<"/">>; Path =:= <<"/webirc">>
         ->
-            handle_webirc_page(Socket, WebircHtml);
+            handle_webirc_page(Socket, WebircHtml, Path, Headers);
         {ok, <<"GET">>, {<<"/verify">>, Query}, _Headers, _Body} ->
             handle_verify_page(Socket, VerifyHtml, Query);
         {ok, <<"POST">>, {<<"/api/verify">>, _Query}, Headers, Body} ->
@@ -292,7 +296,7 @@ handle_static(Socket, Name, Static) ->
             send_json(Socket, 404, <<"Not Found">>, #{error => <<"not_found">>})
     end.
 
-handle_webirc_page(Socket, WebircHtml) ->
+handle_webirc_page(Socket, WebircHtml, Path, Headers) ->
     Config = persistent_term:get({ircd_state, config}, #{}),
     WsPort = maps:get(ws, Config, null),
     WssPort = maps:get(wss, Config, null),
@@ -304,14 +308,47 @@ handle_webirc_page(Socket, WebircHtml) ->
             WsBin = port_to_bin(WsPort),
             WssBin = port_to_bin(WssPort),
             DefaultChans = escape_html(default_channels(Config)),
+            Origin = public_origin(Headers, Config),
+            PublicUrl = escape_html(<<Origin/binary, Path/binary>>),
+            OgImageUrl = escape_html(<<Origin/binary, "/og-image.png">>),
             P0 = binary:replace(WebircHtml, <<"__NETWORK_NAME__">>, Network, [global]),
             P1 = binary:replace(P0, <<"__WS_PORT__">>, WsBin, [global]),
             P2 = binary:replace(P1, <<"__WSS_PORT__">>, WssBin, [global]),
-            Page = binary:replace(P2, <<"__DEFAULT_CHANNELS__">>, DefaultChans, [global]),
+            P3 = binary:replace(P2, <<"__DEFAULT_CHANNELS__">>, DefaultChans, [global]),
+            P4 = binary:replace(P3, <<"__PUBLIC_URL__">>, PublicUrl, [global]),
+            Page = binary:replace(P4, <<"__OG_IMAGE_URL__">>, OgImageUrl, [global]),
             send_nonce_html(
                 Socket, Page, <<"connect-src 'self' ws: wss:; img-src 'self' data:; ">>
             )
     end.
+
+public_origin(Headers, Config) ->
+    Proto =
+        case string:lowercase(maps:get(<<"x-forwarded-proto">>, Headers, <<"http">>)) of
+            <<"https">> -> <<"https">>;
+            _ -> <<"http">>
+        end,
+    RawHost = maps:get(<<"host">>, Headers, maps:get(name, Config, <<"localhost">>)),
+    Host = sanitize_host(RawHost, maps:get(name, Config, <<"localhost">>)),
+    <<Proto/binary, "://", Host/binary>>.
+
+sanitize_host(Bin, Fallback) when is_binary(Bin), byte_size(Bin) > 0, byte_size(Bin) =< 255 ->
+    case
+        lists:all(
+            fun(C) ->
+                (C >= $a andalso C =< $z) orelse
+                    (C >= $A andalso C =< $Z) orelse
+                    (C >= $0 andalso C =< $9) orelse
+                    C =:= $. orelse C =:= $- orelse C =:= $: orelse C =:= $[ orelse C =:= $]
+            end,
+            binary_to_list(Bin)
+        )
+    of
+        true -> Bin;
+        false -> Fallback
+    end;
+sanitize_host(_, Fallback) ->
+    Fallback.
 
 port_to_bin(null) -> <<>>;
 port_to_bin(Port) when is_integer(Port) -> integer_to_binary(Port).

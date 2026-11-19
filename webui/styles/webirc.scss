@@ -120,7 +120,8 @@ body {
 }
 
 .mobile-only,
-.tablet-only {
+.tablet-only,
+.icon-mobile .btn-icon {
   display: none;
 }
 
@@ -954,6 +955,16 @@ body.layout-mobile {
     padding: 4px 8px;
     font-size: 12px;
   }
+  .icon-mobile {
+    width: 34px;
+    padding: 0 !important;
+    .btn-icon {
+      display: block;
+    }
+    .btn-label {
+      display: none;
+    }
+  }
   .buf-close {
     opacity: 0.85;
   }
@@ -1062,6 +1073,16 @@ body.layout-mobile {
       min-height: 52px;
       padding: calc(6px + env(safe-area-inset-top)) 10px 6px;
       gap: 6px;
+    }
+    .icon-mobile {
+      width: 34px;
+      padding: 0 !important;
+      .btn-icon {
+        display: block;
+      }
+      .btn-label {
+        display: none;
+      }
     }
     .messages {
       padding: 10px 10px;

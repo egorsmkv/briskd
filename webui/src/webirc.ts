@@ -235,7 +235,10 @@ $("settings-modal").addEventListener("click", (ev) => {
   if (ev.target === $("settings-modal")) closeSettings();
 });
 document.addEventListener("keydown", (ev) => {
-  if (ev.key === "Escape") closeSettings();
+  if (ev.key === "Escape") {
+    closeSettings();
+    closeTopicModal();
+  }
 });
 
 $<HTMLSelectElement>("opt-layout").onchange = (ev) => {
@@ -302,7 +305,50 @@ const BASE_TITLE = document.title;
   } else {
     inp.value = `${isHttps ? "wss" : "ws"}://${location.host}/`;
   }
+  const qChan = new URLSearchParams(location.search).get("channel")?.trim();
+  if (qChan && /^[#&+!]/.test(qChan)) {
+    $<HTMLInputElement>("inp-channels").value = qChan;
+  }
 })();
+
+async function shareWebirc(btn: HTMLElement): Promise<void> {
+  const buf = buffers.get(activeBuf);
+  const url = new URL("/", location.href);
+  if (buf && isChan(buf.name)) {
+    url.searchParams.set("channel", buf.name);
+  }
+  const shareUrl = url.toString();
+  const title = BASE_TITLE;
+  const text = buf && isChan(buf.name)
+    ? `Join ${buf.name} on ${BASE_TITLE}`
+    : `Join ${BASE_TITLE}`;
+
+  if (typeof navigator.share === "function") {
+    try {
+      await navigator.share({ title, text, url: shareUrl });
+      return;
+    } catch {
+      // User cancelled or share unsupported; fall back to clipboard
+    }
+  }
+  const orig = btn.textContent || "Share";
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(shareUrl);
+      btn.textContent = "Copied!";
+      setTimeout(() => {
+        btn.textContent = orig;
+      }, 1800);
+      return;
+    }
+  } catch {
+    // Fall through to prompt
+  }
+  prompt("Copy WebIRC link:", shareUrl);
+}
+
+$("btn-share-1").onclick = () => void shareWebirc($("btn-share-1"));
+$("btn-share-2").onclick = () => void shareWebirc($("btn-share-2"));
 
 let ws: WebSocket | null = null;
 let lastWsUrl = "";
@@ -1517,12 +1563,38 @@ $("btn-reconnect").onclick = () => {
   if (lastWsUrl) connectSocket(lastWsUrl);
 };
 
-$("btn-topic").onclick = () => {
+let topicTarget = "";
+
+function openTopicModal(): void {
   const buf = buffers.get(activeBuf);
   if (!buf || !isChan(buf.name)) return;
-  const next = prompt(`Topic for ${buf.name}:`, buf.topic || "");
-  if (next !== null) sendRaw(`TOPIC ${buf.name} :${next}`);
-};
+  topicTarget = buf.name;
+  $("topic-modal-chan").textContent = buf.name;
+  const inp = $<HTMLInputElement>("inp-topic");
+  inp.value = buf.topic || "";
+  $("topic-modal").classList.add("open");
+  inp.focus();
+  inp.select();
+}
+
+function closeTopicModal(): void {
+  $("topic-modal").classList.remove("open");
+  topicTarget = "";
+}
+
+$("btn-topic").onclick = openTopicModal;
+$("btn-close-topic").onclick = closeTopicModal;
+$("btn-cancel-topic").onclick = closeTopicModal;
+$("topic-modal").addEventListener("click", (ev) => {
+  if (ev.target === $("topic-modal")) closeTopicModal();
+});
+$<HTMLFormElement>("topic-form").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  if (!topicTarget) return;
+  const next = $<HTMLInputElement>("inp-topic").value.trim();
+  sendRaw(`TOPIC ${topicTarget} :${next}`);
+  closeTopicModal();
+});
 
 $("btn-disconnect").onclick = () => {
   isRegistered = false;

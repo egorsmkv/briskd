@@ -4,16 +4,25 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>__NETWORK_NAME__ - WebIRC</title>
-<meta name="description" content="Connect to __NETWORK_NAME__ IRC directly from your browser with IRCv3 WebSocket, chat history, themes, and optional end-to-end encryption (E2EE).">
+<meta name="description" content="Join __NETWORK_NAME__ IRC (__DEFAULT_CHANNELS__) directly in your browser with IRCv3 WebSocket, chat history, themes, and optional end-to-end encryption (E2EE).">
 <meta name="robots" content="index, follow">
-<meta name="theme-color" content="#2563eb">
+<meta name="theme-color" content="#00e64d">
+<link rel="canonical" href="__PUBLIC_URL__">
 <meta property="og:type" content="website">
+<meta property="og:url" content="__PUBLIC_URL__">
 <meta property="og:site_name" content="__NETWORK_NAME__">
 <meta property="og:title" content="__NETWORK_NAME__ - WebIRC">
-<meta property="og:description" content="Connect to __NETWORK_NAME__ IRC directly from your browser with IRCv3 WebSocket, chat history, themes, and optional end-to-end encryption (E2EE).">
-<meta name="twitter:card" content="summary">
+<meta property="og:description" content="Join __NETWORK_NAME__ IRC (__DEFAULT_CHANNELS__) directly in your browser with IRCv3 WebSocket, chat history, themes, and optional end-to-end encryption (E2EE).">
+<meta property="og:image" content="__OG_IMAGE_URL__">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="__NETWORK_NAME__ WebIRC - IRCv3 WebSocket Chat with End-to-End Encryption">
+<meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="__NETWORK_NAME__ - WebIRC">
-<meta name="twitter:description" content="Connect to __NETWORK_NAME__ IRC directly from your browser with IRCv3 WebSocket, chat history, themes, and optional end-to-end encryption (E2EE).">
+<meta name="twitter:description" content="Join __NETWORK_NAME__ IRC (__DEFAULT_CHANNELS__) directly in your browser with IRCv3 WebSocket and optional E2EE.">
+<meta name="twitter:image" content="__OG_IMAGE_URL__">
+<meta name="twitter:image:alt" content="__NETWORK_NAME__ WebIRC - IRCv3 WebSocket Chat with End-to-End Encryption">
 <link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/assets/webirc.css">
@@ -25,6 +34,7 @@
     <div class="connect-top">
       <h1>__NETWORK_NAME__ WebIRC</h1>
       <div class="head-actions">
+        <button type="button" class="small" id="btn-share-1">Share</button>
         <button type="button" class="small" id="btn-settings-1">Settings</button>
       </div>
     </div>
@@ -91,9 +101,15 @@
     </div>
     <div class="head-right">
       <span class="my-nick" id="my-nick"></span>
-      <button type="button" class="small" id="btn-members" aria-label="Toggle members">Users</button>
+      <button type="button" class="small icon-mobile" id="btn-members" aria-label="Toggle members" title="Members">
+        <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        <span class="btn-label">Users</span>
+      </button>
       <button type="button" class="small primary hidden" id="btn-reconnect">Reconnect</button>
-      <button type="button" class="small" id="btn-settings-2">Settings</button>
+      <button type="button" class="small icon-mobile" id="btn-settings-2" aria-label="Settings" title="Settings">
+        <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <span class="btn-label">Settings</span>
+      </button>
       <button type="button" class="small danger" id="btn-disconnect">Disconnect</button>
     </div>
   </header>
@@ -168,6 +184,9 @@
           <input type="checkbox" id="opt-notify">
           <span>Desktop notifications on mentions</span>
         </label>
+        <div class="e2ee-actions">
+          <button type="button" class="small" id="btn-share-2">Share WebIRC Link</button>
+        </div>
       </div>
 
       <div class="modal-pane" id="pane-settings-e2ee" role="tabpanel">
@@ -196,6 +215,25 @@
         </div>
       </div>
     </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="topic-modal" role="dialog" aria-modal="true" aria-labelledby="topic-modal-title">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="topic-modal-title">Set Channel Topic</h2>
+      <button type="button" class="small" id="btn-close-topic" aria-label="Close topic dialog">×</button>
+    </div>
+    <form class="modal-body" id="topic-form">
+      <div class="field">
+        <label for="inp-topic">Topic for <span id="topic-modal-chan">#channel</span></label>
+        <input type="text" id="inp-topic" maxlength="390" placeholder="Enter channel topic (leave blank to clear)">
+      </div>
+      <div class="e2ee-actions">
+        <button type="submit" class="primary small">Save Topic</button>
+        <button type="button" class="small" id="btn-cancel-topic">Cancel</button>
+      </div>
+    </form>
   </div>
 </div>
 
