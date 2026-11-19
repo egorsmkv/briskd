@@ -9,9 +9,16 @@ session_status_redacts_link_password_test() ->
 link_status_redacts_peer_password_test() ->
     State = #{
         peer => #{name => <<"irc.example">>, password => <<"secret">>},
-        peer_password => <<"secret">>
+        peer_password => <<"secret">>,
+        config => #{
+            name => <<"irc.local">>,
+            server_links => [#{name => <<"irc.example">>, password => <<"secret">>}],
+            operators => [{<<"admin">>, <<"opersecret">>}]
+        }
     },
     #{state := Redacted} = ircd_link:format_status(#{state => State}),
+    ?assertEqual(#{name => <<"irc.local">>}, maps:get(config, Redacted)),
+    ?assertEqual(nomatch, binary:match(term_to_binary(Redacted), <<"secret">>)),
     ?assertEqual(#{name => <<"irc.example">>}, maps:get(peer, Redacted)),
     ?assertEqual(redacted, maps:get(peer_password, Redacted)).
 

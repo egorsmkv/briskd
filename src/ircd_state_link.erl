@@ -574,7 +574,7 @@ update_remote_topic(Peer, Prefix, Name, Topic) ->
                         _ ->
                             {error, remote_user_not_on_channel}
                     end;
-                {{error, _}, _} ->
+                {error, _} ->
                     {error, unknown_remote_source};
                 {_, []} ->
                     {error, unknown_remote_channel}
@@ -793,7 +793,7 @@ remove_remote_channel_member(Peer, Prefix, Name, Reason) ->
                 _ ->
                     {error, remote_user_not_on_channel}
             end;
-        {{error, _}, _} ->
+        {error, _} ->
             {error, unknown_remote_source};
         {_, []} ->
             {error, unknown_remote_channel}
@@ -812,7 +812,7 @@ receive_remote_kick(Peer, Prefix, Name, Nick, Reason) ->
                 _ ->
                     {error, remote_kick_requires_operator}
             end;
-        {{error, _}, _} ->
+        {error, _} ->
             {error, unknown_remote_source};
         {_, []} ->
             {error, unknown_remote_channel}

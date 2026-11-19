@@ -33,6 +33,11 @@ xref:
 test:
     rebar3 eunit
 
+# Run the unit tests with line coverage; fail below 90% total.
+cover:
+    rebar3 eunit --cover
+    rebar3 cover --verbose --min_coverage 90
+
 # Fetch dependencies and formatter plugin.
 deps:
     rebar3 get-deps

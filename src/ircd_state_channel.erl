@@ -1446,6 +1446,24 @@ change_user_modes([Mode | Rest], Action, Modes, Nick, Client, Server) when
             ok
     end,
     change_user_modes(Rest, Action, New, Nick, Client, Server);
+%% RFC 2812 3.1.5: a user may de-op themselves; +o only comes from OPER.
+%% Losing +o also ends administrator status.
+change_user_modes([$o | Rest], remove, Modes, Nick, #client{pid = Pid} = Client, Server) ->
+    New = maps:remove($o, Modes),
+    case New =/= Modes of
+        true ->
+            mnesia:dirty_write(#user_modes{pid = Pid, modes = New}),
+            _ = ets:whereis(ircd_admins) =/= undefined andalso ets:delete(ircd_admins, Pid),
+            logger:info(#{event => oper_dropped, nick => Nick}),
+            Prefix = ircd_state_send:prefix(Client),
+            ircd_state_send:send(Pid, Prefix, <<"MODE">>, [Nick, <<"-o">>], none),
+            ircd_state_link:server_broadcast(
+                ircd_wire:line(Prefix, <<"MODE">>, [Nick, <<"-o">>], none)
+            );
+        false ->
+            ok
+    end,
+    change_user_modes(Rest, remove, New, Nick, Client, Server);
 change_user_modes([$o | Rest], Action, Modes, Nick, Client, Server) ->
     ircd_state_send:numeric(
         Client, Server, <<"481">>, [], <<"Permission Denied- You're not an IRC operator">>
@@ -1651,14 +1669,16 @@ announce_mode_changes(#channel{key = Key, name = Name, members = Members} = Chan
 
 mode_authorized($r, _Action, #channel{name = <<$!, _/binary>>} = Channel, Client) ->
     Channel#channel.creator =:= Client#client.pid;
+%% On other channel types +r and +a are not creator modes; apply_mode/4
+%% answers them with 472 (RFC 2811 4.2.1 and 4.3).
 mode_authorized($r, _Action, _, _) ->
-    false;
+    true;
 mode_authorized($a, _Action, #channel{name = <<$!, _/binary>>} = Channel, Client) ->
     Channel#channel.creator =:= Client#client.pid;
 mode_authorized($a, _Action, #channel{name = <<$&, _/binary>>}, _) ->
     true;
 mode_authorized($a, _Action, _, _) ->
-    false;
+    true;
 mode_authorized(_, _, _, _) ->
     true.
 

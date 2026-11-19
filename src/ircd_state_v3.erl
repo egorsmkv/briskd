@@ -1026,6 +1026,9 @@ finish_attach(#client{pid = Pid, nick = Nick}, Holder) ->
     ircd_cap:disconnect(Pid),
     ircd_conn:delete(Pid),
     ircd_state_client:remove_connection_stats(Pid),
+    %% The holder learns of the new connection first: replies to lines the new
+    %% connection already pipelined (run as the holder) are then mirrored to it.
+    Holder ! {attached_session, Pid},
     Pid ! {attach, Holder},
     ok.
 

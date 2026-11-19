@@ -115,7 +115,9 @@ handle_info({Tag, Socket, Reason}, #{socket := Socket} = State) when
 handle_info(_, State) ->
     {noreply, State}.
 
-%% @doc Remove the configured link password and any password received during handshake.
+%% @doc Remove the configured link password, any password received during
+%% handshake, and the server configuration (which holds every link and operator
+%% password); only the local server name is kept from it.
 -spec format_status(map()) -> map().
 format_status(#{state := State} = Status) ->
     Status#{state := redact_state(State)};
@@ -123,8 +125,13 @@ format_status(Status) ->
     Status.
 
 redact_state(#{peer := Peer} = State) ->
-    State#{peer := maps:remove(password, Peer), peer_password => redacted};
+    redact_config(State#{peer := maps:remove(password, Peer), peer_password => redacted});
 redact_state(State) ->
+    State.
+
+redact_config(#{config := Config} = State) when is_map(Config) ->
+    State#{config := maps:with([name], Config)};
+redact_config(State) ->
     State.
 
 connect(#{peer := #{host := Host, port := Port, tls := true}} = State) ->

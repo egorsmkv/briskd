@@ -116,8 +116,8 @@ handle_info({Tag, Socket, Reason}, {_, Socket, _, _, _} = State) when
 %% same account's nickname. Its commands now run as that client and every
 %% line the primary session receives is mirrored here.
 handle_info({attach, Primary}, {Kind, Socket, Peer, Buffer, client}) ->
+    %% ircd_state already sent {attached_session, self()} to Primary.
     monitor(process, Primary),
-    Primary ! {attached_session, self()},
     {noreply, {Kind, Socket, Peer, Buffer, {attached, Primary}}};
 handle_info({attached_session, Pid}, State) ->
     monitor(process, Pid),
@@ -650,10 +650,10 @@ receive_data(Packet, Kind, Socket, Peer, Buffer, Role) ->
                 {ok, State} -> active(State);
                 {starttls, State} -> starttls(State);
                 quit -> flush_and_stop({Kind, Socket, Peer, <<>>, Role});
-                error -> {stop, normal, {Kind, Socket, Peer, <<>>}}
+                error -> {stop, normal, {Kind, Socket, Peer, <<>>, Role}}
             end;
         error ->
-            {stop, normal, {Kind, Socket, Peer, <<>>}}
+            {stop, normal, {Kind, Socket, Peer, <<>>, Role}}
     end.
 
 %% While skipping the rest of an over-long tagged line, drop bytes up to and
@@ -675,10 +675,10 @@ discard(Packet) ->
 %% Replies the state process queued before a QUIT (including ERROR) reach the
 %% socket before it closes, so a client that pipelines commands with QUIT
 %% still gets every answer.
-flush_and_stop({Kind, Socket, Peer, _, _}) ->
+flush_and_stop({Kind, Socket, Peer, _, Role}) ->
     Module = transport(Kind),
     flush_outgoing(Module, Socket),
-    {stop, normal, {Kind, Socket, Peer, <<>>}}.
+    {stop, normal, {Kind, Socket, Peer, <<>>, Role}}.
 
 flush_outgoing(Module, Socket) ->
     receive

@@ -564,13 +564,13 @@ server_call({server_command, Peer, Prefix, <<"REDACT">>, Params, _Tags}, _, Serv
 ->
     {reply, ircd_state_history:receive_remote_redact(Peer, Prefix, Params), Server};
 server_call({server_command, Peer, Prefix, <<"ACCOUNTSYNC">>, Params, _Tags}, _, Server) ->
-    {reply, ircd_state_sync:receive_accountsync(Peer, Prefix, Params), Server};
+    {reply, ircd_state_sync:receive_accountsync(Peer, link_source(Peer, Prefix), Params), Server};
 server_call({server_command, Peer, Prefix, <<"METADATA">>, Params, _Tags}, _, Server) when
     is_binary(Prefix)
 ->
     {reply, ircd_state_sync:receive_metadata(Peer, Prefix, Params), Server};
 server_call({server_command, Peer, Prefix, <<"MARKREAD">>, Params, _Tags}, _, Server) ->
-    {reply, ircd_state_sync:receive_markread(Peer, Prefix, Params), Server};
+    {reply, ircd_state_sync:receive_markread(Peer, link_source(Peer, Prefix), Params), Server};
 server_call(Request, From, Server) ->
     other_call(Request, From, Server).
 
@@ -687,7 +687,26 @@ other_call({command_as, Primary, Command, Params, Bytes, Tags}, {Caller, Ref}, S
         _ ->
             {reply, quit, Server}
     end;
-other_call({command, Command, Params, Bytes, Tags}, {Pid, _}, Server) ->
+other_call({command, Command, Params, Bytes, Tags}, {Pid, Ref}, Server) ->
+    case mnesia:dirty_read(client, Pid) of
+        [_] ->
+            client_command(Command, Params, Bytes, Tags, Pid, Server);
+        [] ->
+            %% multiclient: finish_attach/2 dropped this connection's client
+            %% row, but lines the session read before it saw {attach, Holder}
+            %% still arrive as plain commands. Run them as the holder; a
+            %% connection with no client row and no holder is closed.
+            case ets:lookup(ircd_attached, Pid) of
+                [{Pid, Holder}] ->
+                    other_call(
+                        {command_as, Holder, Command, Params, Bytes, Tags}, {Pid, Ref}, Server
+                    );
+                [] ->
+                    {reply, quit, Server}
+            end
+    end.
+
+client_command(Command, Params, Bytes, Tags, Pid, Server) ->
     count_command(Pid, Command, Bytes),
     Client = ircd_state_client:client(Pid),
     ircd_log:client_command(Client#client.nick, Command, Params),
@@ -710,6 +729,11 @@ other_call({command, Command, Params, Bytes, Tags}, {Pid, _}, Server) ->
         _ -> ircd_state_client:touch_activity(Pid)
     end,
     {reply, Reply, Server}.
+
+%% A server message without a prefix comes from the link it arrived on
+%% (RFC 2813 3.3), so relays name that server as the source.
+link_source(Peer, undefined) -> Peer;
+link_source(_Peer, Prefix) -> Prefix.
 
 %% @doc Ignore unsupported asynchronous state messages.
 handle_cast(_, State) -> {noreply, State}.
