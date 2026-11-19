@@ -3,6 +3,9 @@
   "tasks": {
     "build": "deno run --allow-read --allow-write --allow-env --allow-run build.ts",
     "check": "deno check src/admin.ts src/signup.ts src/verify.ts src/webirc.ts",
+    "lint": "deno lint src build.ts",
+    "fmt": "deno fmt src build.ts",
+    "fmt-check": "deno fmt --check src build.ts",
     "test": "deno test src/e2ee/crypto_test.ts"
   },
   "compilerOptions": {

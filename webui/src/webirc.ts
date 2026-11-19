@@ -1,8 +1,10 @@
+import { byId as $, errorMessage } from "./common/dom.ts";
 import { currentTheme, initTheme, setTheme, THEMES } from "./common/theme.ts";
 import { updateDynamicFavicon } from "./common/favicon.ts";
 import { E2EE_CAP, E2eeManager } from "./e2ee/manager.ts";
 
 interface WebircSettings {
+  layout: "auto" | "mobile" | "desktop";
   density: "comfortable" | "compact";
   fontSize: "small" | "normal" | "large";
   timestamps: boolean;
@@ -14,6 +16,7 @@ const SETTINGS_KEY = "ircd-webirc-settings";
 
 function loadSettings(): WebircSettings {
   const defaults: WebircSettings = {
+    layout: "auto",
     density: "comfortable",
     fontSize: "normal",
     timestamps: true,
@@ -25,6 +28,9 @@ function loadSettings(): WebircSettings {
     if (!raw) return defaults;
     const parsed = JSON.parse(raw) as Partial<WebircSettings>;
     return {
+      layout: parsed.layout === "mobile" || parsed.layout === "desktop"
+        ? parsed.layout
+        : "auto",
       density: parsed.density === "compact" ? "compact" : "comfortable",
       fontSize: parsed.fontSize === "small" || parsed.fontSize === "large"
         ? parsed.fontSize
@@ -72,9 +78,6 @@ interface BufferState {
   mentions: number;
   members: Map<string, string>;
 }
-
-const $ = <T extends HTMLElement = HTMLElement>(id: string): T =>
-  document.getElementById(id) as T;
 
 const AVATAR_COLORS = [
   "#2563eb",
@@ -156,6 +159,11 @@ initTheme([], {
 const settings: WebircSettings = loadSettings();
 
 function applySettings(): void {
+  document.body.classList.toggle("layout-mobile", settings.layout === "mobile");
+  document.body.classList.toggle(
+    "layout-desktop",
+    settings.layout === "desktop",
+  );
   document.body.classList.toggle(
     "density-compact",
     settings.density === "compact",
@@ -163,6 +171,7 @@ function applySettings(): void {
   document.body.classList.toggle("hide-timestamps", !settings.timestamps);
   document.body.classList.toggle("font-small", settings.fontSize === "small");
   document.body.classList.toggle("font-large", settings.fontSize === "large");
+  $<HTMLSelectElement>("opt-layout").value = settings.layout;
   $<HTMLSelectElement>("opt-density").value = settings.density;
   $<HTMLSelectElement>("opt-fontsize").value = settings.fontSize;
   $<HTMLInputElement>("opt-timestamps").checked = settings.timestamps;
@@ -194,9 +203,21 @@ function renderThemeSwatches(): void {
   }
 }
 
-function openSettings(): void {
+function switchSettingsTab(tab: "general" | "e2ee"): void {
+  const isE2ee = tab === "e2ee";
+  $("tab-settings-general").classList.toggle("active", !isE2ee);
+  $("tab-settings-general").setAttribute("aria-selected", String(!isE2ee));
+  $("tab-settings-e2ee").classList.toggle("active", isE2ee);
+  $("tab-settings-e2ee").setAttribute("aria-selected", String(isE2ee));
+  $("pane-settings-general").classList.toggle("active", !isE2ee);
+  $("pane-settings-e2ee").classList.toggle("active", isE2ee);
+  if (isE2ee) renderE2eeModal();
+}
+
+function openSettings(tab: "general" | "e2ee" = "general"): void {
   renderThemeSwatches();
   applySettings();
+  switchSettingsTab(tab);
   $("settings-modal").classList.add("open");
 }
 
@@ -205,18 +226,25 @@ function closeSettings(): void {
 }
 
 applySettings();
-$("btn-settings-1").onclick = openSettings;
-$("btn-settings-2").onclick = openSettings;
+$("btn-settings-1").onclick = () => openSettings("general");
+$("btn-settings-2").onclick = () => openSettings("general");
 $("btn-close-settings").onclick = closeSettings;
+$("tab-settings-general").onclick = () => switchSettingsTab("general");
+$("tab-settings-e2ee").onclick = () => switchSettingsTab("e2ee");
 $("settings-modal").addEventListener("click", (ev) => {
   if (ev.target === $("settings-modal")) closeSettings();
 });
 document.addEventListener("keydown", (ev) => {
-  if (ev.key === "Escape") {
-    closeSettings();
-    closeE2eeModal();
-  }
+  if (ev.key === "Escape") closeSettings();
 });
+
+$<HTMLSelectElement>("opt-layout").onchange = (ev) => {
+  const v = (ev.target as HTMLSelectElement).value;
+  settings.layout = v === "mobile" || v === "desktop" ? v : "auto";
+  saveSettings(settings);
+  applySettings();
+  closeDrawers();
+};
 
 $<HTMLSelectElement>("opt-density").onchange = (ev) => {
   const v = (ev.target as HTMLSelectElement).value;
@@ -308,7 +336,7 @@ const e2ee = new E2eeManager({
   onStateChange: () => {
     updateE2eeUi();
     renderBuffers();
-    if ($("e2ee-modal").classList.contains("open")) renderE2eeModal();
+    if ($("settings-modal").classList.contains("open")) renderE2eeModal();
   },
 });
 
@@ -416,15 +444,6 @@ function renderE2eeModal(): void {
   }
 }
 
-function openE2eeModal(): void {
-  renderE2eeModal();
-  $("e2ee-modal").classList.add("open");
-}
-
-function closeE2eeModal(): void {
-  $("e2ee-modal").classList.remove("open");
-}
-
 $("btn-e2ee").onclick = () => {
   const buf = buffers.get(activeBuf);
   if (!buf || buf.name === "*status") return;
@@ -438,11 +457,6 @@ $("btn-e2ee").onclick = () => {
     });
   }
 };
-$("btn-e2ee-keys").onclick = openE2eeModal;
-$("btn-close-e2ee").onclick = closeE2eeModal;
-$("e2ee-modal").addEventListener("click", (ev) => {
-  if (ev.target === $("e2ee-modal")) closeE2eeModal();
-});
 $("btn-e2ee-export").onclick = () => {
   const pass = prompt(
     "Enter a passphrase (min 6 characters) to encrypt your E2EE key backup:",
@@ -464,7 +478,7 @@ $("btn-e2ee-export").onclick = () => {
       kind: "sys",
     });
   } catch (err) {
-    alert(err instanceof Error ? err.message : String(err));
+    alert(errorMessage(err));
   }
 };
 $("btn-e2ee-import").onclick = () => {
@@ -488,7 +502,7 @@ $<HTMLInputElement>("inp-e2ee-file").onchange = async (ev) => {
       kind: "sys",
     });
   } catch (err) {
-    alert(err instanceof Error ? err.message : String(err));
+    alert(errorMessage(err));
   }
 };
 $("btn-e2ee-replenish").onclick = () => {
@@ -541,7 +555,7 @@ function clearHiddenCounters(): void {
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) clearHiddenCounters();
 });
-window.addEventListener("focus", clearHiddenCounters);
+globalThis.addEventListener("focus", clearHiddenCounters);
 
 function ensureBuf(name: string): BufferState {
   const key = name.toLowerCase();
@@ -724,7 +738,9 @@ function toggleDrawer(side: "left" | "right"): void {
 
 $("btn-menu").onclick = () => toggleDrawer("left");
 $("btn-members").onclick = () => {
-  if (window.innerWidth > 960) {
+  const useDesktopGrid = settings.layout === "desktop" ||
+    (settings.layout === "auto" && globalThis.innerWidth > 960);
+  if (useDesktopGrid) {
     $("chat-view").classList.toggle("members-open");
   } else {
     toggleDrawer("right");
@@ -1435,7 +1451,7 @@ function runSlashCommand(raw: string, buf: BufferState | undefined): void {
         e2ee.resetDevice();
         addLine(target, { text: "E2EE device keys reset.", kind: "sys" });
       } else {
-        openE2eeModal();
+        openSettings("e2ee");
       }
       return;
     }

@@ -1,3 +1,9 @@
+import {
+  byId as $,
+  errorMessage,
+  postJson,
+  showNotice as showNoticeById,
+} from "./common/dom.ts";
 import { initTheme } from "./common/theme.ts";
 
 interface ListenerInfo {
@@ -103,9 +109,6 @@ type CellValue =
   | null
   | undefined;
 
-const $ = <T extends HTMLElement = HTMLElement>(id: string): T =>
-  document.getElementById(id) as T;
-
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   text?: string | number | null,
@@ -117,11 +120,8 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-function showNotice(ok: boolean, text: string): void {
-  const n = $("notice");
-  n.className = ok ? "ok" : "err";
-  n.textContent = text;
-}
+const showNotice = (ok: boolean, text: string) =>
+  showNoticeById("notice", ok, text);
 
 function fmtUptime(s: number): string {
   const d = Math.floor(s / 86400);
@@ -142,26 +142,21 @@ function fmtBytes(bytes: number): string {
 
 async function postAction(action: string, args: string[] = []): Promise<void> {
   try {
-    const res = await fetch("/api/action", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Requested-With": "ircd-webui",
+    const { ok, data } = await postJson<Record<string, unknown>>(
+      "/api/action",
+      {
+        action,
+        args,
       },
-      body: JSON.stringify({ action, args }),
-    });
-    const data = await res.json();
-    if (res.ok) {
+    );
+    if (ok) {
       showNotice(true, `${action}: ${JSON.stringify(data)}`);
       await refresh();
     } else {
       showNotice(false, `${action} failed: ${JSON.stringify(data)}`);
     }
-  } catch (e) {
-    showNotice(
-      false,
-      `${action} error: ${e instanceof Error ? e.message : String(e)}`,
-    );
+  } catch (err) {
+    showNotice(false, `${action} error: ${errorMessage(err)}`);
   }
 }
 

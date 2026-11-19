@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>__NETWORK_NAME__ - WebIRC</title>
 <meta name="description" content="Connect to __NETWORK_NAME__ IRC directly from your browser with IRCv3 WebSocket, chat history, themes, and optional end-to-end encryption (E2EE).">
 <meta name="robots" content="index, follow">
@@ -93,7 +93,6 @@
       <span class="my-nick" id="my-nick"></span>
       <button type="button" class="small" id="btn-members" aria-label="Toggle members">Users</button>
       <button type="button" class="small primary hidden" id="btn-reconnect">Reconnect</button>
-      <button type="button" class="small" id="btn-e2ee-keys" title="E2EE keys and safety numbers">Keys</button>
       <button type="button" class="small" id="btn-settings-2">Settings</button>
       <button type="button" class="small danger" id="btn-disconnect">Disconnect</button>
     </div>
@@ -119,76 +118,82 @@
 </section>
 
 <div class="modal-backdrop" id="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-  <div class="modal-card">
+  <div class="modal-card modal-wide">
     <div class="modal-head">
       <h2 id="settings-title">Workspace Settings</h2>
       <button type="button" class="small" id="btn-close-settings" aria-label="Close settings">×</button>
     </div>
-    <div class="modal-body">
-      <div class="setting-group">
-        <div class="setting-label">Theme</div>
-        <div class="theme-grid" id="theme-grid"></div>
-      </div>
-      <div class="setting-row">
-        <label for="opt-density">Message density</label>
-        <select id="opt-density">
-          <option value="comfortable">Comfortable (avatars)</option>
-          <option value="compact">Compact (classic IRC)</option>
-        </select>
-      </div>
-      <div class="setting-row">
-        <label for="opt-fontsize">Font size</label>
-        <select id="opt-fontsize">
-          <option value="small">Small (13px)</option>
-          <option value="normal">Normal (14px)</option>
-          <option value="large">Large (15.5px)</option>
-        </select>
-      </div>
-      <label class="setting-check">
-        <input type="checkbox" id="opt-timestamps" checked>
-        <span>Show message timestamps</span>
-      </label>
-      <label class="setting-check">
-        <input type="checkbox" id="opt-joinpart" checked>
-        <span>Show join, part, and quit events</span>
-      </label>
-      <label class="setting-check">
-        <input type="checkbox" id="opt-notify">
-        <span>Desktop notifications on mentions</span>
-      </label>
+    <div class="modal-tabs" role="tablist">
+      <button type="button" class="modal-tab active" id="tab-settings-general" role="tab" aria-selected="true">General</button>
+      <button type="button" class="modal-tab" id="tab-settings-e2ee" role="tab" aria-selected="false">E2EE Keys</button>
     </div>
-  </div>
-</div>
+    <div class="modal-body">
+      <div class="modal-pane active" id="pane-settings-general" role="tabpanel">
+        <div class="setting-group">
+          <div class="setting-label">Theme</div>
+          <div class="theme-grid" id="theme-grid"></div>
+        </div>
+        <div class="setting-row">
+          <label for="opt-layout">Screen layout</label>
+          <select id="opt-layout">
+            <option value="auto">Auto (responsive)</option>
+            <option value="mobile">Mobile / iPhone</option>
+            <option value="desktop">Desktop</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <label for="opt-density">Message density</label>
+          <select id="opt-density">
+            <option value="comfortable">Comfortable (avatars)</option>
+            <option value="compact">Compact (classic IRC)</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <label for="opt-fontsize">Font size</label>
+          <select id="opt-fontsize">
+            <option value="small">Small (13px)</option>
+            <option value="normal">Normal (14px)</option>
+            <option value="large">Large (15.5px)</option>
+          </select>
+        </div>
+        <label class="setting-check">
+          <input type="checkbox" id="opt-timestamps" checked>
+          <span>Show message timestamps</span>
+        </label>
+        <label class="setting-check">
+          <input type="checkbox" id="opt-joinpart" checked>
+          <span>Show join, part, and quit events</span>
+        </label>
+        <label class="setting-check">
+          <input type="checkbox" id="opt-notify">
+          <span>Desktop notifications on mentions</span>
+        </label>
+      </div>
 
-<div class="modal-backdrop" id="e2ee-modal" role="dialog" aria-modal="true" aria-labelledby="e2ee-title">
-  <div class="modal-card modal-wide">
-    <div class="modal-head">
-      <h2 id="e2ee-title">End-to-End Encryption (E2EE)</h2>
-      <button type="button" class="small" id="btn-close-e2ee" aria-label="Close E2EE dialog">×</button>
-    </div>
-    <div class="modal-body">
-      <div class="e2ee-status-banner" id="e2ee-status-banner"></div>
-      <div class="e2ee-kv-grid">
-        <div class="e2ee-kv"><span class="k">Account</span><span class="v" id="e2ee-account">-</span></div>
-        <div class="e2ee-kv"><span class="k">Device ID</span><span class="v" id="e2ee-device">-</span></div>
-        <div class="e2ee-kv"><span class="k">One-time Prekeys</span><span class="v" id="e2ee-prekeys">-</span></div>
-        <div class="e2ee-kv"><span class="k">Active Sessions</span><span class="v" id="e2ee-sessions">-</span></div>
-      </div>
-      <div class="setting-group">
-        <div class="setting-label">Your Identity Fingerprint</div>
-        <div class="e2ee-fp" id="e2ee-fingerprint">-</div>
-      </div>
-      <div class="e2ee-actions">
-        <button type="button" class="small" id="btn-e2ee-export">Download Keys</button>
-        <button type="button" class="small" id="btn-e2ee-import">Upload Keys</button>
-        <input type="file" id="inp-e2ee-file" accept=".json,application/json" class="hidden">
-        <button type="button" class="small" id="btn-e2ee-replenish">Upload Prekeys</button>
-        <button type="button" class="small" id="btn-e2ee-rotate">Rotate Channel Key</button>
-        <button type="button" class="small danger" id="btn-e2ee-reset">Reset Device Keys</button>
-      </div>
-      <div class="setting-group">
-        <div class="setting-label">Trusted Peer Devices (TOFU Safety Numbers)</div>
-        <div class="e2ee-peers" id="e2ee-peers"></div>
+      <div class="modal-pane" id="pane-settings-e2ee" role="tabpanel">
+        <div class="e2ee-status-banner" id="e2ee-status-banner"></div>
+        <div class="e2ee-kv-grid">
+          <div class="e2ee-kv"><span class="k">Account</span><span class="v" id="e2ee-account">-</span></div>
+          <div class="e2ee-kv"><span class="k">Device ID</span><span class="v" id="e2ee-device">-</span></div>
+          <div class="e2ee-kv"><span class="k">One-time Prekeys</span><span class="v" id="e2ee-prekeys">-</span></div>
+          <div class="e2ee-kv"><span class="k">Active Sessions</span><span class="v" id="e2ee-sessions">-</span></div>
+        </div>
+        <div class="setting-group">
+          <div class="setting-label">Your Identity Fingerprint</div>
+          <div class="e2ee-fp" id="e2ee-fingerprint">-</div>
+        </div>
+        <div class="e2ee-actions">
+          <button type="button" class="small" id="btn-e2ee-export">Download Keys</button>
+          <button type="button" class="small" id="btn-e2ee-import">Upload Keys</button>
+          <input type="file" id="inp-e2ee-file" accept=".json,application/json" class="hidden">
+          <button type="button" class="small" id="btn-e2ee-replenish">Upload Prekeys</button>
+          <button type="button" class="small" id="btn-e2ee-rotate">Rotate Channel Key</button>
+          <button type="button" class="small danger" id="btn-e2ee-reset">Reset Device Keys</button>
+        </div>
+        <div class="setting-group">
+          <div class="setting-label">Trusted Peer Devices (TOFU Safety Numbers)</div>
+          <div class="e2ee-peers" id="e2ee-peers"></div>
+        </div>
       </div>
     </div>
   </div>

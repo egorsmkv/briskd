@@ -1,3 +1,4 @@
+import { errorMessage } from "../common/dom.ts";
 import {
   bytesEqual,
   CryptoError,
@@ -103,7 +104,7 @@ interface FetchRequest {
   bundles: PreKeyBundle[];
   resolve: (bundles: PreKeyBundle[]) => void;
   reject: (err: Error) => void;
-  timer: number;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 interface WhoRequest {
@@ -111,7 +112,7 @@ interface WhoRequest {
   token: string;
   found: Array<{ nick: string; account: string }>;
   resolve: (members: Array<{ nick: string; account: string }>) => void;
-  timer: number;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 function isChan(name: string): boolean {
@@ -845,12 +846,11 @@ export class E2eeManager {
       }
     } catch (err) {
       const dest = isChan(target) ? target : senderNick || srcAccount;
-      const reason = err instanceof Error ? err.message : String(err);
       this.cb.onNotice(
         dest,
-        `[E2EE] Could not decrypt message from ${
-          senderNick || srcAccount
-        }: ${reason}`,
+        `[E2EE] Could not decrypt message from ${senderNick || srcAccount}: ${
+          errorMessage(err)
+        }`,
         "err",
       );
     }
@@ -995,8 +995,11 @@ export class E2eeManager {
       }
       return true;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.cb.onNotice(target, `[E2EE] Send failed: ${msg}`, "err");
+      this.cb.onNotice(
+        target,
+        `[E2EE] Send failed: ${errorMessage(err)}`,
+        "err",
+      );
       return false;
     }
   }
@@ -1157,7 +1160,7 @@ export class E2eeManager {
         );
         this.pumpFetchQueue();
       }
-    }, 10000) as unknown as number;
+    }, 10000);
 
     this.activeFetch = {
       target: next.target,
@@ -1181,7 +1184,7 @@ export class E2eeManager {
           this.activeWho.delete(token);
           req.resolve(req.found);
         }
-      }, 6000) as unknown as number;
+      }, 6000);
 
       this.activeWho.set(token, {
         channel: channel.toLowerCase(),

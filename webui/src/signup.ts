@@ -1,45 +1,46 @@
+import { byId, errorMessage, postJson, showNotice } from "./common/dom.ts";
 import { initTheme } from "./common/theme.ts";
 import { initAltcha } from "./common/altcha.ts";
 
-const $ = <T extends HTMLElement = HTMLElement>(id: string): T =>
-  document.getElementById(id) as T;
-
-function showNotice(ok: boolean, text: string): void {
-  const n = $("notice");
-  n.className = ok ? "ok" : "err";
-  n.textContent = text;
+interface SignupResponse {
+  status?: string;
+  account?: string;
+  message?: string;
+  error?: string;
 }
 
-initTheme([$("btn-theme")]);
+const notice = (ok: boolean, text: string) => showNotice("notice", ok, text);
+
+initTheme([byId("btn-theme")]);
 
 const altcha = initAltcha(
-  $<HTMLInputElement>("altcha-check"),
-  $("altcha-label"),
-  (msg) => showNotice(false, msg),
+  byId<HTMLInputElement>("altcha-check"),
+  byId("altcha-label"),
+  (msg) => notice(false, msg),
 );
 
-$<HTMLFormElement>("signup-form").addEventListener("submit", async (ev) => {
+byId<HTMLFormElement>("signup-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
-  const account = $<HTMLInputElement>("account").value.trim();
-  const email = $<HTMLInputElement>("email").value.trim();
-  const password = $<HTMLInputElement>("password").value;
-  const confirm = $<HTMLInputElement>("confirm").value;
+  const account = byId<HTMLInputElement>("account").value.trim();
+  const email = byId<HTMLInputElement>("email").value.trim();
+  const password = byId<HTMLInputElement>("password").value;
+  const confirm = byId<HTMLInputElement>("confirm").value;
 
   if (password !== confirm) {
-    showNotice(false, "Passwords do not match.");
+    notice(false, "Passwords do not match.");
     return;
   }
-  if (!$<HTMLInputElement>("accept-terms").checked) {
-    showNotice(false, "You must accept the Terms of Use and Privacy Policy.");
+  if (!byId<HTMLInputElement>("accept-terms").checked) {
+    notice(false, "You must accept the Terms of Use and Privacy Policy.");
     return;
   }
   const altchaPayload = altcha.getPayload();
   if (!altchaPayload) {
-    showNotice(false, "Please complete the ALTCHA verification.");
+    notice(false, "Please complete the ALTCHA verification.");
     return;
   }
 
-  const btn = $<HTMLButtonElement>("btn-submit");
+  const btn = byId<HTMLButtonElement>("btn-submit");
   btn.disabled = true;
   try {
     const payload: Record<string, unknown> = {
@@ -49,41 +50,18 @@ $<HTMLFormElement>("signup-form").addEventListener("submit", async (ev) => {
       altcha: altchaPayload,
     };
     if (email) payload.email = email;
-    const res = await fetch("/api/signup", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Requested-With": "ircd-webui",
-      },
-      body: JSON.stringify(payload),
-    });
-    const data = (await res.json()) as {
-      status?: string;
-      account?: string;
-      message?: string;
-      error?: string;
-    };
-    if (res.ok) {
-      if (data.status === "verification_required") {
-        showNotice(
-          true,
-          `Account '${data.account}' created. Check your email for the verification link or code.`,
-        );
-      } else {
-        showNotice(
-          true,
-          `Account '${data.account}' created. You can now log in via SASL in your IRC client.`,
-        );
-      }
-      $<HTMLFormElement>("signup-form").reset();
+    const { ok, data } = await postJson<SignupResponse>("/api/signup", payload);
+    if (ok) {
+      const msg = data.status === "verification_required"
+        ? `Account '${data.account}' created. Check your email for the verification link or code.`
+        : `Account '${data.account}' created. You can now log in via SASL in your IRC client.`;
+      notice(true, msg);
+      byId<HTMLFormElement>("signup-form").reset();
     } else {
-      showNotice(false, data.message || data.error || "Sign up failed.");
+      notice(false, data.message || data.error || "Sign up failed.");
     }
-  } catch (e) {
-    showNotice(
-      false,
-      `Request failed: ${e instanceof Error ? e.message : String(e)}`,
-    );
+  } catch (err) {
+    notice(false, `Request failed: ${errorMessage(err)}`);
   } finally {
     altcha.reset();
     btn.disabled = false;
