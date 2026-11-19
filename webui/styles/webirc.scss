@@ -238,10 +238,10 @@ body {
   }
   &.active {
     background: var(--accent);
-    color: #fff;
+    color: var(--accent-fg, #fff);
     font-weight: 600;
     .buf-close {
-      color: #fff;
+      color: var(--accent-fg, #fff);
     }
   }
 }
@@ -663,7 +663,7 @@ body.font-large .messages {
   &.on {
     background: var(--ok);
     border-color: var(--ok);
-    color: #fff;
+    color: var(--accent-fg, #fff);
     &:hover {
       opacity: 0.92;
     }

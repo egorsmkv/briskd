@@ -1,4 +1,5 @@
 export type Theme =
+  | "hacker"
   | "light"
   | "dark"
   | "nord"
@@ -15,6 +16,12 @@ export interface ThemeMeta {
 }
 
 export const THEMES: ThemeMeta[] = [
+  {
+    id: "hacker",
+    name: "Hacker",
+    swatchBg: "#050a07",
+    swatchAccent: "#00e64d",
+  },
   { id: "light", name: "Light", swatchBg: "#f4f6f9", swatchAccent: "#2563eb" },
   { id: "dark", name: "Dark", swatchBg: "#0c1118", swatchAccent: "#3b82f6" },
   { id: "nord", name: "Nord", swatchBg: "#2e3440", swatchAccent: "#88c0d0" },
@@ -48,8 +55,8 @@ const VALID_THEMES = new Set<string>(THEMES.map((t) => t.id));
 const STORAGE_KEY = "ircd-webui-theme";
 
 export function currentTheme(): Theme {
-  const attr = document.documentElement.getAttribute("data-theme") || "light";
-  return VALID_THEMES.has(attr) ? (attr as Theme) : "light";
+  const attr = document.documentElement.getAttribute("data-theme") || "hacker";
+  return VALID_THEMES.has(attr) ? (attr as Theme) : "hacker";
 }
 
 export function applyTheme(
@@ -58,7 +65,7 @@ export function applyTheme(
 ): void {
   document.documentElement.setAttribute("data-theme", theme);
   const isLight = theme === "light" || theme === "solarized-light";
-  const label = isLight ? "Dark" : "Light";
+  const label = isLight ? "Hacker" : "Light";
   for (const btn of buttons) {
     if (btn) btn.textContent = label;
   }
@@ -83,19 +90,15 @@ export function initTheme(buttons: Array<HTMLElement | null> = []): () => void {
   } catch {
     // Ignore storage errors in restricted contexts.
   }
-  const prefersDark = typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-color-scheme: dark)").matches;
   const initial: Theme = saved && VALID_THEMES.has(saved)
     ? (saved as Theme)
-    : prefersDark
-    ? "dark"
-    : "light";
+    : "hacker";
   applyTheme(initial, buttons);
 
   const toggle = () => {
     const cur = currentTheme();
     const next: Theme = cur === "light" || cur === "solarized-light"
-      ? "dark"
+      ? "hacker"
       : "light";
     setTheme(next, buttons);
   };
