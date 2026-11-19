@@ -141,7 +141,10 @@ def x3dh_initiate(identity, bundle):
 
 def x3dh_respond(identity, prekeys, header):
     """Receiver side: the shared key and associated data from a prekey header.
-    The one-time prekey is deleted after use."""
+    `consume_opk(opk_id)` removes the one-time prekey after the first message
+    decrypts, so an invalid message does not burn the prekey."""
+    if len(header) != 104:
+        raise CryptoError("invalid prekey header")
     their_identity, ephemeral = header[:64], header[64:96]
     spk_id, opk_id = struct.unpack(">II", header[96:104])
     if spk_id != prekeys.spk_id:
@@ -153,12 +156,12 @@ def x3dh_respond(identity, prekeys, header):
         prekeys.spk.exchange(ephemeral),
     ]
     if opk_id != NO_OPK:
-        opk = prekeys.one_time.pop(opk_id, None)
+        opk = prekeys.one_time.get(opk_id)
         if opk is None:
             raise CryptoError("one-time prekey already used")
         parts.append(opk.exchange(ephemeral))
     shared = hkdf(b"\xff" * 32 + b"".join(parts), b"\0" * 32, b"ircd-e2ee X3DH", 32)
-    return shared, their_identity + identity.public, their_identity
+    return shared, their_identity + identity.public, their_identity, opk_id
 
 
 class DoubleRatchet:
@@ -225,8 +228,10 @@ class DoubleRatchet:
 
     def _skip(self, until):
         if self.recv_chain is None:
+            if until != 0:
+                raise CryptoError("cannot skip before first DH step")
             return
-        if until - self.nr > MAX_SKIP:
+        if until < self.nr or len(self.skipped) + (until - self.nr) > MAX_SKIP:
             raise CryptoError("too many skipped messages")
         while self.nr < until:
             self.recv_chain, key = kdf_chain(self.recv_chain)
@@ -254,8 +259,12 @@ def parse_envelope(data):
     if len(data) < 2 or data[0] != VERSION:
         raise CryptoError("unknown envelope version")
     if data[1] == PREKEY:
+        if len(data) < 2 + 104 + 56:
+            raise CryptoError("short prekey envelope")
         return "prekey", data[2:106], data[106:]
     if data[1] == MESSAGE:
+        if len(data) < 2 + 56:
+            raise CryptoError("short message envelope")
         return "msg", None, data[2:]
     raise CryptoError("unknown envelope type")
 
@@ -301,26 +310,38 @@ class SenderKey:
         return body + self.signing_private.sign(body)
 
     def decrypt(self, data, channel):
+        if len(data) < 10 + 16 + 64:
+            raise CryptoError("short channel message")
         body, signature = data[:-64], data[-64:]
         try:
             Ed25519PublicKey.from_public_bytes(self.signing_public).verify(signature, body)
         except InvalidSignature as exc:
             raise CryptoError("bad channel signature") from exc
         header = body[:10]
+        if header[0] != VERSION or header[1] != CHANNEL:
+            raise CryptoError("unknown channel envelope")
         key_id, iteration = struct.unpack(">II", header[2:10])
         if key_id != self.key_id:
             raise CryptoError("unknown sender key")
-        key = self.skipped.pop(iteration, None)
-        if key is None:
-            if iteration < self.iteration or iteration - self.iteration > MAX_SKIP:
-                raise CryptoError("old or too distant channel message")
-            while self.iteration < iteration:
-                self.chain, skipped = kdf_chain(self.chain)
-                self.skipped[self.iteration] = skipped
+        saved_chain, saved_iter, saved_skipped = self.chain, self.iteration, dict(self.skipped)
+        try:
+            key = self.skipped.pop(iteration, None)
+            if key is None:
+                if (
+                    iteration < self.iteration
+                    or len(self.skipped) + (iteration - self.iteration) > MAX_SKIP
+                ):
+                    raise CryptoError("old or too distant channel message")
+                while self.iteration < iteration:
+                    self.chain, skipped = kdf_chain(self.chain)
+                    self.skipped[self.iteration] = skipped
+                    self.iteration += 1
+                self.chain, key = kdf_chain(self.chain)
                 self.iteration += 1
-            self.chain, key = kdf_chain(self.chain)
-            self.iteration += 1
-        return aead_decrypt(key, body[10:], channel.encode() + header)
+            return aead_decrypt(key, body[10:], channel.encode() + header)
+        except Exception:
+            self.chain, self.iteration, self.skipped = saved_chain, saved_iter, saved_skipped
+            raise
 
 
 def channel_key_id(data):

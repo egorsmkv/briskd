@@ -6,6 +6,7 @@
     command/3,
     route/4,
     session_down/1,
+    forget_remote/1,
     expire/0,
     tag/1,
     burst_lines/0,
@@ -365,7 +366,19 @@ bind(Account, DevText, #client{pid = Pid} = Client, Server) ->
         true = ets:match_delete(?BOUND, {'_', Pid}),
         true = ets:insert(?BOUND, {{Folded, Dev}, Pid}),
         broadcast(bind_line(Client, Dev)),
-        Queued = queued(Folded, Dev),
+        Now = erlang:system_time(second),
+        Queued = lists:filter(
+            fun(#e2ee_queue{key = Key, expires = Expires}) ->
+                case Expires =< Now of
+                    true ->
+                        ok = mnesia:dirty_delete(e2ee_queue, Key),
+                        false;
+                    false ->
+                        true
+                end
+            end,
+            queued(Folded, Dev)
+        ),
         reply(Pid, Server, [<<"BOUND">>, integer_to_binary(Dev), integer_to_binary(length(Queued))]),
         lists:foreach(fun(Entry) -> replay(Pid, Entry) end, Queued)
     else
@@ -379,13 +392,31 @@ replay(Pid, #e2ee_queue{key = {_, _, Seq}} = Entry) ->
     #e2ee_queue{prefix = Prefix, command = Command, target = Target, text = Text, tags = Tags} =
         Entry,
     Delivery = [{tag(qid), integer_to_binary(Seq)} | Tags],
-    case Text of
-        {multiline, Lines} ->
-            ircd_state_batch:deliver_multiline(
-                Pid, Prefix, Command, Target, Lines, Delivery, normal
-            );
+    ircd_state_send:with_source(replay_source(Prefix), fun() ->
+        case Text of
+            {multiline, Lines} ->
+                ircd_state_batch:deliver_multiline(
+                    Pid, Prefix, Command, Target, Lines, Delivery, normal
+                );
+            _ ->
+                ircd_state_send:send(Pid, Prefix, Command, [Target], Text, Delivery)
+        end
+    end).
+
+replay_source(Prefix) when is_binary(Prefix) ->
+    case binary:split(Prefix, <<"!">>) of
+        [Nick, _] ->
+            case ircd_state_client:find_nick(Nick) of
+                #client{} = Client ->
+                    case iolist_to_binary(ircd_state_send:prefix(Client)) =:= Prefix of
+                        true -> ircd_state_v3:source_info(Client);
+                        false -> #{}
+                    end;
+                undefined ->
+                    ircd_state_v3:remote_source_info(Prefix)
+            end;
         _ ->
-            ircd_state_send:send(Pid, Prefix, Command, [Target], Text, Delivery)
+            #{}
     end.
 
 ack(Account, Ids, #client{pid = Pid}) ->
@@ -399,10 +430,7 @@ ack(Account, Ids, #client{pid = Pid}) ->
             lists:foreach(
                 fun(Seq) -> mnesia:dirty_delete(e2ee_queue, {Folded, Dev, Seq}) end, Seqs
             ),
-            case Seqs of
-                [] -> ok;
-                _ -> broadcast(ack_line(Account, Dev, Seqs))
-            end;
+            lists:foreach(fun broadcast/1, ack_lines(Account, Dev, Seqs));
         none ->
             fail(Pid, <<"NOT_BOUND">>, [], <<"BIND a device first">>)
     end.
@@ -528,26 +556,63 @@ deliver_to({remote, NickKey}, _Target, Body, Client, {Tags, Command}) ->
 enqueue(Account, Dev, Target, Body, #client{pid = Pid} = Client, {Tags, Command}) ->
     #{queue_limit := Limit, queue_ttl := Ttl} = config(),
     Folded = ircd_wire:fold(Account),
-    case {ircd_state_v3:account(Pid), length(queued(Folded, Dev)) < Limit} of
+    Now = erlang:system_time(second),
+    LiveCount = length([
+        E
+     || #e2ee_queue{key = Key, expires = Exp} = E <- queued(Folded, Dev),
+        case Exp =< Now of
+            true ->
+                ok = mnesia:dirty_delete(e2ee_queue, Key),
+                false;
+            false ->
+                true
+        end
+    ]),
+    case {ircd_state_v3:account(Pid), LiveCount < Limit} of
         {undefined, _} ->
             fail(Pid, <<"ACCOUNT_REQUIRED">>, [Target], <<"Log in to queue encrypted messages">>);
         {_, false} ->
             fail(
                 Pid, <<"QUEUE_FULL">>, [Target, integer_to_binary(Dev)], <<"Device queue is full">>
             );
-        {_, true} ->
+        {SenderAccount, true} ->
+            Prefix = iolist_to_binary(ircd_state_send:prefix(Client)),
+            StoredTags =
+                [{ircd_wire:retain(K), ircd_wire:retain(V)} || {K, V} <- Tags] ++
+                    [
+                        {ircd_wire:retain(K), ircd_wire:retain(V)}
+                     || {K, V} <- ircd_state_send:source_tags(Prefix),
+                        not lists:keymember(K, 1, Tags)
+                    ],
             Seq = next_seq(Folded, Dev),
             Entry = #e2ee_queue{
                 key = {Folded, Dev, Seq},
-                prefix = iolist_to_binary(ircd_state_send:prefix(Client)),
+                prefix = Prefix,
                 command = Command,
                 target = ircd_wire:retain(Target),
                 text = retain_body(Body),
-                tags = [{ircd_wire:retain(K), ircd_wire:retain(V)} || {K, V} <- Tags],
-                expires = erlang:system_time(second) + Ttl
+                tags = StoredTags,
+                expires = Now + Ttl
             },
             ok = mnesia:dirty_write(Entry),
             broadcast(queue_line(Account, Entry)),
+            ircd_state_history:note_direct(
+                {SenderAccount, Client#client.nick},
+                {Account, Target},
+                Target,
+                ircd_state_history:entry(
+                    Command,
+                    Prefix,
+                    Body,
+                    case lists:keyfind(<<"msgid">>, 1, Tags) of
+                        {_, Id} -> Id;
+                        false -> ircd_state_send:msgid()
+                    end,
+                    erlang:system_time(millisecond),
+                    ircd_cap:client_tags(Tags),
+                    SenderAccount
+                )
+            ),
             reply(Pid, server(), [
                 <<"QUEUED">>, Target, integer_to_binary(Dev), integer_to_binary(Seq)
             ])
@@ -574,6 +639,17 @@ session_down(Pid) ->
             ok;
         _ ->
             true = ets:match_delete(?BOUND, {'_', Pid}),
+            ok
+    end.
+
+-doc "Forget the device binding of a remote user that left the network or logged out.".
+-spec forget_remote(binary()) -> ok.
+forget_remote(NickKey) ->
+    case ets:whereis(?BOUND) of
+        undefined ->
+            ok;
+        _ ->
+            true = ets:match_delete(?BOUND, {'_', {remote, NickKey}}),
             ok
     end.
 
@@ -667,8 +743,9 @@ receive_link(_Peer, _Prefix, [], _Tags) ->
     {error, invalid_e2ee}.
 
 link_command(
-    <<"DEVICE">>, _Peer, _Prefix, [AccountText, DevText, UpdatedText, Identity, Spk, Sig], _
+    <<"DEVICE">>, Peer, Prefix, [AccountText, DevText, UpdatedText, Identity, Spk, Sig], _
 ) ->
+    true = ircd_state_link:trusted_server(Peer, Prefix),
     {ok, Account} = account_name(AccountText),
     {ok, Dev} = device_id(DevText),
     {ok, Updated} = non_neg(UpdatedText),
@@ -686,17 +763,22 @@ link_command(
         updated = Updated
     },
     store(fun() ->
+        #{max_devices := MaxDevices} = config(),
         case mnesia:dirty_read(e2ee_device, Key) of
             [#e2ee_device{updated = Mine}] when Mine > Updated ->
                 ok;
             [#e2ee_device{prekeys = Prekeys, used = Used}] ->
                 ok = mnesia:dirty_write(Device0#e2ee_device{prekeys = Prekeys, used = Used});
             [] ->
-                ok = mnesia:dirty_write(Device0)
+                case length(account_devices(Account)) < MaxDevices of
+                    true -> ok = mnesia:dirty_write(Device0);
+                    false -> ok
+                end
         end
     end),
     {ok, device_line(Device0)};
-link_command(<<"PREKEYS">>, _Peer, _Prefix, [AccountText, DevText | KeyTexts], _) ->
+link_command(<<"PREKEYS">>, Peer, Prefix, [AccountText, DevText | KeyTexts], _) ->
+    true = ircd_state_link:trusted_server(Peer, Prefix),
     {ok, Account} = account_name(AccountText),
     {ok, Dev} = device_id(DevText),
     {ok, New} = id_keys(KeyTexts),
@@ -712,7 +794,8 @@ link_command(<<"PREKEYS">>, _Peer, _Prefix, [AccountText, DevText | KeyTexts], _
         end
     end),
     {ok, prekeys_line(Account, Dev, New)};
-link_command(<<"USE">>, _Peer, _Prefix, [AccountText, DevText, IdText], _) ->
+link_command(<<"USE">>, Peer, Prefix, [AccountText, DevText, IdText], _) ->
+    true = ircd_state_link:trusted_server(Peer, Prefix),
     {ok, Account} = account_name(AccountText),
     {ok, Dev} = device_id(DevText),
     {ok, Id} = non_neg(IdText),
@@ -723,18 +806,20 @@ link_command(<<"USE">>, _Peer, _Prefix, [AccountText, DevText, IdText], _) ->
         end
     end),
     {ok, use_line(Account, Dev, Id)};
-link_command(<<"DELETE">>, _Peer, _Prefix, [AccountText, DevText], _) ->
+link_command(<<"DELETE">>, Peer, Prefix, [AccountText, DevText], _) ->
+    true = ircd_state_link:trusted_server(Peer, Prefix),
     {ok, Account} = account_name(AccountText),
     {ok, Dev} = device_id(DevText),
     store(fun() -> delete_device(ircd_wire:fold(Account), Dev) end),
     {ok, delete_line(Account, Dev)};
 link_command(
     <<"QUEUE">>,
-    _Peer,
-    _Prefix,
+    Peer,
+    Prefix,
     [AccountText, DevText, SeqText, ExpiresText, Command, Target, Sender],
     Tags
 ) ->
+    true = ircd_state_link:trusted_server(Peer, Prefix),
     {ok, Account} = account_name(AccountText),
     {ok, Dev} = device_id(DevText),
     {ok, Seq} = seq(SeqText),
@@ -755,15 +840,31 @@ link_command(
     },
     store(fun() ->
         #{queue_limit := Limit} = config(),
-        Fresh = Expires > erlang:system_time(second),
-        Room = length(queued(Folded, Dev)) < Limit,
+        Now = erlang:system_time(second),
+        Fresh = Expires > Now,
+        LiveCount = length([
+            E
+         || #e2ee_queue{key = K, expires = Exp} = E <- queued(Folded, Dev),
+            case Exp =< Now of
+                true ->
+                    ok = mnesia:dirty_delete(e2ee_queue, K),
+                    false;
+                false ->
+                    true
+            end
+        ]),
+        Room =
+            mnesia:dirty_read(e2ee_device, {Folded, Dev}) =/= [] andalso
+                (mnesia:dirty_read(e2ee_queue, {Folded, Dev, Seq}) =/= [] orelse
+                    LiveCount < Limit),
         case Fresh andalso Room of
             true -> ok = mnesia:dirty_write(Entry);
             false -> ok
         end
     end),
     {ok, queue_line(Account, Entry)};
-link_command(<<"ACK">>, _Peer, _Prefix, [AccountText, DevText, SeqsText], _) ->
+link_command(<<"ACK">>, Peer, Prefix, [AccountText, DevText, SeqsText], _) ->
+    true = ircd_state_link:trusted_server(Peer, Prefix),
     {ok, Account} = account_name(AccountText),
     {ok, Dev} = device_id(DevText),
     Seqs = [
@@ -864,6 +965,9 @@ use_line(Account, Dev, Id) ->
 delete_line(Account, Dev) ->
     ircd_wire:line(server(), <<"E2EE">>, [<<"DELETE">>, Account, integer_to_binary(Dev)], none).
 
+ack_lines(Account, Dev, Seqs) ->
+    [ack_line(Account, Dev, Chunk) || Chunk <- chunks(Seqs, 15)].
+
 ack_line(Account, Dev, Seqs) ->
     ircd_wire:line(
         server(),
@@ -942,7 +1046,10 @@ tag_value(V) -> base64:encode(V).
 decode_tags(Encoded) ->
     Json = base64:decode(Encoded),
     true = byte_size(Json) =< ?MAX_TAGS_BYTES * 2,
-    Tags = [{base64:decode(K), untag_value(V)} || [K, V] <- json:decode(Json)],
+    Raw = json:decode(Json),
+    true = is_list(Raw),
+    Tags = [{base64:decode(K), untag_value(V)} || [K, V] <- Raw],
+    true = length(Tags) =:= length(Raw),
     true = lists:sum([byte_size(K) + tag_size(V) || {K, V} <- Tags]) =< ?MAX_TAGS_BYTES,
     Tags.
 

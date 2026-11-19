@@ -426,6 +426,13 @@ sasl_numeric(#client{pid = Pid, nick = Nick}, Server, Number, Params, Text) ->
 login(#client{pid = Pid}, Account, Server) ->
     Client = ircd_state_client:client(Pid),
     Previous = account(Pid),
+    case
+        Previous =/= undefined andalso
+            ircd_wire:fold(Previous) =/= ircd_wire:fold(Account)
+    of
+        true -> ok = ircd_e2ee:session_down(Pid);
+        false -> ok
+    end,
     ircd_conn:put(Pid, account, Account),
     logger:info(#{event => account_login, nick => Client#client.nick, account => Account}),
     ircd_state_send:send(
@@ -451,6 +458,7 @@ logout(#client{pid = Pid} = Client, Server) ->
         undefined ->
             ok;
         _ ->
+            ok = ircd_e2ee:session_down(Pid),
             ircd_conn:remove(Pid, account),
             ircd_state_send:send(
                 Pid,
@@ -952,12 +960,20 @@ match a user behind `Peer`.
 -spec receive_remote_account(binary(), binary(), [binary()]) -> ok | {error, term()}.
 receive_remote_account(Peer, Prefix, [Value | _]) ->
     case remote_user(Peer, Prefix) of
-        {ok, Remote} ->
+        {ok, #remote_client{key = Key, account = Previous} = Remote} ->
             Account =
                 case Value of
                     <<"*">> -> undefined;
                     _ -> ircd_wire:retain(Value)
                 end,
+            case
+                Previous =/= undefined andalso
+                    (Account =:= undefined orelse
+                        ircd_wire:fold(Previous) =/= ircd_wire:fold(Account))
+            of
+                true -> ok = ircd_e2ee:forget_remote(Key);
+                false -> ok
+            end,
             mnesia:dirty_write(Remote#remote_client{account = Account}),
             notify_remote(Remote, Prefix, <<"account-notify">>, <<"ACCOUNT">>, [Value], none),
             ircd_state_link:relay_except(

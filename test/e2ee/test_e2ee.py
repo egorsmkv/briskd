@@ -53,8 +53,9 @@ def session_pair():
     }
     shared, ad, header = x3dh_initiate(alice, bundle)
     sender = DoubleRatchet.initiator(shared, ad, bundle["spk"])
-    shared2, ad2, their = x3dh_respond(bob, prekeys, header)
-    assert (shared2, ad2, their) == (shared, ad, alice.public)
+    shared2, ad2, their, opk_id = x3dh_respond(bob, prekeys, header)
+    prekeys.one_time.pop(opk_id, None)
+    assert (shared2, ad2, their, opk_id) == (shared, ad, alice.public, 1)
     return sender, DoubleRatchet.responder(shared2, ad2, prekeys.spk)
 
 

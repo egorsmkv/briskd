@@ -315,6 +315,8 @@ init(#{name := Name} = Config) ->
         [
             account,
             read_marker,
+            e2ee_device,
+            e2ee_queue,
             direct_history,
             client,
             channel,

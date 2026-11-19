@@ -738,6 +738,7 @@ drop_remote_user(#remote_client{key = Key, nick = Nick, user = User, host = Host
     mnesia:dirty_delete(remote_client, Key),
     ircd_state_monitor:offline(Nick),
     ircd_state_meta:forget_remote(Key),
+    ok = ircd_e2ee:forget_remote(Key),
     drop_memberships(Key).
 
 drop_memberships(NickKey) ->

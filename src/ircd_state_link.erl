@@ -52,6 +52,7 @@ have members in the channel. The burst for a new peer is built by
     remote_names_listing/3,
     remote_nick_exists/1,
     remote_source/2,
+    trusted_server/2,
     remote_user_local_recipients/1,
     remote_user_visible_to_requester/3,
     receive_remote_kill/3,
@@ -624,6 +625,7 @@ remove_remote_nick(Peer, Prefix, Reason) ->
             mnesia:dirty_delete(remote_client, Key),
             ircd_state_monitor:offline(Nick),
             ircd_state_meta:forget_remote(Key),
+            ok = ircd_e2ee:forget_remote(Key),
             remove_remote_memberships(Peer, Key),
             ok;
         error ->
@@ -783,7 +785,11 @@ local_channel_mode(Key, Mode) ->
         [] -> false
     end.
 
-%% True when Prefix is the adjacent peer or a known server reached through it.
+-doc """
+True when `Prefix` is the adjacent peer `Peer` or a known server reached
+through `Peer`.
+""".
+-spec trusted_server(binary(), binary()) -> boolean().
 trusted_server(Peer, Prefix) ->
     case ircd_wire:fold(Prefix) =:= ircd_wire:fold(Peer) of
         true ->

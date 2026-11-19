@@ -43,7 +43,7 @@ broker() ->
         queue(Port),
         multiline(Port),
         second_device(Port),
-        expiry()
+        expiry(Port)
     end).
 
 capability(Port) ->
@@ -179,18 +179,26 @@ queue(Port) ->
     ?assert(has(sync(Anon), <<"FAIL E2EE ACCOUNT_REQUIRED alice">>)),
     close(Anon),
     %% Alice comes back on device 1001: the queue is replayed with the
-    %% original sender and tags plus a qid, oldest first.
+    %% original sender and tags (including account-tag) plus a qid, oldest first.
     Back = login(Port, <<"alice">>, <<"alicepassword">>),
+    send(Back, <<"CAP REQ :account-tag draft/chathistory">>),
+    _ = recv_until(Back, <<"ACK">>),
     send(Back, <<"E2EE BIND 1001">>),
     Replay = sync(Back),
     ?assert(has(Replay, <<"E2EE BOUND 1001 3">>)),
     ?assert(has(Replay, <<":bob!">>)),
+    ?assert(has(Replay, <<"account=bob">>)),
     ?assert(has(Replay, <<?SRC "=77">>)),
     ?assert(has(Replay, <<"PRIVMSG alice :cipher-three">>)),
     ?assert(has(Replay, <<"TAGMSG alice">>)),
     {Three, _} = binary:match(Replay, <<"cipher-three">>),
     {Four, _} = binary:match(Replay, <<"cipher-four">>),
     ?assert(Three < Four),
+    %% Offline-queued messages are also recorded in direct history.
+    send(Back, <<"CHATHISTORY LATEST bob * 10">>),
+    History = sync(Back),
+    ?assert(has(History, <<"cipher-three">>)),
+    ?assert(has(History, <<"cipher-four">>)),
     Qids = qids(Replay),
     ?assertEqual(3, length(Qids)),
     %% Acknowledge two; the third is delivered again on the next BIND.
@@ -286,7 +294,7 @@ second_device(Port) ->
     close(Second),
     close(Bob).
 
-expiry() ->
+expiry(Port) ->
     ok = mnesia:dirty_write(#e2ee_queue{
         key = {<<"alice">>, 1001, 1},
         prefix = <<"old!o@o">>,
@@ -298,7 +306,23 @@ expiry() ->
     }),
     erase(ircd_e2ee_expired_at),
     ok = ircd_e2ee:expire(),
-    ?assertEqual([], mnesia:dirty_read(e2ee_queue, {<<"alice">>, 1001, 1})).
+    ?assertEqual([], mnesia:dirty_read(e2ee_queue, {<<"alice">>, 1001, 1})),
+    %% An expired entry waiting for the 60s sweep is pruned and not replayed on BIND.
+    ok = mnesia:dirty_write(#e2ee_queue{
+        key = {<<"alice">>, 1001, 2},
+        prefix = <<"old!o@o">>,
+        command = <<"PRIVMSG">>,
+        target = <<"alice">>,
+        text = <<"expired-before-sweep">>,
+        tags = [],
+        expires = erlang:system_time(second) - 1
+    }),
+    Alice = login(Port, <<"alice">>, <<"alicepassword">>),
+    send(Alice, <<"E2EE BIND 1001">>),
+    Bound = sync(Alice),
+    ?assertNot(has(Bound, <<"expired-before-sweep">>)),
+    ?assertEqual([], mnesia:dirty_read(e2ee_queue, {<<"alice">>, 1001, 2})),
+    close(Alice).
 
 %%% Server links: replication in both directions
 
@@ -395,11 +419,27 @@ link() ->
         send(Bob, <<"E2EE DEVICES carol">>),
         ?assert(has(sync(Bob), <<"E2EE DEVICES carol :">>)),
         ?assertNot(has(sync(Bob), <<"2002">>)),
-        %% A malformed E2EE line is invalid peer state.
+        %% Rebind and quit: remote user QUIT cleans up its ETS binding.
+        send(Peer, <<":carol!u@h.test E2EE BIND 2002">>),
+        _ = sync(Peer),
+        ?assertEqual(
+            [{{<<"carol">>, 2002}, {remote, <<"carol">>}}],
+            ets:lookup(ircd_e2ee_bound, {<<"carol">>, 2002})
+        ),
+        send(Peer, <<":carol!u@h.test QUIT :bye">>),
+        _ = sync(Peer),
+        ?assertEqual([], ets:lookup(ircd_e2ee_bound, {<<"carol">>, 2002})),
+        %% A malformed E2EE line or an untrusted server prefix is invalid peer state.
         ?assertMatch(
             {error, _},
             ircd_state:server_command(<<"peer.test">>, <<"peer.test">>, <<"E2EE">>, [
                 <<"DEVICE">>, <<"x">>
+            ])
+        ),
+        ?assertMatch(
+            {error, _},
+            ircd_state:server_command(<<"peer.test">>, <<"untrusted.test">>, <<"E2EE">>, [
+                <<"DELETE">>, <<"alice">>, <<"1001">>
             ])
         ),
         close(Bob),

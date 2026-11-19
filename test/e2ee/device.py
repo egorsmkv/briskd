@@ -20,6 +20,7 @@ import os
 import time
 
 from e2ee_crypto import (
+    NO_OPK,
     CryptoError,
     DoubleRatchet,
     Identity,
@@ -342,10 +343,14 @@ class Device:
                 if kind != "prekey":
                     raise
         if plaintext is None:
-            shared, ad, their_identity = x3dh_respond(self.identity, self.prekeys, header)
+            if kind != "prekey":
+                raise CryptoError("no session for message envelope")
+            shared, ad, their_identity, opk_id = x3dh_respond(self.identity, self.prekeys, header)
             self._pin(account, dev, their_identity)
             session = DoubleRatchet.responder(shared, ad, self.prekeys.spk)
             plaintext = session.decrypt(ratchet)
+            if opk_id != NO_OPK:
+                self.prekeys.one_time.pop(opk_id, None)
             self.sessions[key] = session
         self.awaiting_reply.pop(key, None)
         payload = json.loads(plaintext)
