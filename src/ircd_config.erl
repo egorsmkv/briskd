@@ -930,7 +930,8 @@ features(Map) when is_map(Map) ->
         replies => boolean_setting(replies, maps:get(<<"replies">>, Map, true)),
         typing => boolean_setting(typing, maps:get(<<"typing">>, Map, true)),
         editing => boolean_setting(editing, maps:get(<<"editing">>, Map, true)),
-        redaction => boolean_setting(redaction, maps:get(<<"redaction">>, Map, true))
+        redaction => boolean_setting(redaction, maps:get(<<"redaction">>, Map, true)),
+        link_previews => boolean_setting(link_previews, maps:get(<<"link_previews">>, Map, true))
     };
 features(Value) ->
     erlang:error({invalid_features, Value}).

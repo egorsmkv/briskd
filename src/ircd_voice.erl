@@ -25,7 +25,9 @@ Ogg/Opus, `1A 45 DF A3` for WebM/EBML) before being written to object storage.
     detect_opus/1,
     mime_for_id/1,
     store/2,
-    fetch/1
+    fetch/1,
+    list/0,
+    delete/1
 ]).
 
 -define(CAP, <<"egorsmkv.github.io/voice">>).
@@ -193,6 +195,66 @@ fetch(Id) when is_binary(Id) ->
             end
     end;
 fetch(_) ->
+    {error, invalid_id}.
+
+-doc """
+List stored voice objects in the configured S3 bucket for admin inspection.
+""".
+-spec list() -> map().
+list() ->
+    case config() of
+        null ->
+            #{enabled => false, objects => []};
+        #{bucket := Bucket, max_bytes := MaxBytes, max_duration := MaxDur} = Cfg ->
+            Base = #{
+                enabled => true,
+                bucket => Bucket,
+                max_bytes => MaxBytes,
+                max_duration => MaxDur
+            },
+            case livery_s3:list_objects(client(Cfg), Bucket, #{max_keys => 500}) of
+                {ok, #{objects := Objs}} ->
+                    Items = [
+                        #{
+                            id => maps:get(key, O, <<>>),
+                            size => maps:get(size, O, 0),
+                            last_modified => maps:get(last_modified, O, <<>>)
+                        }
+                     || O <- Objs, valid_id(maps:get(key, O, <<>>))
+                    ],
+                    Base#{objects => Items};
+                {error, not_found} ->
+                    Base#{objects => []};
+                {error, {s3, <<"NoSuchBucket">>, _, _}} ->
+                    Base#{objects => []};
+                {error, Reason} ->
+                    ircd_log:warning(voice_list_failed, #{reason => Reason}),
+                    Base#{objects => [], error => <<"storage_error">>}
+            end
+    end.
+
+-doc """
+Delete a stored voice message by its validated ID from S3.
+""".
+-spec delete(binary()) -> ok | {error, term()}.
+delete(Id) when is_binary(Id) ->
+    case config() of
+        null ->
+            {error, disabled};
+        #{bucket := Bucket} = Cfg ->
+            case valid_id(Id) of
+                false ->
+                    {error, invalid_id};
+                true ->
+                    case livery_s3:delete_object(client(Cfg), Bucket, Id) of
+                        ok -> ok;
+                        {ok, _} -> ok;
+                        {error, not_found} -> ok;
+                        {error, Reason} -> {error, Reason}
+                    end
+            end
+    end;
+delete(_) ->
     {error, invalid_id}.
 
 %%--------------------------------------------------------------------

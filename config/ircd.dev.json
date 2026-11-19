@@ -34,7 +34,8 @@
     "replies": true,
     "typing": true,
     "editing": true,
-    "redaction": true
+    "redaction": true,
+    "link_previews": true
   },
   "administrators": [
     {"nick": "yehor", "password": "devpass"},

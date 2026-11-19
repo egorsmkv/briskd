@@ -19,7 +19,8 @@ config_features_test() ->
                 replies => true,
                 typing => true,
                 editing => true,
-                redaction => true
+                redaction => true,
+                link_previews => true
             },
             Def
         ),
@@ -75,7 +76,8 @@ cap_features_advertisement_test() ->
                 replies => false,
                 typing => true,
                 editing => false,
-                redaction => false
+                redaction => false,
+                link_previews => false
             }
         }),
         Adv = maps:from_list(ircd_cap:advertised(self())),
@@ -88,7 +90,8 @@ cap_features_advertisement_test() ->
                 replies => false,
                 typing => false,
                 editing => false,
-                redaction => false
+                redaction => false,
+                link_previews => false
             }
         }),
         AdvNone = maps:from_list(ircd_cap:advertised(self())),

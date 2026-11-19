@@ -8,6 +8,7 @@
  */
 
 import { type LightboxItem, openLightbox } from "./lightbox.ts";
+import { createCodeCard } from "./code_card.ts";
 import { createVoicePlayer } from "./voice_player.ts";
 import { decryptAttachment } from "../e2ee/crypto.ts";
 
@@ -68,6 +69,16 @@ export type E2eeAttachmentPayload =
     v: 1;
     kind: "album";
     items: E2eeAttachmentItem[];
+  }
+  | {
+    v: 1;
+    kind: "paste";
+    id: string;
+    lang: string;
+    title: string;
+    key: string;
+    iv: string;
+    sha256: string;
   };
 
 const decryptedBlobCache = new Map<string, string>();
@@ -139,6 +150,13 @@ export function parseE2eeAttachment(
         typeof it.key === "string" && typeof it.iv === "string" &&
         typeof it.sha256 === "string"
       )
+    ) {
+      return parsed as E2eeAttachmentPayload;
+    }
+    if (
+      parsed.kind === "paste" && typeof parsed.id === "string" &&
+      SAFE_E2EE_ID_RE.test(parsed.id) && typeof parsed.key === "string" &&
+      typeof parsed.iv === "string" && typeof parsed.sha256 === "string"
     ) {
       return parsed as E2eeAttachmentPayload;
     }
@@ -462,6 +480,24 @@ export function createEncryptedAttachmentView(
       host.appendChild(createAlbumGrid(items, true));
     }).catch(() => {
       loading.textContent = "🔒 Failed to decrypt image album";
+    });
+  } else if (payload.kind === "paste") {
+    void fetch(`/api/files/${payload.id}`).then(async (resp) => {
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const ct = new Uint8Array(await resp.arrayBuffer());
+      const pt = decryptAttachment(ct, payload.key, payload.iv, payload.sha256);
+      const code = new TextDecoder().decode(pt).slice(0, 65536);
+      host.textContent = "";
+      host.appendChild(
+        createCodeCard({
+          code,
+          lang: payload.lang,
+          title: payload.title,
+          encrypted: true,
+        }),
+      );
+    }).catch(() => {
+      loading.textContent = "🔒 Failed to decrypt code snippet";
     });
   }
 

@@ -32,6 +32,7 @@
     <button type="button" class="tab" data-tab="links" role="tab" aria-selected="false">Links <span class="tab-count" id="cnt-links">0</span></button>
     <button type="button" class="tab" data-tab="accounts" role="tab" aria-selected="false">Accounts <span class="tab-count" id="cnt-accounts">0</span></button>
     <button type="button" class="tab" data-tab="dronebl" role="tab" aria-selected="false">DroneBL <span class="tab-count" id="cnt-dronebl">0</span></button>
+    <button type="button" class="tab" data-tab="media" role="tab" aria-selected="false">Media &amp; Features</button>
     <button type="button" class="tab" data-tab="operations" role="tab" aria-selected="false">Operations</button>
   </div>
 </nav>
@@ -65,6 +66,11 @@
         <div class="label">DroneBL</div>
         <div class="value" id="st-dronebl">-</div>
         <div class="sub" id="st-dronebl-sub"></div>
+      </div>
+      <div class="card clickable" data-goto="media">
+        <div class="label">Media &amp; Features</div>
+        <div class="value" id="st-media">-</div>
+        <div class="sub" id="st-media-sub"></div>
       </div>
       <div class="card">
         <div class="label">Database</div>
@@ -132,6 +138,34 @@
       <button type="submit" class="danger">Ban IP</button>
     </form>
     <div id="dronebl-wrap"></div>
+  </section>
+
+  <section class="page panel" id="panel-media" role="tabpanel">
+    <div class="page-head">
+      <h2>Chat Features (Live Toggles)</h2>
+      <div class="ops-row">
+        <button type="button" id="btn-refresh-media">Refresh Storage</button>
+        <button type="button" id="btn-clear-upload-limits">Reset Upload Limits</button>
+      </div>
+    </div>
+    <p class="muted">Enable or disable messenger features server-wide without restarting. Changes take effect immediately for new connections and redaction checks.</p>
+    <div class="feature-grid" id="features-grid"></div>
+
+    <div class="media-section">
+      <div class="page-head">
+        <h3 id="voice-heading">Voice Messages (OPUS)</h3>
+        <input type="search" class="filter-input" id="filter-voice" placeholder="Filter voice IDs...">
+      </div>
+      <div id="voice-wrap"></div>
+    </div>
+
+    <div class="media-section">
+      <div class="page-head">
+        <h3 id="files-heading">Shared Files</h3>
+        <input type="search" class="filter-input" id="filter-files" placeholder="Filter file IDs...">
+      </div>
+      <div id="files-wrap"></div>
+    </div>
   </section>
 
   <section class="page" id="panel-operations" role="tabpanel">

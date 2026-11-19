@@ -84,6 +84,32 @@ interface DroneblBan {
   reason?: string;
 }
 
+interface MediaObject {
+  id: string;
+  size: number;
+  last_modified?: string;
+  preview?: boolean;
+}
+
+interface MediaPayload {
+  features?: Record<string, boolean>;
+  voice?: {
+    enabled: boolean;
+    bucket?: string;
+    max_bytes?: number;
+    max_duration?: number;
+    objects?: MediaObject[];
+    error?: string;
+  };
+  files?: {
+    enabled: boolean;
+    bucket?: string;
+    max_bytes?: number;
+    objects?: MediaObject[];
+    error?: string;
+  };
+}
+
 interface OverviewPayload {
   status?: StatusData;
   clients?: { clients?: ClientEntry[] };
@@ -98,6 +124,14 @@ interface OverviewPayload {
       in_flight?: number;
     };
     bans?: DroneblBan[];
+  };
+  features?: Record<string, boolean>;
+  media_summary?: {
+    voice_enabled?: boolean;
+    voice_max_bytes?: number;
+    voice_max_duration?: number;
+    files_enabled?: boolean;
+    files_max_bytes?: number;
   };
 }
 
@@ -662,6 +696,198 @@ function render(data: OverviewPayload): void {
       }),
     ),
   );
+
+  const feats = data.features ?? {};
+  const totalFeats = Object.keys(feats).length || 6;
+  const enabledCount = Object.values(feats).filter(Boolean).length;
+  const ms = data.media_summary ?? {};
+  $("st-media").textContent = `${enabledCount}/${totalFeats} features`;
+  const parts: string[] = [];
+  parts.push(
+    ms.voice_enabled
+      ? `voice ${fmtBytes(ms.voice_max_bytes ?? 0)}`
+      : "voice off",
+  );
+  parts.push(
+    ms.files_enabled
+      ? `files ${fmtBytes(ms.files_max_bytes ?? 0)}`
+      : "files off",
+  );
+  $("st-media-sub").textContent = parts.join(" / ");
+  if (data.features) renderFeatures(data.features);
+}
+
+let lastMedia: MediaPayload | null = null;
+
+const FEATURE_META: Array<{ key: string; title: string; desc: string }> = [
+  {
+    key: "reactions",
+    title: "Emoji Reactions",
+    desc: "+draft/react TAGMSG emoji pills",
+  },
+  {
+    key: "replies",
+    title: "Message Replies",
+    desc: "+draft/reply quoted message threads",
+  },
+  {
+    key: "typing",
+    title: "Typing Indicators",
+    desc: "+typing live typing notifications",
+  },
+  {
+    key: "editing",
+    title: "Message Editing",
+    desc: "+egorsmkv.github.io/edit in-place edits",
+  },
+  {
+    key: "redaction",
+    title: "Message Redaction",
+    desc: "draft/message-redaction REDACT deletions",
+  },
+  {
+    key: "link_previews",
+    title: "Link Previews",
+    desc: "SSRF-protected OpenGraph cards for URLs",
+  },
+];
+
+function renderFeatures(features: Record<string, boolean>): void {
+  const grid = $("features-grid");
+  grid.textContent = "";
+  for (const item of FEATURE_META) {
+    const enabled = features[item.key] !== false;
+    const card = el("div", null, "feature-card");
+    const top = el("div", null, "feature-top");
+    top.appendChild(el("strong", item.title));
+    top.appendChild(
+      el(
+        "span",
+        enabled ? "enabled" : "disabled",
+        `badge ${enabled ? "ok" : "off"}`,
+      ),
+    );
+    card.appendChild(top);
+    card.appendChild(el("div", item.desc, "muted feature-desc"));
+    const btn = el(
+      "button",
+      enabled ? "Disable" : "Enable",
+      enabled ? "small danger" : "small primary",
+    );
+    btn.type = "button";
+    btn.onclick = async () => {
+      await postAction("toggle-feature", [
+        item.key,
+        enabled ? "false" : "true",
+      ]);
+      void refreshMedia();
+    };
+    card.appendChild(btn);
+    grid.appendChild(card);
+  }
+}
+
+function renderMedia(data: MediaPayload): void {
+  lastMedia = data;
+  if (data.features) renderFeatures(data.features);
+
+  const voice = data.voice;
+  const voiceObjs = voice?.objects ?? [];
+  const voiceTotal = voiceObjs.reduce((s, o) => s + (o.size || 0), 0);
+  $("voice-heading").textContent = voice?.enabled
+    ? `Voice Messages — ${
+      voice.bucket || "ircd-voice"
+    } (${voiceObjs.length} objects, ${fmtBytes(voiceTotal)}, max ${
+      fmtBytes(voice.max_bytes ?? 0)
+    } / ${voice.max_duration ?? 120}s)`
+    : "Voice Messages (disabled)";
+
+  const filteredVoice = voiceObjs.filter((o) =>
+    matchesFilter("voice", o.id, o.last_modified)
+  );
+  replace(
+    "voice-wrap",
+    makeTable(
+      "voice",
+      ["Object ID", "Size", "Uploaded", "Preview", "Action"],
+      filteredVoice.map((o) => {
+        const audio = document.createElement("audio");
+        audio.controls = true;
+        audio.preload = "none";
+        audio.src = `/api/voice/${o.id}`;
+        audio.className = "admin-audio";
+        const delBtn = el("button", "Delete", "small danger");
+        delBtn.type = "button";
+        delBtn.onclick = () => {
+          if (confirm(`Delete voice message ${o.id}?`)) {
+            void postAction("delete-voice", [o.id]).then(() => refreshMedia());
+          }
+        };
+        return [
+          { text: o.id, cls: "mono" },
+          fmtBytes(o.size),
+          { text: o.last_modified || "-", cls: "mono" },
+          audio,
+          delBtn,
+        ];
+      }),
+    ),
+  );
+
+  const files = data.files;
+  const fileObjs = files?.objects ?? [];
+  const filesTotal = fileObjs.reduce((s, o) => s + (o.size || 0), 0);
+  $("files-heading").textContent = files?.enabled
+    ? `Shared Files — ${
+      files.bucket || "ircd-files"
+    } (${fileObjs.length} objects, ${fmtBytes(filesTotal)}, max ${
+      fmtBytes(files.max_bytes ?? 0)
+    })`
+    : "Shared Files (disabled)";
+
+  const filteredFiles = fileObjs.filter((o) =>
+    matchesFilter("files", o.id, o.last_modified)
+  );
+  replace(
+    "files-wrap",
+    makeTable(
+      "files",
+      ["Object ID", "Type", "Size", "Uploaded", "Actions"],
+      filteredFiles.map((o) => {
+        const wrap = el("div", null, "row-actions");
+        const openLink = el("a", "Open", "btn-link");
+        openLink.href = `/api/files/${o.id}`;
+        openLink.target = "_blank";
+        openLink.rel = "noopener noreferrer";
+        const delBtn = el("button", "Delete", "small danger");
+        delBtn.type = "button";
+        delBtn.onclick = () => {
+          if (confirm(`Delete shared file ${o.id}?`)) {
+            void postAction("delete-file", [o.id]).then(() => refreshMedia());
+          }
+        };
+        wrap.appendChild(openLink);
+        wrap.appendChild(delBtn);
+        return [
+          { text: o.id, cls: "mono" },
+          o.preview ? "image" : "file",
+          fmtBytes(o.size),
+          { text: o.last_modified || "-", cls: "mono" },
+          wrap,
+        ];
+      }),
+    ),
+  );
+}
+
+async function refreshMedia(): Promise<void> {
+  try {
+    const res = await fetch("/api/media", { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    renderMedia((await res.json()) as MediaPayload);
+  } catch (e) {
+    showNotice(false, `Failed to load media storage: ${errorMessage(e)}`);
+  }
 }
 
 async function refresh(): Promise<void> {
@@ -690,6 +916,7 @@ const VALID_TABS = new Set([
   "links",
   "accounts",
   "dronebl",
+  "media",
   "operations",
 ]);
 
@@ -717,6 +944,7 @@ function activateTab(tab: string, updateUrl = true): void {
       history.pushState({ tab: next }, "", targetPath);
     }
   }
+  if (next === "media") void refreshMedia();
 }
 
 $("tabs").addEventListener("click", (ev) => {
@@ -785,6 +1013,18 @@ for (const key of ["clients", "channels", "links", "accounts", "dronebl"]) {
     if (lastOverview) render(lastOverview);
   });
 }
+
+for (const key of ["voice", "files"]) {
+  $<HTMLInputElement>(`filter-${key}`).addEventListener("input", (ev) => {
+    tableFilters[key] = (ev.target as HTMLInputElement).value.trim();
+    tablePages[key] = 1;
+    if (lastMedia) renderMedia(lastMedia);
+  });
+}
+
+$("btn-refresh-media").onclick = () => void refreshMedia();
+$("btn-clear-upload-limits").onclick = () =>
+  void postAction("clear-upload-limits", []);
 
 $("stats-grid").addEventListener("click", (ev) => {
   const card = (ev.target as HTMLElement | null)?.closest<HTMLElement>(

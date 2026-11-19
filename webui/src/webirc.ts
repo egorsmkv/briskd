@@ -3,6 +3,7 @@ import { dayKey, formatDayLabel, renderIrcMessage } from "./common/format.ts";
 import { currentLang, initLang, setLang, t } from "./common/i18n.ts";
 import { currentTheme, initTheme, setTheme, THEMES } from "./common/theme.ts";
 import { updateDynamicFavicon } from "./common/favicon.ts";
+import { createRemoteCodeCard } from "./common/code_card.ts";
 import {
   createAlbumGrid,
   createEncryptedAttachmentView,
@@ -13,6 +14,10 @@ import {
   isPreviewImageId,
   parseE2eeAttachment,
 } from "./common/file_card.ts";
+import {
+  createLinkPreviewSlot,
+  extractFirstHttpUrl,
+} from "./common/link_preview.ts";
 import { createVoicePlayer } from "./common/voice_player.ts";
 import { encryptAttachment } from "./e2ee/crypto.ts";
 import { E2EE_CAP, E2eeManager } from "./e2ee/manager.ts";
@@ -29,9 +34,16 @@ interface WebircSettings {
   typing: boolean;
   editing: boolean;
   redaction: boolean;
+  linkPreviews: boolean;
 }
 
-type FeatureKey = "reactions" | "replies" | "typing" | "editing" | "redaction";
+type FeatureKey =
+  | "reactions"
+  | "replies"
+  | "typing"
+  | "editing"
+  | "redaction"
+  | "link_previews";
 
 const SETTINGS_KEY = "ircd-webirc-settings";
 
@@ -48,6 +60,7 @@ function loadSettings(): WebircSettings {
     typing: true,
     editing: true,
     redaction: true,
+    linkPreviews: true,
   };
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
@@ -69,6 +82,7 @@ function loadSettings(): WebircSettings {
       typing: parsed.typing !== false,
       editing: parsed.editing !== false,
       redaction: parsed.redaction !== false,
+      linkPreviews: parsed.linkPreviews !== false,
     };
   } catch {
     return defaults;
@@ -111,6 +125,9 @@ interface ChatLine {
   fileName?: string;
   fileSize?: number;
   albumIds?: string[];
+  pasteId?: string;
+  pasteLang?: string;
+  pasteTitle?: string;
 }
 
 const FEATURES_CAP = "egorsmkv.github.io/features";
@@ -130,11 +147,19 @@ const serverFeatures: Record<FeatureKey, boolean> = {
   typing: true,
   editing: true,
   redaction: true,
+  link_previews: true,
 };
 
 function featureOn(key: FeatureKey): boolean {
+  if (key === "link_previews") {
+    return serverFeatures.link_previews && settings.linkPreviews;
+  }
   return serverFeatures[key] && settings[key];
 }
+
+const PASTE_TAG = "+egorsmkv.github.io/paste";
+const PASTE_LANG_TAG = "+egorsmkv.github.io/paste-lang";
+const PASTE_TITLE_TAG = "+egorsmkv.github.io/paste-title";
 
 const VOICE_CAP = "egorsmkv.github.io/voice";
 const VOICE_TAG = "+egorsmkv.github.io/voice";
@@ -269,6 +294,9 @@ function applySettings(): void {
   $<HTMLInputElement>("opt-typing").checked = settings.typing;
   $<HTMLInputElement>("opt-editing").checked = settings.editing;
   $<HTMLInputElement>("opt-redaction").checked = settings.redaction;
+  $<HTMLInputElement>("opt-link-previews").checked = settings.linkPreviews;
+  $<HTMLInputElement>("opt-link-previews").disabled = !serverFeatures
+    .link_previews;
   for (
     const key of [
       "reactions",
@@ -342,6 +370,7 @@ document.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape") {
     closeSettings();
     closeTopicModal();
+    closeCodeModal();
     clearComposeMode();
   }
 });
@@ -430,6 +459,11 @@ for (
     renderActiveMessages();
   };
 }
+$<HTMLInputElement>("opt-link-previews").onchange = (ev) => {
+  settings.linkPreviews = (ev.target as HTMLInputElement).checked;
+  saveSettings(settings);
+  renderActiveMessages();
+};
 
 const bodyData = document.body.dataset;
 const WS_PORT = bodyData.wsPort || "";
@@ -896,6 +930,9 @@ function addLine(
     fileName?: string;
     fileSize?: number;
     albumIds?: string[];
+    pasteId?: string;
+    pasteLang?: string;
+    pasteTitle?: string;
   },
 ): void {
   const buf = ensureBuf(bufName);
@@ -922,6 +959,9 @@ function addLine(
     fileName: opts.fileName,
     fileSize: opts.fileSize,
     albumIds: opts.albumIds,
+    pasteId: opts.pasteId,
+    pasteLang: opts.pasteLang,
+    pasteTitle: opts.pasteTitle,
   };
   const prev = buf.lines[buf.lines.length - 1];
   buf.lines.push(entry);
@@ -1012,6 +1052,13 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
         });
       }
     }
+    if (entry.pasteId && FILE_ID_RE.test(entry.pasteId)) {
+      return createRemoteCodeCard({
+        fileId: entry.pasteId,
+        lang: entry.pasteLang,
+        title: entry.pasteTitle,
+      });
+    }
     if (entry.albumIds && entry.albumIds.length > 0) {
       return createAlbumGrid(
         entry.albumIds.map((id) => ({
@@ -1042,6 +1089,10 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
       ed.className = "msg-edited";
       ed.textContent = ` ${t("msg.edited")}`;
       frag.appendChild(ed);
+    }
+    if (!entry.encrypted && !entry.kind && featureOn("link_previews")) {
+      const url = extractFirstHttpUrl(entry.text);
+      if (url) frag.appendChild(createLinkPreviewSlot(url));
     }
     return frag;
   };
@@ -1500,6 +1551,7 @@ function handleMessage(raw: string): void {
               "typing",
               "editing",
               "redaction",
+              "link_previews",
             ] as const
           ) {
             serverFeatures[k] = enabledSet.has(k);
@@ -1832,6 +1884,19 @@ function handleMessage(raw: string): void {
           FILE_ID_RE.test(id) && isPreviewImageId(id)
         ).slice(0, 10)
         : undefined;
+      const rawPasteId = msg.tags[PASTE_TAG] || "";
+      const pasteId = FILE_ID_RE.test(rawPasteId) ? rawPasteId : undefined;
+      const pasteLang = pasteId
+        ? (msg.tags[PASTE_LANG_TAG] || "text")
+        : undefined;
+      let pasteTitle: string | undefined;
+      if (pasteId && msg.tags[PASTE_TITLE_TAG]) {
+        try {
+          pasteTitle = decodeURIComponent(msg.tags[PASTE_TITLE_TAG]);
+        } catch {
+          pasteTitle = msg.tags[PASTE_TITLE_TAG];
+        }
+      }
       const replyTo = msg.tags[REPLY_TAG] || undefined;
       addLine(dest, {
         time,
@@ -1847,6 +1912,9 @@ function handleMessage(raw: string): void {
         fileName,
         fileSize,
         albumIds: albumIds && albumIds.length > 0 ? albumIds : undefined,
+        pasteId,
+        pasteLang,
+        pasteTitle,
       });
     }
     return;
@@ -2881,6 +2949,7 @@ function updateFileButton(): void {
   const btn = $("btn-file");
   btn.classList.toggle("hidden", !filesSupported);
   btn.title = `${t("file.attach")} (max ${formatBytes(filesMaxBytes)})`;
+  $("btn-code").classList.toggle("hidden", !filesSupported);
 }
 
 async function uploadBinaryFile(
@@ -3109,6 +3178,93 @@ msgInp.addEventListener("paste", (ev) => {
   if (files.length > 0) {
     ev.preventDefault();
     shareFilesInActiveBuffer(files);
+  }
+});
+
+// Code Snippet / Paste modal
+function openCodeModal(): void {
+  const buf = buffers.get(activeBuf);
+  if (!buf || buf.name === "*status") {
+    addLine("*status", { text: t("file.err.target"), kind: "err" });
+    return;
+  }
+  $("code-modal").classList.add("open");
+  $<HTMLTextAreaElement>("inp-code-body").focus();
+}
+
+function closeCodeModal(): void {
+  $("code-modal").classList.remove("open");
+}
+
+$("btn-code").onclick = openCodeModal;
+$("btn-close-code").onclick = closeCodeModal;
+$("btn-cancel-code").onclick = closeCodeModal;
+$("code-modal").addEventListener("click", (ev) => {
+  if (ev.target === $("code-modal")) closeCodeModal();
+});
+
+const codeBodyInp = $<HTMLTextAreaElement>("inp-code-body");
+codeBodyInp.addEventListener("keydown", (ev) => {
+  if (ev.key === "Tab") {
+    ev.preventDefault();
+    const s = codeBodyInp.selectionStart;
+    const e = codeBodyInp.selectionEnd;
+    codeBodyInp.value = codeBodyInp.value.slice(0, s) + "  " +
+      codeBodyInp.value.slice(e);
+    codeBodyInp.selectionStart = codeBodyInp.selectionEnd = s + 2;
+  } else if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) {
+    ev.preventDefault();
+    $<HTMLFormElement>("code-form").requestSubmit();
+  }
+});
+
+$<HTMLFormElement>("code-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const buf = buffers.get(activeBuf);
+  if (!buf || buf.name === "*status") return;
+  const code = codeBodyInp.value;
+  if (!code.trim()) return;
+  const lang = $<HTMLSelectElement>("sel-code-lang").value || "text";
+  const title = $<HTMLInputElement>("inp-code-title").value.trim();
+  const target = buf.name;
+  closeCodeModal();
+  codeBodyInp.value = "";
+  $<HTMLInputElement>("inp-code-title").value = "";
+
+  try {
+    const raw = new TextEncoder().encode(code);
+    if (e2ee.isBufferEncrypted(target)) {
+      const enc = encryptAttachment(raw);
+      const up = await uploadBinaryFile(enc.ciphertext, "encrypted.bin");
+      if (!up) return;
+      const payload = E2EE_ATT_PREFIX + JSON.stringify({
+        v: 1,
+        kind: "paste",
+        id: up.id,
+        lang,
+        title,
+        key: enc.key,
+        iv: enc.iv,
+        sha256: enc.sha256,
+      });
+      const ok = await e2ee.sendEncrypted(target, payload);
+      if (ok) addLine(target, { nick: myNick, text: payload, encrypted: true });
+      return;
+    }
+    const up = await uploadBinaryFile(raw, (title || "snippet") + ".txt");
+    if (!up) return;
+    const titleTag = title
+      ? `;${PASTE_TITLE_TAG}=${encodeURIComponent(title)}`
+      : "";
+    const label = title ? `${title} (${lang})` : lang;
+    sendRaw(
+      `@${PASTE_TAG}=${up.id};${PASTE_LANG_TAG}=${lang}${titleTag} PRIVMSG ${target} :[Code: ${label}] /api/files/${up.id}`,
+    );
+  } catch (e) {
+    addLine(target, {
+      text: t("file.err.upload", { reason: errorMessage(e) }),
+      kind: "err",
+    });
   }
 });
 

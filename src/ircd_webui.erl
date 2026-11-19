@@ -272,6 +272,8 @@ handle_connection(
             handle_file_upload(Socket, Headers, Body);
         {ok, <<"GET">>, {<<"/api/files/", FileId/binary>>, _Query}, _Headers, _Body} ->
             handle_file_download(Socket, FileId);
+        {ok, <<"GET">>, {<<"/api/link-preview">>, Query}, Headers, _Body} ->
+            handle_link_preview(Socket, Query, Headers);
         {ok, Method, {Path, _Query}, Headers, Body} ->
             case check_auth(Headers) of
                 ok ->
@@ -830,6 +832,52 @@ decode_header_filename(Bin) when is_binary(Bin) ->
         _:_ -> Bin
     end.
 
+handle_link_preview(Socket, Query, Headers) ->
+    case maps:get(<<"x-requested-with">>, Headers, undefined) of
+        <<"ircd-webui">> ->
+            Url = extract_query_param(<<"url">>, Query),
+            case Url of
+                <<>> ->
+                    send_json(Socket, 400, <<"Bad Request">>, #{error => <<"missing_url">>});
+                _ ->
+                    case ircd_link_preview:fetch(Url) of
+                        {ok, Meta} ->
+                            send_json(Socket, 200, <<"OK">>, Meta);
+                        {error, disabled} ->
+                            send_json(Socket, 404, <<"Not Found">>, #{
+                                error => <<"link_previews_disabled">>
+                            });
+                        {error, private_address} ->
+                            send_json(Socket, 403, <<"Forbidden">>, #{
+                                error => <<"private_address">>
+                            });
+                        {error, invalid_url} ->
+                            send_json(Socket, 400, <<"Bad Request">>, #{error => <<"invalid_url">>});
+                        {error, disallowed_port} ->
+                            send_json(Socket, 400, <<"Bad Request">>, #{
+                                error => <<"disallowed_port">>
+                            });
+                        {error, _} ->
+                            send_json(Socket, 404, <<"Not Found">>, #{error => <<"no_preview">>})
+                    end
+            end;
+        _ ->
+            send_json(Socket, 403, <<"Forbidden">>, #{error => <<"missing_csrf_header">>})
+    end.
+
+extract_query_param(Key, Query) ->
+    try uri_string:dissect_query(Query) of
+        Pairs when is_list(Pairs) ->
+            case lists:keyfind(Key, 1, Pairs) of
+                {_, Val} when is_binary(Val) -> Val;
+                _ -> <<>>
+            end;
+        _ ->
+            <<>>
+    catch
+        _:_ -> <<>>
+    end.
+
 peer_ip(Socket) ->
     case inet:peername(Socket) of
         {ok, {Addr, _}} -> list_to_binary(inet:ntoa(Addr));
@@ -978,10 +1026,12 @@ route(Socket, <<"GET">>, Path, _Headers, _Body, Html) when
     Path =:= <<"/admin/links">>;
     Path =:= <<"/admin/accounts">>;
     Path =:= <<"/admin/dronebl">>;
+    Path =:= <<"/admin/media">>;
     Path =:= <<"/admin/operations">>
 ->
     send_nonce_html(Socket, Html);
 route(Socket, <<"GET">>, <<"/api/overview">>, _Headers, _Body, _Html) ->
+    Config = persistent_term:get({ircd_state, config}, #{}),
     Payload = #{
         status => ctl_json([<<"status">>]),
         clients => ctl_json([<<"clients">>]),
@@ -991,9 +1041,24 @@ route(Socket, <<"GET">>, <<"/api/overview">>, _Headers, _Body, _Html) ->
         dronebl => #{
             stats => ircd_dronebl:stats(),
             bans => ircd_dronebl:list_bans()
+        },
+        features => current_features(Config),
+        media_summary => #{
+            voice_enabled => ircd_voice:enabled(),
+            voice_max_bytes => ircd_voice:max_bytes(),
+            voice_max_duration => ircd_voice:max_duration(),
+            files_enabled => ircd_files:enabled(),
+            files_max_bytes => ircd_files:max_bytes()
         }
     },
     send_json(Socket, 200, <<"OK">>, Payload);
+route(Socket, <<"GET">>, <<"/api/media">>, _Headers, _Body, _Html) ->
+    Config = persistent_term:get({ircd_state, config}, #{}),
+    send_json(Socket, 200, <<"OK">>, #{
+        features => current_features(Config),
+        voice => ircd_voice:list(),
+        files => ircd_files:list()
+    });
 route(Socket, <<"POST">>, <<"/api/action">>, Headers, Body, _Html) ->
     case maps:get(<<"x-requested-with">>, Headers, undefined) of
         <<"ircd-webui">> ->
@@ -1042,6 +1107,47 @@ dispatch_action(Socket, <<"dronebl-ban">>, [IP | Rest]) ->
                 error => <<"invalid_ip">>, ip => IP
             })
     end;
+dispatch_action(Socket, <<"toggle-feature">>, [KeyBin, ValBin]) ->
+    case parse_feature_toggle(KeyBin, ValBin) of
+        {ok, Key, Bool} ->
+            Config = persistent_term:get({ircd_state, config}, #{}),
+            Updated = (current_features(Config))#{Key => Bool},
+            persistent_term:put({ircd_state, config}, Config#{features => Updated}),
+            ircd_log:notice(admin_feature_toggled, #{feature => Key, enabled => Bool}),
+            send_json(Socket, 200, <<"OK">>, #{status => <<"updated">>, features => Updated});
+        error ->
+            send_json(Socket, 400, <<"Bad Request">>, #{error => <<"invalid_feature">>})
+    end;
+dispatch_action(Socket, <<"delete-voice">>, [VoiceId]) ->
+    case ircd_voice:delete(VoiceId) of
+        ok ->
+            ircd_log:notice(admin_voice_deleted, #{id => VoiceId}),
+            send_json(Socket, 200, <<"OK">>, #{status => <<"deleted">>, id => VoiceId});
+        {error, invalid_id} ->
+            send_json(Socket, 400, <<"Bad Request">>, #{error => <<"invalid_voice_id">>});
+        {error, disabled} ->
+            send_json(Socket, 404, <<"Not Found">>, #{error => <<"voice_disabled">>});
+        {error, _} ->
+            send_json(Socket, 502, <<"Bad Gateway">>, #{error => <<"storage_error">>})
+    end;
+dispatch_action(Socket, <<"delete-file">>, [FileId]) ->
+    case ircd_files:delete(FileId) of
+        ok ->
+            ircd_log:notice(admin_file_deleted, #{id => FileId}),
+            send_json(Socket, 200, <<"OK">>, #{status => <<"deleted">>, id => FileId});
+        {error, invalid_id} ->
+            send_json(Socket, 400, <<"Bad Request">>, #{error => <<"invalid_file_id">>});
+        {error, disabled} ->
+            send_json(Socket, 404, <<"Not Found">>, #{error => <<"files_disabled">>});
+        {error, _} ->
+            send_json(Socket, 502, <<"Bad Gateway">>, #{error => <<"storage_error">>})
+    end;
+dispatch_action(Socket, <<"clear-upload-limits">>, []) ->
+    case ets:whereis(ircd_webui_uploads) of
+        undefined -> ok;
+        Tab -> ets:delete_all_objects(Tab)
+    end,
+    send_json(Socket, 200, <<"OK">>, #{status => <<"cleared">>});
 dispatch_action(Socket, Action, Args) ->
     case allowed_action(Action) of
         true ->
@@ -1084,6 +1190,39 @@ allowed_action(<<"backup">>) -> true;
 allowed_action(<<"drain">>) -> true;
 allowed_action(<<"stop">>) -> true;
 allowed_action(_) -> false.
+
+current_features(Config) ->
+    F = maps:get(features, Config, #{}),
+    #{
+        reactions => maps:get(reactions, F, true),
+        replies => maps:get(replies, F, true),
+        typing => maps:get(typing, F, true),
+        editing => maps:get(editing, F, true),
+        redaction => maps:get(redaction, F, true),
+        link_previews => maps:get(link_previews, F, true)
+    }.
+
+parse_feature_toggle(KeyBin, ValBin) ->
+    Key =
+        case KeyBin of
+            <<"reactions">> -> reactions;
+            <<"replies">> -> replies;
+            <<"typing">> -> typing;
+            <<"editing">> -> editing;
+            <<"redaction">> -> redaction;
+            <<"link_previews">> -> link_previews;
+            _ -> invalid
+        end,
+    Val =
+        case ValBin of
+            <<"true">> -> true;
+            <<"false">> -> false;
+            _ -> invalid
+        end,
+    case Key =/= invalid andalso Val =/= invalid of
+        true -> {ok, Key, Val};
+        false -> error
+    end.
 
 valid_args(Args) when is_list(Args), length(Args) =< 4 ->
     lists:all(

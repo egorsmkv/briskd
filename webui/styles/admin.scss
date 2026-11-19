@@ -411,3 +411,67 @@ td.mono {
     white-space: nowrap;
   }
 }
+
+/* Media & Features management */
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin: 14px 0 22px;
+}
+
+.feature-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.feature-top {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.feature-desc {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.media-section {
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  h3 {
+    margin: 0;
+    font-size: 15px;
+  }
+}
+
+.admin-audio {
+  height: 30px;
+  max-width: 220px;
+  display: block;
+}
+
+.btn-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 12px;
+  text-decoration: none;
+  &:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+}

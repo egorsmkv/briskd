@@ -453,7 +453,8 @@ value(<<"egorsmkv.github.io/features">>, _Info) ->
             {replies, <<"replies">>},
             {typing, <<"typing">>},
             {editing, <<"editing">>},
-            {redaction, <<"redaction">>}
+            {redaction, <<"redaction">>},
+            {link_previews, <<"link_previews">>}
         ],
         maps:get(Key, Features, true)
     ],
