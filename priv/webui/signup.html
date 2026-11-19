@@ -156,6 +156,12 @@
       <label for="confirm">Confirm password</label>
       <input type="password" id="confirm" name="confirm" autocomplete="new-password" required maxlength="256">
     </div>
+    <div class="field">
+      <label style="display:flex;align-items:flex-start;gap:8px;font-weight:400;font-size:13px;cursor:pointer;">
+        <input type="checkbox" id="accept-terms" name="accept_terms" required style="width:auto;margin-top:3px;">
+        <span>I accept the <a href="__TERMS_URL__" target="_blank" rel="noopener noreferrer" style="color:var(--accent);">Terms of Use</a> and <a href="__PRIVACY_URL__" target="_blank" rel="noopener noreferrer" style="color:var(--accent);">Privacy Policy</a>.</span>
+      </label>
+    </div>
     <button type="submit" class="primary" id="btn-submit">Create Account</button>
   </form>
   <p class="sub" style="margin-top:14px;margin-bottom:0;text-align:center;">Already have a code? <a href="/verify" style="color:var(--accent);">Verify your account</a></p>
@@ -199,10 +205,14 @@
       showNotice(false, "Passwords do not match.");
       return;
     }
+    if (!$("accept-terms").checked) {
+      showNotice(false, "You must accept the Terms of Use and Privacy Policy.");
+      return;
+    }
     const btn = $("btn-submit");
     btn.disabled = true;
     try {
-      const payload = { account: account, password: password };
+      const payload = { account: account, password: password, accept_terms: true };
       if (email) payload.email = email;
       const res = await fetch("/api/signup", {
         method: "POST",

@@ -806,11 +806,31 @@ webui(Map) when is_map(Map) ->
     true =
         is_binary(Password) andalso byte_size(Password) > 0 andalso byte_size(Password) =< 256 andalso
             binary:match(Password, [<<0>>, <<"\r">>, <<"\n">>]) =:= nomatch,
+    TermsUrl = webui_url(
+        terms_url, maps:get(<<"terms_url">>, Map, <<"https://example.com/terms">>)
+    ),
+    PrivacyUrl = webui_url(
+        privacy_url, maps:get(<<"privacy_url">>, Map, <<"https://example.com/privacy">>)
+    ),
     #{
         ip => IP,
         port => Port,
         username => ircd_wire:retain(Username),
-        password => retain_secret(Password)
+        password => retain_secret(Password),
+        terms_url => TermsUrl,
+        privacy_url => PrivacyUrl
     };
 webui(Value) ->
     erlang:error({invalid_webui, Value}).
+
+webui_url(_Key, Url) when is_binary(Url), byte_size(Url) =< 2048 ->
+    nomatch = binary:match(Url, [
+        <<0>>, <<" ">>, <<"\r">>, <<"\n">>, <<"\"">>, <<"'">>, <<"<">>, <<">">>
+    ]),
+    case Url of
+        <<"https://", Rest/binary>> when byte_size(Rest) > 0 -> ircd_wire:retain(Url);
+        <<"http://", Rest/binary>> when byte_size(Rest) > 0 -> ircd_wire:retain(Url);
+        _ -> erlang:error({invalid_webui_url, Url})
+    end;
+webui_url(Key, Value) ->
+    erlang:error({invalid_webui_url, Key, Value}).

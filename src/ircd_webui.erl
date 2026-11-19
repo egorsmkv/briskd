@@ -222,7 +222,16 @@ handle_signup_page(Socket, SignupHtml) ->
     Config = persistent_term:get({ircd_state, config}, #{}),
     case maps:get(account_registration, Config, true) of
         true ->
-            send_nonce_html(Socket, SignupHtml);
+            WebCfg =
+                case maps:get(webui, Config, null) of
+                    M when is_map(M) -> M;
+                    _ -> #{}
+                end,
+            Terms = escape_html(maps:get(terms_url, WebCfg, <<"https://example.com/terms">>)),
+            Privacy = escape_html(maps:get(privacy_url, WebCfg, <<"https://example.com/privacy">>)),
+            Page0 = binary:replace(SignupHtml, <<"__TERMS_URL__">>, Terms, [global]),
+            Page = binary:replace(Page0, <<"__PRIVACY_URL__">>, Privacy, [global]),
+            send_nonce_html(Socket, Page);
         false ->
             send_json(Socket, 404, <<"Not Found">>, #{error => <<"registration_disabled">>})
     end.
@@ -234,47 +243,15 @@ handle_signup_api(Socket, Headers, Body) ->
                 #{<<"account">> := Account, <<"password">> := Password} = Req when
                     is_binary(Account), is_binary(Password)
                 ->
-                    Email =
-                        case maps:get(<<"email">>, Req, undefined) of
-                            undefined -> undefined;
-                            null -> undefined;
-                            E when is_binary(E) -> E;
-                            _ -> invalid
-                        end,
-                    case Email of
-                        invalid ->
-                            send_json(Socket, 400, <<"Bad Request">>, #{
-                                error => <<"invalid_email">>,
-                                message => <<"Invalid email address.">>
-                            });
+                    case maps:get(<<"accept_terms">>, Req, false) of
+                        true ->
+                            handle_signup_submit(Socket, Account, Password, Req);
                         _ ->
-                            PeerIP = peer_ip(Socket),
-                            case ircd_state:signup_account(Account, Email, Password, PeerIP) of
-                                {ok, created, Name} ->
-                                    send_json(Socket, 201, <<"Created">>, #{
-                                        status => <<"created">>, account => Name
-                                    });
-                                {ok, verification_required, Name} ->
-                                    send_json(Socket, 202, <<"Accepted">>, #{
-                                        status => <<"verification_required">>, account => Name
-                                    });
-                                {error, registration_disabled} ->
-                                    send_json(Socket, 404, <<"Not Found">>, #{
-                                        error => <<"registration_disabled">>,
-                                        message => <<"Account registration is disabled.">>
-                                    });
-                                {error, rate_limited} ->
-                                    send_json(Socket, 429, <<"Too Many Requests">>, #{
-                                        error => <<"rate_limited">>,
-                                        message =>
-                                            <<"Too many registration attempts. Try again later.">>
-                                    });
-                                {error, Reason} ->
-                                    send_json(Socket, 400, <<"Bad Request">>, #{
-                                        error => atom_to_binary(Reason),
-                                        message => signup_error_message(Reason)
-                                    })
-                            end
+                            send_json(Socket, 400, <<"Bad Request">>, #{
+                                error => <<"terms_not_accepted">>,
+                                message =>
+                                    <<"You must accept the Terms of Use and Privacy Policy.">>
+                            })
                     end;
                 _ ->
                     send_json(Socket, 400, <<"Bad Request">>, #{
@@ -290,6 +267,49 @@ handle_signup_api(Socket, Headers, Body) ->
             end;
         _ ->
             send_json(Socket, 403, <<"Forbidden">>, #{error => <<"missing_csrf_header">>})
+    end.
+
+handle_signup_submit(Socket, Account, Password, Req) ->
+    Email =
+        case maps:get(<<"email">>, Req, undefined) of
+            undefined -> undefined;
+            null -> undefined;
+            E when is_binary(E) -> E;
+            _ -> invalid
+        end,
+    case Email of
+        invalid ->
+            send_json(Socket, 400, <<"Bad Request">>, #{
+                error => <<"invalid_email">>,
+                message => <<"Invalid email address.">>
+            });
+        _ ->
+            PeerIP = peer_ip(Socket),
+            case ircd_state:signup_account(Account, Email, Password, PeerIP) of
+                {ok, created, Name} ->
+                    send_json(Socket, 201, <<"Created">>, #{
+                        status => <<"created">>, account => Name
+                    });
+                {ok, verification_required, Name} ->
+                    send_json(Socket, 202, <<"Accepted">>, #{
+                        status => <<"verification_required">>, account => Name
+                    });
+                {error, registration_disabled} ->
+                    send_json(Socket, 404, <<"Not Found">>, #{
+                        error => <<"registration_disabled">>,
+                        message => <<"Account registration is disabled.">>
+                    });
+                {error, rate_limited} ->
+                    send_json(Socket, 429, <<"Too Many Requests">>, #{
+                        error => <<"rate_limited">>,
+                        message => <<"Too many registration attempts. Try again later.">>
+                    });
+                {error, Reason} ->
+                    send_json(Socket, 400, <<"Bad Request">>, #{
+                        error => atom_to_binary(Reason),
+                        message => signup_error_message(Reason)
+                    })
+            end
     end.
 
 signup_error_message(account_exists) -> <<"That account name is already taken.">>;

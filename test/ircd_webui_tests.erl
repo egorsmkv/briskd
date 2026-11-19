@@ -22,10 +22,18 @@ config_validation_test() ->
                 ip := {127, 0, 0, 1},
                 port := 8080,
                 username := <<"admin">>,
-                password := <<"s3cr3t">>
+                password := <<"s3cr3t">>,
+                terms_url := <<"https://example.com/terms">>,
+                privacy_url := <<"https://example.com/privacy">>
             }
         }},
         Load(<<",\"webui\":{\"port\":8080,\"password\":\"s3cr3t\"}">>)
+    ),
+    ?assertMatch(
+        {error, _},
+        Load(
+            <<",\"webui\":{\"port\":8080,\"password\":\"s3cr3t\",\"terms_url\":\"javascript:alert(1)\"}">>
+        )
     ),
     ?assertMatch({error, _}, Load(<<",\"webui\":{\"port\":8080}">>)),
     ?assertMatch({error, _}, Load(<<",\"webui\":{\"password\":\"s3cr3t\"}">>)),
@@ -152,15 +160,30 @@ live_webui() ->
                 nomatch
         ),
         ?assert(binary:match(SignupHtml, <<"<title>Sign Up - ircd</title>">>) =/= nomatch),
+        ?assert(binary:match(SignupHtml, <<"https://example.com/terms">>) =/= nomatch),
+        ?assert(binary:match(SignupHtml, <<"https://example.com/privacy">>) =/= nomatch),
+        ?assertEqual(nomatch, binary:match(SignupHtml, <<"__TERMS_URL__">>)),
+        ?assertEqual(nomatch, binary:match(SignupHtml, <<"__PRIVACY_URL__">>)),
 
-        %% Public POST /api/signup enforces CSRF header, validates input, and creates accounts.
+        %% Public POST /api/signup enforces CSRF header, terms acceptance, and validates input.
         {403, _, _} = http_req(
             Port,
             <<"POST">>,
             <<"/api/signup">>,
             [{<<"Content-Type">>, <<"application/json">>}],
+            <<"{\"account\":\"newuser\",\"password\":\"strongpass123\",\"accept_terms\":true}">>
+        ),
+        {400, _, NoTermsBody} = http_req(
+            Port,
+            <<"POST">>,
+            <<"/api/signup">>,
+            [
+                {<<"Content-Type">>, <<"application/json">>},
+                {<<"X-Requested-With">>, <<"ircd-webui">>}
+            ],
             <<"{\"account\":\"newuser\",\"password\":\"strongpass123\"}">>
         ),
+        ?assertMatch(#{<<"error">> := <<"terms_not_accepted">>}, json:decode(NoTermsBody)),
         {400, _, WeakBody} = http_req(
             Port,
             <<"POST">>,
@@ -169,7 +192,7 @@ live_webui() ->
                 {<<"Content-Type">>, <<"application/json">>},
                 {<<"X-Requested-With">>, <<"ircd-webui">>}
             ],
-            <<"{\"account\":\"newuser\",\"password\":\"123\"}">>
+            <<"{\"account\":\"newuser\",\"password\":\"123\",\"accept_terms\":true}">>
         ),
         ?assertMatch(#{<<"error">> := <<"weak_password">>}, json:decode(WeakBody)),
         {201, _, SignupOk} = http_req(
@@ -180,7 +203,7 @@ live_webui() ->
                 {<<"Content-Type">>, <<"application/json">>},
                 {<<"X-Requested-With">>, <<"ircd-webui">>}
             ],
-            <<"{\"account\":\"newuser\",\"password\":\"strongpass123\",\"email\":\"u@example.com\"}">>
+            <<"{\"account\":\"newuser\",\"password\":\"strongpass123\",\"email\":\"u@example.com\",\"accept_terms\":true}">>
         ),
         ?assertMatch(
             #{<<"status">> := <<"created">>, <<"account">> := <<"newuser">>},
@@ -194,7 +217,7 @@ live_webui() ->
                 {<<"Content-Type">>, <<"application/json">>},
                 {<<"X-Requested-With">>, <<"ircd-webui">>}
             ],
-            <<"{\"account\":\"newuser\",\"password\":\"strongpass123\"}">>
+            <<"{\"account\":\"newuser\",\"password\":\"strongpass123\",\"accept_terms\":true}">>
         ),
         ?assertMatch(#{<<"error">> := <<"account_exists">>}, json:decode(DupBody)),
 
