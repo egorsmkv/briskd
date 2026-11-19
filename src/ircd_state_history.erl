@@ -92,9 +92,21 @@ the channel with folded name `Key`. Other commands and disabled history are
 ignored.
 """.
 -spec note_channel(binary(), map()) -> ok.
+note_channel(Key, #{cmd := <<"TAGMSG">>, tags := Tags} = Entry) ->
+    case is_ephemeral_tagmsg(Tags) of
+        true ->
+            ok;
+        false ->
+            note_channel_entry(Key, Entry)
+    end;
 note_channel(Key, #{cmd := Command} = Entry) when
-    Command =:= <<"PRIVMSG">>; Command =:= <<"NOTICE">>; Command =:= <<"TAGMSG">>
+    Command =:= <<"PRIVMSG">>; Command =:= <<"NOTICE">>
 ->
+    note_channel_entry(Key, Entry);
+note_channel(_Key, _Entry) ->
+    ok.
+
+note_channel_entry(Key, Entry) ->
     case enabled() of
         true ->
             Existing = channel_entries(Key),
@@ -104,9 +116,24 @@ note_channel(Key, #{cmd := Command} = Entry) when
             ok;
         false ->
             ok
-    end;
-note_channel(_Key, _Entry) ->
-    ok.
+    end.
+
+%% Typing indicators are ephemeral and must not pollute message history or
+%% push real messages/reactions out of `history_limit`.
+is_ephemeral_tagmsg(Tags) when is_list(Tags) ->
+    HasTyping =
+        lists:keymember(<<"+typing">>, 1, Tags) orelse
+            lists:keymember(<<"+draft/typing">>, 1, Tags),
+    HasReact = lists:keymember(<<"+draft/react">>, 1, Tags),
+    HasTyping andalso not HasReact;
+is_ephemeral_tagmsg(_) ->
+    false.
+
+is_reaction_entry(#{cmd := <<"TAGMSG">>, tags := Tags}) when is_list(Tags) ->
+    lists:keymember(<<"+draft/react">>, 1, Tags) andalso
+        lists:keymember(<<"+draft/reply">>, 1, Tags);
+is_reaction_entry(_) ->
+    false.
 
 -doc """
 Record a channel event (`JOIN`, `PART`, `KICK`, `TOPIC`, `MODE`) for
@@ -217,11 +244,20 @@ params_list(notarget) -> [];
 params_list(Params) -> Params.
 
 %% Messages a client may receive from history. Without draft/event-playback
-%% only PRIVMSG and NOTICE are replayed (IRCv3 chathistory).
+%% PRIVMSG, NOTICE, and persistent reaction TAGMSGs (for message-tags clients)
+%% are replayed.
 playable(Pid, Entries) ->
     case ircd_cap:enabled(Pid, <<"draft/event-playback">>) of
-        true -> Entries;
-        false -> [E || #{cmd := C} = E <- Entries, C =:= <<"PRIVMSG">> orelse C =:= <<"NOTICE">>]
+        true ->
+            Entries;
+        false ->
+            HasTags = ircd_cap:enabled(Pid, <<"message-tags">>),
+            [
+                E
+             || #{cmd := C} = E <- Entries,
+                C =:= <<"PRIVMSG">> orelse C =:= <<"NOTICE">> orelse
+                    (HasTags andalso is_reaction_entry(E))
+            ]
     end.
 
 -doc """
@@ -240,7 +276,8 @@ note_direct({FromAccount, _} = From, {ToAccount, _} = To, Target, #{cmd := Comma
     (is_binary(FromAccount) orelse is_binary(ToAccount)),
     (Command =:= <<"PRIVMSG">> orelse Command =:= <<"NOTICE">> orelse Command =:= <<"TAGMSG">>)
 ->
-    case enabled() of
+    Skip = Command =:= <<"TAGMSG">> andalso is_ephemeral_tagmsg(maps:get(tags, Entry, [])),
+    case enabled() andalso not Skip of
         true ->
             PartyA = party(From),
             PartyB = party(To),

@@ -376,6 +376,7 @@ document.addEventListener("keydown", (ev) => {
     closeCodeModal();
     closeModModal();
     closeAttachMenu();
+    closeDiscoverModal();
     clearComposeMode();
   }
 });
@@ -2076,11 +2077,29 @@ function handleMessage(raw: string): void {
     return;
   }
   if (command === "322") {
+    const chan = params[1] || "";
+    const users = parseInt(params[2] || "0", 10) || 0;
+    const topic = params[3] || "";
+    if (discoverLoading || $("discover-modal").classList.contains("open")) {
+      if (chan) {
+        discoverChannels.push({ name: chan, users, topic });
+        renderDiscoverList();
+      }
+      return;
+    }
     addLine("*status", {
       time,
-      text: `${params[1]} (${params[2]} users) ${params[3] || ""}`,
+      text: `${chan} (${users} users) ${topic}`,
       kind: "sys",
     });
+    return;
+  }
+  if (command === "323") {
+    if (discoverLoading || $("discover-modal").classList.contains("open")) {
+      discoverLoading = false;
+      renderDiscoverList();
+      return;
+    }
     return;
   }
   if (/^\d{3}$/.test(command)) {
@@ -2093,6 +2112,22 @@ function handleMessage(raw: string): void {
       kind: "sys",
     });
   }
+}
+
+let connOffline = false;
+
+function setConnButtonState(offline: boolean): void {
+  connOffline = offline;
+  const btn = $("btn-conn");
+  const label = $("btn-conn-label");
+  btn.classList.toggle("primary", offline);
+  btn.classList.toggle("danger", !offline);
+  $("icon-disconnect").classList.toggle("hidden", offline);
+  $("icon-reconnect").classList.toggle("hidden", !offline);
+  const text = offline ? t("btn.reconnect") : t("btn.disconnect");
+  label.textContent = text;
+  btn.title = text;
+  btn.setAttribute("aria-label", text);
 }
 
 function connectSocket(url: string): void {
@@ -2110,7 +2145,7 @@ function connectSocket(url: string): void {
   }
   ws = new WebSocket(parsed.href, ["text.ircv3.net"]);
   $("status-dot").classList.remove("off");
-  $("btn-reconnect").style.display = "none";
+  setConnButtonState(false);
   addLine("*status", { text: `Connecting to ${url}...`, kind: "sys" });
 
   ws.onopen = () => {
@@ -2133,7 +2168,7 @@ function connectSocket(url: string): void {
     e2ee.resetConnection();
     updateTitle();
     $("status-dot").classList.add("off");
-    $("btn-reconnect").style.display = "inline-flex";
+    setConnButtonState(true);
     addLine("*status", { text: "Disconnected from server.", kind: "err" });
   };
 }
@@ -2489,10 +2524,6 @@ globalThis.addEventListener("popstate", () => {
   }
 });
 
-$("btn-reconnect").onclick = () => {
-  if (lastWsUrl) connectSocket(lastWsUrl);
-};
-
 let topicTarget = "";
 
 function openTopicModal(): void {
@@ -2526,7 +2557,11 @@ $<HTMLFormElement>("topic-form").addEventListener("submit", (ev) => {
   closeTopicModal();
 });
 
-$("btn-disconnect").onclick = () => {
+$("btn-conn").onclick = () => {
+  if (connOffline) {
+    if (lastWsUrl) connectSocket(lastWsUrl);
+    return;
+  }
   clearSession();
   isRegistered = false;
   hiddenUnread = 0;
@@ -3604,6 +3639,116 @@ $<HTMLFormElement>("mod-ban-form").addEventListener("submit", (ev) => {
     inp.value = "";
     renderModModal();
   }
+});
+
+// Channel Discovery Modal (LIST / 322 / 323)
+interface DiscoveredChannel {
+  name: string;
+  users: number;
+  topic: string;
+}
+let discoverChannels: DiscoveredChannel[] = [];
+let discoverLoading = false;
+
+function renderDiscoverList(): void {
+  const wrap = $("discover-list");
+  wrap.textContent = "";
+  if (discoverLoading && discoverChannels.length === 0) {
+    const msg = document.createElement("div");
+    msg.className = "muted discover-empty";
+    msg.textContent = t("discover.loading");
+    wrap.appendChild(msg);
+    return;
+  }
+  const q = $<HTMLInputElement>("inp-discover-filter").value.trim()
+    .toLowerCase();
+  const filtered = discoverChannels
+    .filter((c) =>
+      !q || c.name.toLowerCase().includes(q) ||
+      c.topic.toLowerCase().includes(q)
+    )
+    .sort((a, b) => b.users - a.users || a.name.localeCompare(b.name));
+
+  if (filtered.length === 0) {
+    const msg = document.createElement("div");
+    msg.className = "muted discover-empty";
+    msg.textContent = t("discover.empty");
+    wrap.appendChild(msg);
+    return;
+  }
+
+  for (const ch of filtered) {
+    const row = document.createElement("div");
+    row.className = "discover-row";
+
+    const info = document.createElement("div");
+    info.className = "discover-info";
+
+    const top = document.createElement("div");
+    top.className = "discover-top";
+    const nameEl = document.createElement("strong");
+    nameEl.dir = "ltr";
+    nameEl.textContent = ch.name;
+    const countEl = document.createElement("span");
+    countEl.className = "discover-count";
+    countEl.textContent = t("discover.users", { count: ch.users });
+    top.appendChild(nameEl);
+    top.appendChild(countEl);
+
+    info.appendChild(top);
+    if (ch.topic) {
+      const topicEl = document.createElement("div");
+      topicEl.className = "discover-topic muted";
+      topicEl.dir = "auto";
+      topicEl.textContent = ch.topic;
+      info.appendChild(topicEl);
+    }
+
+    const joined = buffers.has(ch.name.toLowerCase());
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = joined ? "small" : "small primary";
+    btn.textContent = joined ? t("discover.open") : t("btn.join");
+    btn.onclick = () => {
+      closeDiscoverModal();
+      if (joined) {
+        switchBuf(ch.name.toLowerCase());
+      } else {
+        sendRaw(`JOIN ${ch.name}`);
+      }
+    };
+
+    row.appendChild(info);
+    row.appendChild(btn);
+    wrap.appendChild(row);
+  }
+}
+
+function requestDiscoverList(): void {
+  discoverChannels = [];
+  discoverLoading = true;
+  renderDiscoverList();
+  sendRaw("LIST");
+}
+
+function openDiscoverModal(): void {
+  closeDrawers();
+  $("discover-modal").classList.add("open");
+  requestDiscoverList();
+  $<HTMLInputElement>("inp-discover-filter").focus();
+}
+
+function closeDiscoverModal(): void {
+  $("discover-modal").classList.remove("open");
+  discoverLoading = false;
+}
+
+$("btn-discover").onclick = openDiscoverModal;
+$("btn-close-discover").onclick = closeDiscoverModal;
+$("btn-discover-refresh").onclick = requestDiscoverList;
+$("inp-discover-filter").addEventListener("input", renderDiscoverList);
+$("discover-modal").addEventListener("click", (ev) => {
+  if (ev.target === $("discover-modal")) closeDiscoverModal();
 });
 
 // Keep chat workspace pinned cleanly above the iOS software keyboard

@@ -107,3 +107,49 @@ cap_features_advertisement_test() ->
             _ -> persistent_term:put({ircd_state, config}, Old)
         end
     end.
+
+reaction_persistence_test() ->
+    Old = persistent_term:get({ircd_state, config}, undefined),
+    ok = mnesia:start(),
+    _ = mnesia:create_table(channel_history, [
+        {attributes, [channel, entries]}, {record_name, channel_history}
+    ]),
+    try
+        persistent_term:put({ircd_state, config}, #{chathistory => true, history_limit => 50}),
+        Key = <<"#react_persist_test">>,
+        mnesia:dirty_delete(channel_history, Key),
+        Msg = ircd_state_history:entry(
+            <<"PRIVMSG">>, <<"alice!a@h">>, <<"hi">>, <<"m1">>, 1000, [], <<"alice">>
+        ),
+        React = ircd_state_history:entry(
+            <<"TAGMSG">>,
+            <<"bob!b@h">>,
+            none,
+            <<"m2">>,
+            1001,
+            [{<<"+draft/reply">>, <<"m1">>}, {<<"+draft/react">>, <<"👍">>}],
+            <<"bob">>
+        ),
+        Typing = ircd_state_history:entry(
+            <<"TAGMSG">>,
+            <<"bob!b@h">>,
+            none,
+            <<"m3">>,
+            1002,
+            [{<<"+typing">>, <<"active">>}],
+            <<"bob">>
+        ),
+        ok = ircd_state_history:note_channel(Key, Msg),
+        ok = ircd_state_history:note_channel(Key, React),
+        ok = ircd_state_history:note_channel(Key, Typing),
+        [{channel_history, Key, Entries}] = mnesia:dirty_read(channel_history, Key),
+        %% Typing TAGMSG must NOT be persisted; PRIVMSG + reaction TAGMSG MUST be persisted.
+        ?assertEqual(2, length(Entries)),
+        ?assertEqual([<<"m2">>, <<"m1">>], [maps:get(msgid, E) || E <- Entries]),
+        mnesia:dirty_delete(channel_history, Key)
+    after
+        case Old of
+            undefined -> persistent_term:erase({ircd_state, config});
+            _ -> persistent_term:put({ircd_state, config}, Old)
+        end
+    end.

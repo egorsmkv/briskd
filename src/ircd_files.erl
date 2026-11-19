@@ -233,7 +233,7 @@ list() ->
                 {error, {s3, <<"NoSuchBucket">>, _, _}} ->
                     Base#{objects => []};
                 {error, Reason} ->
-                    ircd_log:warning(files_list_failed, #{reason => Reason}),
+                    logger:warning(#{event => files_list_failed, reason => Reason}),
                     Base#{objects => [], error => <<"storage_error">>}
             end
     end.

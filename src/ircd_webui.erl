@@ -700,7 +700,7 @@ handle_voice_upload(Socket, Headers, Body) ->
                                 message => <<"Only OPUS audio (Ogg or WebM) is accepted.">>
                             });
                         {error, Reason} ->
-                            ircd_log:warning(voice_upload_failed, #{reason => Reason}),
+                            logger:warning(#{event => voice_upload_failed, reason => Reason}),
                             send_json(Socket, 502, <<"Bad Gateway">>, #{
                                 error => <<"storage_error">>
                             })
@@ -736,7 +736,7 @@ handle_voice_download(Socket, VoiceId) ->
         {error, not_found} ->
             send_json(Socket, 404, <<"Not Found">>, #{error => <<"not_found">>});
         {error, Reason} ->
-            ircd_log:warning(voice_download_failed, #{id => VoiceId, reason => Reason}),
+            logger:warning(#{event => voice_download_failed, id => VoiceId, reason => Reason}),
             send_json(Socket, 502, <<"Bad Gateway">>, #{error => <<"storage_error">>})
     end.
 
@@ -770,7 +770,7 @@ handle_file_upload(Socket, Headers, Body) ->
                                 error => <<"payload_too_large">>
                             });
                         {error, Reason} ->
-                            ircd_log:warning(file_upload_failed, #{reason => Reason}),
+                            logger:warning(#{event => file_upload_failed, reason => Reason}),
                             send_json(Socket, 502, <<"Bad Gateway">>, #{
                                 error => <<"storage_error">>
                             })
@@ -849,7 +849,7 @@ handle_file_download(Socket, FileId) ->
         {error, not_found} ->
             send_json(Socket, 404, <<"Not Found">>, #{error => <<"not_found">>});
         {error, Reason} ->
-            ircd_log:warning(file_download_failed, #{id => FileId, reason => Reason}),
+            logger:warning(#{event => file_download_failed, id => FileId, reason => Reason}),
             send_json(Socket, 502, <<"Bad Gateway">>, #{error => <<"storage_error">>})
     end.
 
@@ -1144,7 +1144,7 @@ dispatch_action(Socket, <<"toggle-feature">>, [KeyBin, ValBin]) ->
             Config = persistent_term:get({ircd_state, config}, #{}),
             Updated = (current_features(Config))#{Key => Bool},
             persistent_term:put({ircd_state, config}, Config#{features => Updated}),
-            ircd_log:notice(admin_feature_toggled, #{feature => Key, enabled => Bool}),
+            logger:notice(#{event => admin_feature_toggled, feature => Key, enabled => Bool}),
             send_json(Socket, 200, <<"OK">>, #{status => <<"updated">>, features => Updated});
         error ->
             send_json(Socket, 400, <<"Bad Request">>, #{error => <<"invalid_feature">>})
@@ -1152,7 +1152,7 @@ dispatch_action(Socket, <<"toggle-feature">>, [KeyBin, ValBin]) ->
 dispatch_action(Socket, <<"delete-voice">>, [VoiceId]) ->
     case ircd_voice:delete(VoiceId) of
         ok ->
-            ircd_log:notice(admin_voice_deleted, #{id => VoiceId}),
+            logger:notice(#{event => admin_voice_deleted, id => VoiceId}),
             send_json(Socket, 200, <<"OK">>, #{status => <<"deleted">>, id => VoiceId});
         {error, invalid_id} ->
             send_json(Socket, 400, <<"Bad Request">>, #{error => <<"invalid_voice_id">>});
@@ -1164,7 +1164,7 @@ dispatch_action(Socket, <<"delete-voice">>, [VoiceId]) ->
 dispatch_action(Socket, <<"delete-file">>, [FileId]) ->
     case ircd_files:delete(FileId) of
         ok ->
-            ircd_log:notice(admin_file_deleted, #{id => FileId}),
+            logger:notice(#{event => admin_file_deleted, id => FileId}),
             send_json(Socket, 200, <<"OK">>, #{status => <<"deleted">>, id => FileId});
         {error, invalid_id} ->
             send_json(Socket, 400, <<"Bad Request">>, #{error => <<"invalid_file_id">>});

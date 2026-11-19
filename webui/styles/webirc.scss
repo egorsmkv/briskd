@@ -267,6 +267,33 @@ body {
   padding: 10px 8px;
 }
 
+.section-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 8px 8px 4px;
+  .section-label {
+    padding: 0;
+  }
+}
+
+.btn-discover {
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  &:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+}
+
 .section-label {
   font-size: 11px;
   text-transform: uppercase;
@@ -630,8 +657,11 @@ body {
 .attach-option {
   display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: flex-start;
+  gap: 14px;
   width: 100%;
+  height: auto;
+  min-height: 64px;
   padding: 12px 14px;
   border-radius: 10px;
   border: 1px solid var(--border);
@@ -677,17 +707,103 @@ body {
 }
 
 .attach-option-text {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  align-items: flex-start;
+  gap: 3px;
   min-width: 0;
+  text-align: start;
   strong {
     font-size: 14px;
     font-weight: 600;
+    line-height: 1.25;
   }
   .muted {
     font-size: 12px;
+    line-height: 1.35;
   }
+}
+
+.attach-chevron {
+  font-size: 20px;
+  line-height: 1;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.discover-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  input {
+    flex: 1;
+    min-width: 0;
+    height: 36px;
+    padding: 0 10px;
+  }
+}
+
+.discover-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 380px;
+  overflow-y: auto;
+}
+
+.discover-empty {
+  text-align: center;
+  padding: 20px 8px;
+  font-size: 13px;
+}
+
+.discover-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  &:hover {
+    border-color: var(--accent);
+  }
+}
+
+.discover-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.discover-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  strong {
+    font-size: 14px;
+  }
+}
+
+.discover-count {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.discover-topic {
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .scroll-bottom-fab {

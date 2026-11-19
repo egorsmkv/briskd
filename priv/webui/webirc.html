@@ -87,7 +87,10 @@
       <button type="button" class="small mobile-only" id="btn-close-left" aria-label="Close channels">×</button>
     </div>
     <div class="buffer-scroll">
-      <div class="section-label" data-i18n="sec.channels">Channels</div>
+      <div class="section-label-row">
+        <span class="section-label" data-i18n="sec.channels">Channels</span>
+        <button type="button" class="btn-discover" id="btn-discover" title="Browse public channels" data-i18n="btn.discover">Discover</button>
+      </div>
       <div id="channel-list"></div>
       <div class="section-label" data-i18n="sec.dms">Direct Messages</div>
       <div id="dm-list"></div>
@@ -117,14 +120,14 @@
         <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
         <span class="btn-label" data-i18n="btn.users">Users</span>
       </button>
-      <button type="button" class="small primary hidden" id="btn-reconnect" data-i18n="btn.reconnect">Reconnect</button>
       <button type="button" class="small icon-mobile" id="btn-settings-2" aria-label="Settings" title="Settings">
         <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         <span class="btn-label" data-i18n="btn.settings">Settings</span>
       </button>
-      <button type="button" class="small danger icon-mobile" id="btn-disconnect" aria-label="Disconnect" title="Disconnect">
-        <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-        <span class="btn-label" data-i18n="btn.disconnect">Disconnect</span>
+      <button type="button" class="small danger icon-mobile" id="btn-conn" aria-label="Disconnect" title="Disconnect">
+        <svg class="btn-icon" id="icon-disconnect" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        <svg class="btn-icon hidden" id="icon-reconnect" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        <span class="btn-label" id="btn-conn-label" data-i18n="btn.disconnect">Disconnect</span>
       </button>
     </div>
   </header>
@@ -395,6 +398,7 @@
             <strong data-i18n="file.attach">Attach file</strong>
             <span class="muted" id="attach-file-desc" data-i18n="attach.file.desc">Images, albums, documents, or archives</span>
           </span>
+          <span class="attach-chevron" aria-hidden="true">›</span>
         </button>
         <button type="button" class="attach-option hidden" id="btn-attach-code-menu">
           <span class="attach-option-icon attach-icon-code">&lt;/&gt;</span>
@@ -402,6 +406,7 @@
             <strong data-i18n="code.modal.title">Share Code Snippet</strong>
             <span class="muted" data-i18n="attach.code.desc">Syntax-highlighted paste with copy button</span>
           </span>
+          <span class="attach-chevron" aria-hidden="true">›</span>
         </button>
         <button type="button" class="attach-option hidden" id="btn-attach-voice-menu">
           <span class="attach-option-icon attach-icon-voice">
@@ -411,8 +416,25 @@
             <strong data-i18n="voice.label">Voice message</strong>
             <span class="muted" data-i18n="attach.voice.desc">Record and send an OPUS audio clip</span>
           </span>
+          <span class="attach-chevron" aria-hidden="true">›</span>
         </button>
       </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="discover-modal" role="dialog" aria-modal="true" aria-labelledby="discover-modal-title">
+  <div class="modal-card modal-wide">
+    <div class="modal-head">
+      <h2 id="discover-modal-title" data-i18n="discover.title">Discover Channels</h2>
+      <button type="button" class="small" id="btn-close-discover" aria-label="Close channel discovery">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="discover-toolbar">
+        <input type="search" id="inp-discover-filter" dir="auto" placeholder="Filter channels or topics..." data-i18n-placeholder="discover.search">
+        <button type="button" class="small" id="btn-discover-refresh" data-i18n="discover.refresh">Refresh</button>
+      </div>
+      <div class="discover-list" id="discover-list"></div>
     </div>
   </div>
 </div>
