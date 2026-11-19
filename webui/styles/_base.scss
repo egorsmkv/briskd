@@ -1,0 +1,138 @@
+@use "tokens";
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
+button,
+select,
+input {
+  font: inherit;
+  padding: 7px 11px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+input:focus,
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+button {
+  cursor: pointer;
+  font-weight: 500;
+  &:hover {
+    background: var(--hover);
+  }
+  &.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    &:hover {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+    }
+    &:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+  }
+  &.danger {
+    background: var(--danger);
+    border-color: var(--danger);
+    color: #fff;
+    &:hover {
+      background: var(--danger-hover);
+      border-color: var(--danger-hover);
+    }
+  }
+  &.small {
+    padding: 4px 9px;
+    font-size: 12px;
+  }
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+#notice {
+  display: none;
+  padding: 10px 14px;
+  border-radius: 6px;
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 13px;
+  white-space: pre-wrap;
+  &.ok {
+    display: block;
+    border-color: var(--notice-ok-border);
+    background: var(--notice-ok-bg);
+    color: var(--ok);
+  }
+  &.err {
+    display: block;
+    border-color: var(--notice-err-border);
+    background: var(--notice-err-bg);
+    color: var(--danger);
+  }
+}
+
+.altcha-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-alt);
+
+  .altcha-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    cursor: pointer;
+    margin: 0;
+    input {
+      width: auto;
+      margin: 0;
+    }
+  }
+
+  .altcha-brand {
+    font-size: 11px;
+    color: var(--muted);
+  }
+}

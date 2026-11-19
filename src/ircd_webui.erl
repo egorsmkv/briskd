@@ -97,7 +97,8 @@ init(#{webui := #{ip := IP, port := Port}}) ->
                 index => load_asset("index.html", <<"ircd admin UI asset missing">>),
                 signup => load_asset("signup.html", <<"ircd signup UI asset missing">>),
                 verify => load_asset("verify.html", <<"ircd verify UI asset missing">>),
-                webirc => load_asset("webirc.html", <<"ircd webirc UI asset missing">>)
+                webirc => load_asset("webirc.html", <<"ircd webirc UI asset missing">>),
+                static => load_static_assets()
             },
             Counter = atomics:new(1, []),
             Acceptor = spawn_link(fun() -> accept_loop(Listen, Assets, Counter) end),
@@ -196,9 +197,18 @@ accept_loop(Listen, Assets, Counter) ->
     end.
 
 handle_connection(
-    Socket, #{index := IndexHtml, signup := SignupHtml, verify := VerifyHtml, webirc := WebircHtml}
+    Socket,
+    #{
+        index := IndexHtml,
+        signup := SignupHtml,
+        verify := VerifyHtml,
+        webirc := WebircHtml,
+        static := Static
+    }
 ) ->
     case read_request(Socket) of
+        {ok, <<"GET">>, {<<"/assets/", Name/binary>>, _Query}, _Headers, _Body} ->
+            handle_static(Socket, Name, Static);
         {ok, <<"GET">>, {<<"/api/altcha">>, _Query}, _Headers, _Body} ->
             send_json(Socket, 200, <<"OK">>, ircd_altcha:create_challenge());
         {ok, <<"GET">>, {<<"/webirc">>, _Query}, _Headers, _Body} ->
@@ -229,6 +239,21 @@ handle_connection(
             send_json(Socket, 413, <<"Payload Too Large">>, #{error => <<"payload_too_large">>});
         {error, _} ->
             send_json(Socket, 400, <<"Bad Request">>, #{error => <<"bad_request">>})
+    end.
+
+handle_static(Socket, Name, Static) ->
+    case maps:find(Name, Static) of
+        {ok, {ContentType, Body}} ->
+            send_response(
+                Socket,
+                200,
+                <<"OK">>,
+                ContentType,
+                [{<<"Cache-Control">>, <<"public, max-age=300">>}],
+                Body
+            );
+        error ->
+            send_json(Socket, 404, <<"Not Found">>, #{error => <<"not_found">>})
     end.
 
 handle_webirc_page(Socket, WebircHtml) ->
@@ -563,6 +588,20 @@ handle_action(Socket, Body) ->
 dispatch_action(Socket, <<"dronebl-unban">>, [IP]) ->
     ok = ircd_dronebl:unban(IP),
     send_json(Socket, 200, <<"OK">>, #{status => <<"unbanned">>, ip => IP});
+dispatch_action(Socket, <<"dronebl-ban">>, [IP | Rest]) ->
+    Reason =
+        case Rest of
+            [R | _] when byte_size(R) > 0 -> R;
+            _ -> <<"Manual admin ban">>
+        end,
+    case ircd_dronebl:ban(IP, 255, Reason) of
+        ok ->
+            send_json(Socket, 200, <<"OK">>, #{status => <<"banned">>, ip => IP});
+        {error, invalid_ip} ->
+            send_json(Socket, 400, <<"Bad Request">>, #{
+                error => <<"invalid_ip">>, ip => IP
+            })
+    end;
 dispatch_action(Socket, Action, Args) ->
     case allowed_action(Action) of
         true ->
@@ -588,9 +627,12 @@ dispatch_action(Socket, Action, Args) ->
     end.
 
 allowed_action(<<"rehash">>) -> true;
+allowed_action(<<"check-config">>) -> true;
 allowed_action(<<"reload-certs">>) -> true;
 allowed_action(<<"log-level">>) -> true;
 allowed_action(<<"kick-client">>) -> true;
+allowed_action(<<"notice-all">>) -> true;
+allowed_action(<<"set-topic">>) -> true;
 allowed_action(<<"connect">>) -> true;
 allowed_action(<<"squit">>) -> true;
 allowed_action(<<"create-account">>) -> true;
@@ -778,7 +820,7 @@ send_nonce_html(Socket, Html, ExtraCsp) ->
     Csp = <<
         "default-src 'self'; ",
         ExtraCsp/binary,
-        "style-src 'unsafe-inline'; script-src 'nonce-",
+        "style-src 'self'; script-src 'self' 'nonce-",
         Nonce/binary,
         "'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
     >>,
@@ -790,6 +832,47 @@ send_nonce_html(Socket, Html, ExtraCsp) ->
         [{<<"Content-Security-Policy">>, Csp}],
         Body
     ).
+
+load_static_assets() ->
+    Specs = [
+        {<<"admin.js">>, <<"application/javascript; charset=utf-8">>},
+        {<<"admin.css">>, <<"text/css; charset=utf-8">>},
+        {<<"signup.js">>, <<"application/javascript; charset=utf-8">>},
+        {<<"signup.css">>, <<"text/css; charset=utf-8">>},
+        {<<"verify.js">>, <<"application/javascript; charset=utf-8">>},
+        {<<"verify.css">>, <<"text/css; charset=utf-8">>},
+        {<<"webirc.js">>, <<"application/javascript; charset=utf-8">>},
+        {<<"webirc.css">>, <<"text/css; charset=utf-8">>}
+    ],
+    lists:foldl(
+        fun({Name, Mime}, Acc) ->
+            Rel = filename:join("assets", binary_to_list(Name)),
+            case read_asset_file(Rel) of
+                {ok, Bin} -> Acc#{Name => {Mime, Bin}};
+                error -> Acc
+            end
+        end,
+        #{},
+        Specs
+    ).
+
+read_asset_file(Rel) ->
+    Candidates = [
+        case code:priv_dir(ircd) of
+            {error, _} -> filename:join(["priv", "webui", Rel]);
+            Dir -> filename:join([Dir, "webui", Rel])
+        end,
+        filename:join(["priv", "webui", Rel])
+    ],
+    read_file_first(Candidates).
+
+read_file_first([Path | Rest]) ->
+    case file:read_file(Path) of
+        {ok, Bin} -> {ok, Bin};
+        {error, _} -> read_file_first(Rest)
+    end;
+read_file_first([]) ->
+    error.
 
 load_asset(File, Fallback) ->
     Candidates = [

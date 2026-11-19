@@ -1,0 +1,14 @@
+{
+  "tasks": {
+    "build": "deno run --allow-read --allow-write --allow-env --allow-run build.ts",
+    "check": "deno check src/admin.ts src/signup.ts src/verify.ts src/webirc.ts"
+  },
+  "compilerOptions": {
+    "lib": ["dom", "dom.iterable", "es2022"],
+    "strict": true
+  },
+  "imports": {
+    "esbuild": "npm:esbuild@0.25.2",
+    "sass": "npm:sass@1.86.3"
+  }
+}

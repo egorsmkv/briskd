@@ -1,6 +1,14 @@
 default:
     @just --list
 
+# Build WebUI TypeScript and Sass assets with Deno.
+build-webui:
+    cd webui && deno task build
+
+# Type-check WebUI TypeScript sources with Deno.
+check-webui:
+    cd webui && deno task check
+
 # Compile the application and dependencies.
 build:
     rebar3 compile

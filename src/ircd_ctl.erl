@@ -372,6 +372,38 @@ handle_state_action({create_account, Name, Password, Email}, _Server) ->
         {error, Reason} ->
             {error, Reason}
     end;
+handle_state_action({notice_all, Text}, Server) ->
+    Pids = [
+        Pid
+     || Pid <- mnesia:dirty_all_keys(client),
+        [Client] <- [mnesia:dirty_read(client, Pid)],
+        ircd_state_client:ready(Client)
+    ],
+    lists:foreach(
+        fun(Pid) ->
+            ircd_state_send:send(Pid, Server, <<"NOTICE">>, [<<"*">>], Text)
+        end,
+        Pids
+    ),
+    logger:notice(#{event => ctl_notice_all, recipients => length(Pids)}),
+    {ok, #{status => <<"sent">>, recipients => length(Pids)}};
+handle_state_action({set_topic, ChannelName, Topic}, Server) ->
+    Key = ircd_wire:fold(ChannelName),
+    case mnesia:dirty_read(channel, Key) of
+        [] ->
+            {error, {no_such_channel, ChannelName}};
+        [#channel{name = Actual, members = Members} = Channel] ->
+            Now = erlang:system_time(second),
+            Updated = Channel#channel{
+                topic = ircd_wire:retain(Topic),
+                topic_by = Server,
+                topic_at = Now
+            },
+            mnesia:dirty_write(Updated),
+            ircd_state_send:broadcast(maps:keys(Members), Server, <<"TOPIC">>, [Actual], Topic),
+            logger:notice(#{event => ctl_set_topic, channel => Actual}),
+            {ok, #{status => <<"updated">>, channel => Actual, topic => Topic}}
+    end;
 handle_state_action({verify_account, Name}, _Server) ->
     case ircd_account:force_verify(Name) of
         {ok, #account{name = Actual} = Account} ->
@@ -506,6 +538,14 @@ dispatch([<<"create-account">>, Name, Password | Rest], Format) ->
         end,
     cmd_state_call({create_account, Name, Password, Email}, Format, fun(#{account := A}) ->
         <<"Created account ", A/binary>>
+    end);
+dispatch([<<"notice-all">>, Text | _], Format) when byte_size(Text) > 0, byte_size(Text) =< 400 ->
+    cmd_state_call({notice_all, Text}, Format, fun(#{recipients := N}) ->
+        <<"Sent notice to ", (integer_to_binary(N))/binary, " users">>
+    end);
+dispatch([<<"set-topic">>, Channel, Topic | _], Format) when byte_size(Topic) =< 390 ->
+    cmd_state_call({set_topic, Channel, Topic}, Format, fun(#{channel := C}) ->
+        <<"Updated topic for ", C/binary>>
     end);
 dispatch([<<"verify-account">>, Name | _], Format) ->
     cmd_state_call({verify_account, Name}, Format, fun(#{account := A}) ->

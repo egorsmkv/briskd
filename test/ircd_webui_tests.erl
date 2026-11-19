@@ -79,8 +79,9 @@ live_webui() ->
         ?assertEqual(<<"DENY">>, maps:get(<<"x-frame-options">>, HtmlHeaders)),
         ?assertEqual(<<"nosniff">>, maps:get(<<"x-content-type-options">>, HtmlHeaders)),
         Csp = maps:get(<<"content-security-policy">>, HtmlHeaders),
-        ?assert(binary:match(Csp, <<"script-src 'nonce-">>) =/= nomatch),
-        ?assertEqual(nomatch, binary:match(Csp, <<"script-src 'unsafe-inline'">>)),
+        ?assert(binary:match(Csp, <<"script-src 'self' 'nonce-">>) =/= nomatch),
+        ?assert(binary:match(Csp, <<"style-src 'self'">>) =/= nomatch),
+        ?assertEqual(nomatch, binary:match(Csp, <<"'unsafe-inline'">>)),
         ?assert(binary:match(Csp, <<"frame-ancestors 'none'">>) =/= nomatch),
         ?assertEqual(nomatch, binary:match(HtmlBody, <<"__CSP_NONCE__">>)),
         ?assert(binary:match(HtmlBody, <<"<title>ircd admin</title>">>) =/= nomatch),
@@ -135,6 +136,32 @@ live_webui() ->
         {200, _, RehashBody} = post_action(Port, GoodAuth, <<"rehash">>, []),
         ?assertMatch(#{<<"status">> := <<"rehashed">>}, json:decode(RehashBody)),
 
+        {200, _, CheckCfgBody} = post_action(Port, GoodAuth, <<"check-config">>, []),
+        ?assertMatch(#{<<"status">> := <<"valid">>}, json:decode(CheckCfgBody)),
+
+        {200, _, NoticeBody} = post_action(Port, GoodAuth, <<"notice-all">>, [
+            <<"Maintenance soon">>
+        ]),
+        ?assertMatch(#{<<"status">> := <<"sent">>}, json:decode(NoticeBody)),
+
+        {200, _, BanBody} = post_action(Port, GoodAuth, <<"dronebl-ban">>, [
+            <<"198.51.100.42">>, <<"Abuse">>
+        ]),
+        ?assertMatch(#{<<"status">> := <<"banned">>}, json:decode(BanBody)),
+        {200, _, Unban42} = post_action(Port, GoodAuth, <<"dronebl-unban">>, [<<"198.51.100.42">>]),
+        ?assertMatch(#{<<"status">> := <<"unbanned">>}, json:decode(Unban42)),
+
+        %% Compiled static TypeScript/Sass assets are served with exact MIME types.
+        {200, JsHdrs, JsBody} = http_req(Port, <<"GET">>, <<"/assets/admin.js">>, [], <<>>),
+        ?assertEqual(
+            <<"application/javascript; charset=utf-8">>, maps:get(<<"content-type">>, JsHdrs)
+        ),
+        ?assert(byte_size(JsBody) > 100),
+        {200, CssHdrs, CssBody} = http_req(Port, <<"GET">>, <<"/assets/webirc.css">>, [], <<>>),
+        ?assertEqual(<<"text/css; charset=utf-8">>, maps:get(<<"content-type">>, CssHdrs)),
+        ?assert(byte_size(CssBody) > 100),
+        {404, _, _} = http_req(Port, <<"GET">>, <<"/assets/../../etc/passwd">>, [], <<>>),
+
         {200, _, CreateBody} = post_action(
             Port, GoodAuth, <<"create-account">>, [<<"webops">>, <<"strongpass123">>]
         ),
@@ -168,7 +195,7 @@ live_webui() ->
         {200, SignupHdrs, SignupHtml} = http_req(Port, <<"GET">>, <<"/signup">>, [], <<>>),
         ?assert(
             binary:match(
-                maps:get(<<"content-security-policy">>, SignupHdrs), <<"script-src 'nonce-">>
+                maps:get(<<"content-security-policy">>, SignupHdrs), <<"script-src 'self' 'nonce-">>
             ) =/=
                 nomatch
         ),
@@ -345,7 +372,7 @@ live_webui() ->
         {200, WebircHdrs, WebircHtml} = http_req(Port, <<"GET">>, <<"/webirc">>, [], <<>>),
         WebircCsp = maps:get(<<"content-security-policy">>, WebircHdrs),
         ?assert(binary:match(WebircCsp, <<"connect-src 'self' ws: wss:">>) =/= nomatch),
-        ?assert(binary:match(WebircCsp, <<"script-src 'nonce-">>) =/= nomatch),
+        ?assert(binary:match(WebircCsp, <<"script-src 'self' 'nonce-">>) =/= nomatch),
         ?assert(binary:match(WebircHtml, <<"WebIRC">>) =/= nomatch),
         ?assertEqual(nomatch, binary:match(WebircHtml, <<"__NETWORK_NAME__">>)),
         ?assertEqual(nomatch, binary:match(WebircHtml, <<"__WS_PORT__">>)),
