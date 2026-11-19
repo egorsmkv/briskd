@@ -41,7 +41,7 @@ for IRCv3 drafts, and there is no published one for end-to-end encryption.
 | Name | Kind | Use |
 | --- | --- | --- |
 | `egorsmkv.github.io/e2ee` | capability | Value `v=1,max-devices=N,max-prekeys=N,queue=N` |
-| `+egorsmkv.github.io/e2ee-src` | client-only tag | Sender's device id (clients) |
+| `+egorsmkv.github.io/e2ee-src` | client-only tag | Sender, for clients; the test clients use `<account>:<device>` |
 | `+egorsmkv.github.io/e2ee-dst` | client-only tag | Recipient device id; the server queues by it |
 | `+egorsmkv.github.io/e2ee-type` | client-only tag | Envelope type, such as `prekey`, `msg`, `skdist` (clients) |
 | `egorsmkv.github.io/e2ee-qid` | server tag | Queue id on a replayed envelope, for `ACK` |
@@ -107,6 +107,10 @@ ciphertext in a client tag), addressed to the nickname, with the device tags:
 C: @+egorsmkv.github.io/e2ee-src=102938;+egorsmkv.github.io/e2ee-dst=481516;+egorsmkv.github.io/e2ee-type=prekey PRIVMSG alice :<base64 ciphertext>
 ```
 
+Long ciphertext can go in a `draft/multiline` batch with the E2EE tags on
+the `BATCH` line. Batches are queued whole and replayed as one batch, with
+the `qid` on the opening `BATCH` line.
+
 A client says which device a connection is:
 
 ```text
@@ -118,7 +122,10 @@ C: E2EE ACK <qid>[,<qid>...]
 
 The server routes a message that carries the `dst` tag as follows:
 
-- **The device is bound to a live connection:** normal delivery.
+- **The device is bound to a live connection:** normal delivery. When that
+  connection uses another nickname than the target, for example a second
+  device of the same account, it also gets its own copy, on this server or
+  across a link.
 - **The recipient is online, but not on that device:** normal delivery to the
   recipient's connections, and the envelope is also queued for the device.
   The sender gets `E2EE QUEUED <target> <device> <qid>`.
@@ -148,21 +155,72 @@ must rotate and redistribute their Sender Keys when anyone leaves, is kicked,
 or quits. Clients see this through normal `PART`, `KICK`, and `QUIT`, and
 `extended-join` and `account-notify` give the accounts involved.
 
+## Server links
+
+Every server in the network keeps the whole directory and every queue, so a
+device can fetch from, queue for, and bind on any server. Changes are sent
+to the peers and relayed onward, never back to the link they came from.
+A newly linked server gets everything in its burst. The lines come from the
+server, except `BIND`, which comes from the user:
+
+```text
+:<server> E2EE DEVICE <account> <device> <updated-us> <identity> <spk-id>:<spk> <sig>
+:<server> E2EE PREKEYS <account> <device> <id>:<key> ...
+:<server> E2EE USE <account> <device> <prekey-id>
+:<server> E2EE DELETE <account> <device>
+@egorsmkv.github.io/e2ee-body=<b64 json>;egorsmkv.github.io/e2ee-tags=<b64 json> :<server> E2EE QUEUE <account> <device> <qid> <expires> <command> <target> <sender>
+:<server> E2EE ACK <account> <device> <qid>[,<qid>...]
+:<nick!user@host> E2EE BIND <device>
+```
+
+A queued envelope's body and tags travel in server tags, so they are not
+limited by the 512-octet line. An envelope too large for the 8191-byte tag
+section stays on the server where it was queued. Replication is eventually
+consistent:
+
+- **Bundles:** the bundle with the newer `updated` time wins.
+- **One-time prekeys:** a server remembers the ids it has handed out, so a
+  burst cannot bring one back.
+- **Splits:** two servers that are split can still hand out the same prekey.
+  The second X3DH session then fails, and that client fetches again.
+- **Bindings:** a `BIND` is valid while that user is still logged into the
+  same account. It follows nickname changes and ends when the user leaves.
+
+## Testing with real clients
+
+`test/e2ee/` holds Python clients that do the cryptography for real:
+- `e2ee_crypto.py`: X3DH, the Double Ratchet with skipped message keys, and
+  Sender Keys, using the `cryptography` package.
+- `device.py`: one device. It publishes and binds its keys, keeps sessions
+  with identity keys pinned on first use (TOFU), and handles multiline
+  envelopes and channel sender keys.
+- `test_e2ee.py`: the tests.
+
+`test/e2ee/run` starts two linked servers (`hub` and `leaf`) and runs the
+tests in Docker Compose. CI runs it as well. The tests cover:
+
+- the crypto alone
+- direct messages
+- the offline queue with `ACK`
+- long multiline messages
+- two devices of one account
+- bundles and queues across the link
+- channel Sender Keys with rotation when a member leaves
+- TOFU detecting a changed identity key
+- refusal of keys without an account
+
 ## Limits and notes
 
 - **Line length.** The tag section has its own budget of 8191 bytes, but the
   rest of a line stays within 512 octets. In
   `PRIVMSG alice :<ciphertext>` that leaves about 470 bytes of base64, about
   350 bytes of raw ciphertext. Longer messages need a `draft/multiline` batch
-  (up to 4096 bytes, delivered live but not queued), or several envelopes.
+  (up to 4096 bytes, queued like any envelope), or several envelopes.
   The pasted proposal's claim that message tags extend the message length is
   incorrect. Key bundles use several plain IRC lines for the same reason,
   instead of one JSON blob.
 - **Numerics.** The proposal's 900 and 901 replies are not used: 900 is
   RPL_LOGGEDIN, which SASL already sends.
-- **Server links.** Bundles and queues are kept on the server the account uses.
-  They are not replicated across server links yet, and a user on another
-  server cannot fetch them.
 - **Persistence.** Bundles and queued envelopes are Mnesia disc copies and
   survive a restart (see [Mnesia operations](mnesia.md)). Chat history, when
   enabled, also records the ciphertext of direct messages. It cannot read it.

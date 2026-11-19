@@ -41,6 +41,8 @@ broker() ->
         capability(Port),
         directory(Port),
         queue(Port),
+        multiline(Port),
+        second_device(Port),
         expiry()
     end).
 
@@ -210,6 +212,80 @@ queue(Port) ->
     close(Bob),
     close(Back).
 
+%% A draft/multiline batch for an offline device is queued whole and
+%% replayed as one batch, with the qid on its opening BATCH line.
+multiline(Port) ->
+    Bob = login(Port, <<"bob">>, <<"bobpassword1">>),
+    send(Bob, <<"CAP REQ :batch draft/multiline">>),
+    _ = recv_until(Bob, <<"ACK">>),
+    send(Bob, <<"@" ?DST "=1001 BATCH +ml draft/multiline alice">>),
+    send(Bob, <<"@batch=ml PRIVMSG alice :part-one">>),
+    send(Bob, <<"@batch=ml;draft/multiline-concat PRIVMSG alice :part-two">>),
+    send(Bob, <<"BATCH -ml">>),
+    ?assert(has(sync(Bob), <<"E2EE QUEUED alice 1001 ">>)),
+    [Entry | _] = [
+        E
+     || #e2ee_queue{text = {multiline, _}} = E <- mnesia:dirty_select(e2ee_queue, [
+            {erlang:make_tuple(record_info(size, e2ee_queue), '_', [{1, e2ee_queue}]), [], ['$_']}
+        ])
+    ],
+    ?assertEqual(
+        {multiline, [{false, <<"part-one">>}, {true, <<"part-two">>}]}, Entry#e2ee_queue.text
+    ),
+    Alice = login(Port, <<"alice">>, <<"alicepassword">>),
+    send(Alice, <<"CAP REQ :batch draft/multiline">>),
+    _ = recv_until(Alice, <<"ACK">>),
+    send(Alice, <<"E2EE BIND 1001">>),
+    Replay = sync(Alice),
+    ?assert(has(Replay, <<"BATCH +">>)),
+    ?assert(has(Replay, <<"draft/multiline alice">>)),
+    ?assert(has(Replay, <<"PRIVMSG alice :part-one">>)),
+    ?assert(has(Replay, <<"draft/multiline-concat">>)),
+    ?assert(has(Replay, <<"PRIVMSG alice :part-two">>)),
+    %% The qid rides on the opening BATCH line.
+    {match, _} = re:run(Replay, <<?QID "=[0-9]+[^\r]* BATCH \\+">>),
+    close(Alice),
+    close(Bob).
+
+%% A second device of the same account uses another nickname. A message for
+%% that device reaches its connection live, whether or not the account's
+%% main nickname is online, and is not queued.
+second_device(Port) ->
+    Main = login(Port, <<"alice">>, <<"alicepassword">>),
+    send(
+        Main,
+        <<"E2EE PUBLISH 1002 ", (?K32("i"))/binary, " 7:", (?K32("s"))/binary, " ", (?SIG)/binary>>
+    ),
+    ?assert(has(sync(Main), <<"E2EE PUBLISHED 1002">>)),
+    Second = connect(Port),
+    send(Second, <<"CAP REQ :sasl message-tags " ?CAP>>),
+    _ = recv_until(Second, <<"ACK">>),
+    send(Second, <<"NICK alice2\r\nUSER u 0 * :U\r\nAUTHENTICATE PLAIN">>),
+    _ = recv_until(Second, <<"AUTHENTICATE +">>),
+    send(Second, <<"AUTHENTICATE ", (base64:encode(<<0, "alice", 0, "alicepassword">>))/binary>>),
+    _ = recv_until(Second, <<" 903 ">>),
+    send(Second, <<"CAP END">>),
+    _ = recv_until(Second, <<" 001 ">>),
+    send(Second, <<"E2EE BIND 1002">>),
+    ?assert(has(sync(Second), <<"E2EE BOUND 1002 0">>)),
+    Bob = login(Port, <<"bob">>, <<"bobpassword1">>),
+    %% alice is online on her main connection.
+    send(Bob, <<"@" ?DST "=1002 PRIVMSG alice :for-second-online">>),
+    ?assertNot(has(sync(Bob), <<"QUEUED">>)),
+    ?assert(
+        has(recv_until(Second, <<"for-second-online">>), <<"PRIVMSG alice :for-second-online">>)
+    ),
+    %% The main connection leaves; the second device still gets its copy.
+    close(Main),
+    wait_offline(<<"alice">>),
+    send(Bob, <<"@" ?DST "=1002 PRIVMSG alice :for-second-offline">>),
+    Reply = sync(Bob),
+    ?assertNot(has(Reply, <<"QUEUED">>)),
+    ?assertNot(has(Reply, <<" 401 ">>)),
+    ?assert(has(recv_until(Second, <<"for-second-offline">>), <<"for-second-offline">>)),
+    close(Second),
+    close(Bob).
+
 expiry() ->
     ok = mnesia:dirty_write(#e2ee_queue{
         key = {<<"alice">>, 1001, 1},
@@ -223,6 +299,123 @@ expiry() ->
     erase(ircd_e2ee_expired_at),
     ok = ircd_e2ee:expire(),
     ?assertEqual([], mnesia:dirty_read(e2ee_queue, {<<"alice">>, 1001, 1})).
+
+%%% Server links: replication in both directions
+
+link_test_() ->
+    {timeout, 120, fun link/0}.
+
+link() ->
+    Config = <<
+        ",\"e2ee\":{},\"server_links\":[{\"name\":\"peer.test\",\"host\":\"127.0.0.1\","
+        "\"port\":1,\"password\":\"linksecret\",\"tls\":false}]"
+    >>,
+    with_server(Config, fun(Port) ->
+        {ok, _} = ircd_account:create(<<"alice">>, undefined, <<"alicepassword">>, [], undefined),
+        {ok, _} = ircd_account:create(<<"bob">>, undefined, <<"bobpassword1">>, [], undefined),
+        Alice = login(Port, <<"alice">>, <<"alicepassword">>),
+        send(
+            Alice,
+            <<"E2EE PUBLISH 1001 ", (?K32("i"))/binary, " 7:", (?K32("s"))/binary, " ",
+                (?SIG)/binary>>
+        ),
+        send(Alice, <<"E2EE PREKEYS 1001 1:", (?K32("a"))/binary, " 2:", (?K32("b"))/binary>>),
+        send(Alice, <<"E2EE BIND 1001">>),
+        ?assert(has(sync(Alice), <<"E2EE BOUND 1001 0">>)),
+        %% The burst carries the bundle, its prekeys, and the binding.
+        {Peer, Greeting} = peer(Port),
+        Burst = <<Greeting/binary, (sync(Peer))/binary>>,
+        ?assert(has(Burst, <<":irc.test E2EE DEVICE alice 1001 ">>)),
+        ?assert(has(Burst, <<"E2EE PREKEYS alice 1001 1:", (?K32("a"))/binary>>)),
+        ?assert(has(Burst, <<":alice!">>)),
+        ?assert(has(Burst, <<" E2EE BIND 1001">>)),
+        %% A remote user, logged in, publishes and binds through the peer.
+        send(Peer, <<":peer.test NICK carol 1 u h.test 1 + :Carol">>),
+        send(Peer, <<":carol!u@h.test ACCOUNT carol">>),
+        send(
+            Peer,
+            <<":peer.test E2EE DEVICE carol 2002 ",
+                (integer_to_binary(erlang:system_time(microsecond)))/binary, " ",
+                (?K32("c"))/binary, " 3:", (?K32("d"))/binary, " ", (?SIG)/binary>>
+        ),
+        send(Peer, <<":peer.test E2EE PREKEYS carol 2002 9:", (?K32("e"))/binary>>),
+        send(Peer, <<":carol!u@h.test E2EE BIND 2002">>),
+        _ = sync(Peer),
+        Bob = login(Port, <<"bob">>, <<"bobpassword1">>),
+        send(Bob, <<"E2EE DEVICES carol">>),
+        ?assert(has(sync(Bob), <<"E2EE DEVICES carol :2002">>)),
+        send(Bob, <<"E2EE FETCH carol">>),
+        ?assert(has(sync(Bob), <<" 9:", (?K32("e"))/binary>>)),
+        %% Using a prekey here is announced to the peer.
+        ?assert(has(recv_until(Peer, <<"E2EE USE carol 2002 9">>), <<"USE carol 2002 9">>)),
+        %% Carol's device is bound on the peer: a message for it is routed
+        %% there, not queued.
+        send(Bob, <<"@" ?DST "=2002 PRIVMSG carol :to-carol">>),
+        ?assertNot(has(sync(Bob), <<"QUEUED">>)),
+        ?assert(has(recv_until(Peer, <<"to-carol">>), <<"PRIVMSG carol :to-carol">>)),
+        %% A device of alice that is offline: the queued envelope reaches the
+        %% peer with its body and tags.
+        send(
+            Alice,
+            <<"E2EE PUBLISH 1003 ", (?K32("i"))/binary, " 7:", (?K32("s"))/binary, " ",
+                (?SIG)/binary>>
+        ),
+        _ = sync(Alice),
+        send(Bob, <<"@" ?DST "=1003;" ?SRC "=55 PRIVMSG alice :to-1003">>),
+        ?assert(has(sync(Bob), <<"E2EE QUEUED alice 1003 ">>)),
+        Queued = recv_until(Peer, <<"E2EE QUEUE alice 1003 ">>),
+        ?assert(has(Queued, <<"egorsmkv.github.io/e2ee-body=">>)),
+        ?assert(has(Queued, <<" PRIVMSG alice bob!">>)),
+        %% The peer queues an envelope for alice's device 1003 too; BIND
+        %% replays both, and ACK is announced to the peer.
+        Body = base64:encode(json_bin(#{<<"t">> => base64:encode(<<"from-peer">>)})),
+        TagsJson = base64:encode(json_bin([[base64:encode(<<?SRC>>), base64:encode(<<"66">>)]])),
+        Expires = integer_to_binary(erlang:system_time(second) + 600),
+        send(
+            Peer,
+            <<"@egorsmkv.github.io/e2ee-body=", Body/binary, ";egorsmkv.github.io/e2ee-tags=",
+                TagsJson/binary, " :peer.test E2EE QUEUE alice 1003 123 ", Expires/binary,
+                " PRIVMSG alice carol!u@h.test">>
+        ),
+        _ = sync(Peer),
+        send(Alice, <<"E2EE BIND 1003">>),
+        Replay = sync(Alice),
+        ?assert(has(Replay, <<"E2EE BOUND 1003 2">>)),
+        ?assert(has(Replay, <<":carol!u@h.test PRIVMSG alice :from-peer">>)),
+        ?assert(has(Replay, <<?SRC "=66">>)),
+        ?assert(has(Replay, <<":bob!">>)),
+        send(Alice, <<"E2EE ACK 123">>),
+        ?assert(has(recv_until(Peer, <<"E2EE ACK alice 1003 123">>), <<"ACK alice 1003 123">>)),
+        %% Prekey use and removal from the peer are applied here.
+        send(Peer, <<":peer.test E2EE USE alice 1001 2">>),
+        send(Peer, <<":peer.test E2EE DELETE carol 2002">>),
+        _ = sync(Peer),
+        send(Alice, <<"E2EE PREKEYS 1001">>),
+        ?assert(has(sync(Alice), <<"E2EE PREKEYS 1001 1">>)),
+        send(Bob, <<"E2EE DEVICES carol">>),
+        ?assert(has(sync(Bob), <<"E2EE DEVICES carol :">>)),
+        ?assertNot(has(sync(Bob), <<"2002">>)),
+        %% A malformed E2EE line is invalid peer state.
+        ?assertMatch(
+            {error, _},
+            ircd_state:server_command(<<"peer.test">>, <<"peer.test">>, <<"E2EE">>, [
+                <<"DEVICE">>, <<"x">>
+            ])
+        ),
+        close(Bob),
+        close(Alice),
+        close(Peer)
+    end).
+
+peer(Port) ->
+    S = connect(Port),
+    send(S, <<"PASS linksecret 0210 |">>),
+    send(S, <<"SERVER peer.test 1 1 :Peer">>),
+    Greeting = recv_until(S, <<"SERVER irc.test">>),
+    {S, Greeting}.
+
+json_bin(Term) ->
+    iolist_to_binary(json:encode(Term)).
 
 qids(Data) ->
     [Qid || [_, Qid] <- re_all(Data, <<?QID "=([0-9]+)">>)].

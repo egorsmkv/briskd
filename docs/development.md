@@ -41,11 +41,18 @@ If `just` is installed, `just --list` shows the available commands:
 | `just deps` | Fetch Rebar3 dependencies |
 | `just clean` | Remove compiled build artifacts |
 
+## End-to-end encryption tests
+
+`test/e2ee/run` builds the server image, starts two linked servers, and runs
+Python clients that do X3DH, the Double Ratchet, and Sender Keys against them
+(`docker compose`, see [End-to-end encryption](e2ee.md)).
+
 ## Continuous integration
 
 GitHub Actions builds the development image from the [Dockerfile](https://github.com/egorsmkv/irc-server/blob/main/Dockerfile)
 and runs `just format-check` and `just test` in that image. The image pins the
-same OTP, Rebar3, and `just` versions as local development.
+same OTP, Rebar3, and `just` versions as local development. A second job runs
+`test/e2ee/run`, the end-to-end encryption tests on two linked servers.
 
 ## Building the documentation
 

@@ -1,0 +1,46 @@
+# End-to-end tests for the E2EE broker: two linked servers and Python clients
+# that do X3DH, the Double Ratchet, and Sender Keys (test/e2ee/run).
+#
+#   docker compose -f test/e2ee/docker-compose.yml up --build \
+#       --abort-on-container-exit --exit-code-from tests
+
+x-server: &server
+  build:
+    context: ../..
+    dockerfile: Dockerfile
+  image: ircd-e2ee-server
+  working_dir: /workspace
+  volumes:
+    - ../..:/workspace:ro
+  healthcheck:
+    test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6667"]
+    interval: 3s
+    timeout: 3s
+    retries: 60
+
+services:
+  hub:
+    <<: *server
+    command: ["sh", "/workspace/test/e2ee/server.sh", "/workspace/test/e2ee/hub.json"]
+  leaf:
+    <<: *server
+    command: ["sh", "/workspace/test/e2ee/server.sh", "/workspace/test/e2ee/leaf.json"]
+  tests:
+    image: python:3.14.3-slim
+    working_dir: /tests
+    volumes:
+      - .:/tests:ro
+    environment:
+      E2EE_HUB: hub:6667
+      E2EE_LEAF: leaf:6667
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    command:
+      - sh
+      - -c
+      - pip install --quiet -r requirements.txt && python -m pytest -v -p no:cacheprovider test_e2ee.py
+    depends_on:
+      hub:
+        condition: service_healthy
+      leaf:
+        condition: service_healthy

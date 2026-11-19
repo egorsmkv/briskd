@@ -1,0 +1,14 @@
+#!/bin/sh
+# Run the E2EE end-to-end tests: two linked ircd servers and Python clients.
+set -eu
+cd "$(dirname "$0")"
+if docker compose version >/dev/null 2>&1; then
+    compose="docker compose"
+else
+    compose="docker-compose"
+fi
+status=0
+$compose -p ircd-e2ee -f docker-compose.yml up --build --abort-on-container-exit \
+    --exit-code-from tests || status=$?
+$compose -p ircd-e2ee -f docker-compose.yml down -v >/dev/null 2>&1 || true
+exit $status

@@ -30,3 +30,14 @@ jobs:
           -w /workspace
           ircd-ci
           sh -c "just format-check && just test"
+
+  e2ee:
+    name: E2EE end-to-end (two linked servers, Python clients)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Run test/e2ee/run
+        run: test/e2ee/run

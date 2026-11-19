@@ -274,8 +274,15 @@ always-on bouncer details, and Sable's PostgreSQL history server.
   (`E2EE PUBLISH`, `PREKEYS`, `DEVICES`, `FETCH`, `REMOVE`), device binding
   (`BIND`), per-device offline queue with acknowledgement (`ACK`), and limits
   on devices, prekeys, queue size and age, and fetch rate.
-- [ ] Replicate bundles and queued envelopes across server links.
-- [ ] Queue `draft/multiline` envelopes for offline devices.
+- [x] Replicate bundles, prekey use, removals, queued envelopes,
+  acknowledgements, and device bindings across server links (`E2EE` link
+  lines, in the burst and as they change).
+- [x] Queue `draft/multiline` envelopes for offline devices and replay them as
+  one batch.
+- [x] Deliver to a device bound under another nickname (a second device of
+  the account), locally or across a link.
+- [x] End-to-end tests with Python clients doing X3DH, the Double Ratchet, and
+  Sender Keys against two linked servers (`test/e2ee/run`, in CI).
 
 ## Documentation and verification
 

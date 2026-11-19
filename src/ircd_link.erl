@@ -368,6 +368,7 @@ handle_server_line(
     Command =:= <<"ACCOUNTSYNC">>;
     Command =:= <<"METADATA">>;
     Command =:= <<"MARKREAD">>;
+    Command =:= <<"E2EE">>;
     Command =:= <<"BATCH">>
 ->
     case ircd_state:server_command(PeerName, Prefix, Command, Params, Tags) of

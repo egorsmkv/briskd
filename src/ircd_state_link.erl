@@ -112,7 +112,7 @@ server_burst_lines(Server) ->
         ),
     ServerLines ++ ClientLines ++ remote_client_burst_lines() ++
         ircd_state_v3:burst_lines(Server) ++ ChannelLines ++ ircd_state_sync:burst_lines(Server) ++
-        remote_channel_burst_lines(Server).
+        remote_channel_burst_lines(Server) ++ ircd_e2ee:burst_lines().
 
 client_burst_lines(
     #client{nick = Nick, user = User, host = Host, real = Real, pid = Pid}, Server
@@ -573,6 +573,7 @@ rename_remote_nick(Peer, Prefix, Nick) ->
                     ),
                     rename_remote_memberships(Peer, OldKey, NewKey),
                     ircd_state_meta:rename_remote(OldKey, NewKey),
+                    ok = ircd_e2ee:remote_renamed(OldKey, NewKey),
                     ircd_state_monitor:offline(Remote#remote_client.nick),
                     ircd_state_monitor:online(
                         Nick,

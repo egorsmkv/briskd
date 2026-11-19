@@ -418,6 +418,8 @@ ensure_table_shape(remote_channel, Fields) ->
     migrate_appended(remote_channel, Fields, #{});
 ensure_table_shape(remote_client, Fields) ->
     migrate_appended(remote_client, Fields, undefined);
+ensure_table_shape(e2ee_device, Fields) ->
+    migrate_appended(e2ee_device, Fields, []);
 ensure_table_shape(Table, Fields) ->
     case mnesia:table_info(Table, attributes) of
         Fields -> ok;
@@ -741,6 +743,8 @@ server_call({server_command, Peer, Prefix, <<"METADATA">>, Params, _Tags}, _, Se
     is_binary(Prefix)
 ->
     {reply, ircd_state_sync:receive_metadata(Peer, Prefix, Params), Server};
+server_call({server_command, Peer, Prefix, <<"E2EE">>, Params, Tags}, _, Server) ->
+    {reply, ircd_e2ee:receive_link(Peer, link_source(Peer, Prefix), Params, Tags), Server};
 server_call({server_command, Peer, Prefix, <<"MARKREAD">>, Params, _Tags}, _, Server) ->
     {reply, ircd_state_sync:receive_markread(Peer, link_source(Peer, Prefix), Params), Server};
 server_call(Request, From, Server) ->

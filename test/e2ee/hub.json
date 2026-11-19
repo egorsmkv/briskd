@@ -1,0 +1,15 @@
+{
+  "name": "hub.test",
+  "bind": "0.0.0.0",
+  "tcp_port": 6667,
+  "tls_port": null,
+  "log_level": "warning",
+  "log_format": "text",
+  "mnesia_dir": "/tmp/ircd-hub/mnesia",
+  "nicklen": 30,
+  "resource_delay": 0,
+  "e2ee": {"max_devices": 4, "max_prekeys": 100, "queue_limit": 100, "fetch_rate": 1000},
+  "server_links": [
+    {"name": "leaf.test", "host": "leaf", "port": 6667, "password": "e2ee-link-secret", "tls": false}
+  ]
+}
