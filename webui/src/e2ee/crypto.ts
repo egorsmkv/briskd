@@ -92,14 +92,33 @@ export function toHex(bytes: Uint8Array): string {
 }
 
 export function fromHex(hex: string): Uint8Array {
-  if (hex.length % 2 !== 0) throw new CryptoError("invalid hex");
+  if (typeof hex !== "string" || hex.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(hex)) {
+    throw new CryptoError("invalid hex");
+  }
   const out = new Uint8Array(hex.length / 2);
   for (let i = 0; i < out.length; i++) {
-    const v = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-    if (Number.isNaN(v)) throw new CryptoError("invalid hex");
-    out[i] = v;
+    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   }
   return out;
+}
+
+function dhExchange(secretKey: Uint8Array, publicKey: Uint8Array): Uint8Array {
+  if (secretKey.length !== 32 || publicKey.length !== 32) {
+    throw new CryptoError("invalid X25519 key length");
+  }
+  const shared = nacl.scalarMult(secretKey, publicKey);
+  let acc = 0;
+  for (let i = 0; i < shared.length; i++) acc |= shared[i];
+  if (acc === 0) throw new CryptoError("low-order X25519 public key");
+  return shared;
+}
+
+function compareBytes(a: Uint8Array, b: Uint8Array): number {
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return a.length - b.length;
 }
 
 function u32be(n: number): Uint8Array {
@@ -286,16 +305,22 @@ export function x3dhInitiate(
   identity: Identity,
   bundle: PreKeyBundle,
 ): { shared: Uint8Array; ad: Uint8Array; header: Uint8Array } {
+  if (bundle.identity.length !== 64 || bundle.spk.length !== 32 || bundle.signature.length !== 64) {
+    throw new CryptoError("invalid prekey bundle key length");
+  }
+  if (bundle.opk !== null && bundle.opk.length !== 32) {
+    throw new CryptoError("invalid one-time prekey length");
+  }
   Identity.verify(bundle.identity, bundle.spk, bundle.signature);
   const ephemeral = nacl.box.keyPair();
   const parts: Uint8Array[] = [
-    nacl.scalarMult(identity.dh.secretKey, bundle.spk),
-    nacl.scalarMult(ephemeral.secretKey, Identity.dhPublic(bundle.identity)),
-    nacl.scalarMult(ephemeral.secretKey, bundle.spk),
+    dhExchange(identity.dh.secretKey, bundle.spk),
+    dhExchange(ephemeral.secretKey, Identity.dhPublic(bundle.identity)),
+    dhExchange(ephemeral.secretKey, bundle.spk),
   ];
   let opkId = NO_OPK;
   if (bundle.opk !== null && bundle.opkId !== null) {
-    parts.push(nacl.scalarMult(ephemeral.secretKey, bundle.opk));
+    parts.push(dhExchange(ephemeral.secretKey, bundle.opk));
     opkId = bundle.opkId;
   }
   const shared = deriveHkdf(concatBytes(FF_32, ...parts), ZEROS_32, INFO_X3DH, 32);
@@ -321,14 +346,14 @@ export function x3dhRespond(
   const opkId = readU32be(header, 100);
   if (spkId !== prekeys.spkId) throw new CryptoError("unknown signed prekey");
   const parts: Uint8Array[] = [
-    nacl.scalarMult(prekeys.spk.secretKey, Identity.dhPublic(theirIdentity)),
-    nacl.scalarMult(identity.dh.secretKey, ephemeral),
-    nacl.scalarMult(prekeys.spk.secretKey, ephemeral),
+    dhExchange(prekeys.spk.secretKey, Identity.dhPublic(theirIdentity)),
+    dhExchange(identity.dh.secretKey, ephemeral),
+    dhExchange(prekeys.spk.secretKey, ephemeral),
   ];
   if (opkId !== NO_OPK) {
     const opk = prekeys.oneTime.get(opkId);
     if (!opk) throw new CryptoError("one-time prekey already used");
-    parts.push(nacl.scalarMult(opk.secretKey, ephemeral));
+    parts.push(dhExchange(opk.secretKey, ephemeral));
   }
   const shared = deriveHkdf(concatBytes(FF_32, ...parts), ZEROS_32, INFO_X3DH, 32);
   const ad = concatBytes(theirIdentity, identity.publicKey);
@@ -371,7 +396,7 @@ export class DoubleRatchet {
     state.dhSelf = nacl.box.keyPair();
     state.dhRemote = new Uint8Array(remoteSpk);
     const [root, sendChain] = state.kdfRoot(
-      nacl.scalarMult(state.dhSelf.secretKey, state.dhRemote),
+      dhExchange(state.dhSelf.secretKey, state.dhRemote),
     );
     state.root = root;
     state.sendChain = sendChain;
@@ -473,11 +498,11 @@ export class DoubleRatchet {
     this.ns = 0;
     this.nr = 0;
     this.dhRemote = new Uint8Array(dh);
-    const [r1, recvChain] = this.kdfRoot(nacl.scalarMult(this.dhSelf.secretKey, this.dhRemote));
+    const [r1, recvChain] = this.kdfRoot(dhExchange(this.dhSelf.secretKey, this.dhRemote));
     this.root = r1;
     this.recvChain = recvChain;
     this.dhSelf = nacl.box.keyPair();
-    const [r2, sendChain] = this.kdfRoot(nacl.scalarMult(this.dhSelf.secretKey, this.dhRemote));
+    const [r2, sendChain] = this.kdfRoot(dhExchange(this.dhSelf.secretKey, this.dhRemote));
     this.root = r2;
     this.sendChain = sendChain;
   }
@@ -588,7 +613,23 @@ export class SenderKey {
   }
 
   static fromDistribution(d: SenderKeyDistribution): SenderKey {
-    return new SenderKey(d.key_id, fromHex(d.chain), d.iteration, fromHex(d.signing), null);
+    if (
+      typeof d.key_id !== "number" ||
+      !Number.isInteger(d.key_id) ||
+      d.key_id < 0 ||
+      d.key_id > 0xffffffff
+    ) {
+      throw new CryptoError("invalid sender key id");
+    }
+    if (typeof d.iteration !== "number" || !Number.isInteger(d.iteration) || d.iteration < 0) {
+      throw new CryptoError("invalid sender key iteration");
+    }
+    const chain = fromHex(d.chain);
+    const signing = fromHex(d.signing);
+    if (chain.length !== 32 || signing.length !== 32) {
+      throw new CryptoError("invalid sender key material length");
+    }
+    return new SenderKey(d.key_id, chain, d.iteration, signing, null);
   }
 
   encrypt(plaintext: Uint8Array, channel: string): Uint8Array {
@@ -689,15 +730,19 @@ export function identityFingerprint(pub64: Uint8Array): string {
 }
 
 export function safetyNumber(idA: Uint8Array, idB: Uint8Array): string {
-  const hexA = toHex(idA);
-  const hexB = toHex(idB);
-  const combined = hexA <= hexB ? concatBytes(idA, idB) : concatBytes(idB, idA);
-  const hash = sha256(combined);
+  const [first, second] = compareBytes(idA, idB) <= 0 ? [idA, idB] : [idB, idA];
+  const h1 = sha256(concatBytes(BYTE_01, first, second));
+  const h2 = sha256(concatBytes(BYTE_02, first, second));
+  const digest = concatBytes(h1, h2);
   const groups: string[] = [];
-  for (let i = 0; i < 30; i += 5) {
-    const num =
-      ((hash[i] << 16) | (hash[i + 1] << 8) | hash[i + 2]) * 256 + hash[i + 3];
-    groups.push(String(Math.abs(num) % 100000).padStart(5, "0"));
+  for (let i = 0; i < 60; i += 5) {
+    const val =
+      digest[i] * 4294967296 +
+      digest[i + 1] * 16777216 +
+      digest[i + 2] * 65536 +
+      digest[i + 3] * 256 +
+      digest[i + 4];
+    groups.push(String(val % 100000).padStart(5, "0"));
   }
   return groups.join(" ");
 }

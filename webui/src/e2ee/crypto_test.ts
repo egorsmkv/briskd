@@ -2,6 +2,7 @@
 import {
   CryptoError,
   DoubleRatchet,
+  fromHex,
   Identity,
   messageEnvelope,
   NO_OPK,
@@ -136,11 +137,60 @@ Deno.test("SenderKey channel encryption, out-of-order, and serialization", () =>
   assert(dec.decode(receiver2.decrypt(c4, "#secret")) === "after reload", "sk reload failed");
 });
 
-Deno.test("Safety number is symmetric", () => {
+Deno.test("Safety number is symmetric and 12 groups of 5 digits", () => {
   const a = new Identity();
   const b = new Identity();
-  assert(
-    safetyNumber(a.publicKey, b.publicKey) === safetyNumber(b.publicKey, a.publicKey),
-    "safety number must be symmetric",
-  );
+  const snAB = safetyNumber(a.publicKey, b.publicKey);
+  const snBA = safetyNumber(b.publicKey, a.publicKey);
+  assert(snAB === snBA, "safety number must be symmetric");
+  const groups = snAB.split(" ");
+  assert(groups.length === 12, `expected 12 groups, got ${groups.length}`);
+  for (const g of groups) {
+    assert(/^\d{5}$/.test(g), `expected 5 digits, got ${g}`);
+  }
+});
+
+Deno.test("Rejects low-order X25519 keys and malformed hex / sender key distributions", () => {
+  const aliceId = new Identity();
+  const bobId = new Identity();
+  const zeroKey = new Uint8Array(32); // low-order X25519 point -> all-zero DH output
+  const sig = bobId.sign(zeroKey);
+
+  let rejectedLowOrder = false;
+  try {
+    x3dhInitiate(aliceId, {
+      account: "bob",
+      device: 1,
+      identity: bobId.publicKey,
+      spkId: 1,
+      spk: zeroKey,
+      signature: sig,
+      opkId: null,
+      opk: null,
+    });
+  } catch (e) {
+    rejectedLowOrder = e instanceof CryptoError;
+  }
+  assert(rejectedLowOrder, "must reject low-order X25519 public key");
+
+  let rejectedHex = false;
+  try {
+    fromHex("1g");
+  } catch (e) {
+    rejectedHex = e instanceof CryptoError;
+  }
+  assert(rejectedHex, "fromHex must reject non-hex characters");
+
+  let rejectedDist = false;
+  try {
+    SenderKey.fromDistribution({
+      key_id: 1,
+      chain: "aabb", // too short
+      iteration: 0,
+      signing: "ccdd",
+    });
+  } catch (e) {
+    rejectedDist = e instanceof CryptoError;
+  }
+  assert(rejectedDist, "SenderKey.fromDistribution must reject short keys");
 });

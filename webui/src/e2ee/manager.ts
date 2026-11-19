@@ -128,6 +128,7 @@ function formatTags(tags: Record<string, string | null>): string {
 export class E2eeManager {
   private cb: E2eeCallbacks;
   private serverSupported = false;
+  private accountTagEnabled = false;
   private account = "";
   private myNick = "";
   private deviceId = 0;
@@ -165,6 +166,7 @@ export class E2eeManager {
 
   resetConnection(): void {
     this.serverSupported = false;
+    this.accountTagEnabled = false;
     this.bound = false;
     this.replenishing = false;
     this.batches.clear();
@@ -187,6 +189,10 @@ export class E2eeManager {
   setServerSupported(supported: boolean): void {
     this.serverSupported = supported;
     this.cb.onStateChange();
+  }
+
+  setAccountTagEnabled(enabled: boolean): void {
+    this.accountTagEnabled = enabled;
   }
 
   setMyNick(nick: string): void {
@@ -604,7 +610,30 @@ export class E2eeManager {
 
     const srcAccount = src.slice(0, colon).toLowerCase();
     const srcDevice = parseInt(src.slice(colon + 1), 10);
-    if (Number.isNaN(srcDevice)) return;
+    if (Number.isNaN(srcDevice) || srcDevice < 1) return;
+
+    // Verify client-only e2ee-src account against the server-authenticated account tag
+    // to prevent TOFU poisoning / sender spoofing.
+    const serverAcct = (tags.account || "").toLowerCase();
+    if (serverAcct) {
+      if (serverAcct !== srcAccount) {
+        const dest = isChan(target) ? target : senderNick || serverAcct;
+        this.cb.onNotice(
+          dest,
+          `[E2EE] Rejected spoofed sender tag: claimed ${srcAccount}, authenticated as ${serverAcct}.`,
+          "err",
+        );
+        return;
+      }
+    } else if (this.accountTagEnabled && !qid) {
+      const dest = isChan(target) ? target : senderNick || "*status";
+      this.cb.onNotice(
+        dest,
+        `[E2EE] Rejected unauthenticated E2EE envelope claiming ${srcAccount}.`,
+        "err",
+      );
+      return;
+    }
 
     // Suppress echo-message of our own outbound encrypted envelopes
     if (srcAccount === this.account.toLowerCase() && srcDevice === this.deviceId) {

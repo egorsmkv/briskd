@@ -832,6 +832,7 @@ function handleMessage(raw: string): void {
         "draft/multiline",
         "away-notify",
         "account-notify",
+        "account-tag",
         "extended-join",
         E2EE_CAP,
       ];
@@ -842,6 +843,7 @@ function handleMessage(raw: string): void {
     } else if (sub === "ACK") {
       const acked = (params[2] || "").split(" ").filter(Boolean);
       if (acked.includes(E2EE_CAP)) e2ee.setServerSupported(true);
+      if (acked.includes("account-tag")) e2ee.setAccountTagEnabled(true);
       if (saslPass && acked.includes("sasl")) {
         sendRaw("AUTHENTICATE PLAIN");
       } else {
