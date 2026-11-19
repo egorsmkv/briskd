@@ -1,0 +1,29 @@
+{
+  "name": "irc.example.org",
+  "network": "ExampleNet",
+  "server_info": "Erlang/OTP IRC server",
+  "bind": "0.0.0.0",
+  "tcp_port": 6667,
+  "tls_port": null,
+  "certfile": null,
+  "keyfile": null,
+  "log_level": "info",
+  "log_format": "json",
+  "max_clients": 10000,
+  "motd_file": "/etc/ircd/motd.txt",
+  "mnesia_dir": "/var/lib/ircd/mnesia",
+  "retention": "channels",
+  "history_limit": 500,
+  "shutdown_grace": 10,
+  "operators": [],
+  "administrators": [],
+  "channels": [
+    {"name": "#lobby", "topic": "Welcome! Say hello.", "modes": "nt"}
+  ],
+  "admin_name": "IRC server administrator",
+  "admin_location1": "Not configured",
+  "admin_location2": "Not configured",
+  "admin_email": "Not configured",
+  "client_password": null,
+  "server_links": []
+}

@@ -1,2 +1,9 @@
 **
 !Dockerfile
+!Dockerfile.prod
+!rebar.config
+!rebar.lock
+!src/**
+!include/**
+!config/**
+!bench/release.json

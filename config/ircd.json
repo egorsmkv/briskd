@@ -12,7 +12,7 @@
   "administrators": [],
   "channels": [],
   "reop_delay": 30,
-  "motd_file": null,
+  "motd_file": "config/motd.txt",
   "mnesia_dir": "data/mnesia",
   "retention": "transient",
   "history_limit": 100,

@@ -72,6 +72,40 @@ Stop the container with `docker compose -f docker-compose.dev.yml down`. The
 Rebar3 cache and development database persist in named volumes. Use `down -v`
 to remove those volumes and their contents.
 
+## Production deployment
+
+`Dockerfile.prod` builds the release (ERTS included) and runs it as an
+unprivileged `ircd` user on `debian:trixie-slim`. `docker-compose.prod.yml`
+runs that image with `config/ircd.prod.json` and `config/motd.txt` mounted
+read-only and Mnesia data in the `ircd-data` volume.
+
+```sh
+echo "IRCD_COOKIE=$(openssl rand -hex 24)" > .env    # distribution cookie, loopback only
+docker compose -f docker-compose.prod.yml up --build -d
+```
+
+Set the server name, operators, channels, and (for TLS) certificate paths in
+`config/ircd.prod.json` before the first start. The healthcheck connects and
+expects `ERROR` after `QUIT`.
+
+### Graceful shutdown
+
+SIGTERM (`docker compose stop`, `systemctl stop`), operator `DIE` and
+`RESTART`, and `application:stop(ircd)` all drain the server before it stops
+(`ircd_shutdown`, called from `ircd_app:prep_stop/1`):
+
+1. Every listener closes, so no new connection is accepted.
+2. Directly linked servers receive `SQUIT <this server>` (RFC 2813 4.1.6).
+3. Every client receives `NOTICE * :Server shutting down` and then
+   `ERROR :Closing Link: <server> (Server shutting down)` (RFC 2812 3.7.4),
+   and its socket is closed after the lines are flushed.
+4. The server waits up to `shutdown_grace` seconds for sessions to finish;
+   the supervisor stops any that remain. Mnesia stops after the application,
+   so durable data stays consistent.
+
+The compose file allows 30 seconds (`stop_grace_period`), more than the
+`shutdown_grace` of 10 in `ircd.prod.json`.
+
 ## Project commands
 
 If `just` is installed, `just --list` shows the available commands:
@@ -115,6 +149,7 @@ to the process working directory unless they are absolute.
 | `administrators` | `[]` | Operator accounts, each with `nick` and `password`. `OPER` uses `nick`. A successful login also grants channel operator on predefined channels |
 | `channels` | `[]` | Channels created at startup when absent. Each entry has `name` and optional `topic`, `key`, `limit`, and `modes` |
 | `motd_file` | `null` | Text file served by `MOTD` |
+| `shutdown_grace` | `5` | Seconds a graceful shutdown waits for sessions to close (0..300) |
 | `admin_name`, `admin_location1`, `admin_location2`, `admin_email` | See config | Values returned by `ADMIN` |
 | `reop_delay` | `30` | Base delay in seconds before re-opping an operatorless safe channel |
 | `resource_delay` | `60` | Seconds a nickname or channel released by a quit or netsplit stays unavailable (437); `0` disables |

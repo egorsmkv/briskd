@@ -1,0 +1,5 @@
+## Production node. Distribution listens on loopback only and the cookie comes
+## from the IRCD_COOKIE environment variable (relx substitutes ${...} at start).
+-sname ircd
+-setcookie ${IRCD_COOKIE}
+-kernel inet_dist_use_interface {127,0,0,1}

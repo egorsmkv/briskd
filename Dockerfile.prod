@@ -1,0 +1,48 @@
+# Production image: build the release (ERTS included) and run it on a slim
+# Debian base that matches erlang:29.1.2 (Debian 13 "trixie").
+
+FROM erlang:29.1.2 AS build
+
+ARG REBAR3_VERSION=3.28.0
+RUN curl -fsSL \
+        "https://github.com/erlang/rebar3/releases/download/${REBAR3_VERSION}/rebar3" \
+        -o /usr/local/bin/rebar3 \
+    && chmod +x /usr/local/bin/rebar3
+
+WORKDIR /build
+COPY rebar.config rebar.lock ./
+RUN rebar3 as prod get-deps
+COPY src src
+COPY include include
+COPY config config
+COPY bench/release.json bench/release.json
+RUN rebar3 as prod release
+
+FROM debian:trixie-slim
+
+# Runtime libraries the bundled ERTS and the crypto/ssl NIFs link against.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash ca-certificates libssl3t64 libstdc++6 libtinfo6 libzstd1 zlib1g \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system ircd \
+    && useradd --system --gid ircd --home-dir /var/lib/ircd --shell /usr/sbin/nologin ircd \
+    && mkdir -p /var/lib/ircd/mnesia /etc/ircd \
+    && chown -R ircd:ircd /var/lib/ircd
+
+COPY --from=build --chown=ircd:ircd /build/_build/prod/rel/ircd /opt/ircd
+COPY config/ircd.prod.json /etc/ircd/ircd.json
+COPY config/motd.txt /etc/ircd/motd.txt
+
+ENV IRCD_CONFIG=/etc/ircd/ircd.json \
+    HOME=/var/lib/ircd
+
+USER ircd
+WORKDIR /var/lib/ircd
+EXPOSE 6667 6697 8080 8443
+
+# SIGTERM makes the runtime call init:stop/0, which runs the graceful drain
+# (ircd_shutdown) before the application stops.
+STOPSIGNAL SIGTERM
+ENTRYPOINT ["/opt/ircd/bin/ircd"]
+CMD ["foreground"]

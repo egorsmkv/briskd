@@ -1,0 +1,59 @@
+# Production deployment.
+#
+#   echo "IRCD_COOKIE=$(openssl rand -hex 24)" > .env
+#   docker compose -f docker-compose.prod.yml up --build -d
+#
+# Edit config/ircd.prod.json (server name, operators, channels) and
+# config/motd.txt before the first start; both are mounted read-only. Mnesia
+# data (WHOWAS, accounts, read markers, retained channels and history) lives in
+# the ircd-data volume. `docker compose stop` sends SIGTERM: the server stops
+# accepting connections, tells clients and linked servers, and waits up to
+# `shutdown_grace` seconds (10 in ircd.prod.json) before it exits, well inside
+# the 30-second stop_grace_period below.
+
+services:
+  ircd:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    image: ircd:latest
+    restart: unless-stopped
+    init: true
+    environment:
+      IRCD_CONFIG: /etc/ircd/ircd.json
+      IRCD_COOKIE: ${IRCD_COOKIE:?set IRCD_COOKIE in .env (any long random string)}
+    ports:
+      - "6667:6667"
+      # Uncomment with tls_port/wss_port and certificates in ircd.prod.json:
+      # - "6697:6697"
+      # - "8443:8443"
+    volumes:
+      - ircd-data:/var/lib/ircd
+      - ./config/ircd.prod.json:/etc/ircd/ircd.json:ro
+      - ./config/motd.txt:/etc/ircd/motd.txt:ro
+      # - ./certs:/etc/ircd/certs:ro
+    stop_signal: SIGTERM
+    stop_grace_period: 30s
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      # Connect, QUIT, and expect the server's ERROR acknowledgement.
+      test:
+        - CMD
+        - bash
+        - -c
+        - "exec 3<>/dev/tcp/127.0.0.1/6667 && printf 'QUIT\\r\\n' >&3 && timeout 3 grep -q ERROR <&3"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  ircd-data:

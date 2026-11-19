@@ -44,6 +44,9 @@ in the referenced RFC.
   commands. `SUMMON` and `USERS` stay disabled with numerics 445 and 446.
   Operator `DIE` stops the node and operator `RESTART` restarts it; other
   clients receive numeric 481. IRCv3 support is listed below.
+- [x] Graceful shutdown on SIGTERM, `DIE`, `RESTART`, and application stop:
+  listeners close, peers get `SQUIT`, clients get a NOTICE and `ERROR`, and the
+  server waits up to `shutdown_grace` seconds (`ircd_shutdown`).
 - [x] Audit parameter limits, error numerics, visibility, and command edge cases
   against the RFCs.
 

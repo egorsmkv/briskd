@@ -49,6 +49,7 @@ load(Path) ->
         ServerInfo = text_value(Json, <<"server_info">>, <<"Erlang/OTP IRC server">>),
         {ok, #{
             server_info => ServerInfo,
+            shutdown_grace => shutdown_grace(maps:get(<<"shutdown_grace">>, Json, 5)),
             multiclient => boolean_setting(multiclient, maps:get(<<"multiclient">>, Json, false)),
             account_rejoin => boolean_setting(
                 account_rejoin, maps:get(<<"account_rejoin">>, Json, false)
@@ -171,6 +172,10 @@ sni_hosts(Entries) when is_list(Entries) ->
          || Entry <- Entries
         ]}
     ].
+
+%% Seconds to wait for sessions to close during a graceful shutdown.
+shutdown_grace(Value) when is_integer(Value), Value >= 0, Value =< 300 -> Value;
+shutdown_grace(Value) -> erlang:error({invalid_shutdown_grace, Value}).
 
 %% Longest nickname. RFC 1459 uses 9; larger values are an operator choice
 %% and must match every linked server.

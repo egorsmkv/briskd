@@ -1,6 +1,6 @@
 -module(ircd_app).
 -behaviour(application).
--export([start/2, stop/1]).
+-export([start/2, prep_stop/1, stop/1]).
 
 %% @doc Load JSON configuration, configure logging, and start the supervision tree.
 start(_, _) ->
@@ -38,6 +38,17 @@ start(_, _) ->
         Error ->
             Error
     end.
+
+%% @doc Drain clients and peers before the supervision tree stops (graceful
+%% shutdown on SIGTERM, DIE, RESTART, or application:stop/1).
+prep_stop(State) ->
+    try
+        ircd_shutdown:drain(<<"Server shutting down">>)
+    catch
+        Class:Reason ->
+            logger:warning(#{event => shutdown_drain_failed, class => Class, reason => Reason})
+    end,
+    State.
 
 %% @doc Restore the logger level and formatter from before startup.
 stop({Previous, Primary, StartedMnesia}) ->
