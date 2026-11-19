@@ -86,6 +86,11 @@ live_webui() ->
         ?assertEqual(nomatch, binary:match(HtmlBody, <<"__CSP_NONCE__">>)),
         ?assert(binary:match(HtmlBody, <<"<title>ircd admin</title>">>) =/= nomatch),
         ?assert(binary:match(HtmlBody, <<"noindex, nofollow">>) =/= nomatch),
+        {200, _, SubAdminBody} = http_req(
+            Port, <<"GET">>, <<"/admin/accounts">>, [{<<"Authorization">>, GoodAuth}], <<>>
+        ),
+        ?assert(binary:match(SubAdminBody, <<"<title>ircd admin</title>">>) =/= nomatch),
+        {401, _, _} = http_req(Port, <<"GET">>, <<"/admin/accounts">>, [], <<>>),
 
         %% Public favicon.ico, favicon.svg, and robots.txt are served without auth.
         {200, IcoHeaders, IcoBody} = http_req(Port, <<"GET">>, <<"/favicon.ico">>, [], <<>>),

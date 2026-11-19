@@ -243,7 +243,11 @@ handle_connection(
         {ok, <<"GET">>, {<<"/api/altcha">>, _Query}, _Headers, _Body} ->
             send_json(Socket, 200, <<"OK">>, ircd_altcha:create_challenge());
         {ok, <<"GET">>, {Path, _Query}, Headers, _Body} when
-            Path =:= <<"/">>; Path =:= <<"/webirc">>
+            Path =:= <<"/">>;
+            Path =:= <<"/webirc">>;
+            Path =:= <<"/status">>;
+            binary_part(Path, 0, min(byte_size(Path), 9)) =:= <<"/channel/">>;
+            binary_part(Path, 0, min(byte_size(Path), 4)) =:= <<"/dm/">>
         ->
             handle_webirc_page(Socket, WebircHtml, Path, Headers);
         {ok, <<"GET">>, {<<"/verify">>, Query}, _Headers, _Body} ->
@@ -763,7 +767,17 @@ escape_html(Bin) ->
     B4 = binary:replace(B3, <<"\"">>, <<"&quot;">>, [global]),
     binary:replace(B4, <<"'">>, <<"&#39;">>, [global]).
 
-route(Socket, <<"GET">>, <<"/admin">>, _Headers, _Body, Html) ->
+route(Socket, <<"GET">>, Path, _Headers, _Body, Html) when
+    Path =:= <<"/admin">>;
+    Path =:= <<"/admin/">>;
+    Path =:= <<"/admin/overview">>;
+    Path =:= <<"/admin/clients">>;
+    Path =:= <<"/admin/channels">>;
+    Path =:= <<"/admin/links">>;
+    Path =:= <<"/admin/accounts">>;
+    Path =:= <<"/admin/dronebl">>;
+    Path =:= <<"/admin/operations">>
+->
     send_nonce_html(Socket, Html);
 route(Socket, <<"GET">>, <<"/api/overview">>, _Headers, _Body, _Html) ->
     Payload = #{

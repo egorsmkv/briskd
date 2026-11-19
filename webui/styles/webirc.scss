@@ -425,6 +425,78 @@ body {
   font-size: 14px;
 }
 
+/* Halloy-style day divider & rich IRC message formatting */
+.day-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0 8px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  user-select: none;
+  &::before,
+  &::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+}
+
+.irc-bold {
+  font-weight: 700;
+}
+
+.irc-italic {
+  font-style: italic;
+}
+
+.irc-underline {
+  text-decoration: underline;
+}
+
+.irc-strike {
+  text-decoration: line-through;
+}
+
+.irc-mono {
+  font-family: var(--mono);
+}
+
+.irc-code {
+  font-family: var(--mono);
+  font-size: 0.9em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+}
+
+.irc-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+
+.irc-chan {
+  color: var(--accent);
+  font-weight: 600;
+  cursor: pointer;
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
+.irc-mention {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+  padding: 0 4px;
+  border-radius: 4px;
+}
+
 .input-bar {
   grid-area: input;
   background: var(--surface);

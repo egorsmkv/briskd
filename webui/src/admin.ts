@@ -693,7 +693,15 @@ const VALID_TABS = new Set([
   "operations",
 ]);
 
-function activateTab(tab: string, updateHash = true): void {
+function tabFromUrl(): string {
+  const m = location.pathname.match(/^\/admin\/([a-z]+)\/?$/i);
+  if (m && VALID_TABS.has(m[1].toLowerCase())) return m[1].toLowerCase();
+  const h = location.hash.replace(/^#/, "").toLowerCase();
+  if (VALID_TABS.has(h)) return h;
+  return "overview";
+}
+
+function activateTab(tab: string, updateUrl = true): void {
   const next = VALID_TABS.has(tab) ? tab : "overview";
   document.querySelectorAll<HTMLButtonElement>(".tab").forEach((t) => {
     const active = t.dataset.tab === next;
@@ -703,8 +711,11 @@ function activateTab(tab: string, updateHash = true): void {
   document.querySelectorAll<HTMLElement>(".page").forEach((p) => {
     p.classList.toggle("active", p.id === `panel-${next}`);
   });
-  if (updateHash && location.hash !== `#${next}`) {
-    history.replaceState(null, "", `#${next}`);
+  if (updateUrl) {
+    const targetPath = next === "overview" ? "/admin" : `/admin/${next}`;
+    if (location.pathname !== targetPath || location.hash) {
+      history.pushState({ tab: next }, "", targetPath);
+    }
   }
 }
 
@@ -715,11 +726,11 @@ $("tabs").addEventListener("click", (ev) => {
   activateTab(btn.dataset.tab);
 });
 
-globalThis.addEventListener("hashchange", () => {
-  activateTab(location.hash.replace(/^#/, ""), false);
+globalThis.addEventListener("popstate", () => {
+  activateTab(tabFromUrl(), false);
 });
 
-activateTab(location.hash.replace(/^#/, ""), false);
+activateTab(tabFromUrl(), false);
 
 $("btn-refresh").onclick = () => void refresh();
 $("btn-rehash").onclick = () => void postAction("rehash", []);

@@ -1,4 +1,5 @@
 import { byId as $, errorMessage } from "./common/dom.ts";
+import { dayKey, formatDayLabel, renderIrcMessage } from "./common/format.ts";
 import { currentLang, initLang, setLang, t } from "./common/i18n.ts";
 import { currentTheme, initTheme, setTheme, THEMES } from "./common/theme.ts";
 import { updateDynamicFavicon } from "./common/favicon.ts";
@@ -311,6 +312,110 @@ const WS_PORT = bodyData.wsPort || "";
 const WSS_PORT = bodyData.wssPort || "";
 const BASE_TITLE = document.title;
 
+interface SavedSession {
+  nick: string;
+  acct: string;
+  pass: string;
+  channels: string[];
+  wsUrl: string;
+  activeBuf: string;
+}
+
+const SESSION_KEY = "ircd-webirc-session";
+
+function bufferToPath(name: string): string {
+  if (name === "*status") return "/status";
+  if (isChan(name)) {
+    const clean = name.startsWith("#") ? name.slice(1) : name;
+    return `/channel/${encodeURIComponent(clean)}`;
+  }
+  return `/dm/${encodeURIComponent(name)}`;
+}
+
+const MAX_BUFFERS = 100;
+
+function isSafeIrcTarget(s: string): boolean {
+  if (s.length < 1 || s.length > 50) return false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c <= 0x20 || c === 0x2c || c === 0x7f) return false;
+  }
+  return true;
+}
+
+function pathToBuffer(pathname: string): string | null {
+  if (pathname === "/status") return "*status";
+  const cm = pathname.match(/^\/channel\/([^/]+)\/?$/);
+  if (cm) {
+    try {
+      const dec = decodeURIComponent(cm[1]).trim();
+      if (dec && isSafeIrcTarget(dec)) {
+        return isChan(dec) ? dec : `#${dec}`;
+      }
+    } catch {
+      return null;
+    }
+  }
+  const dm = pathname.match(/^\/dm\/([^/]+)\/?$/);
+  if (dm) {
+    try {
+      const dec = decodeURIComponent(dm[1]).trim();
+      if (dec && !isChan(dec) && isSafeIrcTarget(dec)) return dec;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function saveSession(): void {
+  if (!myNick || !lastWsUrl) return;
+  const chans: string[] = [];
+  buffers.forEach((b) => {
+    if (isChan(b.name)) chans.push(b.name);
+  });
+  const payload: SavedSession = {
+    nick: myNick,
+    acct: saslUser,
+    pass: saslPass,
+    channels: chans.length > 0 ? chans : autoChannels,
+    wsUrl: lastWsUrl,
+    activeBuf,
+  };
+  try {
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify(payload));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function loadSession(): SavedSession | null {
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const p = JSON.parse(raw) as Partial<SavedSession>;
+    if (!p.nick || !p.wsUrl) return null;
+    return {
+      nick: p.nick,
+      acct: p.acct || "",
+      pass: p.pass || "",
+      channels: Array.isArray(p.channels) ? p.channels.filter(Boolean) : [],
+      wsUrl: p.wsUrl,
+      activeBuf: p.activeBuf || "*status",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function clearSession(): void {
+  try {
+    sessionStorage.removeItem(SESSION_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 (function initWsUrl() {
   const isHttps = location.protocol === "https:";
   const host = location.hostname || "127.0.0.1";
@@ -324,19 +429,19 @@ const BASE_TITLE = document.title;
   } else {
     inp.value = `${isHttps ? "wss" : "ws"}://${location.host}/`;
   }
+  const pathBuf = pathToBuffer(location.pathname);
   const qChan = new URLSearchParams(location.search).get("channel")?.trim();
-  if (qChan && /^[#&+!]/.test(qChan)) {
+  if (pathBuf && isChan(pathBuf)) {
+    $<HTMLInputElement>("inp-channels").value = pathBuf;
+  } else if (qChan && /^[#&+!]/.test(qChan)) {
     $<HTMLInputElement>("inp-channels").value = qChan;
   }
 })();
 
 async function shareWebirc(btn: HTMLElement): Promise<void> {
   const buf = buffers.get(activeBuf);
-  const url = new URL("/", location.href);
-  if (buf && isChan(buf.name)) {
-    url.searchParams.set("channel", buf.name);
-  }
-  const shareUrl = url.toString();
+  const sharePath = buf && isChan(buf.name) ? bufferToPath(buf.name) : "/";
+  const shareUrl = new URL(sharePath, location.href).toString();
   const title = BASE_TITLE;
   const text = buf && isChan(buf.name)
     ? `Join ${buf.name} on ${BASE_TITLE}`
@@ -619,6 +724,15 @@ function ensureBuf(name: string): BufferState {
   const key = name.toLowerCase();
   let buf = buffers.get(key);
   if (!buf) {
+    if (buffers.size >= MAX_BUFFERS) {
+      // Evict oldest inactive non-channel DM buffer to prevent DM flood memory exhaustion
+      for (const [k, existing] of buffers.entries()) {
+        if (k !== "*status" && k !== activeBuf && !isChan(existing.name)) {
+          buffers.delete(k);
+          break;
+        }
+      }
+    }
     buf = {
       name,
       topic: "",
@@ -699,12 +813,34 @@ function addLine(
 function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
   const wrap = $("messages");
   const atBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 60;
-  const grouped = !entry.kind &&
+
+  // Halloy-style day divider when date changes
+  if (!prev || dayKey(entry.epochMs) !== dayKey(prev.epochMs)) {
+    const sep = document.createElement("div");
+    sep.className = "day-divider";
+    const span = document.createElement("span");
+    span.textContent = formatDayLabel(entry.epochMs);
+    sep.appendChild(span);
+    wrap.appendChild(sep);
+  }
+
+  const sameDay = !!prev && dayKey(entry.epochMs) === dayKey(prev.epochMs);
+  const grouped = sameDay &&
+    !entry.kind &&
     !!entry.nick &&
     !!prev &&
     !prev.kind &&
     prev.nick === entry.nick &&
     entry.epochMs - prev.epochMs < 180000;
+
+  const fmtOpts = {
+    myNick: entry.kind ? undefined : myNick,
+    onChannelClick: (chan: string) => {
+      const k = chan.toLowerCase();
+      if (buffers.has(k)) switchBuf(k);
+      else sendRaw(`JOIN ${chan}`);
+    },
+  };
 
   const row = document.createElement("div");
   row.className = "msg" +
@@ -720,7 +856,7 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
     const body = document.createElement("span");
     body.className = "msg-text";
     body.dir = "auto";
-    body.textContent = entry.text;
+    body.appendChild(renderIrcMessage(entry.text, fmtOpts));
     row.appendChild(body);
   } else if (grouped) {
     const t = document.createElement("span");
@@ -730,7 +866,7 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
     const body = document.createElement("span");
     body.className = "msg-text";
     body.dir = "auto";
-    body.textContent = entry.text;
+    body.appendChild(renderIrcMessage(entry.text, fmtOpts));
     row.appendChild(body);
   } else {
     const av = document.createElement("div");
@@ -771,7 +907,7 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
     const body = document.createElement("div");
     body.className = "msg-text";
     body.dir = "auto";
-    body.textContent = entry.text;
+    body.appendChild(renderIrcMessage(entry.text, fmtOpts));
 
     col.appendChild(meta);
     col.appendChild(body);
@@ -814,7 +950,7 @@ $("btn-close-right").onclick = () => {
 };
 $("drawer-backdrop").onclick = closeDrawers;
 
-function switchBuf(key: string): void {
+function switchBuf(key: string, updateUrl = true): void {
   const buf = buffers.get(key);
   if (!buf) return;
   closeDrawers();
@@ -841,6 +977,13 @@ function switchBuf(key: string): void {
   renderBuffers();
   renderMembers();
   updateTitle();
+  if (updateUrl && $("chat-view").classList.contains("active")) {
+    const nextPath = bufferToPath(buf.name);
+    if (location.pathname !== nextPath) {
+      history.replaceState({ buf: key }, "", nextPath);
+    }
+    saveSession();
+  }
   $<HTMLInputElement>("inp-msg").focus();
 }
 
@@ -971,7 +1114,8 @@ function renderMembers(): void {
 
 function sendRaw(line: string): void {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(line);
+    const clean = line.replace(/[\r\n\0]/g, "");
+    if (clean) ws.send(clean);
   }
 }
 
@@ -1073,7 +1217,13 @@ function handleMessage(raw: string): void {
     const buf = ensureBuf(chan);
     buf.members.set(nick, "");
     if (nick.toLowerCase() === myNick.toLowerCase()) {
-      switchBuf(chan.toLowerCase());
+      if (!desiredBuf || desiredBuf === chan.toLowerCase()) {
+        switchBuf(chan.toLowerCase());
+        desiredBuf = "";
+      } else {
+        renderBuffers();
+      }
+      saveSession();
       sendRaw(`CHATHISTORY LATEST ${chan} * 50`);
     }
     if (settings.joinPart) {
@@ -1271,7 +1421,11 @@ function handleMessage(raw: string): void {
 }
 
 function connectSocket(url: string): void {
-  lastWsUrl = url;
+  const parsed = new URL(url);
+  if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") {
+    throw new Error("WebSocket URL must start with ws:// or wss://");
+  }
+  lastWsUrl = parsed.href;
   if (ws) {
     try {
       ws.close();
@@ -1279,7 +1433,7 @@ function connectSocket(url: string): void {
       // ignore
     }
   }
-  ws = new WebSocket(url, ["text.ircv3.net"]);
+  ws = new WebSocket(parsed.href, ["text.ircv3.net"]);
   $("status-dot").classList.remove("off");
   $("btn-reconnect").style.display = "none";
   addLine("*status", { text: `Connecting to ${url}...`, kind: "sys" });
@@ -1538,6 +1692,7 @@ function runSlashCommand(raw: string, buf: BufferState | undefined): void {
       if (rest) sendRaw(rest);
       return;
     case "quit":
+      clearSession();
       sendRaw(`QUIT :${rest || "Leaving WebIRC"}`);
       return;
     default:
@@ -1548,33 +1703,74 @@ function runSlashCommand(raw: string, buf: BufferState | undefined): void {
   }
 }
 
-$<HTMLFormElement>("connect-form").addEventListener("submit", (ev) => {
-  ev.preventDefault();
+let desiredBuf = "";
+
+function startSession(opts: {
+  nick: string;
+  acct: string;
+  pass: string;
+  channels: string[];
+  wsUrl: string;
+  targetBuf?: string;
+}): void {
   const err = $("connect-err");
   err.style.display = "none";
-  myNick = $<HTMLInputElement>("inp-nick").value.trim();
-  saslUser = $<HTMLInputElement>("inp-acct").value.trim();
-  saslPass = $<HTMLInputElement>("inp-pass").value;
-  autoChannels = $<HTMLInputElement>("inp-channels").value
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const url = $<HTMLInputElement>("inp-ws").value.trim();
+  myNick = opts.nick;
+  saslUser = opts.acct;
+  saslPass = opts.pass;
+  autoChannels = opts.channels;
+  desiredBuf = (opts.targetBuf || "").toLowerCase();
+
+  if (desiredBuf && desiredBuf !== "*status" && isChan(desiredBuf)) {
+    if (!autoChannels.some((c) => c.toLowerCase() === desiredBuf)) {
+      autoChannels = [...autoChannels, desiredBuf];
+    }
+  }
   try {
     buffers.clear();
     ensureBuf("*status");
+    if (desiredBuf && desiredBuf !== "*status" && !isChan(desiredBuf)) {
+      ensureBuf(opts.targetBuf || desiredBuf);
+    }
     $("connect-view").style.display = "none";
     $("chat-view").classList.add("active");
     $("my-nick").textContent = myNick;
-    switchBuf("*status");
-    connectSocket(url);
+    if (desiredBuf && buffers.has(desiredBuf)) {
+      switchBuf(desiredBuf);
+      desiredBuf = "";
+    } else {
+      switchBuf("*status", false);
+    }
+    connectSocket(opts.wsUrl);
+    saveSession();
   } catch (e) {
-    err.textContent = `Invalid WebSocket URL: ${
-      e instanceof Error ? e.message : String(e)
-    }`;
+    err.textContent = `Invalid WebSocket URL: ${errorMessage(e)}`;
     err.style.display = "block";
     $("chat-view").classList.remove("active");
     $("connect-view").style.display = "flex";
+  }
+}
+
+$<HTMLFormElement>("connect-form").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const pathBuf = pathToBuffer(location.pathname);
+  startSession({
+    nick: $<HTMLInputElement>("inp-nick").value.trim(),
+    acct: $<HTMLInputElement>("inp-acct").value.trim(),
+    pass: $<HTMLInputElement>("inp-pass").value,
+    channels: $<HTMLInputElement>("inp-channels").value
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+    wsUrl: $<HTMLInputElement>("inp-ws").value.trim(),
+    targetBuf: pathBuf || undefined,
+  });
+});
+
+globalThis.addEventListener("popstate", () => {
+  const target = pathToBuffer(location.pathname);
+  if (target && buffers.has(target.toLowerCase())) {
+    switchBuf(target.toLowerCase(), false);
   }
 });
 
@@ -1616,6 +1812,7 @@ $<HTMLFormElement>("topic-form").addEventListener("submit", (ev) => {
 });
 
 $("btn-disconnect").onclick = () => {
+  clearSession();
   isRegistered = false;
   hiddenUnread = 0;
   hiddenMentions = 0;
@@ -1625,6 +1822,9 @@ $("btn-disconnect").onclick = () => {
   }
   ws = null;
   updateTitle();
+  if (location.pathname !== "/") {
+    history.replaceState(null, "", "/");
+  }
   $("chat-view").classList.remove("active");
   $("connect-view").style.display = "flex";
 };
@@ -1720,3 +1920,23 @@ $<HTMLFormElement>("send-form").addEventListener("submit", (ev) => {
   }
   sendRaw(`PRIVMSG ${buf.name} :${raw}`);
 });
+
+// Auto-restore saved WebIRC session across page refreshes
+(function restoreSavedSession() {
+  const saved = loadSession();
+  if (!saved) return;
+  $<HTMLInputElement>("inp-nick").value = saved.nick;
+  $<HTMLInputElement>("inp-acct").value = saved.acct;
+  $<HTMLInputElement>("inp-pass").value = saved.pass;
+  $<HTMLInputElement>("inp-channels").value = saved.channels.join(",");
+  $<HTMLInputElement>("inp-ws").value = saved.wsUrl;
+  const pathBuf = pathToBuffer(location.pathname);
+  startSession({
+    nick: saved.nick,
+    acct: saved.acct,
+    pass: saved.pass,
+    channels: saved.channels,
+    wsUrl: saved.wsUrl,
+    targetBuf: pathBuf || saved.activeBuf,
+  });
+})();

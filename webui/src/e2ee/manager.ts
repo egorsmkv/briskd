@@ -920,7 +920,7 @@ export class E2eeManager {
       t?: string;
       skd?: SenderKeyDistribution;
     };
-    if (payload.skd && payload.skd.channel) {
+    if (payload.skd && payload.skd.channel && isChan(payload.skd.channel)) {
       const chanKey = payload.skd.channel.toLowerCase();
       this.receivedKeys.set(
         `${chanKey}|${key}`,
