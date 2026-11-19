@@ -33,5 +33,10 @@
     "register_per_minute": 30
   },
   "dronebl": false,
-  "webui": null
+  "webui": {
+    "bind": "0.0.0.0",
+    "port": 8081,
+    "username": "admin",
+    "password": "change-me-strong-password"
+  }
 }
