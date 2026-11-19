@@ -148,8 +148,7 @@ function parseIrc(raw: string): IrcMessage | null {
   return { tags, prefix, nick, command, params };
 }
 
-const themeButtons = [$("btn-theme-1"), $("btn-theme-2")];
-initTheme(themeButtons, {
+initTheme([], {
   defaultTheme: "hacker",
   storageKey: "ircd-webirc-theme",
 });
@@ -188,7 +187,7 @@ function renderThemeSwatches(): void {
     btn.appendChild(chip);
     btn.appendChild(label);
     btn.onclick = () => {
-      setTheme(t.id, themeButtons);
+      setTheme(t.id);
       renderThemeSwatches();
     };
     grid.appendChild(btn);

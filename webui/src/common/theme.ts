@@ -104,10 +104,13 @@ export function initTheme(
   } catch {
     // Ignore storage errors in restricted contexts.
   }
+  const allowed = opts.storageKey === "ircd-webirc-theme"
+    ? VALID_THEMES
+    : new Set<string>(["light", "dark"]);
   const prefersDark = typeof window.matchMedia === "function" &&
     window.matchMedia("(prefers-color-scheme: dark)").matches;
   const fallback: Theme = opts.defaultTheme ?? (prefersDark ? "dark" : "light");
-  const initial: Theme = saved && VALID_THEMES.has(saved)
+  const initial: Theme = saved && allowed.has(saved)
     ? (saved as Theme)
     : fallback;
   applyTheme(initial, buttons);
