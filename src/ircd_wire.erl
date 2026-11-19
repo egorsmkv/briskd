@@ -1,4 +1,39 @@
 -module(ircd_wire).
+-moduledoc """
+Pure IRC wire codec: line framing, parsing, encoding, IRCv3 message tags,
+and the RFC 1459 case mapping.
+
+This module makes no process calls and keeps no state. `m:ircd_session` and
+`m:ircd_link` own the sockets: they buffer unterminated input with
+`append_pending/2` and `partial/1`, and pass each complete line to
+`parse_client/1` (client sockets) or `parse_server/1` (server links). Replies
+and relayed messages are built with `line/4` and `message/5`.
+
+Wire limits and grammar:
+
+- An untagged line is at most 512 octets including the trailing CR LF
+  (RFC 1459 section 2.3, RFC 2812 section 2.3). NUL, a bare CR, or a bare LF
+  inside a line makes it malformed.
+- The IRCv3 message-tags specification allows at most 4094 bytes of tag data
+  and a tag section (`@`, the tags, and the separating space) of at most 8191
+  bytes in front of that 512-octet message. The absolute size of one line is
+  `MAX_WIRE_LINE` (8703 octets) in `include/ircd_wire.hrl`, and buffered input
+  without a line end is capped at `MAX_PENDING_BYTES` (1 MiB).
+- A command is a letter run or a three-digit numeric. Other word-like tokens
+  of up to 64 characters (letters, digits, `_`, `.`, `-`) also parse, so the
+  server can answer 421 instead of closing the connection. Commands are
+  returned upper-cased.
+- At most 15 parameters. A `:` introduces the trailing parameter, which may
+  contain spaces. After 14 middle parameters the rest of the line is the 15th
+  parameter even without a `:`, as in the RFC 2812 grammar.
+
+Parsers return `{ok, ...}` for a well-formed line, `empty` for a line with no
+command, and `error` for malformed input. `parse_client/1` also returns
+`{error, input_too_long, Tags}` so the session can answer numeric 417.
+
+Identities (nicknames, channel names, masks) are compared after `fold/1`,
+the RFC 1459 case mapping.
+""".
 -export([
     append_pending/2,
     channel/1,
@@ -18,7 +53,15 @@
 
 -include("ircd_wire.hrl").
 
-%% @doc Append one socket delivery to the unfinished line, or reject an oversized buffer.
+-doc """
+Append one socket read to the buffered input that has no line end yet.
+
+`Buffer` holds the bytes kept from earlier reads after the last CR LF, and
+`Packet` is the new read. Returns `{ok, Combined}` while the total stays within
+`MAX_PENDING_BYTES` (1 MiB, `include/ircd_wire.hrl`) and `error` otherwise; the
+caller then closes the connection. The per-line limit is enforced separately by
+`partial/1` and the parsers.
+""".
 -spec append_pending(binary(), binary()) -> {ok, binary()} | error.
 append_pending(Buffer, Packet) when
     is_binary(Buffer),
@@ -29,9 +72,22 @@ append_pending(Buffer, Packet) when
 append_pending(Buffer, Packet) when is_binary(Buffer), is_binary(Packet) ->
     error.
 
-%% @doc Parse one untagged client line into a command and binary parameters.
-%% A client prefix or message tags make the line `error`. Oversized untagged
-%% lines are `error`. Use parse_client/1 when tags are in scope.
+-doc """
+Parse one untagged client line into `{ok, Command, Params}`.
+
+`Packet` is one complete line ending in CR LF. Returns `empty` for a line with
+no command and `error` for malformed input, including a client-supplied prefix,
+any message tags, and a line over 512 octets. This is the strict RFC 1459 and
+RFC 2812 form; client sessions use `parse_client/1`, which accepts IRCv3 tags
+and reports over-long lines separately.
+
+```erlang
+1> ircd_wire:parse(<<"JOIN #a key\r\n">>).
+{ok,<<"JOIN">>,[<<"#a">>,<<"key">>]}
+2> ircd_wire:parse(<<"@a=1 PING x\r\n">>).
+error
+```
+""".
 -spec parse(binary()) -> {ok, binary(), [binary()]} | empty | error.
 parse(Packet) ->
     case parse_client(Packet) of
@@ -41,11 +97,35 @@ parse(Packet) ->
         Other -> Other
     end.
 
-%% @doc Parse a client line, including IRCv3 message tags.
-%% `{error, input_too_long, Tags}' means numeric 417: the tag data exceeds
-%% 4094 bytes, the tag section exceeds 8191 bytes, or the command part exceeds
-%% 512 octets. The command must not be processed. A client-supplied prefix is
-%% `error`.
+-doc """
+Parse one client line, including an optional IRCv3 message-tag section.
+
+`Packet` is one complete line ending in CR LF. Results:
+
+- `{ok, Tags, Command, Params}`: `Command` is upper-cased. `Tags` lists
+  `{Key, Value}` pairs in first-seen order with escaped values decoded; a
+  missing or empty value is `undefined`, and the last value wins for a
+  repeated key.
+- `{error, input_too_long, Tags}`: the tag data exceeds 4094 bytes, the tag
+  section exceeds 8191 bytes, or the message after the tags exceeds 512 octets
+  including CR LF. The caller answers numeric 417 (`ERR_INPUTTOOLONG`) and must
+  not run the command.
+- `empty`: the line holds no command.
+- `error`: malformed input, including a source prefix (a client may not name
+  its own source), NUL, a bare CR or LF, a missing CR LF, or more than
+  `MAX_WIRE_LINE` octets.
+
+```erlang
+1> ircd_wire:parse_client(<<"privmsg #chan :hello world\r\n">>).
+{ok,[],<<"PRIVMSG">>,[<<"#chan">>,<<"hello world">>]}
+2> ircd_wire:parse_client(<<"@label=1 PING tok\r\n">>).
+{ok,[{<<"label">>,<<"1">>}],<<"PING">>,[<<"tok">>]}
+3> ircd_wire:parse_client(<<":nick PRIVMSG #c :hi\r\n">>).
+error
+4> ircd_wire:parse_client(<<"\r\n">>).
+empty
+```
+""".
 -spec parse_client(binary()) ->
     {ok, [{binary(), undefined | binary()}], binary(), [binary()]}
     | {error, input_too_long, [{binary(), undefined | binary()}]}
@@ -66,9 +146,21 @@ parse_client(Packet) ->
             error
     end.
 
-%% @doc Parse a server-link line, retaining tags and an optional source prefix.
-%% An over-long tagged line is `error` here. Client sessions map that case to
-%% numeric 417 themselves.
+-doc """
+Parse one server-link line into `{ok, Tags, Prefix, Command, Params}`.
+
+Unlike `parse_client/1`, an optional `:prefix` naming the source is accepted
+and returned as `Prefix`, or `undefined` when absent (RFC 2813 section 3.3).
+The caller must still check that the peer may speak for that source. Tags are
+decoded as in `parse_client/1`. Returns `empty` for a line with no command and
+`error` for malformed input, an empty prefix, a prefix with no command, or any
+over-long line; a server link has no 417 reply.
+
+```erlang
+1> ircd_wire:parse_server(<<":irc.example NICK bob 1\r\n">>).
+{ok,[],<<"irc.example">>,<<"NICK">>,[<<"bob">>,<<"1">>]}
+```
+""".
 -spec parse_server(binary()) ->
     {ok, [{binary(), undefined | binary()}], undefined | binary(), binary(), [binary()]}
     | empty
@@ -86,7 +178,15 @@ parse_server(Packet) ->
             error
     end.
 
-%% @doc Accept a partial line that can still grow into one valid IRC message.
+-doc """
+Check that unterminated input can still grow into one valid line.
+
+`Data` is the buffered bytes after the last CR LF. Returns `ok` when it is
+shorter than `MAX_WIRE_LINE` octets, contains no LF, and contains no CR except
+as its last byte (a CR LF split across two reads). Returns `error` otherwise;
+`m:ircd_session` then answers 417 for an over-long tagged client line and
+closes the connection in the other cases.
+""".
 -spec partial(binary()) -> ok | error.
 partial(Data) when is_binary(Data), byte_size(Data) < ?MAX_WIRE_LINE ->
     case {binary:match(Data, <<"\n">>), binary:match(Data, <<"\r">>)} of
@@ -265,8 +365,23 @@ params([Rest], Command, Acc) when length(Acc) < 14 ->
 params(_, _, _) ->
     error.
 
-%% @doc Encode an IRC message with optional IRCv3 tags in front of the 512-octet line.
-%% An empty tag list is the classic line. Tags are not truncated.
+-doc """
+Encode one IRC message with an optional IRCv3 tag section in front of it.
+
+`Tags` is a list of `{Key, Value}` pairs. `undefined` writes the key alone, and
+values are escaped as the message-tags specification requires (`;`, space,
+`\`, CR, LF). With `[]` the result is exactly `line/4`. The part after the tags
+follows `line/4`, including its 512-octet limit. The tag section itself is
+neither truncated nor size-checked here; per-recipient tag filtering happens in
+`m:ircd_state_send`.
+
+```erlang
+1> Tags = [{<<"time">>, <<"2026-01-01T00:00:00.000Z">>}].
+[{<<"time">>,<<"2026-01-01T00:00:00.000Z">>}]
+2> iolist_to_binary(ircd_wire:message(Tags, <<"n!u@h">>, <<"PRIVMSG">>, [<<"#c">>], <<"hi">>)).
+<<"@time=2026-01-01T00:00:00.000Z :n!u@h PRIVMSG #c :hi\r\n">>
+```
+""".
 -spec message(
     [{binary(), undefined | binary()}], iodata(), iodata(), [iodata()], none | iodata()
 ) ->
@@ -276,7 +391,25 @@ message([], Prefix, Command, Middle, Trailing) ->
 message(Tags, Prefix, Command, Middle, Trailing) ->
     [encode_tags(Tags), line(Prefix, Command, Middle, Trailing)].
 
-%% @doc Encode an IRC message, enforcing the protocol's 512-byte line limit.
+-doc """
+Encode one prefixed IRC line within the 512-octet limit (RFC 2812 section 2.3).
+
+The result is `:Prefix Command Middle...`, then ` :Trailing` unless `Trailing`
+is `none`, then CR LF. `Middle` parameters are written as given, so they must
+not contain spaces or start with `:`. A trailing parameter that does not fit is
+cut so the whole line, CR LF included, is at most 512 octets; the cut counts
+bytes and can split a UTF-8 sequence. When the prefix, command, and middle
+parameters alone do not fit (over 510 octets, or 508 with a trailing
+parameter), the result is `[]` and nothing should be sent: one logical message
+is never split across lines.
+
+```erlang
+1> iolist_to_binary(ircd_wire:line(<<"irc.local">>, <<"001">>, [<<"alice">>], <<"Welcome">>)).
+<<":irc.local 001 alice :Welcome\r\n">>
+2> iolist_to_binary(ircd_wire:line(<<"irc.local">>, <<"PING">>, [<<"tok">>], none)).
+<<":irc.local PING tok\r\n">>
+```
+""".
 -spec line(iodata(), iodata(), [iodata()], none | iodata()) -> iolist().
 line(Prefix, Command, Middle, Trailing) ->
     Head = iolist_to_binary([
@@ -300,20 +433,41 @@ line(Prefix, Command, Middle, Trailing) ->
             []
     end.
 
-%% @doc Copy a binary that will outlive the socket buffer it was sliced from.
-%% Other terms are returned unchanged. Short-lived relay text should not be copied.
-%% @doc Copy every top-level binary field of a record (or other tuple), so a
-%% row built from a parsed peer line does not keep the receive buffer alive.
-%% Nested maps and lists are left as they are; copy those at insertion.
+-doc """
+Apply `retain/1` to every top-level field of a record or other tuple.
+
+Use it on a row built from a parsed peer line before it is stored, so the row
+does not keep the receive buffer alive. Nested maps and lists are left as they
+are; copy those at insertion.
+""".
 -spec retain_fields(T) -> T when T :: tuple().
 retain_fields(Record) when is_tuple(Record) ->
     list_to_tuple([retain(Field) || Field <- tuple_to_list(Record)]).
 
+-doc """
+Copy `Value` if it is a binary, so it no longer references a larger buffer.
+
+A sub-binary sliced from a socket read keeps the whole read alive. Copy at a
+long-lived ownership boundary, such as a Mnesia or ETS insert. Any other term
+is returned unchanged. Short-lived relay text should not be copied.
+""".
 -spec retain(term()) -> term().
 retain(Value) when is_binary(Value) -> binary:copy(Value);
 retain(Value) -> Value.
 
-%% @doc Fold an IRC identifier according to the RFC1459 case mapping.
+-doc """
+Fold an identifier with the RFC 1459 case mapping (RFC 1459 section 2.2).
+
+ASCII `A`-`Z` become `a`-`z`, and `[`, `]`, `\`, `^` become `{`, `}`, `|`,
+`~`. Other bytes, including non-ASCII ones, are unchanged. Stored nickname,
+channel, and mask identities are compared in this form; replies keep the wire
+spelling.
+
+```erlang
+1> ircd_wire:fold(<<"Nick[1]^">>).
+<<"nick{1}~">>
+```
+""".
 -spec fold(binary()) -> binary().
 fold(Value) -> <<<<(lower(C))>> || <<C>> <= Value>>.
 lower(C) when C >= $A, C =< $Z -> C + 32;
@@ -323,13 +477,38 @@ lower(92) -> $|;
 lower($^) -> $~;
 lower(C) -> C.
 
-%% @doc Check whether a nickname uses the server's supported RFC character set.
+-doc """
+Check a nickname with the RFC 1459 length limit of 9 octets.
+
+Same as `nickname(Nick, 9)`; see `nickname/2` for the character set.
+
+```erlang
+1> ircd_wire:nickname(<<"[bot]">>).
+true
+2> ircd_wire:nickname(<<"9lives">>).
+false
+3> ircd_wire:nickname(<<"averylongnick">>).
+false
+```
+""".
 -spec nickname(binary()) -> boolean().
 nickname(Nick) ->
     nickname(Nick, 9).
 
-%% @doc Like nickname/1 with an operator-configured maximum length (`nicklen`).
-%% RFC 1459 sets 9; the character set is the same at any length.
+-doc """
+Check a nickname's syntax with a maximum length of `Max` octets.
+
+The first character is a letter or one of the RFC 2812 special characters
+`[`, `]`, `\`, `` ` ``, `_`, `^`, `{`, `|`, `}` (RFC 2812 section 2.3.1).
+Later characters may also be digits or `-`. `Max` is the configured `nicklen`
+(9 to 30, default 9); RFC 1459 sets 9, and the character set is the same at any
+length. Anything else, including an empty nickname, is `false`.
+
+```erlang
+1> ircd_wire:nickname(<<"averylongnick">>, 30).
+true
+```
+""".
 -spec nickname(binary(), pos_integer()) -> boolean().
 nickname(Nick, Max) when is_binary(Nick), byte_size(Nick) =< Max ->
     re:run(
@@ -340,7 +519,24 @@ nickname(Nick, Max) when is_binary(Nick), byte_size(Nick) =< Max ->
 nickname(_Nick, _Max) ->
     false.
 
-%% @doc Validate a regular or safe channel name accepted by this server.
+-doc """
+Check that a channel name is valid on this server (RFC 2811 section 2.1).
+
+`#` (network-wide), `&` (local), and `+` (modeless) names take 1 to 49
+octets after the prefix, so at most 50 in total, and must not contain NUL,
+BEL (Ctrl-G), space, comma, or colon. Names starting with `!` are safe
+channels and are checked by `safe_channel/1`. Case is not checked; compare
+names with `fold/1`.
+
+```erlang
+1> ircd_wire:channel(<<"#erlang">>).
+true
+2> ircd_wire:channel(<<"#a,b">>).
+false
+3> ircd_wire:channel(<<"!ABC12chat">>).
+true
+```
+""".
 -spec channel(binary()) -> boolean().
 channel(<<Type, Rest/binary>>) when Type =:= $#; Type =:= $&; Type =:= $+ ->
     byte_size(Rest) > 0 andalso byte_size(Rest) < 50 andalso
@@ -350,7 +546,19 @@ channel(<<$!, _/binary>> = Name) ->
 channel(_) ->
     false.
 
-%% @doc Validate the server-generated identifier and short name in a safe channel.
+-doc """
+Check a safe channel name (RFC 2811 section 3.2).
+
+The name is `!`, a five-character channel id of `A`-`Z` and `0`-`9`, and a
+short name of 1 to 44 octets with the same forbidden characters as
+`channel/1`, so the whole name is at most 50 octets. This checks syntax only;
+whether the id belongs to an existing channel is decided by the caller.
+
+```erlang
+1> ircd_wire:safe_channel(<<"!abc12chat">>).
+false
+```
+""".
 -spec safe_channel(binary()) -> boolean().
 safe_channel(<<$!, Id:5/binary, Short/binary>>) when
     byte_size(Short) > 0,

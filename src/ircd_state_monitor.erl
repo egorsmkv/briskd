@@ -2,15 +2,26 @@
 -export([clear/1, monitor/3, offline/1, online/2, watchers/1]).
 -include("ircd_state.hrl").
 
-%% @doc IRCv3 MONITOR. Each client's targets live in `ircd_conn` (`monitor`,
-%% folded nick => given spelling) and in the `ircd_monitor` bag index
-%% (folded nick, watcher pid) used to find watchers on nick events. The list
-%% length is capped by `monitor_limit` (ISUPPORT MONITOR).
+-moduledoc """
+IRCv3 [MONITOR](https://ircv3.net/specs/extensions/monitor): online and
+offline notifications for nicknames, local or remote.
+
+Runs inside `m:ircd_state`. Each client's targets live in `m:ircd_conn`
+(`monitor`, folded nick => given spelling) and in the `ircd_monitor` ETS bag
+(folded nick, watcher pid) used to find watchers on nick events. Both are
+transient and dropped on disconnect. The list length is capped by
+`monitor_limit` (default 100, advertised as ISUPPORT `MONITOR`). Nicknames
+compare under the RFC 1459 case mapping (`ircd_wire:fold/1`). Replies are
+split so each 730/731/732 line carries at most about 400 bytes of targets.
+`m:ircd_state_v3` also uses `watchers/1` for extended-monitor.
+""".
 
 %% Bytes of targets per 730/731/732 line, leaving room for prefix and nick.
 -define(LINE_BUDGET, 400).
 
-%% @doc Clients monitoring a nickname.
+-doc """
+Pids of the local clients monitoring `Nick` (compared folded).
+""".
 -spec watchers(binary()) -> [pid()].
 watchers(Nick) ->
     case ets:whereis(ircd_monitor) of
@@ -18,7 +29,10 @@ watchers(Nick) ->
         _ -> [Pid || {_, Pid} <- ets:lookup(ircd_monitor, ircd_wire:fold(Nick))]
     end.
 
-%% @doc A nickname became reachable: send RPL_MONONLINE to its watchers.
+-doc """
+A nickname became reachable: send `730 RPL_MONONLINE` with `Mask`
+(`nick!user@host`) to its watchers.
+""".
 -spec online(binary(), binary()) -> ok.
 online(Nick, Mask) ->
     Server = server(),
@@ -27,13 +41,17 @@ online(Nick, Mask) ->
         watchers(Nick)
     ).
 
-%% @doc A nickname went away: send RPL_MONOFFLINE to its watchers.
+-doc """
+A nickname went away: send `731 RPL_MONOFFLINE` to its watchers.
+""".
 -spec offline(binary()) -> ok.
 offline(Nick) ->
     Server = server(),
     lists:foreach(fun(Pid) -> reply(Pid, Server, <<"731">>, Nick) end, watchers(Nick)).
 
-%% @doc Drop every target of a disconnecting client.
+-doc """
+Drop every target of the client `Pid` (on `MONITOR C` and on disconnect).
+""".
 -spec clear(pid()) -> ok.
 clear(Pid) ->
     lists:foreach(
@@ -42,7 +60,15 @@ clear(Pid) ->
     ),
     ircd_conn:remove(Pid, monitor).
 
-%% @doc `MONITOR <+|-|C|L|S> [targets]`.
+-doc """
+`MONITOR <+|-|C|L|S> [targets]`.
+
+`+` adds comma-separated nicknames (invalid ones are skipped) and replies
+730 / 731 for each new target; targets past the limit get
+`734 ERR_MONLISTFULL`. `-` removes targets, `C` clears the list, `L` lists
+it (732, then 733), and `S` reports the status of every target (730 / 731).
+A missing target list gets 461 and an unknown modifier 421.
+""".
 -spec monitor([binary()], #client{}, binary()) -> ok.
 monitor([<<"+">>, Targets | _], #client{pid = Pid} = Client, Server) ->
     Limit = maps:get(monitor_limit, persistent_term:get({ircd_state, config}), 100),

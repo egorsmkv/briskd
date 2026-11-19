@@ -41,64 +41,183 @@
 -include("ircd_state.hrl").
 -include("ircd_account.hrl").
 
-%% @doc Own IRC client, channel, and peer state for this server.
+-moduledoc """
+Single-writer owner of this server's IRC protocol state, and the entry point
+that sessions and links call to apply commands.
 
-%% @doc Start the process that owns IRC client and channel state.
+`ircd_state` is a registered `gen_server`. Sessions (`m:ircd_session`) and
+links (`m:ircd_link`) parse lines and call `command/4` or `server_command/5`;
+this process applies the effect and writes replies straight to client
+sockets through `m:ircd_state_send`. The `ircd_state_*` modules
+(`m:ircd_state_client`, `m:ircd_state_channel`, `m:ircd_state_link`,
+`m:ircd_state_net`, `m:ircd_state_v3`, `m:ircd_state_history`, and the
+others) are libraries that run inside this process, so every protocol write
+is serialized here and ordering per nick and channel is the order of calls.
+Client commands follow RFC 2812 / RFC 1459, channel rules RFC 2811, and peer
+messages RFC 2813; IRCv3 commands are dispatched to their own modules.
+
+## Mnesia tables
+
+`init/1` creates (or loads and migrates) these `disc_copies` tables:
+`client`, `channel`, `channel_history`, `activity`, `whowas`, `user_modes`,
+`remote_client`, `remote_channel`, `known_server`, `service`, `account`,
+`read_marker`, and `direct_history`. On every start it clears `client`,
+`activity`, `user_modes`, and all imported peer state (`remote_client`,
+`remote_channel`, `known_server`, `service`). `whowas`, safe `!` channels,
+`account`, and `read_marker` always survive a restart. The JSON `retention`
+setting decides the rest:
+
+- `transient` (default): ordinary channels and both history tables are
+  deleted; safe channels are kept with their membership cleared.
+- `channels`: every channel row is kept with membership cleared, together
+  with its history; history of channels that no longer exist is dropped.
+
+Configured `channels` entries are then created when no row exists. See
+`docs/mnesia.md` for backup, restore, and migration.
+
+## ETS tables and configuration
+
+Named ETS tables are created (or emptied) at startup and are transient:
+`ircd_caps` (negotiated capabilities, `m:ircd_cap`), `ircd_conn`
+(per-connection IRCv3 state, `m:ircd_conn`), `ircd_nicks` (folded-nick
+index), `ircd_monitor` (MONITOR watcher bag), `ircd_chan_meta` and
+`ircd_remote_meta` (metadata), `ircd_holds` (nick and channel holds after a
+split or nick change), `ircd_admins`, `ircd_attached` (multiclient),
+`ircd_account_channels` (account rejoin), `ircd_inbound_peers`,
+`ircd_outbound_ready`, and the `ircd_command_stats` / `ircd_connection_stats`
+counters used by `STATS`. Validated configuration, operator credentials, and
+link secrets are published in `persistent_term` and replaced on `REHASH`.
+
+## Timers and lifecycle
+
+A `reop_tick` message every second reopens operatorless safe channels after
+`reop_delay` and expires nick and channel holds. Each session is monitored
+when it connects; its `'DOWN'` removes the client, its memberships, and its
+IRCv3 state. `format_status/1` redacts `PASS` and `OPER` passwords.
+""".
+
+-doc """
+Start and register the `ircd_state` process with the validated configuration
+map from `m:ircd_config`. Called by `m:ircd_sup`.
+""".
 -spec start_link(map()) -> gen_server:start_ret().
 start_link(Config) -> gen_server:start_link({local, ?MODULE}, ?MODULE, Config, []).
 
-%% @doc Register the calling session as a connected client using its peer host.
+-doc """
+Register the calling session as a connected, unregistered client.
+
+Same as `connect(Host, #{})`. `Host` is the peer address or resolved name.
+""".
 -spec connect(binary()) -> ok.
 connect(Host) -> connect(Host, #{}).
 
-%% @doc Register the calling session with connection facts: `secure` (TLS) and
-%% `certfp` (lowercase hex SHA-256 of the client certificate, if any).
+-doc """
+Register the calling session as a connected, unregistered client.
+
+`Info` carries connection facts used for capability negotiation and SASL
+EXTERNAL: `secure` (TLS) and `certfp` (lowercase hex SHA-256 of the client
+certificate, if any). The caller is monitored, and a `client` and
+`user_modes` row are written for it.
+""".
 -spec connect(binary(), map()) -> ok.
 connect(Host, Info) -> gen_server:call(?MODULE, {connect, Host, Info}).
 
-%% @doc Record that the calling session finished a STARTTLS handshake.
+-doc """
+Record that the calling session finished a `STARTTLS` handshake.
+
+The `Info` keys update the connection facts. Because the offered capability
+set changes (`tls` disappears, `sts` switches to its persistence value),
+clients with `cap-notify` receive `CAP DEL` / `CAP NEW`.
+""".
 -spec tls_upgraded(map()) -> ok.
 tls_upgraded(Info) -> gen_server:call(?MODULE, {tls_upgraded, Info}).
 
-%% @doc Apply a parsed IRC command on behalf of the calling session.
-%% Params contains the command's tokenized parameters and Bytes is the wire line size.
+-doc """
+Apply an untagged client command on behalf of the calling session.
+
+Same as `command(Command, Params, Bytes, [])`.
+""".
 -spec command(binary(), [binary()], non_neg_integer()) -> ok | quit | starttls.
 command(Command, Params, Bytes) -> command(Command, Params, Bytes, []).
 
-%% @doc Apply a client command that may carry IRCv3 message tags.
+-doc """
+Apply a client command, with its IRCv3 message tags, on behalf of the calling
+session.
+
+`Params` are the parsed parameters and `Bytes` is the wire line size (counted
+for `STATS m` and connection statistics). Replies are written directly to
+the client; a `label` tag wraps them per labeled-response. Returns `quit`
+when the session must close, `starttls` when it must start the TLS
+handshake, and `ok` otherwise. Unregistered clients get 451 for commands
+that need registration.
+""".
 -spec command(binary(), [binary()], non_neg_integer(), [{binary(), undefined | binary()}]) ->
     ok | quit | starttls.
 command(Command, Params, Bytes, Tags) ->
     gen_server:call(?MODULE, {command, Command, Params, Bytes, Tags}).
 
-%% @doc Apply a command from a connection attached to `Primary` (multiclient).
+-doc """
+Apply a command from a secondary connection attached to `Primary`
+(the opt-in multiclient feature).
+
+The command runs as the primary client. Returns `quit` when the caller is
+not attached to `Primary` or the primary is gone.
+""".
 -spec command_as(pid(), binary(), [binary()], non_neg_integer(), list()) -> ok | quit.
 command_as(Primary, Command, Params, Bytes, Tags) ->
     gen_server:call(?MODULE, {command_as, Primary, Command, Params, Bytes, Tags}).
 
-%% @doc Reject an over-long tagged line with numeric 417 and do not relay it.
+-doc """
+Answer an over-long tagged line from the calling session with
+`417 ERR_INPUTTOOLONG`, honouring its `label` tag. The line is not applied.
+""".
 -spec input_too_long([{binary(), undefined | binary()}]) -> ok.
 input_too_long(Tags) -> gen_server:call(?MODULE, {input_too_long, Tags}).
 
-%% @doc Return whether the calling session has completed NICK and USER registration.
+-doc """
+Return whether the calling session is registered: `NICK`, `USER`, and any
+required `PASS` are accepted and the welcome has been sent (not held by
+`CAP` negotiation).
+""".
 -spec registered() -> boolean().
 registered() -> gen_server:call(?MODULE, registered).
 
-%% @doc Return the RFC 2813 client and channel burst for an authenticated link.
+-doc """
+Return the RFC 2813 burst lines for a newly authenticated link: known
+servers, local and remote users, IRCv3 account state, channels, synchronized
+accounts, metadata, and read markers.
+""".
 -spec server_burst() -> [binary()].
 server_burst() -> gen_server:call(?MODULE, server_burst).
 
-%% @doc Remember a directly connected peer after its handshake succeeds.
+-doc """
+Record a directly connected peer after its `PASS`/`SERVER` handshake
+succeeds. Writes a hop-1 `known_server` row and indexes the calling link
+process under the folded name as an `inbound` or `outbound` peer.
+""".
 -spec register_adjacent(binary(), binary(), inbound | outbound) -> ok.
 register_adjacent(Name, Token, Kind) ->
     gen_server:call(?MODULE, {register_adjacent, Name, Token, Kind}).
 
-%% @doc Apply a state message received from an authenticated peer.
+-doc """
+Apply an untagged message received from the authenticated peer `Peer`.
+
+Same as `server_command(Peer, Prefix, Command, Params, [])`.
+""".
 -spec server_command(binary(), undefined | binary(), binary(), [binary()]) -> ok | {error, term()}.
 server_command(Peer, Prefix, Command, Params) ->
     server_command(Peer, Prefix, Command, Params, []).
 
-%% @doc Apply a peer message, keeping only client-only tags for later relay.
+-doc """
+Apply a message received from the authenticated peer `Peer` (RFC 2813).
+
+`Prefix` is the source prefix, or `undefined` when the line had none (the
+link's own server is then the source). `Tags` are the client-only tags kept
+for relay to local recipients. With `utf8_only` set, invalid UTF-8 in the
+parameters is replaced by U+FFFD before delivery. Unknown commands are
+ignored. Returns `{error, Reason}` when the message breaks link rules; the
+caller then drops the link.
+""".
 -spec server_command(
     binary(), undefined | binary(), binary(), [binary()], [{binary(), undefined | binary()}]
 ) ->
@@ -107,8 +226,13 @@ server_command(Peer, Prefix, Command, Params, Tags) ->
     ircd_log:server_command(Peer, Command, Params),
     gen_server:call(?MODULE, {server_command, Peer, Prefix, Command, Params, Tags}).
 
-%% @doc Drop imported client state when a server link closes.
-%% A missing state process during shutdown is ignored. Other failures propagate.
+-doc """
+Treat the loss of the link to `Peer` as a netsplit: remove the users,
+services, servers, and channel memberships reachable only through it and tell
+the remaining peers.
+
+A missing state process during shutdown is ignored. Other failures propagate.
+""".
 -spec server_disconnect(binary()) -> ok.
 server_disconnect(Peer) ->
     try gen_server:call(?MODULE, {server_disconnect, Peer}) of
@@ -119,7 +243,11 @@ server_disconnect(Peer) ->
         exit:{shutdown, _} -> ok
     end.
 
-%% @doc Check an inbound server's name and shared password against configured peers.
+-doc """
+Check an inbound server's name (RFC 1459 folded) and shared password against
+the configured `server_links`. The password comparison uses
+`ircd_config:secret_match/2`. Runs in the caller's process.
+""".
 -spec authenticate_server_link(binary(), binary()) -> boolean().
 authenticate_server_link(Name, Password) ->
     Links = persistent_term:get({?MODULE, server_links}, []),
@@ -131,7 +259,7 @@ authenticate_server_link(Name, Password) ->
         Links
     ).
 
-%% @doc Initialize Mnesia tables and start the state server with the server name.
+-doc false.
 -spec init(map()) -> {ok, binary()}.
 init(#{name := Name} = Config) ->
     Started = calendar:system_time_to_rfc3339(erlang:system_time(second), [{unit, second}]),
@@ -400,10 +528,14 @@ reset_channels() ->
 cleared_membership(Channel) ->
     Channel#channel{members = #{}, invited = [], opless_since = undefined}.
 
-%% Publish OPER credentials and the predefined-channel keys. Administrator
-%% passwords join the operator list so OPER and STATS o accept them. Their
-%% folded nicks stay separate so a successful OPER can be told from an
-%% ordinary operator account.
+-doc """
+Publish `OPER` credentials and the configured channel keys from `Config`
+in `persistent_term`.
+
+Administrator entries join the operator list so `OPER` and `STATS o` accept
+them; their names are also stored separately so a successful `OPER` can be
+told apart from an ordinary operator. Called at startup and by `REHASH`.
+""".
 -spec store_accounts(map()) -> ok.
 store_accounts(Config) ->
     Operators = maps:get(operators, Config, []),
@@ -416,8 +548,12 @@ store_accounts(Config) ->
     ),
     ok.
 
-%% Create each configured channel that has no row. An existing row, including
-%% one kept by `channels` retention, keeps its topic, modes, key, and limit.
+-doc """
+Create each channel from the JSON `channels` setting that has no row.
+
+An existing row, including one kept by `channels` retention, keeps its
+topic, modes, key, and limit. Called at startup and by `REHASH`.
+""".
 -spec seed_channels() -> ok.
 seed_channels() ->
     Config = persistent_term:get({?MODULE, config}, #{}),
@@ -446,7 +582,10 @@ seed_channel(#{
             })
     end.
 
-%% @doc True after this session's OPER matched an `administrators` entry.
+-doc """
+True after the session `Pid` used `OPER` with an `administrators` entry.
+Reads the `ircd_admins` ETS table; safe to call from any process.
+""".
 -spec administrator(pid()) -> boolean().
 administrator(Pid) when is_pid(Pid) ->
     case ets:whereis(ircd_admins) of
@@ -454,27 +593,43 @@ administrator(Pid) when is_pid(Pid) ->
         _ -> ets:lookup(ircd_admins, Pid) =/= []
     end.
 
-%% @doc True when the folded channel key is in the configured channel list.
+-doc """
+True when the folded channel key `Key` names a channel from the JSON
+`channels` setting. Such a channel is kept when its last member leaves.
+""".
 -spec predefined_channel(binary()) -> boolean().
 predefined_channel(Key) when is_binary(Key) ->
     lists:member(Key, persistent_term:get({?MODULE, predefined_channels}, [])).
 
-%% @doc Restart policy loaded from JSON. `transient` drops ordinary channels.
+-doc """
+Configured `retention` policy.
+
+`transient` (default) deletes ordinary channels and message history at
+startup and when a channel empties; `channels` keeps them. Both clear client
+sessions and imported peer state.
+""".
 -spec retention() -> transient | channels.
 retention() ->
     maps:get(retention, persistent_term:get({?MODULE, config}), transient).
 
-%% @doc Longest accepted nickname (`nicklen`, default 9 from RFC 1459).
+-doc """
+Longest accepted nickname in bytes: the `nicklen` setting, default 9 from
+RFC 1459. Advertised as `NICKLEN` in RPL_ISUPPORT.
+""".
 -spec nicklen() -> pos_integer().
 nicklen() ->
     maps:get(nicklen, persistent_term:get({?MODULE, config}, #{}), 9).
 
-%% @doc Maximum channel PRIVMSG/NOTICE lines stored for one channel.
+-doc """
+The `history_limit` setting (default 100): how many messages, and separately
+how many events, are kept per channel or direct conversation. Advertised as
+`CHATHISTORY` in RPL_ISUPPORT.
+""".
 -spec history_limit() -> pos_integer().
 history_limit() ->
     maps:get(history_limit, persistent_term:get({?MODULE, config}), 100).
 
-%% @doc Handle session registration, registration queries, and client commands.
+-doc false.
 handle_call({connect, Host}, From, Server) ->
     handle_call({connect, Host, #{}}, From, Server);
 handle_call({connect, Host, Info}, {Pid, _}, Server) ->
@@ -740,10 +895,10 @@ client_command(Command, Params, Bytes, Tags, Pid, Server) ->
 link_source(Peer, undefined) -> Peer;
 link_source(_Peer, Prefix) -> Prefix.
 
-%% @doc Ignore unsupported asynchronous state messages.
+-doc false.
 handle_cast(_, State) -> {noreply, State}.
 
-%% @doc Remove client state after its session process exits.
+-doc false.
 handle_info({'DOWN', _, process, Pid, _}, State) ->
     ets:delete(ircd_attached, Pid),
     case mnesia:dirty_read(client, Pid) of
@@ -759,11 +914,18 @@ handle_info(reop_tick, Server) ->
     ok = ircd_state_net:expire_holds(),
     erlang:send_after(1000, self(), reop_tick),
     {noreply, Server};
-%% Ignore unknown messages. Reop and session DOWN are the only expected info events.
+%% Ignore unknown messages. Session DOWN, `reop_tick`, and `flush_netjoin` are
+%% the only expected info events.
 handle_info(_, State) ->
     {noreply, State}.
 
-%% @doc Hide PASS and OPER secrets if a crash report includes the current message.
+-doc """
+Redact secrets from status and crash reports.
+
+The password of a `PASS` command and the password of an `OPER` command are
+replaced by `redacted` in the current message and in the `sys` log. Other
+state is returned unchanged.
+""".
 -spec format_status(map()) -> map().
 format_status(Status) ->
     maps:map(fun redact_status/2, Status).
@@ -1525,30 +1687,65 @@ supported_command(Command) ->
 
 %% Public lookups and replies used by query handlers. The implementations
 %% live with the state they read.
+-doc """
+Find a local client by nickname under the RFC 1459 case mapping
+(`ircd_wire:fold/1`). Returns `undefined` when no local client has it.
+""".
 -spec find_nick(binary()) -> undefined | #client{}.
 find_nick(A0) -> ircd_state_client:find_nick(A0).
 
+-doc """
+True when the client is registered and its welcome has been sent. While
+`CAP` negotiation holds the welcome the client is not ready.
+""".
 -spec ready(#client{}) -> boolean().
 ready(A0) -> ircd_state_client:ready(A0).
 
+-doc """
+User modes of the local client with pid `Pid`, as a set of mode characters.
+""".
 -spec user_modes(term()) -> #{char() => true}.
 user_modes(A0) -> ircd_state_client:user_modes(A0).
 
+-doc """
+True when `Requester` may see `Target` in queries: the target is the
+requester, or it is registered and either not `+i` or shares a channel with
+the requester.
+""".
 -spec user_visible(#client{}, #client{}) -> boolean().
 user_visible(A0, A1) -> ircd_state_client:user_visible(A0, A1).
 
+-doc """
+True when the channel member `Pid` is visible to `Requester`: the requester
+is in `Members` (the channel's member map), or `user_visible/2` holds.
+""".
 -spec visible_member(term(), #client{}, map()) -> boolean().
 visible_member(A0, A1, A2) -> ircd_state_channel:visible_member(A0, A1, A2).
 
+-doc """
+Match an IRC mask (`*`, `?`) against a value under the RFC 1459 case
+mapping. See `ircd_state_channel:wildcard_match/2`.
+""".
 -spec wildcard_match(binary(), binary()) -> boolean().
 wildcard_match(A0, A1) -> ircd_state_channel:wildcard_match(A0, A1).
 
+-doc """
+Mode flags of the imported remote channel `Name`, or `#{}` when no peer
+reported it.
+""".
 -spec remote_channel_flags(binary()) -> #{atom() | char() => term()}.
 remote_channel_flags(A0) -> ircd_state_link:remote_channel_flags(A0).
 
+-doc """
+True when a remote user (folded nick key and user modes) is visible to the
+local `Requester`: it is not `+i`, or it shares a channel with the requester.
+""".
 -spec remote_user_visible_to_requester(term(), map(), term()) -> boolean().
 remote_user_visible_to_requester(A0, A1, A2) ->
     ircd_state_link:remote_user_visible_to_requester(A0, A1, A2).
 
+-doc """
+Send a numeric reply to a local client. See `ircd_state_send:numeric/5`.
+""".
 -spec numeric(#client{}, term(), term(), term(), term()) -> ok.
 numeric(A0, A1, A2, A3, A4) -> ircd_state_send:numeric(A0, A1, A2, A3, A4).

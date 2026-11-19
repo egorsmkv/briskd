@@ -36,22 +36,52 @@
 -include("ircd_state.hrl").
 -include("ircd_account.hrl").
 
-%% @doc IRCv3 identity, account, and notification commands.
-%%
-%% Accounts: SASL 3.1/3.2 (`AUTHENTICATE`), draft/account-registration
-%% (`REGISTER`, `VERIFY`), account-notify (`ACCOUNT`), account-tag, and
-%% extended-join. Presence: away-notify, draft/pre-away, setname, chghost, and
-%% bot mode. Connection: WEBIRC and draft/extended-isupport (`ISUPPORT`).
+-moduledoc """
+IRCv3 identity, account, and notification commands, and their link
+propagation.
+
+Runs inside `m:ircd_state`. Implements:
+
+- Accounts: [SASL 3.1 / 3.2](https://ircv3.net/specs/extensions/sasl-3.2)
+  (`AUTHENTICATE`, mechanisms in `m:ircd_sasl`),
+  [draft/account-registration](https://ircv3.net/specs/extensions/account-registration)
+  (`REGISTER`, `VERIFY`, storage in `m:ircd_account`),
+  [account-notify](https://ircv3.net/specs/extensions/account-notify)
+  (`ACCOUNT`), [account-tag](https://ircv3.net/specs/extensions/account-tag),
+  and [extended-join](https://ircv3.net/specs/extensions/extended-join).
+- Presence: [away-notify](https://ircv3.net/specs/extensions/away-notify),
+  [draft/pre-away](https://ircv3.net/specs/extensions/pre-away),
+  [setname](https://ircv3.net/specs/extensions/setname),
+  [chghost](https://ircv3.net/specs/extensions/chghost),
+  [invite-notify](https://ircv3.net/specs/extensions/invite-notify), and the
+  [bot mode](https://ircv3.net/specs/extensions/bot-mode) source tag.
+- Connection: [WEBIRC](https://ircv3.net/specs/extensions/webirc),
+  [STARTTLS](https://ircv3.net/specs/deprecated/tls) (deprecated), and
+  [draft/extended-isupport](https://ircv3.net/specs/extensions/extended-isupport)
+  (`ISUPPORT`).
+- The opt-in `multiclient` and `account_rejoin` operator features.
+
+The logged-in account of a connection is the `account` key in
+`m:ircd_conn`; it is dropped on disconnect. Account changes, `SETNAME`, and
+`CHGHOST` are sent to peers as prefixed `ACCOUNT`, `SETNAME`, and `CHGHOST`
+lines, and the matching `receive_remote_*` functions accept them only from
+the link that owns the user.
+""".
 
 %% Longest accepted realname for SETNAME, advertised as NAMELEN.
 -define(NAMELEN, 200).
 
-%% @doc Account of a local client, or `undefined`.
+-doc """
+Account the local connection `Pid` is logged in to, or `undefined`.
+""".
 -spec account(pid()) -> undefined | binary().
 account(Pid) ->
     ircd_conn:get(Pid, account).
 
-%% @doc Account of a remote user by folded nick, or `undefined`.
+-doc """
+Account of a remote user by folded nick (`ircd_wire:fold/1`), or
+`undefined` when not logged in or unknown.
+""".
 -spec remote_account(binary()) -> undefined | binary().
 remote_account(NickKey) ->
     case mnesia:dirty_read(remote_client, NickKey) of
@@ -59,7 +89,11 @@ remote_account(NickKey) ->
         [] -> undefined
     end.
 
-%% @doc Source-tag facts for a local client command.
+-doc """
+Source-tag facts for a local client, for `ircd_state_send:set_source/1`:
+`prefix`, `account`, `bot` (user mode `+B`), and `oper` (the nick when
+`+o`). Returns `#{}` before `USER` is accepted.
+""".
 -spec source_info(#client{}) -> map().
 source_info(#client{pid = Pid, nick = Nick, user = User} = Client) when User =/= undefined ->
     Modes = ircd_state_client:user_modes(Pid),
@@ -76,7 +110,11 @@ source_info(#client{pid = Pid, nick = Nick, user = User} = Client) when User =/=
 source_info(_Client) ->
     #{}.
 
-%% @doc Source-tag facts for a remote user named by a `nick!user@host` prefix.
+-doc """
+Source-tag facts for a remote user named by a `nick!user@host` prefix, in
+the same shape as `source_info/1`. Returns `#{}` for a server prefix,
+`undefined`, or an unknown nick.
+""".
 -spec remote_source_info(undefined | binary()) -> map().
 remote_source_info(Prefix) when is_binary(Prefix) ->
     case binary:split(Prefix, <<"!">>) of
@@ -102,8 +140,14 @@ remote_source_info(Prefix) when is_binary(Prefix) ->
 remote_source_info(_) ->
     #{}.
 
-%% @doc Send a notification about a local user to clients that share a channel
-%% (and, with extended-monitor, to clients monitoring the nick) and have `Cap`.
+-doc """
+Send a notification line about a local user, with the user's prefix, to
+clients that share a channel with it (and, with
+[extended-monitor](https://ircv3.net/specs/extensions/extended-monitor), to
+clients monitoring the nick) and negotiated `Cap`.
+
+The user itself is included only when `IncludeSelf` is true and it has `Cap`.
+""".
 -spec notify(#client{}, binary(), binary(), [iodata()], none | iodata(), boolean()) -> ok.
 notify(#client{pid = Pid, nick = Nick} = Client, Cap, Command, Middle, Tail, IncludeSelf) ->
     Shared = ircd_state_channel:nick_recipients(Client),
@@ -112,7 +156,11 @@ notify(#client{pid = Pid, nick = Nick} = Client, Cap, Command, Middle, Tail, Inc
         Recipients, ircd_state_send:prefix(Client), Command, Middle, Tail
     ).
 
-%% @doc Send a notification about a remote user to local clients with `Cap`.
+-doc """
+Send a notification line about a remote user, with `Prefix`, to local
+clients with `Cap` that share a channel with it or (with extended-monitor)
+monitor its nick.
+""".
 -spec notify_remote(#remote_client{}, binary(), binary(), binary(), [iodata()], none | iodata()) ->
     ok.
 notify_remote(#remote_client{key = Key, nick = Nick}, Prefix, Cap, Command, Middle, Tail) ->
@@ -133,12 +181,19 @@ recipients(Shared, Nick, Cap, Self, IncludeSelf) ->
         ircd_cap:enabled(Pid, Cap)
     ].
 
-%% @doc Show a local JOIN to channel members. Clients with extended-join get
-%% the account (`*` when logged out) and realname.
+-doc """
+Show a JOIN to channel members. Same as `join_broadcast/6` with no tags.
+""".
 -spec join_broadcast([pid()], iodata(), binary(), undefined | binary(), binary()) -> ok.
 join_broadcast(Pids, Prefix, Channel, Account, Real) ->
     join_broadcast(Pids, Prefix, Channel, Account, Real, []).
 
+-doc """
+Show a JOIN of `Channel` with `Tags` to `Pids`.
+
+Clients with extended-join get `JOIN <channel> <account> :<realname>`,
+with `*` as the account when logged out; others get `JOIN <channel>`.
+""".
 -spec join_broadcast([pid()], iodata(), binary(), undefined | binary(), binary(), list()) -> ok.
 join_broadcast(Pids, Prefix, Channel, Account, Real, Tags) ->
     {Extended, Plain} = lists:partition(
@@ -153,7 +208,10 @@ join_broadcast(Pids, Prefix, Channel, Account, Real, Tags) ->
     ircd_state_send:broadcast(Extended, Prefix, <<"JOIN">>, [Channel, AccountParam], Real, Tags),
     ok.
 
-%% @doc After a JOIN, tell away-notify members that the joining user is away.
+-doc """
+After a JOIN, tell members with away-notify that the joining user is away
+(`AWAY :<message>`). A no-op when `Away` is `undefined`.
+""".
 -spec away_on_join([pid()], iodata(), undefined | binary()) -> ok.
 away_on_join(_Pids, _Prefix, undefined) ->
     ok;
@@ -166,8 +224,11 @@ away_on_join(Pids, Prefix, Away) ->
         Away
     ).
 
-%% @doc invite-notify: tell channel members with the capability about an
-%% INVITE. On an invite-only channel only channel operators are told.
+-doc """
+invite-notify: tell channel members with the capability about an `INVITE`
+(`:inviter INVITE <target> <channel>`). The inviter and the target are
+skipped. On an invite-only (`+i`) channel only channel operators are told.
+""".
 -spec invite_notify(#channel{}, #client{}, binary(), {pid(), iodata()}) -> ok.
 invite_notify(
     #channel{name = Name, members = Members, flags = Flags},
@@ -185,8 +246,11 @@ invite_notify(
     ],
     ircd_state_send:broadcast(Recipients, Prefix, <<"INVITE">>, [TargetNick, Name], none).
 
-%% @doc Called once when a local client completes registration: propagate the
-%% account and away state, notify MONITOR watchers, and drop pending SASL.
+-doc """
+Called once when a local client completes registration: send its account
+(`ACCOUNT`) and away state to peers, and tell MONITOR watchers it is online
+(730).
+""".
 -spec registered(#client{}, binary()) -> ok.
 registered(#client{pid = Pid, away = Away} = Client, _Server) ->
     Prefix = ircd_state_send:prefix(Client),
@@ -203,7 +267,11 @@ registered(#client{pid = Pid, away = Away} = Client, _Server) ->
     ircd_state_monitor:online(Client#client.nick, iolist_to_binary(Prefix)),
     ok.
 
-%% @doc Release per-connection IRCv3 state when a client disconnects.
+-doc """
+Release per-connection IRCv3 state when a client disconnects: tell MONITOR
+watchers a registered nick went offline (731), drop its MONITOR list and
+metadata, and delete its `m:ircd_conn` row.
+""".
 -spec disconnect(#client{}) -> ok.
 disconnect(#client{pid = Pid, nick = Nick} = Client) ->
     case ircd_state_client:ready(Client) of
@@ -214,7 +282,10 @@ disconnect(#client{pid = Pid, nick = Nick} = Client) ->
     ircd_state_meta:disconnect(Pid),
     ircd_conn:delete(Pid).
 
-%% @doc Account and capability lines for a newly linked peer's burst.
+-doc """
+Burst lines for a newly linked peer: one prefixed `ACCOUNT <name>` line
+for every logged-in registered local user and every logged-in remote user.
+""".
 -spec burst_lines(binary()) -> [binary()].
 burst_lines(_Server) ->
     Local = [
@@ -242,7 +313,16 @@ burst_lines(_Server) ->
 
 %%% SASL
 
-%% @doc AUTHENTICATE (SASL 3.1 and 3.2). Reauthentication is allowed.
+-doc """
+`AUTHENTICATE` (SASL 3.1 and 3.2). Reauthentication is allowed.
+
+The first parameter names the mechanism (see `ircd_sasl:start/2`); later
+ones are base64 chunks of up to 400 bytes, reassembled with
+`ircd_sasl:decode_chunk/2`. `AUTHENTICATE *` aborts with 906. Success logs
+in (900 RPL_LOGGEDIN, account-notify, peers) and sends 903. An unknown
+mechanism gets 908 with the available list, then 904; a bad exchange gets
+904 and an over-long response 905. Failures are logged without credentials.
+""".
 -spec authenticate([binary()], #client{}, binary()) -> ok.
 authenticate([], Client, Server) ->
     ircd_state_send:numeric(
@@ -336,7 +416,11 @@ login(#client{pid = Pid}, Account, Server) ->
         false -> ok
     end.
 
-%% @doc Log out (used when an account is removed). Sends RPL_LOGGEDOUT.
+-doc """
+Log the client out (used when its account is removed). When it was logged
+in, sends 901 RPL_LOGGEDOUT, `ACCOUNT *` to account-notify clients, and
+`ACCOUNT *` to peers.
+""".
 -spec logout(#client{}, binary()) -> ok.
 logout(#client{pid = Pid} = Client, Server) ->
     case account(Pid) of
@@ -370,8 +454,23 @@ mask(Client) -> iolist_to_binary(ircd_state_send:prefix(Client)).
 
 %%% draft/account-registration
 
-%% @doc `REGISTER <account|*> <email|*> <password>`. Allowed before
-%% registration completes (`before-connect`). Success logs the client in.
+-doc """
+`REGISTER <account|*> <email|*> <password>` (draft/account-registration).
+
+`*` as the account means the current (or, before registration, the last
+refused) nickname. Allowed before registration completes unless
+`account_registration_before_connect` is false. Without verification the
+account is created and the client logged in (`REGISTER SUCCESS`). With
+`account_verification` configured, a code is generated and handed to the
+configured program, and the reply is `REGISTER VERIFICATION_REQUIRED`.
+
+Failures are `FAIL REGISTER` with `TEMPORARILY_UNAVAILABLE`,
+`COMPLETE_CONNECTION_REQUIRED`, `NEED_NICK`, `ALREADY_AUTHENTICATED`,
+`ACCOUNT_EXISTS` (also when another client uses the nickname),
+`INVALID_EMAIL`, `BAD_ACCOUNT_NAME`, `WEAK_PASSWORD`, or
+`UNACCEPTABLE_PASSWORD`; missing parameters get 461. Only a SCRAM-SHA-256
+verifier of the password is stored (`ircd_account:create/5`).
+""".
 -spec register([binary()], #client{}, binary()) -> ok.
 register([Requested, Email, Password | _], #client{pid = Pid, nick = Current} = Client, Server) ->
     Nick =
@@ -546,8 +645,14 @@ wait_sender(Port, Account) ->
         })
     end.
 
-%% @doc `VERIFY <account> <code>`. A correct code for a pending account logs
-%% the client in, as SASL would.
+-doc """
+`VERIFY <account> <code>` (draft/account-registration). A correct,
+unexpired code for a pending account activates it, replies
+`VERIFY SUCCESS`, and logs the client in, as SASL would.
+
+A wrong code gets `FAIL VERIFY INVALID_CODE`; a logged-in client gets
+`FAIL VERIFY ALREADY_AUTHENTICATED`; missing parameters get 461.
+""".
 -spec verify([binary()], #client{}, binary()) -> ok.
 verify([Requested, Code | _], #client{pid = Pid, nick = Nick} = Client, Server) ->
     Name =
@@ -588,8 +693,14 @@ verify(_, Client, Server) ->
 
 %%% setname, chghost, pre-away
 
-%% @doc `SETNAME :<realname>`. The change is shown to setname clients that
-%% share a channel and to the sender, and is propagated to peers.
+-doc """
+`SETNAME :<realname>`. The change is shown to setname clients that
+share a channel (and to the sender when it has `setname`), and is
+propagated to peers.
+
+A realname over 200 bytes (`NAMELEN`), or invalid UTF-8 with `utf8_only`,
+gets `FAIL SETNAME INVALID_REALNAME`.
+""".
 -spec setname([binary()], #client{}, binary()) -> ok.
 setname([Real | _], #client{pid = Pid} = Client, Server) ->
     case valid_realname(Real) of
@@ -622,7 +733,9 @@ valid_utf8_if_required(Text) ->
         false -> true
     end.
 
-%% @doc True for well-formed UTF-8.
+-doc """
+True when `Text` is well-formed UTF-8. Used for the `UTF8ONLY` checks.
+""".
 -spec valid_utf8(binary()) -> boolean().
 valid_utf8(Text) ->
     case unicode:characters_to_binary(Text, utf8, utf8) of
@@ -630,9 +743,15 @@ valid_utf8(Text) ->
         _ -> false
     end.
 
-%% @doc Operator `CHGHOST <nick> <user> <host>` (IRCv3 chghost). chghost
-%% clients see `CHGHOST`; other members of shared channels see QUIT, JOIN, and
-%% the member's channel modes, as the specification recommends.
+-doc """
+Operator `CHGHOST <nick> <user> <host>` (IRCv3 chghost) for a local user.
+
+chghost clients (and extended-monitor watchers with chghost) see
+`CHGHOST`; other members of shared channels see QUIT, JOIN, and the member's
+channel modes, as the specification recommends. The change goes to peers.
+Non-operators get 481; an unknown nick 401; a bad user or host
+`FAIL CHGHOST INVALID_USERNAME` / `INVALID_HOSTNAME`.
+""".
 -spec chghost([binary()], #client{}, binary()) -> ok.
 chghost([Nick, User, Host | _], #client{pid = Pid} = Client, Server) ->
     case maps:is_key($o, ircd_state_client:user_modes(Pid)) of
@@ -745,8 +864,11 @@ simulate_reconnect(#client{pid = Pid, channels = Keys}, Legacy, OldPrefix, NewPr
         Keys
     ).
 
-%% @doc draft/pre-away: AWAY before registration completes. `AWAY *` means
-%% away for an unspecified reason; this server substitutes readable text.
+-doc """
+draft/pre-away: `AWAY` before registration completes, for a client that
+negotiated `draft/pre-away` (others get 451). Replies 305 or 306. `AWAY *`
+means away for an unspecified reason; this server stores `Away` as the text.
+""".
 -spec pre_away([binary()], #client{}, binary()) -> ok.
 pre_away(Params, #client{pid = Pid} = Client, Server) ->
     case ircd_cap:enabled(Pid, <<"draft/pre-away">>) of
@@ -772,7 +894,13 @@ away_text(Message) -> Message.
 
 %%% Remote identity updates from server links
 
-%% @doc `:nick!user@host ACCOUNT <name|*>` from a peer.
+-doc """
+`:nick!user@host ACCOUNT <name|*>` from a peer: store the remote user's
+account, tell local account-notify clients, and relay to the other peers.
+
+Returns `{error, unknown_remote_source}` when the prefix does not exactly
+match a user behind `Peer`.
+""".
 -spec receive_remote_account(binary(), binary(), [binary()]) -> ok | {error, term()}.
 receive_remote_account(Peer, Prefix, [Value | _]) ->
     case remote_user(Peer, Prefix) of
@@ -794,7 +922,13 @@ receive_remote_account(Peer, Prefix, [Value | _]) ->
 receive_remote_account(_, _, _) ->
     {error, invalid_account_message}.
 
-%% @doc `:nick!user@host SETNAME :<realname>` from a peer.
+-doc """
+`:nick!user@host SETNAME :<realname>` from a peer: store the realname,
+tell local setname clients, and relay to the other peers.
+
+Returns `{error, unknown_remote_source}` when the prefix does not exactly
+match a user behind `Peer`.
+""".
 -spec receive_remote_setname(binary(), binary(), [binary()]) -> ok | {error, term()}.
 receive_remote_setname(Peer, Prefix, [Real | _]) ->
     case remote_user(Peer, Prefix) of
@@ -809,7 +943,14 @@ receive_remote_setname(Peer, Prefix, [Real | _]) ->
 receive_remote_setname(_, _, _) ->
     {error, invalid_setname_message}.
 
-%% @doc `:nick!old_user@old_host CHGHOST <user> <host>` from a peer.
+-doc """
+`:nick!old_user@old_host CHGHOST <user> <host>` from a peer: store the new
+user and host, show `CHGHOST` (or QUIT and JOIN to legacy clients), and
+relay to the other peers.
+
+Returns `{error, unknown_remote_source}` for a prefix not owned by `Peer`
+and `{error, invalid_chghost_message}` for a bad user or host.
+""".
 -spec receive_remote_chghost(binary(), binary(), [binary()]) -> ok | {error, term()}.
 receive_remote_chghost(Peer, Prefix, [User, Host | _]) ->
     case {remote_user(Peer, Prefix), valid_user(User), valid_host(Host)} of
@@ -881,9 +1022,16 @@ remote_user(Peer, Prefix) ->
 
 %%% WEBIRC and ISUPPORT
 
-%% @doc `WEBIRC <password> <gateway> <hostname> <ip> [:<options>]`. Accepted
-%% only as the first command from a configured gateway address. A failure sends
-%% ERROR and closes the connection.
+-doc """
+`WEBIRC <password> <gateway> <hostname> <ip> [:<options>]`.
+
+Accepted only as the first command (before `NICK`, `USER`, and `CAP`) from a
+configured gateway address with its password. The client's host becomes
+`hostname` (or the IP when the hostname is not valid). The `secure` option
+counts only on a TLS gateway connection, and then `certfp-sha-256=` replaces
+the certificate fingerprint. A failure sends `ERROR` and closes the
+connection.
+""".
 -spec webirc([binary()], #client{}, binary()) -> ok.
 webirc(
     [Password, _Gateway, Hostname, Ip | Rest],
@@ -957,8 +1105,11 @@ webirc_certfp(Options, true) ->
         _ -> undefined
     end.
 
-%% @doc `ISUPPORT` (draft/extended-isupport). Before registration the client
-%% must have negotiated the capability.
+-doc """
+`ISUPPORT` (draft/extended-isupport): resend the 005 tokens. Before
+registration the client must have negotiated the capability, otherwise
+it gets 451.
+""".
 -spec isupport([binary()], #client{}, binary()) -> ok.
 isupport(_Params, #client{pid = Pid} = Client, Server) ->
     case
@@ -970,9 +1121,13 @@ isupport(_Params, #client{pid = Pid} = Client, Server) ->
             ircd_state_send:numeric(Client, Server, <<"451">>, [], <<"You have not registered">>)
     end.
 
-%% @doc STARTTLS (deprecated IRCv3 `tls` extension). Allowed once, before
-%% registration, on a plaintext TCP connection when TLS is configured. The
-%% session performs the handshake after the 670 reply.
+-doc """
+`STARTTLS` (deprecated IRCv3 `tls` extension). Allowed once, before
+registration, on a plaintext TCP connection when TLS is configured.
+
+Returns `starttls` after the 670 reply; the session then performs the
+handshake. Otherwise sends 691 and returns `ok`.
+""".
 -spec starttls(#client{}, binary()) -> ok | starttls.
 starttls(#client{pid = Pid} = Client, Server) ->
     Info = ircd_cap:info(Pid),
@@ -992,9 +1147,11 @@ starttls(#client{pid = Pid} = Client, Server) ->
 
 %%% multiclient and account rejoin (opt-in operator features)
 
-%% @doc With `multiclient`, a connection still registering that authenticated
-%% as the same account as a registered client may attach to that client's
-%% nickname instead of getting 433.
+-doc """
+True when, with `multiclient` enabled, the unregistered `Client` is logged
+in to the same account (RFC 1459 folded) as the registered `Holder`, so it
+may attach to that client's nickname instead of getting 433.
+""".
 -spec attachable(#client{}, #client{}) -> boolean().
 attachable(#client{pid = Pid} = Client, #client{pid = Holder} = HolderClient) ->
     Config = persistent_term:get({ircd_state, config}),
@@ -1006,16 +1163,22 @@ attachable(#client{pid = Pid} = Client, #client{pid = Holder} = HolderClient) ->
 fold_or_empty(undefined) -> <<>>;
 fold_or_empty(Value) -> Value.
 
-%% @doc Take the nickname for this connection without indexing it; the
-%% connection attaches to Holder once its registration completes.
+-doc """
+Take the nickname for this connection without indexing it; the
+connection attaches to `Holder` once its registration completes.
+""".
 -spec prepare_attach(#client{}, #client{}, binary()) -> ok.
 prepare_attach(#client{pid = Pid} = Client, #client{pid = Holder}, Nick) ->
     ircd_conn:put(Pid, attach_to, Holder),
     mnesia:dirty_write(Client#client{nick = ircd_wire:retain(Nick)}),
     ok.
 
-%% @doc Finish an attach after the welcome burst: route this connection's
-%% commands to the holder and drop its own client records.
+-doc """
+Finish an attach after the welcome burst: route this connection's
+commands to `Holder`, drop its own client, activity, user mode, capability,
+and `m:ircd_conn` records, and send `{attached_session, Pid}` to the
+holder and `{attach, Holder}` to the connection.
+""".
 -spec finish_attach(#client{}, pid()) -> ok.
 finish_attach(#client{pid = Pid, nick = Nick}, Holder) ->
     ets:insert(ircd_attached, {Pid, Holder}),
@@ -1032,8 +1195,10 @@ finish_attach(#client{pid = Pid, nick = Nick}, Holder) ->
     Pid ! {attach, Holder},
     ok.
 
-%% @doc With `account_rejoin`, remember a logged-in client's channels when it
-%% disconnects (in memory, until the next login or restart).
+-doc """
+With `account_rejoin`, remember a logged-in client's channels when it
+disconnects (in memory, until the next login or restart).
+""".
 -spec remember_channels(#client{}) -> ok.
 remember_channels(#client{pid = Pid, channels = Keys}) ->
     case
@@ -1050,7 +1215,10 @@ remember_channels(#client{pid = Pid, channels = Keys}) ->
             ok
     end.
 
-%% @doc Rejoin the channels remembered for this account, after the welcome.
+-doc """
+With `account_rejoin`, join the channels remembered for this client's
+account by `remember_channels/1`, after the welcome. The entry is consumed.
+""".
 -spec rejoin_on_login(#client{}, binary()) -> ok.
 rejoin_on_login(#client{pid = Pid}, Server) ->
     case account(Pid) of

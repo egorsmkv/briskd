@@ -1,13 +1,38 @@
 -module(ircd_listener).
+-moduledoc """
+Owns one listen socket and accepts connections on it.
+
+There is one listener per configured transport: `tcp`, `tls` (direct TLS,
+TLS 1.2 and 1.3), `ws` (WebSocket over TCP), and `wss` (WebSocket over TLS).
+The `gen_server` opens the socket on the configured `bind` address and logs
+the bound port, which matters when the configured port is `0`. A linked accept
+loop then admits each connection through `ircd_sessions:start_child/3`, makes
+the new `m:ircd_session` the socket's controlling process, and sends it
+`activate`. The TLS handshake runs in the session, so a slow handshake does not
+block the accept loop.
+
+A connection refused by `max_clients` is logged as `session_rejected` and
+closed. An accept error ends the accept loop and, through the link, the
+listener, which `m:ircd_sup` restarts. Sockets use `{active, false}` until the
+session takes over, `nodelay` (Nagle's algorithm delays multi-line replies),
+and a 5-second send timeout.
+""".
 -behaviour(gen_server).
 -export([start_link/3, init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
-%% @doc Start a TCP, TLS, WebSocket (`ws`), or WebSocket-over-TLS (`wss`)
-%% listener using the normalized server configuration.
+-doc """
+Start a listener for one transport on `Port`.
+
+`Kind` is `tcp`, `tls`, `ws` (WebSocket), or `wss` (WebSocket over TLS).
+`Config` is the normalized map from `ircd_config:load/1`; its `ip` is the bind
+address and, for `tls` and `wss`, its `tls_options` configure the TLS listener.
+Starting fails when the socket cannot be opened, for example when the port is
+in use.
+""".
 -spec start_link(tcp | tls | ws | wss, inet:port_number(), map()) -> gen_server:start_ret().
 start_link(Kind, Port, Config) -> gen_server:start_link(?MODULE, {Kind, Port, Config}, []).
 
-%% @doc Open the listening socket and start accepting client connections.
+-doc false.
 init({Kind, Port, #{ip := IP, tls_options := TLSOptions}}) ->
     Family =
         case tuple_size(IP) of
@@ -40,8 +65,11 @@ init({Kind, Port, #{ip := IP, tls_options := TLSOptions}}) ->
             {stop, Error}
     end.
 
+-doc false.
 handle_call(_, _, State) -> {reply, {error, unsupported}, State}.
+-doc false.
 handle_cast(_, State) -> {noreply, State}.
+-doc false.
 handle_info(_, State) -> {noreply, State}.
 
 base(tcp) -> tcp;

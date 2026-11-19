@@ -126,14 +126,14 @@ rebar.lock
 
 ## 5. Style, formatting, and error contracts
 
-- Format with the pinned **erlfmt** plugin (`erlfmt` 1.3.0 in `rebar.config`). Check with `just format-check` and write with `just format`. The print width is 100.
+- Format with the pinned **erlfmt** plugin (`erlfmt` 1.8.0 in `rebar.config`; 1.3.0 cannot parse the `"""` strings used by `-doc`). Check with `just format-check` and write with `just format`. The print width is 100.
 - Let the formatter decide layout. Leave out trailing whitespace, unexplained numeric literals, giant functions, and speculative abstractions.
 - Prefer pattern matching and explicit clauses over deep nested `case` or `if`. Match only validated data. External input gets a clear error branch and, where the RFC requires it, a numeric reply.
 - Use `ok`, `{ok, Value}`, and `{error, Reason}` for expected API results. `ircd_wire` also returns `empty` and `error` for lines; keep that contract stable. Reasons are stable atoms, tuples, or maps, and they carry diagnostic context without secrets.
 - Invalid client or peer data is an expected protocol event. Reject it with a bounded log and the appropriate numeric or `ERROR`, and keep the process alive when the session can continue. A broken internal invariant may fail the owning process so supervision restores a clean state.
 - No blanket `catch _:_ -> ok`, no `exit(Pid, kill)` as routine control flow, no infinite retry loops, no silent drops of registered-user commands, and no unbounded list accumulation of lines or members.
 - Log with `logger` through `ircd_log`: JSON (default; a map report becomes top-level fields) or `text` (OTP `logger_formatter`). The application has no third-party runtime dependencies. Log events, not every channel message.
-- Document non-obvious functions with `-doc` or `%% @doc`, including timer units and the RFC section for wire constants (512-octet line, RFC 1459 case map, nickname length, channel name limits).
+- Every module has a `-moduledoc` and every exported function a `-doc` (Markdown, OTP 27+ doc attributes; behaviour callbacks may use `-doc false.`). Include timer units and the RFC section for wire constants (512-octet line, RFC 1459 case map, nickname length, channel name limits). Unexported helpers use plain `%%` comments. `just docs` builds the ex_doc HTML that CI publishes to GitHub Pages; keep it warning-free.
 
 ## 6. OTP process model and fault containment
 

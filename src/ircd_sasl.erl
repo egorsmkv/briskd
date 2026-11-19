@@ -2,15 +2,31 @@
 -export([start/2, step/2, decode_chunk/2, encode_chunks/1]).
 -include("ircd_account.hrl").
 
-%% SASL mechanisms for AUTHENTICATE (IRCv3 SASL 3.1 / 3.2):
-%% PLAIN (RFC 4616), EXTERNAL (RFC 4422 appendix A, client certificate
-%% fingerprint), and SCRAM-SHA-256 (RFC 5802, RFC 7677, no channel binding).
-%% Payloads travel base64-encoded in 400-byte AUTHENTICATE chunks.
+-moduledoc """
+SASL mechanisms and `AUTHENTICATE` payload framing for IRCv3
+[SASL 3.1 / 3.2](https://ircv3.net/specs/extensions/sasl-3.2).
+
+Mechanisms: PLAIN (RFC 4616), EXTERNAL (RFC 4422 appendix A, matched against
+the client certificate's SHA-256 fingerprint), and SCRAM-SHA-256 (RFC 5802,
+RFC 7677, without channel binding). An authorization identity, when given,
+must equal the authenticated account under RFC 1459 folding.
+
+The module holds no process state: `m:ircd_state_v3` keeps the `t:state/0`
+in `m:ircd_conn` between steps. Apart from account lookups through
+`m:ircd_account` (read-only Mnesia access, in the `m:ircd_state` process),
+the functions are pure. Payloads travel base64-encoded in 400-byte
+`AUTHENTICATE` chunks; a reassembled response is capped at 8192 encoded
+bytes. Passwords and proofs are never logged or kept after the step.
+""".
 
 -define(CHUNK, 400).
 %% Upper bound on one reassembled client response, before base64 decoding.
 -define(MAX_RESPONSE, 8192).
 
+-doc """
+Progress of one SASL exchange: the mechanism and, for SCRAM, the session
+data between the server-first and server-final messages.
+""".
 -type state() ::
     plain
     | {external, undefined | binary()}
@@ -19,7 +35,14 @@
     | {scram_done, binary()}.
 -export_type([state/0]).
 
-%% @doc Begin a mechanism. The challenge `<<>>` is sent as `AUTHENTICATE +`.
+-doc """
+Begin a mechanism named case-insensitively (`PLAIN`, `EXTERNAL`,
+`SCRAM-SHA-256`).
+
+`Context` may carry `certfp`, the client certificate fingerprint used by
+EXTERNAL. Every mechanism starts with the empty challenge `<<>>`, sent as
+`AUTHENTICATE +`.
+""".
 -spec start(binary(), map()) -> {continue, binary(), state()} | {error, unknown_mechanism}.
 start(Mechanism, Context) ->
     case string:uppercase(Mechanism) of
@@ -29,7 +52,15 @@ start(Mechanism, Context) ->
         _ -> {error, unknown_mechanism}
     end.
 
-%% @doc Apply one decoded client response.
+-doc """
+Apply one decoded client response to `State`.
+
+Returns `{continue, Challenge, Next}` to send another challenge,
+`{success, AccountName}` with the stored spelling of the account, or
+`{error, failed}` for a bad credential, malformed message, or mismatched
+authorization identity. SCRAM ends with the server signature
+(`v=...`) as a challenge, and succeeds on the client's empty reply.
+""".
 -spec step(state(), binary()) ->
     {continue, binary(), state()} | {success, binary()} | {error, failed}.
 step(plain, Data) ->
@@ -68,8 +99,15 @@ step({scram_done, Name}, <<>>) ->
 step(_State, _Data) ->
     {error, failed}.
 
-%% @doc Add one AUTHENTICATE parameter to the pending response.
-%% `+` alone is an empty chunk. A chunk of exactly 400 bytes means more follows.
+-doc """
+Add one `AUTHENTICATE` parameter to the pending base64 response `Buffer`.
+
+`+` alone is an empty chunk and ends the response. A chunk of exactly 400
+bytes means more follows (`{more, Buffer}`); a shorter one ends it
+(`{done, Decoded}`). Errors: `too_long` for a chunk over 400 bytes (905
+ERR_SASLTOOLONG), `overflow` when the response would exceed 8192 bytes, and
+`invalid` for bad base64 (both 904).
+""".
 -spec decode_chunk(binary(), binary()) ->
     {more, binary()} | {done, binary()} | {error, too_long | overflow | invalid}.
 decode_chunk(Buffer, <<"+">>) ->
@@ -93,7 +131,11 @@ finish(Encoded) ->
         error:_ -> {error, invalid}
     end.
 
-%% @doc Split an outgoing challenge into AUTHENTICATE parameters.
+-doc """
+Base64-encode an outgoing challenge and split it into `AUTHENTICATE`
+parameters of at most 400 bytes. An empty challenge, or one whose encoding
+ends exactly on a 400-byte boundary, ends with `+`.
+""".
 -spec encode_chunks(binary()) -> [binary()].
 encode_chunks(<<>>) ->
     [<<"+">>];

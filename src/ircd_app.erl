@@ -1,8 +1,27 @@
 -module(ircd_app).
+-moduledoc """
+Application callback module for `ircd`.
+
+Startup, in order:
+
+1. Load the configuration file named by `IRCD_CONFIG` (default
+   `config/ircd.json`) with `ircd_config:load/1`. An invalid file stops the
+   start with `{error, {invalid_config, Path, Reason}}`.
+2. Install the configured `log_format` and `log_level` on the `logger` default
+   handler (`m:ircd_log`).
+3. Start Mnesia with its directory set to `mnesia_dir`, creating the disk
+   schema on first start. If Mnesia is already running, it must already use
+   that directory.
+4. Start the supervision tree, `m:ircd_sup`.
+
+On stop, `prep_stop/1` drains clients and links (`m:ircd_shutdown`), and
+`stop/1` restores the previous logger settings and stops Mnesia if this
+application started it. A failed start undoes the same steps.
+""".
 -behaviour(application).
 -export([start/2, prep_stop/1, stop/1]).
 
-%% @doc Load JSON configuration, configure logging, and start the supervision tree.
+-doc false.
 start(_, _) ->
     Path = os:getenv("IRCD_CONFIG", "config/ircd.json"),
     case ircd_config:load(Path) of
@@ -35,8 +54,15 @@ start(_, _) ->
             Error
     end.
 
-%% @doc Drain clients and peers before the supervision tree stops (graceful
-%% shutdown on SIGTERM, DIE, RESTART, or application:stop/1).
+-doc """
+Drain clients and server links before the supervision tree stops.
+
+Runs `ircd_shutdown:drain/1` with the reason `Server shutting down`. This is
+the graceful-shutdown path for SIGTERM (`init:stop/0`), operator `DIE` and
+`RESTART`, and `application:stop(ircd)`. A failure while draining is logged as
+`shutdown_drain_failed` and does not block the stop. Returns `State`
+unchanged.
+""".
 prep_stop(State) ->
     try
         ircd_shutdown:drain(<<"Server shutting down">>)
@@ -46,7 +72,7 @@ prep_stop(State) ->
     end,
     State.
 
-%% @doc Restore the logger level and formatter from before startup.
+-doc false.
 stop({Previous, Primary, StartedMnesia}) ->
     ok = logger:set_primary_config(level, Primary),
     ok = logger:update_handler_config(default, Previous),

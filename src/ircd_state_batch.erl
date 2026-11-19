@@ -2,12 +2,25 @@
 -export([batch/4, deliver_multiline/7, in_batch/2, label/1, link_lines/5]).
 -include("ircd_state.hrl").
 
-%% @doc Client-initiated batches (IRCv3 client-batch) of type draft/multiline.
-%% One open batch per connection is kept in `ircd_conn` under `batch`. Lines
-%% are bounded by the advertised `max-bytes` and `max-lines`; exceeding either
-%% drops the batch with `FAIL BATCH MULTILINE_MAX_BYTES` or `MULTILINE_MAX_LINES`.
+-moduledoc """
+Client-initiated [batches](https://ircv3.net/specs/extensions/batch) of type
+[draft/multiline](https://ircv3.net/specs/extensions/multiline), and the
+delivery of multiline messages to clients and peers.
 
-%% @doc Label carried by the opening BATCH line of the open batch, if any.
+Runs inside `m:ircd_state`. One open batch per connection is kept in
+`m:ircd_conn` under `batch`; nested batches are refused. Lines are bounded
+by the advertised `max-bytes` (combined body) and `max-lines` from
+`ircd_cap:multiline_limits/0`; exceeding either drops the batch with
+`FAIL BATCH MULTILINE_MAX_BYTES` or `MULTILINE_MAX_LINES`. A completed batch
+is delivered as one message through `ircd_state_channel:deliver_body/6`.
+Replies to the batched lines are deferred until `BATCH -ref`, which uses the
+`label` of the opening line (labeled-response).
+""".
+
+-doc """
+Label carried by the opening `BATCH` line of the connection's open batch,
+or `undefined`.
+""".
 -spec label(pid()) -> undefined | binary().
 label(Pid) ->
     case ircd_conn:get(Pid, batch) of
@@ -15,7 +28,16 @@ label(Pid) ->
         _ -> undefined
     end.
 
-%% @doc `BATCH +<ref> draft/multiline <target>` and `BATCH -<ref>`.
+-doc """
+`BATCH +<ref> draft/multiline <target>` and `BATCH -<ref>` from a client.
+
+Opening a batch requires the `draft/multiline` capability and a reference
+of 1 to 64 characters `[A-Za-z0-9._-]`; client-only tags and the label of the
+opening line are kept for delivery. Closing delivers the collected message.
+Errors are `FAIL BATCH` with `INVALID_REFTAG`, `UNKNOWN_TYPE`, or
+`MULTILINE_INVALID` (nested, empty, or blank batch, missing target); missing
+parameters get 461.
+""".
 -spec batch([binary()], [{binary(), undefined | binary()}], #client{}, binary()) -> ok.
 batch([<<"+", Ref/binary>>, Type | Rest], Tags, #client{pid = Pid}, _Server) ->
     case {valid_ref(Ref), ircd_conn:get(Pid, batch), Type, Rest} of
@@ -59,8 +81,14 @@ batch([<<"-", Ref/binary>> | _], _Tags, #client{pid = Pid} = Client, Server) ->
 batch(_Params, _Tags, Client, Server) ->
     ircd_state_send:numeric(Client, Server, <<"461">>, [<<"BATCH">>], <<"Not enough parameters">>).
 
-%% @doc Add a PRIVMSG or NOTICE carrying `batch=<ref>` to the open batch.
-%% Returns `false` when the line is not part of an open batch.
+-doc """
+Add a `PRIVMSG` or `NOTICE` carrying `batch=<ref>` to the open batch.
+
+Returns `false` when the line has no `batch` tag, so the caller delivers it
+normally. Returns `true` when the line was consumed: added, or rejected with
+a `FAIL BATCH` code (unknown reference, `MULTILINE_INVALID_TARGET`, mixed
+commands, blank concatenated line, or a limit), which drops the batch.
+""".
 -spec in_batch({binary(), [binary()], list()}, #client{}) -> boolean().
 in_batch({Command, Params, Tags}, #client{pid = Pid}) ->
     case {lists:keyfind(<<"batch">>, 1, Tags), ircd_conn:get(Pid, batch)} of
@@ -137,9 +165,16 @@ finish(#{command := Command, target := Target, lines := Reversed, tags := Tags},
             )
     end.
 
-%% @doc Deliver a multiline message to one recipient. Capable clients get a
-%% draft/multiline batch with tags on the opening line; others get each
-%% non-blank line as its own message, with message tags on the first only.
+-doc """
+Deliver a multiline message to one recipient.
+
+Clients with `draft/multiline` and `batch` get a draft/multiline batch with
+`Tags` on the opening line and `draft/multiline-concat` where set. Others
+get each non-blank line as its own message; only the first carries
+`msgid`, later lines keep `time` and client-only tags. `Mode` `echo` sends
+through `ircd_state_send:echo/6` (the labeled echo-message copy); `normal`
+and `replay` use `ircd_state_send:send/6`.
+""".
 -spec deliver_multiline(
     pid(),
     iodata(),
@@ -204,9 +239,12 @@ deliver_multiline(Pid, Prefix, Command, Target, Lines, Tags, Mode) ->
             ok
     end.
 
-%% @doc Server-link lines for a message body. A multiline message travels as
-%% `BATCH +<ref> draft/multiline <target>` (carrying the message tags), its
-%% lines tagged `batch=<ref>`, and `BATCH -<ref>`, so peers deliver it whole.
+-doc """
+Server-link lines for a message body. A multiline message travels as
+`BATCH +<ref> draft/multiline <target>` (carrying the message tags), its
+lines tagged `batch=<ref>`, and `BATCH -<ref>`, so peers deliver it whole.
+A plain binary body is one ordinary line with `Tags`.
+""".
 -spec link_lines(iodata(), binary(), binary(), term(), list()) -> [iodata()].
 link_lines(Prefix, Command, Target, {multiline, Lines}, Tags) ->
     Ref = ircd_state_send:batch_ref(),

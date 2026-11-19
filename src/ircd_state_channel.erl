@@ -1,4 +1,43 @@
 -module(ircd_state_channel).
+-moduledoc """
+Channel membership, channel and user modes, channel commands, message
+delivery, and safe-channel reop.
+
+Every function runs inside the single `m:ircd_state` gen_server process, which
+owns the Mnesia `channel` rows written here. A row is keyed by the channel
+name folded with `ircd_wire:fold/1` (RFC 1459 case mapping) and holds only
+**local** members, as a map of session pid to roles (`operator`, `voice`,
+`creator`, or `member`). Members on other servers live in `remote_channel`
+rows maintained by `m:ircd_state_link`; changes made here are propagated to
+server peers through that module. In every handler `Client` is the requesting
+`client` record and `Server` is this server's name, used as the numeric prefix.
+
+Implements the RFC 2811 channel model and the RFC 2812 section 3.2 and 3.3
+commands. `JOIN` checks run in this order: channel name (403), netsplit hold
+(437), per-user channel limit (405), key `+k` (475), limit `+l` (471),
+invite-only `+i` unless invited or matched by `+I` (473), and ban `+b` unless
+matched by `+e` (474). Sending to a channel fails with 404 for an outsider on a
+`+n` channel, and for a member without voice or operator status on a `+m`
+channel or matching a ban. The `b`, `e`, and `I` lists hold at most
+`?MAX_LIST_ENTRIES` (100) masks each, advertised as `MAXLIST=beI:100`; adding
+past that gives 478 ERR_BANLISTFULL.
+
+Visibility: `+p` and `+s` hide a channel's members from non-members; `+a`
+(anonymous, only on `&` and `!` channels, RFC 2811 section 4.2.1) shows every
+member as `anonymous!anonymous@anonymous.` and hides the member list; `+q`
+(quiet, server-only) limits join, part, and quit notices to the user
+concerned; members with user mode `+i` are listed only to requesters sharing
+a channel with them.
+
+Safe channels (RFC 2811 section 3.2) are named `!` plus a five-character id
+plus a short name. `JOIN !short` reuses the existing safe channel with that
+short name or creates one with a new id, whose creator gets operator and
+creator status and alone controls `+r` and `+a`. With `+r`, a channel left
+without an operator is reopped after `reop_delay` seconds plus jitter,
+measured in monotonic time (`reop_channels/1`). An emptied safe channel is
+kept; an emptied ordinary channel is kept only under `channels` retention or
+when it is a configured channel.
+""".
 -export([
     deliver/5,
     deliver_body/6,
@@ -31,11 +70,15 @@
 ]).
 -include("ircd_state.hrl").
 
-%% @doc Local channel membership, modes, names, and reop.
+-doc """
+Store or delete a channel whose last local member has left.
 
-%% Last local member left. Safe channels always remain. Ordinary channels remain
-%% when retention is `channels` or the channel is in the configured list, so
-%% a predefined channel stays available after the last member leaves.
+`Remaining` is the (empty) member map to store. Safe `!` channels are always
+kept, with their operatorless deadline updated (`track_opless/2`). Ordinary
+channels are kept when retention is `channels` or the channel is configured
+in `channels`, so a predefined channel stays available. Otherwise the
+channel row, its message history, and its metadata are deleted.
+""".
 -spec release_if_empty(#channel{}, term()) -> ok.
 release_if_empty(#channel{name = <<$!, _/binary>>} = Channel, Remaining) ->
     mnesia:dirty_write(track_opless(Channel, Remaining));
@@ -49,8 +92,15 @@ release_if_empty(#channel{key = Key} = Channel, Remaining) ->
             mnesia:dirty_delete(channel_history, Key)
     end.
 
-%% An administrator who is already on a predefined channel becomes its
-%% channel operator when OPER succeeds. `+` channels stay modeless.
+-doc """
+Give channel operator to an administrator on the predefined channels it is in.
+
+Called after a successful `OPER`. Does nothing unless the client is a
+configured administrator. For each predefined channel the client is already
+a member of without operator status, it gains `operator`, the members see
+`MODE <channel> +o <nick>`, and the change is propagated to server peers.
+Modeless `+` channels are skipped.
+""".
 -spec grant_predefined_operator(#client{}, binary()) -> ok.
 grant_predefined_operator(#client{pid = Pid}, Server) ->
     case ircd_state:administrator(Pid) of
@@ -94,6 +144,14 @@ grant_predefined_row(
             ircd_state_link:propagate_channel_mode(Client, Channel#channel.name, <<"+o">>, [Nick])
     end.
 
+-doc """
+Set a channel's member map and maintain its operatorless deadline.
+
+Returns the updated record without writing it. When no remaining member
+holds `operator`, `opless_since` is set to the reop deadline (monotonic
+seconds plus `reop_delay` and jitter) unless one is already pending; when an
+operator remains, the deadline is cleared.
+""".
 -spec track_opless(#channel{}, #{pid() => [creator | member | operator | voice]}) -> #channel{}.
 track_opless(#channel{} = Channel, Remaining) ->
     HasOperator = lists:any(
@@ -114,6 +172,16 @@ next_reop_time() ->
     Delay = persistent_term:get({ircd_state, reop_delay}, 30),
     erlang:monotonic_time(second) + Delay + rand:uniform(Delay).
 
+-doc """
+Reop safe channels whose operatorless deadline has passed (RFC 2811 section 3.2.3).
+
+Called once per second from the state process's `reop_tick` timer. For each
+non-empty channel with mode `+r`: a pending deadline is cleared when an
+operator is present, a deadline is started when none is pending, and once the
+monotonic deadline passes a uniformly chosen local member is given
+`operator` and the local members see `MODE <channel> +o <nick>` from
+`Server`.
+""".
 -spec reop_channels(binary()) -> ok.
 reop_channels(Server) ->
     lists:foreach(
@@ -194,6 +262,21 @@ pick_member(Iterator, Seen, Chosen, Pids) ->
                 end,
             pick_member(Next, Seen1, Chosen1, [Pid | Pids])
     end.
+
+-doc """
+Join the client with session pid `Pid` to each channel in `Names` (RFC 2812 section 3.2.1).
+
+`Keys` are matched to the names by position; missing keys are `undefined`.
+Channels the client is already on are skipped. Each join runs the checks in
+the order given in the module documentation. On success the channel row and
+the client's channel list are updated (a new channel makes the joiner
+operator, plus creator on a safe channel; a modeless `+` channel never grants
+operator; a configured administrator joining a predefined channel becomes
+operator), the join is propagated to peers, members receive `JOIN` (and
+`AWAY` for away-notify), the event goes to channel history, and the joiner gets
+332 RPL_TOPIC and 333 RPL_TOPICWHOTIME when a topic is set, the NAMES reply
+(unless `no-implicit-names`), metadata, and history replay.
+""".
 -spec join_channels([binary()], term(), term(), term()) -> ok.
 join_channels([], _, _, _) ->
     ok;
@@ -413,10 +496,27 @@ finish_join(
     ircd_state_meta:on_join(Key, Client, Server),
     replay_channel_history(Key, Canonical, Pid).
 
+-doc """
+Remove a local client from a channel; see `leave/6`.
+
+`Notify` controls both the local notice and peer propagation.
+""".
 -spec leave(binary(), #client{}, binary(), none | iodata(), boolean()) -> ok.
 leave(Key, Client, Command, Reason, Notify) ->
     leave(Key, Client, Command, Reason, Notify, Notify).
 
+-doc """
+Remove a local client from a channel.
+
+`Key` is the folded channel name and must name an existing channel.
+`Command` is the verb shown to members (normally `PART`) and `Reason` its
+trailing text or `none`. With `Notify`, members (only the leaver on a `+q`
+channel) receive the line and it is recorded in channel history; with
+`Propagate` and a `PART` command, the `PART` is sent to server peers. The
+member is removed, the operatorless deadline is updated, an emptied channel
+is handled by `release_if_empty/2`, and the channel is removed from the
+client's list.
+""".
 -spec leave(binary(), #client{}, binary(), none | iodata(), boolean(), boolean()) -> ok.
 leave(Key, #client{pid = Pid} = Client, Command, Reason, Notify, Propagate) ->
     [#channel{name = Name, members = Members, flags = Flags} = Channel] =
@@ -465,6 +565,18 @@ leave(Key, #client{pid = Pid} = Client, Command, Reason, Notify, Propagate) ->
     Current = ircd_state_client:client(Pid),
     mnesia:dirty_write(Current#client{channels = lists:delete(Key, Current#client.channels)}).
 
+-doc """
+Handle `KICK <channel> <nick>[,<nick>...] [<comment>]` (RFC 2812 section 3.2.8).
+
+`Name` is the channel, `Nicks` the targets in order, and `Reason` the comment.
+An unknown channel gets 403 ERR_NOSUCHCHANNEL, a requester who is not a
+member 442 ERR_NOTONCHANNEL, and one without operator status 482
+ERR_CHANOPRIVSNEEDED. For each target, an unknown local nickname gets 401
+ERR_NOSUCHNICK and a non-member 441 ERR_USERNOTINCHANNEL. A kicked member is
+announced to the channel (only to the kicker and target on a `+q` channel),
+recorded in history, propagated to peers, and removed. Only local members can
+be kicked.
+""".
 -spec kick(term(), [binary()], term(), term(), term()) -> ok.
 kick(_, [], _, _, _) ->
     ok;
@@ -557,6 +669,13 @@ kick_member(
                     kick(Canonical, Nicks, Reason, Client, Server)
             end
     end.
+
+-doc """
+Local session pids that should see a `NICK` change by `Client`.
+
+The client itself plus every local member of its channels, excluding
+anonymous `+a` and quiet `+q` channels. The list is sorted and unique.
+""".
 -spec nick_recipients(#client{}) -> [term(), ...].
 nick_recipients(#client{pid = Pid, channels = Channels}) ->
     lists:usort([
@@ -577,9 +696,17 @@ channel_origin_prefix(#channel{flags = Flags}, _Client) when is_map_key($a, Flag
 channel_origin_prefix(_, Client) ->
     ircd_state_send:prefix(Client).
 
-%% Route PRIVMSG/NOTICE/TAGMSG to nicknames and channels, applying channel restrictions.
-%% Client-only tags are relayed. Each delivered message gets a `msgid` and a
-%% `time` tag (filtered per recipient by capability). TAGMSG has no text body.
+-doc """
+Route `PRIVMSG`, `NOTICE`, or `TAGMSG` to nicknames and channels (RFC 2812 section 3.3).
+
+`Command` is the verb, `Params` the parameters (`<targets> [<text>]`), and
+`Tags` the parsed message tags; client-only tags are relayed only when the
+sender has `message-tags`. A missing target gives 411 ERR_NORECIPIENT and
+missing or empty text (except for `TAGMSG`) 412 ERR_NOTEXTTOSEND. Duplicate
+targets are dropped, and targets past the first four (`TARGMAX`) each get 407
+ERR_TOOMANYTARGETS. Each remaining target goes through `deliver_body/6`.
+`NOTICE` never produces an error reply.
+""".
 -spec deliver(binary(), [binary()], #client{}, binary(), [{binary(), undefined | binary()}]) -> ok.
 deliver(Command, Params, #client{pid = Pid} = Client, Server, Tags) ->
     ClientTags =
@@ -623,8 +750,27 @@ deliver_targets(Targets, Text, Command, Client, Server, Tags) ->
         Extra
     ).
 
-%% @doc Deliver one message body to one target. `Body` is a binary, `none`
-%% for TAGMSG, or `{multiline, Lines}` from a draft/multiline batch.
+-doc """
+Deliver one message body to one target.
+
+`Body` is a binary, `none` for `TAGMSG`, or `{multiline, Lines}` from a
+draft/multiline batch, and `ClientTags` are the client-only tags to relay.
+Each delivery gets fresh `msgid` and `time` tags, filtered per recipient by
+capability.
+
+- A local channel applies the `+n`, `+m`, and ban checks (404
+  ERR_CANNOTSENDTOCHAN), then sends to the other local members, echoes to the
+  sender with `echo-message`, records the message in channel history, and
+  forwards it to server peers.
+- A registered local user receives the message, the sender gets the echo, the
+  message is recorded as direct history, and a `PRIVMSG` to an away user gets
+  301 RPL_AWAY.
+- A remote user is reached through its adjacent link.
+- Anything else, including a local client still registering, gets 401
+  ERR_NOSUCHNICK.
+
+`NOTICE` failures are silent.
+""".
 -spec deliver_body(binary(), binary(), term(), #client{}, binary(), term()) -> ok.
 deliver_body(Command, Target, Body, #client{pid = Pid} = Client, Server, ClientTags) ->
     MsgId = ircd_state_send:msgid(),
@@ -784,12 +930,23 @@ message_error(<<"NOTICE">>, _, _, _, _, _) ->
 message_error(_, Client, Server, Number, Middle, Text) ->
     ircd_state_send:numeric(Client, Server, Number, Middle, Text).
 
-%% Remember an accepted channel PRIVMSG or NOTICE from a peer. The body is not
-%% logged. `Tags` may carry the peer's `msgid` and `time`.
+-doc """
+Record a channel `PRIVMSG` or `NOTICE` accepted from a server peer; see `note_channel_history/5`.
+""".
 -spec note_channel_history(binary(), binary(), undefined | binary(), none | iodata()) -> ok.
 note_channel_history(Key, Command, Prefix, Text) ->
     note_channel_history(Key, Command, Prefix, Text, []).
 
+-doc """
+Record a channel `PRIVMSG` or `NOTICE` accepted from a server peer.
+
+`Key` is the folded channel name, `Prefix` the source prefix, `Text` the
+body, and `Tags` the line's tags. The peer's `msgid` and `time` are kept when
+present (a line without `msgid` is stored without one; a missing or invalid
+`time` uses the current time), and the account is taken from the source.
+A non-binary body, such as `TAGMSG`'s `none`, is not recorded. The body is
+never logged.
+""".
 -spec note_channel_history(binary(), binary(), undefined | binary(), none | iodata(), [
     {binary(), undefined | binary()}
 ]) -> ok.
@@ -825,6 +982,18 @@ note_channel_history(_Key, _Command, _Prefix, _Text, _Tags) ->
 replay_channel_history(Key, Name, Pid) ->
     ircd_state_history:replay_on_join(Key, Name, Pid).
 
+-doc """
+Handle `TOPIC <channel> [<topic>]` (RFC 2812 section 3.2.4).
+
+`Rest` is the optional new topic as a parameter list. A query replies with
+332 RPL_TOPIC and 333 RPL_TOPICWHOTIME, or 331 RPL_NOTOPIC. A local `+s`
+channel the requester is not on, a remote-only `+p` or `+s` channel, or an
+unknown channel gives 403 ERR_NOSUCHCHANNEL. Setting requires membership (442
+ERR_NOTONCHANNEL) and, with `+t`, operator status (482
+ERR_CHANOPRIVSNEEDED). A new topic is stored with its setter and time,
+broadcast to members, recorded in history, and propagated to peers. When the
+local row has no topic, the topic reported by a peer is shown.
+""".
 -spec topic(binary(), term(), #client{}, binary()) -> ok.
 topic(Name, Rest, #client{pid = Pid} = Client, Server) ->
     case mnesia:dirty_read(channel, ircd_wire:fold(Name)) of
@@ -938,6 +1107,16 @@ topic_reply(#channel{name = Name, topic = Topic} = Channel, Client, Server) ->
         end,
     ircd_state_send:numeric(Client, Server, <<"333">>, [Name, By, integer_to_binary(At)], none).
 
+-doc """
+Handle `NAMES` for one channel (RFC 2812 section 3.2.5).
+
+Sends 353 RPL_NAMREPLY lines with local and remote members, sorted under the
+RFC 1459 case mapping, then 366 RPL_ENDOFNAMES. A `+p` or `+s` channel the
+requester is not on lists nobody; an anonymous `+a` channel lists only the
+requester; members with `+i` are listed only to requesters sharing a channel.
+Prefixes follow `multi-prefix`, and `userhost-in-names` adds `!user@host`.
+An unknown channel still gets 366.
+""".
 -spec names(binary(), #client{}, binary()) -> ok.
 names(Name, Client, Server) ->
     Canonical =
@@ -1008,6 +1187,13 @@ names(Name, Client, Server) ->
         end,
     ircd_state_send:numeric(Client, Server, <<"366">>, [Canonical], <<"End of NAMES list">>).
 
+-doc """
+Send the 353 RPL_NAMREPLY lines for one local channel in an argument-less `NAMES`.
+
+`Key` is the folded channel name. Applies the same visibility rules as
+`names/3` but sends nothing for hidden channels and no 366; the caller ends
+the listing.
+""".
 -spec names_listing(binary(), #client{}, binary()) -> ok.
 names_listing(Key, Client, Server) ->
     case mnesia:dirty_read(channel, Key) of
@@ -1054,6 +1240,12 @@ names_listing(Key, Client, Server) ->
 
 nick_less(Left, Right) -> ircd_wire:fold(Left) =< ircd_wire:fold(Right).
 
+-doc """
+List visible registered local users who are on no channel, under the `*` channel.
+
+Part of an argument-less `NAMES`. A user who is only on secret or private
+channels is not listed. Sends 353 RPL_NAMREPLY lines only.
+""".
 -spec names_unattached(#client{}, binary()) -> ok.
 names_unattached(#client{pid = RequesterPid}, Server) ->
     Requester = ircd_state_client:client(RequesterPid),
@@ -1069,6 +1261,13 @@ names_unattached(#client{pid = RequesterPid}, Server) ->
     ]),
     names_lines(Entries, [], 0, <<"*">>, Requester, Server).
 
+-doc """
+True when channel member `Pid` may be listed to `Requester`.
+
+`Members` is the channel's local member map. A requester on the channel sees
+every member; otherwise the rule of `ircd_state_client:user_visible/2`
+applies.
+""".
 -spec visible_member(pid(), #client{}, map()) -> boolean().
 visible_member(Pid, Requester, Members) ->
     maps:is_key(Requester#client.pid, Members) orelse
@@ -1077,6 +1276,15 @@ visible_member(Pid, Requester, Members) ->
             [] -> false
         end.
 
+-doc """
+Send `Entries` as 353 RPL_NAMREPLY lines for channel `Name`.
+
+Call with an empty accumulator and size 0. Entries are packed until a line
+would carry about 370 octets of names, so each reply stays under the
+512-octet line limit. The channel symbol is `@` for `+s`, `*` for `+p`
+(including flags reported by peers), and `=` otherwise. Sends nothing for an
+empty list.
+""".
 -spec names_lines([binary()], [term()], term(), term(), term(), term()) -> ok.
 names_lines([], [], _, _, _, _) ->
     ok;
@@ -1118,8 +1326,12 @@ display_nick(#client{nick = Nick, user = User, host = Host}, Roles, #client{pid 
         end,
     <<(role_prefix(Roles, Requester))/binary, Name/binary>>.
 
-%% @doc Status prefix for channel roles. With multi-prefix the requester sees
-%% every prefix in rank order (`@+`), otherwise only the highest.
+-doc """
+Status prefix for a member's channel roles as shown to `Requester`.
+
+With `multi-prefix` the requester sees every prefix in rank order (`@+`),
+otherwise only the highest. `creator` is shown as `@`.
+""".
 -spec role_prefix([atom()], pid()) -> binary().
 role_prefix(Roles, Requester) ->
     Operator = lists:member(operator, Roles) orelse lists:member(creator, Roles),
@@ -1131,12 +1343,14 @@ role_prefix(Roles, Requester) ->
         _ -> <<>>
     end.
 
-%% Ban, exception, and invite masks. `$a:<account>` (IRCv3 account-extban,
-%% advertised as EXTBAN=$,a and ACCOUNTEXTBAN=a) matches a logged-in user by
-%% account name with wildcards and RFC 1459 folding; `$a` alone matches any
-%% logged-in user. Other masks match `nick!user@host`.
-%% A local client or a remote user matches a ban, exception, or invite mask by
-%% nick!user@host, or by account for the `$a` extban.
+-doc """
+True when a local or remote user matches the channel's ban, exception, or invite list.
+
+A plain mask is matched with `wildcard_match/2` against `nick!user@host`.
+The IRCv3 account extban (advertised as `EXTBAN=$,a` and `ACCOUNTEXTBAN=a`)
+is also supported: `$a:<account mask>` matches a logged-in user by account
+name, and `$a` alone matches any logged-in user.
+""".
 -spec mask_matches(#channel{}, ban | exception | invite, #client{} | #remote_client{}) ->
     boolean().
 mask_matches(Channel, Type, #client{pid = Pid, nick = Nick, user = User, host = Host}) ->
@@ -1163,10 +1377,14 @@ identity_matches(#channel{lists = Lists}, Type, Nick, User, Host, Account) ->
         maps:get(Type, Lists, [])
     ).
 
-%% @doc Match an IRC mask (`*` any run, `?` one octet) against a value under
-%% the RFC 1459 case mapping. On a mismatch the scan resumes from the most
-%% recent `*`, so the cost is O(byte_size(Mask) * byte_size(Value)) even for
-%% hostile masks such as `*a*a*a*a*b` (no exponential backtracking).
+-doc """
+Match an IRC mask (`*` any run, `?` one octet) against a value under
+the RFC 1459 case mapping.
+
+On a mismatch the scan resumes from the most recent `*`, so the cost is
+O(byte_size(Mask) * byte_size(Value)) even for hostile masks such as
+`*a*a*a*a*b` (no exponential backtracking).
+""".
 -spec wildcard_match(binary(), binary()) -> boolean().
 wildcard_match(Mask, Value) ->
     glob(ircd_wire:fold(Mask), ircd_wire:fold(Value), none).
@@ -1184,6 +1402,15 @@ glob(_Mask, _Value, {StarMask, <<_, StarValue/binary>>}) ->
 glob(_Mask, _Value, _Star) ->
     false.
 
+-doc """
+Handle `KNOCK <channel> [<message>]`: ask the operators of an invite-only channel for an invite.
+
+`ReasonParams` holds the optional message. An unknown channel gets 403
+ERR_NOSUCHCHANNEL and a member 442. A channel with `+K` (no knock), one that
+is not `+i`, or one without a local operator gets 480 with a matching text.
+Otherwise the local channel operators receive `KNOCK <channel> :<message>`
+from the requester.
+""".
 -spec knock(binary(), [binary()], #client{}, binary()) -> ok.
 knock(Name, ReasonParams, #client{pid = Pid} = Client, Server) ->
     Reason =
@@ -1247,6 +1474,20 @@ knock(Name, ReasonParams, #client{pid = Pid} = Client, Server) ->
             end
     end.
 
+-doc """
+Handle `INVITE <nick> <channel>` (RFC 2812 section 3.2.7).
+
+A local user still registering, or an unknown nickname, gets 401
+ERR_NOSUCHNICK. For a local target: an existing channel requires that the
+target is not already on it (443 ERR_USERONCHANNEL), that the inviter is on it
+(442 ERR_NOTONCHANNEL), and, with `+i`, that the inviter is an operator (482
+ERR_CHANOPRIVSNEEDED); the invite is then remembered on the channel and
+`invite-notify` members are told. The inviter gets 341 RPL_INVITING (and 301
+RPL_AWAY for an away target) and the target receives `INVITE`. An invite to a
+channel that does not exist is delivered without checks. A remote target
+requires an existing local channel (403 otherwise) and the same membership and
+operator checks; the invite is remembered and forwarded to the target's link.
+""".
 -spec invite(binary(), binary(), #client{}, binary()) -> ok.
 invite(Nick, Name, #client{pid = Pid} = Client, Server) ->
     Found =
@@ -1391,7 +1632,33 @@ invite_origin_prefix(Channel, Client) ->
         [] -> ircd_state_send:prefix(Client)
     end.
 
-%% Route MODE to a channel or to the requesting user's supported modes.
+-doc """
+Handle `MODE` for a channel or for the requester's own user modes.
+
+A target that is a valid channel name is handled as a channel mode (RFC 2812
+section 3.2.3); otherwise as a user mode (section 3.1.5).
+
+User modes: an unknown nickname gets 401, another user 502
+ERR_USERSDONTMATCH, and no mode string 221 RPL_UMODEIS. `i`, `w`, and `B` can
+be set and cleared; `-o` drops operator (and administrator) status; `+o` gets
+481 ERR_NOPRIVILEGES (operator status comes only from `OPER`); other letters
+get 501 ERR_UMODEUNKNOWNFLAG. Each change is echoed to the user and
+propagated to peers.
+
+Channel modes: an unknown channel gets 403. A bare `+b`, `+e`, or `+I`
+lists the ban (367/368), exception (348/349), or invite (346/347) list; the
+ban and exception lists require channel operator status. No mode string
+replies with 324 RPL_CHANNELMODEIS (the key only to members) and 329
+RPL_CREATIONTIME. Changes require operator or creator status (482
+ERR_CHANOPRIVSNEEDED) and are applied letter by letter: `+r` and `+a` on a
+safe channel need the creator, `+a` exists only on `&` and `!` channels and
+`+r` only on `!` channels (472 otherwise), `q` is server-only (481), an
+invalid key or limit gets 696 ERR_INVALIDMODEPARAM, a full list 478
+ERR_BANLISTFULL, a missing argument 461, `+o`/`+v` on a non-member 441 or
+401, and an unknown letter 472 ERR_UNKNOWNMODE. Applied changes are announced
+as one `MODE` line to members, recorded in history (except key changes), and
+propagated to peers.
+""".
 -spec mode_command(binary(), term(), #client{}, binary()) -> ok.
 mode_command(Target, Rest, Client, Server) ->
     case ircd_wire:channel(Target) of
@@ -1428,6 +1695,9 @@ user_mode(Target, Rest, #client{pid = Pid} = Client, Server) ->
             end
     end.
 
+-doc """
+Format a user-mode map as `+` followed by the sorted mode letters.
+""".
 -spec user_mode_string(map()) -> binary().
 user_mode_string(Modes) ->
     list_to_binary([$+ | lists:sort(maps:keys(Modes))]).
@@ -1834,6 +2104,10 @@ apply_mode(Mode, _, [], _) when Mode =:= $k; Mode =:= $l; Mode =:= $o; Mode =:= 
     {error, <<"461">>, [<<"MODE">>], <<"Not enough parameters">>, []};
 apply_mode(Mode, _, Args, _) ->
     {error, <<"472">>, [<<Mode>>], <<"Unknown mode character">>, Args}.
+
+-doc """
+Split a comma-separated parameter, dropping empty items.
+""".
 -spec split(binary()) -> [binary()].
 split(Value) -> binary:split(Value, <<",">>, [global, trim_all]).
 
@@ -1852,11 +2126,19 @@ param_token(Value) ->
         false -> Value
     end.
 
-%% @doc `RENAME <old> <new> [:reason]` (draft/channel-rename). A channel
-%% operator may rename a local channel. The type prefix cannot change, safe
-%% `!` channels and channels shared with a server link cannot be renamed.
-%% channel-rename clients see RENAME; other members see PART, then JOIN with
-%% the topic and names burst. A case-only rename sends no fallback.
+-doc """
+Handle `RENAME <old> <new> [:reason]` (draft/channel-rename).
+
+A channel operator may rename a local channel. The type prefix cannot
+change, and safe `!` channels and channels shared with a server link cannot
+be renamed (`FAIL RENAME CANNOT_RENAME`); a name already in use gives
+`FAIL RENAME CHANNEL_NAME_IN_USE`. Errors: 461 without two parameters, 403
+for an unknown channel, 442 for a non-member, and 482 for a non-operator.
+The channel row, member channel lists, history, metadata, and read markers
+move to the new key. `draft/channel-rename` clients see `RENAME`; other
+members see `PART`, then `JOIN` with the topic and NAMES reply. A case-only
+rename sends no fallback.
+""".
 -spec rename(term(), #client{}, binary()) -> ok.
 rename([Old, New | Rest], #client{pid = Pid} = Client, Server) ->
     Reason =

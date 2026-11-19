@@ -1,11 +1,59 @@
 -module(ircd_state_queries).
+-moduledoc """
+User queries: `WHO` (with IRCv3 WHOX), `WHOIS`, `WHOWAS`, `ISON`, and `USERHOST`.
+
+Implements RFC 2812 sections 3.6.1 to 3.6.3 and 4.8 to 4.9. Every function
+runs inside the single `m:ircd_state` gen_server process and reads the
+Mnesia `client`, `channel`, `remote_client`, `remote_channel`, `activity`, and
+`whowas` tables that process owns. Nothing here writes state. In every handler
+`Client` is the requesting `client` record and `Server` is this server's name,
+used as the numeric prefix.
+
+Visibility rules shared by the queries:
+
+- A user with mode `+i` appears in mask searches and `WHOIS` only to a
+  requester sharing a channel with them; for remote users that check includes
+  remote membership (`ircd_state:remote_user_visible_to_requester/3`). `WHO`
+  for an exact local nickname answers even for `+i` users.
+- A channel with `+p` or `+s` (locally or as reported by a peer) is listed only
+  to its members, and a channel with `+a` (anonymous) never reveals members.
+- Users are always named with their home server, not the adjacent link.
+
+Nicknames are compared with the RFC 1459 case mapping of `ircd_wire:fold/1`.
+WHOWAS history is written by `m:ircd_state_client` and bounded there.
+""".
 -export([ison/3, userhost/3, who/3, whois/3, whowas_options/1, whowas_reply/4]).
 -include("ircd_state.hrl").
 
+-doc """
+Handle `WHO [<mask> [<flags>]]` (RFC 2812 section 3.6.1, IRCv3 WHOX).
+
+`Params` are the command parameters. The mask resolves, in order, to a local
+channel (its visible local members, then its remote members), a channel known
+only through a server link, an exact local nickname, or a wildcard matched
+against nickname, user, host, real name, and `nick!user@host` of every visible
+local and remote user. No mask means `*`.
+
+A second parameter of `o` limits the reply to IRC operators. A second
+parameter of the form `<flags>%<fields>[,<token>]` selects WHOX: each row is
+354 RPL_WHOSPCRPL carrying only the requested fields in the fixed order
+`t c u i h s n f d l a o r`, where the token is 1 to 3 digits (an invalid token
+falls back to plain WHO). Otherwise each row is 352 RPL_WHOREPLY with status
+`H`/`G`, `*` for operators, `B` for bots, and the channel prefix. The IP field
+is shown only to the user itself and to IRC operators. The reply always ends
+with 315 RPL_ENDOFWHO.
+""".
 -spec who([binary()], #client{}, binary()) -> ok.
 who(Params, Client, Server) ->
     who_command(Params, Client, Server).
 
+-doc """
+Handle `ISON <nickname> ...` (RFC 2812 section 4.9).
+
+`Nicks` are the requested nicknames. Replies with one 303 RPL_ISON listing,
+in their current spelling, each nickname held by a registered local user or a
+known remote user.
+""".
 -spec ison([binary()], #client{}, binary()) -> ok.
 ison(Nicks, Client, Server) ->
     Existing = [
@@ -16,6 +64,13 @@ ison(Nicks, Client, Server) ->
     ],
     ircd_state:numeric(Client, Server, <<"303">>, [], lists:join(<<" ">>, Existing)).
 
+-doc """
+Handle `USERHOST <nickname> ...` (RFC 2812 section 4.8).
+
+Only the first five nicknames are considered. Replies with one 302
+RPL_USERHOST of `nick[*]=(+|-)host` entries for registered local and known
+remote users, where `*` marks an IRC operator and `-` an away user.
+""".
 -spec userhost([term()], #client{}, binary()) -> ok.
 userhost(Nicks, Client, Server) ->
     Entries = lists:filtermap(
@@ -525,7 +580,19 @@ whois_operator(Nick, Pid, Client, Server) ->
             ircd_state:numeric(Client, Server, <<"313">>, [Nick], Text)
     end.
 
-%% Produce the local server's WHOIS numerics for one nickname mask.
+-doc """
+Answer `WHOIS` for one exact nickname (RFC 2812 section 3.6.2).
+
+`Nick` is a single nickname; the caller splits the comma list. For a visible
+local user the reply is 311 RPL_WHOISUSER, 301 RPL_AWAY when away, 319
+RPL_WHOISCHANNELS (wrapped into several lines, omitting `+a` channels and
+`+p`/`+s` channels the requester is not on), 312 RPL_WHOISSERVER, 313
+RPL_WHOISOPERATOR (administrators are named as such), 330 RPL_WHOISACCOUNT
+when logged in, 335 RPL_WHOISBOT for `+B`, and 317 RPL_WHOISIDLE. A remote
+user gets 311, 312 with the home server, 301, 313, 330, and 335 as they apply.
+An unknown or invisible nickname gets 401 ERR_NOSUCHNICK. Every reply ends
+with 318 RPL_ENDOFWHOIS.
+""".
 -spec whois(binary(), #client{}, binary()) -> ok.
 whois(Nick, Client, Server) ->
     case ircd_state:find_nick(Nick) of
@@ -701,6 +768,12 @@ whois_channel_lines([Entry | Rest], Acc, _, Nick, Client, Server) ->
 emit_whois_channels(Entries, Nick, Client, Server) ->
     ircd_state:numeric(Client, Server, <<"319">>, [Nick], lists:join(<<" ">>, Entries)).
 
+-doc """
+Parse the optional `[<count> [<target>]]` parameters of `WHOWAS`.
+
+Returns `{Count, Target}`. A missing or non-numeric count is `all`, and a
+missing target is `undefined`.
+""".
 -spec whowas_options([binary()]) -> {all | integer(), term()}.
 whowas_options([]) ->
     {all, undefined};
@@ -716,6 +789,15 @@ whowas_options([Count | Rest]) ->
         error:badarg -> {all, Target}
     end.
 
+-doc """
+Send the WHOWAS entries for one nickname or nickname mask (RFC 2812 section 3.6.3).
+
+`Nick` may contain `*` and `?`. Entries are sent newest first, each as 314
+RPL_WHOWASUSER followed by 312 RPL_WHOISSERVER; a positive `Count` limits how
+many are sent, and `all` or a non-positive count sends every match. With no
+match the reply is 406 ERR_WASNOSUCHNICK. Returns the nicknames that were
+reported. The caller sends 369 RPL_ENDOFWHOWAS.
+""".
 -spec whowas_reply(binary(), all | integer(), #client{}, binary()) -> [binary()].
 whowas_reply(Nick, Count, Client, Server) ->
     Folded = ircd_wire:fold(Nick),

@@ -27,41 +27,84 @@
 ]).
 -include("ircd_state.hrl").
 
-%% @doc Format IRC replies and deliver them to client sockets.
-%%
-%% Tags are filtered per recipient by negotiated capability: client-only `+`
-%% tags, `msgid`, and `bot` need `message-tags`; `time` needs `server-time`;
-%% `account` needs `account-tag`; `draft/oper` needs `draft/oper-tag`. A
-%% recipient with `server-time` gets a `time` tag on every line.
-%%
-%% A labeled command buffers replies to the commanding client, then end_label/1
-%% emits one tagged line, one labeled-response batch, or one ACK.
-%%
-%% An ambient batch (begin_batch/2 .. end_batch/0) wraps every line sent while
-%% it is open, for each recipient that negotiated `batch`. It is used for
-%% `netsplit`, `netjoin`, and similar server-initiated batches.
-%%
-%% The source (set_source/1) names the user whose command is being applied.
-%% Lines with that user's prefix carry `account`, `bot`, and `draft/oper`.
+-moduledoc """
+Reply formatting, per-recipient tag filtering, labeled responses, batches,
+and delivery of lines to client sessions.
 
+Runs inside `m:ircd_state`. Every line is encoded with
+`ircd_wire:message/5` and sent to the session process as `{irc, Line}`; the
+session writes it to its socket. Sent message and byte counts are recorded
+for `STATS l`. The label, ambient batch, and command source live in the
+process dictionary for the duration of one command.
+
+## Tag filtering
+
+Tags are filtered per recipient by negotiated capability
+([message-tags](https://ircv3.net/specs/extensions/message-tags)): `label`
+and `batch` always pass; `time` needs `server-time`; `account` needs
+`account-tag`; `draft/oper` needs `draft/oper-tag`; every other tag
+(client-only `+` tags, `msgid`, `bot`) needs `message-tags`. A recipient
+with `server-time` gets a `time` tag on every line. `TAGMSG` is not
+delivered to a recipient without `message-tags`. In a channel fan-out each
+distinct visible tag set is encoded once and the binary is shared.
+
+## Labels and batches
+
+A labeled command ([labeled-response](https://ircv3.net/specs/extensions/labeled-response))
+buffers replies to the commanding client between `begin_label/2` and
+`end_label/1`, which emits one tagged line, one `labeled-response`
+[batch](https://ircv3.net/specs/extensions/batch), or `ACK` when there was
+no reply. Copies of other users' messages delivered to the same client are
+not part of the labeled reply.
+
+An ambient batch (`begin_batch/2` .. `end_batch/0`) wraps every line sent
+while it is open, for each recipient that negotiated `batch`; it is used for
+`netsplit`, `netjoin`, and similar server-initiated batches.
+`with_batch/5` wraps the lines to one client.
+
+## Source tags
+
+The source (`set_source/1`) names the user whose command is being applied.
+Lines with that user's prefix carry `account`, `bot`, and `draft/oper`.
+""".
+
+-doc """
+The `nick!user@host` prefix of a client, as iodata.
+""".
 -spec prefix(#client{}) -> iolist().
 prefix(#client{nick = Nick, user = User, host = Host}) -> [Nick, <<"!">>, User, <<"@">>, Host].
 
+-doc """
+Send numeric reply `Number` from `Server` to a client.
+
+The client's current nickname (`*` before registration) is added as the
+first parameter, as RFC 2812 2.4 requires. `Text` is the trailing parameter,
+or `none` for no trailing parameter.
+""".
 -spec numeric(#client{}, binary(), term(), [binary()], none | iodata()) -> ok.
 numeric(#client{pid = Pid, nick = Nick}, Server, Number, Params, Text) ->
     send(Pid, Server, Number, [Nick | Params], Text).
 
-%% @doc Send an IRCv3 standard reply `FAIL <command> <code> [context...] :<text>`.
+-doc """
+Send the [standard reply](https://ircv3.net/specs/extensions/standard-replies)
+`FAIL <command> <code> [context...] :<text>` from the local server.
+""".
 -spec fail(pid(), binary(), binary(), [iodata()], iodata()) -> ok.
 fail(Pid, Command, Code, Context, Text) ->
     standard(Pid, <<"FAIL">>, Command, Code, Context, Text).
 
-%% @doc Send an IRCv3 standard reply `WARN`.
+-doc """
+Send the standard reply `WARN <command> <code> [context...] :<text>` from
+the local server.
+""".
 -spec warn(pid(), binary(), binary(), [iodata()], iodata()) -> ok.
 warn(Pid, Command, Code, Context, Text) ->
     standard(Pid, <<"WARN">>, Command, Code, Context, Text).
 
-%% @doc Send an IRCv3 standard reply `NOTE`.
+-doc """
+Send the standard reply `NOTE <command> <code> [context...] :<text>` from
+the local server.
+""".
 -spec note(pid(), binary(), binary(), [iodata()], iodata()) -> ok.
 note(Pid, Command, Code, Context, Text) ->
     standard(Pid, <<"NOTE">>, Command, Code, Context, Text).
@@ -69,10 +112,23 @@ note(Pid, Command, Code, Context, Text) ->
 standard(Pid, Type, Command, Code, Context, Text) ->
     send(Pid, local_server(), Type, [Command, Code | Context], Text).
 
+-doc """
+Send one line to every pid in `Pids`.
+
+Same as `broadcast(Pids, Prefix, Command, Middle, Tail, [])`.
+""".
 -spec broadcast([pid()], iodata(), binary(), [iodata()], none | iodata()) -> ok.
 broadcast(Pids, Prefix, Command, Middle, Tail) ->
     broadcast(Pids, Prefix, Command, Middle, Tail, []).
 
+-doc """
+Send one line with `Tags` to every pid in `Pids` (channel fan-out).
+
+A `time` tag and the current source's tags are added once for all
+recipients, so every copy carries the same timestamp. Each recipient sees
+only the tags its capabilities allow. Outside an ambient batch, each
+distinct filtered line is encoded once and shared between recipients.
+""".
 -spec broadcast([pid()], iodata(), binary(), [iodata()], none | iodata(), [
     {binary(), undefined | binary()}
 ]) -> ok.
@@ -99,10 +155,24 @@ broadcast(Pids, Prefix, Command, Middle, Tail, Tags0) ->
             ok
     end.
 
+-doc """
+Send one line to the session `Pid`. Same as `send/6` with no tags.
+""".
 -spec send(pid(), iodata(), binary(), [iodata()], none | iodata()) -> ok.
 send(Pid, Prefix, Command, Middle, Tail) ->
     send(Pid, Prefix, Command, Middle, Tail, []).
 
+-doc """
+Send one line `[@Tags] :Prefix Command Middle... [:Tail]` to the session
+`Pid`.
+
+`Tail` is the trailing parameter, or `none`. Source tags are added when
+`Prefix` is the current source, the line joins an open ambient batch, and
+the tags are filtered for the recipient. When `Pid` is the client of the
+current labeled command, the line is buffered for `end_label/1` instead,
+unless it is a copy of a user's `PRIVMSG`, `NOTICE`, or `TAGMSG`. A line
+that `ircd_wire:message/5` cannot fit is dropped.
+""".
 -spec send(pid(), iodata(), binary(), [iodata()], none | iodata(), [
     {binary(), undefined | binary()}
 ]) -> ok.
@@ -125,8 +195,13 @@ send(Pid, Prefix, Command, Middle, Tail, Tags0) ->
             relay(Pid, Prefix, Command, Middle, Tail, Tags)
     end.
 
-%% @doc Send the sender's own copy of a message (echo-message). Inside a labeled
-%% command the echo is the labeled response.
+-doc """
+Send the sender's own copy of a message
+([echo-message](https://ircv3.net/specs/extensions/echo-message)).
+
+Unlike `send/6`, the copy is buffered as the labeled response when the
+command carries a label, and no ambient batch tag is added.
+""".
 -spec echo(pid(), iodata(), binary(), [iodata()], none | iodata(), list()) -> ok.
 echo(Pid, Prefix, Command, Middle, Tail, Tags0) ->
     Tags = add_source_tags(Prefix, Tags0),
@@ -137,7 +212,12 @@ echo(Pid, Prefix, Command, Middle, Tail, Tags0) ->
             relay(Pid, Prefix, Command, Middle, Tail, Tags)
     end.
 
-%% @doc Start collecting replies to Pid when Label is a binary label value.
+-doc """
+Start collecting replies to `Pid` when `Label` is a binary label value.
+
+With `undefined` (no label, or `labeled-response` not negotiated) replies
+are sent immediately. Must be paired with `end_label/1`.
+""".
 -spec begin_label(pid(), undefined | binary()) -> ok.
 begin_label(Pid, Label) when is_binary(Label) ->
     put(ircd_label, {Pid, Label, []}),
@@ -146,7 +226,13 @@ begin_label(_Pid, _) ->
     put(ircd_label, off),
     ok.
 
-%% @doc Send the collected labeled reply, if a label was active.
+-doc """
+Send the collected labeled reply, if a label was active, from `Server`.
+
+No reply sends `ACK`; one reply carries the `label` tag itself; a reply
+that is already a single batch gets the label on its opening `BATCH`;
+several replies are wrapped in a `labeled-response` batch.
+""".
 -spec end_label(binary()) -> ok.
 end_label(Server) ->
     case erase(ircd_label) of
@@ -204,14 +290,22 @@ labeled_batch(Pid, Server, Label, Messages) ->
     lists:foreach(fun(Message) -> send_batched(Pid, Ref, Message) end, lists:reverse(Messages)),
     relay(Pid, Server, <<"BATCH">>, [<<"-", Ref/binary>>], none, []).
 
-%% @doc Open an ambient batch of `Type` with `Params` for every recipient with
-%% the `batch` capability that receives a line before end_batch/0.
+-doc """
+Open an ambient batch of `Type` with `Params`.
+
+`BATCH +ref` is sent lazily to each recipient with the `batch` capability
+when it receives its first line before `end_batch/0`; every such line is
+tagged with the reference.
+""".
 -spec begin_batch(binary(), [binary()]) -> ok.
 begin_batch(Type, Params) ->
     begin_batch(Type, Params, any).
 
-%% @doc Like begin_batch/2, but only lines whose command is in `Commands` join
-%% the batch (for example only QUIT in `netsplit`, only JOIN in `netjoin`).
+-doc """
+Like `begin_batch/2`, but only lines whose command is in `Commands` join
+the batch (for example only `QUIT` in `netsplit`, only `JOIN` in `netjoin`).
+`any` admits every command.
+""".
 -spec begin_batch(binary(), [binary()], any | [binary()]) -> ok.
 begin_batch(Type, Params, Commands) ->
     put(ircd_batch_commands, Commands),
@@ -221,7 +315,10 @@ begin_batch_any(Type, Params) ->
     put(ircd_batch, #{type => Type, params => Params, ref => batch_ref(), opened => []}),
     ok.
 
-%% @doc Close the ambient batch for each recipient that saw it open.
+-doc """
+Close the ambient batch: send `BATCH -ref` to each recipient that saw it
+open. A no-op when no batch is open.
+""".
 -spec end_batch() -> ok.
 end_batch() ->
     erase(ircd_batch_commands),
@@ -236,8 +333,13 @@ end_batch() ->
             ok
     end.
 
-%% @doc Run Fun with every line to Pid wrapped in one batch, when Pid has `batch`.
-%% `Extra` tags go on the opening BATCH line. An empty batch is still sent.
+-doc """
+Run `Fun` with every line to `Pid` wrapped in one batch of `Type` with
+`Params`, when `Pid` negotiated `batch`; otherwise just run `Fun`.
+
+`Extra` tags go on the opening `BATCH` line. An empty batch is still sent.
+Lines to other recipients are not batched. Returns the result of `Fun`.
+""".
 -spec with_batch(pid(), binary(), [binary()], list(), fun(() -> term())) -> term().
 with_batch(Pid, Type, Params, Extra, Fun) ->
     case ircd_cap:enabled(Pid, <<"batch">>) of
@@ -260,16 +362,24 @@ with_batch(Pid, Type, Params, Extra, Fun) ->
 restore_batch(undefined) -> erase(ircd_batch);
 restore_batch(Previous) -> put(ircd_batch, Previous).
 
-%% @doc Remember the user whose command is being applied, for source tags.
-%% `Info` has `prefix` (binary), `account`, `bot`, and `oper`.
+-doc """
+Remember the user whose command is being applied, for source tags.
+
+`Info` has `prefix` (binary `nick!user@host`), `account`, `bot`, and `oper`.
+Lines whose prefix equals `prefix` get the `account`, `bot`, and
+`draft/oper` tags. Cleared with `clear_source/0`.
+""".
 -spec set_source(map()) -> ok.
 set_source(Info) ->
     put(ircd_source, Info),
     ok.
 
-%% @doc Run Fun with `Info` as the source, then restore the previous source.
-%% Used where a user's own line (QUIT, JOIN, CHGHOST) is sent outside that
-%% user's command, so account-tag and oper-tag still apply.
+-doc """
+Run `Fun` with `Info` as the source, then restore the previous source.
+
+Used where a user's own line (`QUIT`, `JOIN`, `CHGHOST`) is sent outside
+that user's command, so account-tag and oper-tag still apply.
+""".
 -spec with_source(map(), fun(() -> term())) -> term().
 with_source(Info, Fun) ->
     Previous = get(ircd_source),
@@ -283,12 +393,18 @@ with_source(Info, Fun) ->
         end
     end.
 
+-doc """
+Forget the source set by `set_source/1`.
+""".
 -spec clear_source() -> ok.
 clear_source() ->
     erase(ircd_source),
     ok.
 
-%% @doc Source tags for a line with the given prefix, or [] for another source.
+-doc """
+Source tags (`account`, `bot`, `draft/oper`) for a line with `Prefix`, or
+`[]` when `Prefix` is not the current source.
+""".
 -spec source_tags(iodata()) -> [{binary(), undefined | binary()}].
 source_tags(Prefix) ->
     case get(ircd_source) of
@@ -331,8 +447,11 @@ add_source_tags(Prefix, Tags) ->
             Extra ++ Tags
     end.
 
-%% @doc A network-unique message ID: time, a node-local counter, and a hash of
-%% the server name, so two servers on one network do not collide.
+-doc """
+A new `msgid` tag value: microsecond time and a node-local monotonic
+counter in base 36, then `-` and a hash of the server name, so two servers
+on one network do not collide.
+""".
 -spec msgid() -> binary().
 msgid() ->
     Server = erlang:phash2(local_server(), 1 bsl 32),
@@ -343,12 +462,17 @@ msgid() ->
         integer_to_binary(Server, 36)
     ]).
 
-%% @doc `time` tag for the current wall clock, in milliseconds (server-time).
+-doc """
+`time` tag for the current wall clock with millisecond precision
+([server-time](https://ircv3.net/specs/extensions/server-time)).
+""".
 -spec time_tag() -> {binary(), binary()}.
 time_tag() ->
     {<<"time">>, time_value(erlang:system_time(millisecond))}.
 
-%% @doc Format milliseconds since the epoch as `YYYY-MM-DDThh:mm:ss.sssZ`.
+-doc """
+Format milliseconds since the Unix epoch as `YYYY-MM-DDThh:mm:ss.sssZ` (UTC).
+""".
 -spec time_value(integer()) -> binary().
 time_value(Millis) ->
     list_to_binary(
@@ -504,7 +628,9 @@ has_user_prefix(Prefix) when is_list(Prefix) ->
 has_user_prefix(_) ->
     false.
 
-%% @doc A batch reference unique within this state process.
+-doc """
+A new batch reference (base 36 counter) unique within this state process.
+""".
 -spec batch_ref() -> binary().
 batch_ref() ->
     Next =

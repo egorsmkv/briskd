@@ -15,31 +15,54 @@
 ]).
 -include("ircd_account.hrl").
 
-%% Account storage for SASL and draft/account-registration.
-%% Names use the nickname character set and RFC 1459 folding, so an account
-%% can be the same as a nickname. Passwords are stored only as SCRAM-SHA-256
-%% verifiers (RFC 5802, RFC 7677), which also verify SASL PLAIN.
+-moduledoc """
+Account storage for [SASL](https://ircv3.net/specs/extensions/sasl-3.2) and
+[draft/account-registration](https://ircv3.net/specs/extensions/account-registration).
+
+Accounts are rows of the Mnesia `account` table (`disc_copies`, record in
+`include/ircd_account.hrl`), keyed by the folded name. They survive every
+restart regardless of `retention` and are replicated to linked servers by
+`m:ircd_state_sync`. The table is written only from `m:ircd_state`;
+`verifier/2` is pure.
+
+Names use the nickname character set and RFC 1459 folding
+(`ircd_wire:fold/1`), so an account can be the same as a nickname.
+Passwords are never stored: only SCRAM-SHA-256 verifiers (RFC 5802,
+RFC 7677) with a random 16-byte salt and 4096 PBKDF2 iterations, which also
+verify SASL PLAIN. Verification codes are stored as SHA-256 hashes, and
+secret comparisons use `crypto:hash_equals/2`.
+""".
 
 -define(ITERATIONS, 4096).
 %% Default shortest password; `account_password_min` in configuration overrides it.
 -define(MIN_PASSWORD, 8).
 -define(MAX_PASSWORD, 300).
 
-%% @doc Shortest accepted password in bytes.
+-doc """
+Shortest accepted password in bytes: `account_password_min` from the
+configuration, default 8. The longest accepted password is 300 bytes.
+""".
 -spec min_password() -> pos_integer().
 min_password() ->
     maps:get(
         account_password_min, persistent_term:get({ircd_state, config}, #{}), ?MIN_PASSWORD
     ).
 
-%% @doc Account names follow the nickname rules of `ircd_wire:nickname/1`.
+-doc """
+True when `Name` is a valid account name: a valid nickname under
+`ircd_wire:nickname/2` with the configured `nicklen`, other than
+`anonymous` (in any case).
+""".
 -spec valid_name(binary()) -> boolean().
 valid_name(Name) when is_binary(Name) ->
     ircd_wire:nickname(Name, ircd_state:nicklen()) andalso ircd_wire:fold(Name) =/= <<"anonymous">>;
 valid_name(_) ->
     false.
 
-%% @doc Look up a usable (verified) account by name.
+-doc """
+Look up a usable (verified) account by name, compared folded. An account
+awaiting verification is `error`.
+""".
 -spec find(binary()) -> {ok, #account{}} | error.
 find(Name) ->
     case lookup(Name) of
@@ -62,7 +85,9 @@ lookup(Name) ->
             error
     end.
 
-%% @doc Every usable account, for a server-link burst.
+-doc """
+Every usable (verified) account, for a server-link burst.
+""".
 -spec list() -> [#account{}].
 list() ->
     [
@@ -71,8 +96,15 @@ list() ->
         [#account{pending = undefined} = Account] <- [mnesia:dirty_read(account, Key)]
     ].
 
-%% @doc Store an account replicated from a peer server. The account created
-%% first wins; an equal or newer copy does not replace an existing row.
+-doc """
+Store an account replicated from a peer server and return `stored`, or
+`kept` when the local copy wins.
+
+The account created first wins: an incoming copy created at the same time
+or later does not replace an existing verified row. A local row still
+waiting for verification is always replaced. The stored copy is marked
+verified.
+""".
 -spec import(#account{}) -> stored | kept.
 import(#account{key = Key, created = Created} = Incoming) ->
     case mnesia:dirty_read(account, Key) of
@@ -83,7 +115,12 @@ import(#account{key = Key, created = Created} = Incoming) ->
             stored
     end.
 
-%% @doc Complete draft/account-registration verification with a code.
+-doc """
+Complete draft/account-registration verification of `Name` with `Code`.
+
+Returns the now usable account when the account is pending, the code has
+not expired, and its SHA-256 hash matches; otherwise `error`.
+""".
 -spec verify(binary(), binary()) -> {ok, #account{}} | error.
 verify(Name, Code) ->
     case mnesia:dirty_read(account, ircd_wire:fold(Name)) of
@@ -101,9 +138,20 @@ verify(Name, Code) ->
             error
     end.
 
-%% @doc Create an account. `Email` is `undefined` when not given. `Pending`
-%% is `undefined` for an immediately usable account, or `{Code, TtlMs}` to
-%% hold it until VERIFY presents the code.
+-doc """
+Create an account and store its SCRAM-SHA-256 verifier; the password itself
+is not kept.
+
+`Email` is `undefined` when not given. `CertFps` are lowercase hex SHA-256
+client certificate fingerprints accepted by SASL EXTERNAL. `Pending` is
+`undefined` for an immediately usable account, or `{Code, TtlMs}` to hold it
+until `VERIFY` presents the code. A name whose pending registration expired
+can be registered again.
+
+Errors: `bad_account_name` (`valid_name/1`), `weak_password` (shorter than
+`min_password/0`), `unacceptable_password` (over 300 bytes),
+`account_exists`.
+""".
 -spec create(
     binary(), undefined | binary(), binary(), [binary()], undefined | {binary(), pos_integer()}
 ) ->
@@ -151,7 +199,11 @@ create(Name, Email, Password, CertFps, Pending) ->
             {ok, Account}
     end.
 
-%% @doc Verify a password (SASL PLAIN). The comparison is constant time.
+-doc """
+Verify a password for a usable account (SASL PLAIN) by deriving its
+SCRAM-SHA-256 StoredKey. The comparison is constant time, and an unknown
+account spends the same derivation time.
+""".
 -spec check_password(binary(), binary()) -> {ok, #account{}} | error.
 check_password(Name, Password) ->
     case find(Name) of
@@ -167,7 +219,10 @@ check_password(Name, Password) ->
             error
     end.
 
-%% @doc SCRAM-SHA-256 StoredKey and ServerKey for a password and salt.
+-doc """
+SCRAM-SHA-256 `{StoredKey, ServerKey}` for a password, salt, and PBKDF2
+iteration count (RFC 5802 section 3). Pure.
+""".
 -spec verifier(binary(), {binary(), pos_integer()}) -> {binary(), binary()}.
 verifier(Password, {Salt, Iterations}) ->
     Salted = crypto:pbkdf2_hmac(sha256, Password, Salt, Iterations, 32),
@@ -175,7 +230,10 @@ verifier(Password, {Salt, Iterations}) ->
     ServerKey = crypto:mac(hmac, sha256, Salted, <<"Server Key">>),
     {crypto:hash(sha256, ClientKey), ServerKey}.
 
-%% @doc SCRAM credentials for an account name, or `error`.
+-doc """
+SCRAM credentials of a usable account (stored spelling of the name, salt,
+iterations, StoredKey, ServerKey) for `m:ircd_sasl`, or `error`.
+""".
 -spec scram_credentials(binary()) ->
     {ok, #{
         name := binary(),
@@ -201,7 +259,10 @@ scram_credentials(Name) ->
             error
     end.
 
-%% @doc Find the account that owns a client certificate fingerprint.
+-doc """
+Find the usable account that lists a client certificate fingerprint
+(compared lowercase), for SASL EXTERNAL. Scans the whole table.
+""".
 -spec by_certfp(binary()) -> {ok, #account{}} | error.
 by_certfp(Fingerprint) ->
     Wanted = string:lowercase(Fingerprint),
@@ -219,7 +280,10 @@ by_certfp(Fingerprint) ->
         [] -> error
     end.
 
-%% @doc Remember a client certificate fingerprint for an account.
+-doc """
+Add a client certificate fingerprint (stored lowercase) to a usable
+account. Returns `error` when the account does not exist.
+""".
 -spec add_certfp(binary(), binary()) -> ok | error.
 add_certfp(Name, Fingerprint) ->
     case find(Name) of

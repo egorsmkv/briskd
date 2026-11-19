@@ -1,4 +1,29 @@
 -module(ircd_state_client).
+-moduledoc """
+Local client identity, registration, visibility, and per-connection statistics.
+
+Every function here runs inside the single `m:ircd_state` gen_server process,
+which owns the Mnesia `client`, `user_modes`, `activity`, and `whowas` tables and
+the ETS tables `ircd_nicks` (folded nickname to session pid) and
+`ircd_connection_stats`. The functions use dirty Mnesia operations and must
+not be called from any other process.
+
+Registration follows RFC 2812 section 3.1. A connection is *identified* once
+`NICK`, `USER`, and (when `client_password` is configured) a matching `PASS`
+have been accepted. It is *ready* once the welcome burst (001 to 004, 005
+ISUPPORT, and the MOTD) has been sent. IRCv3 `CAP` negotiation may hold the
+welcome until `CAP END`. Until then the client is not ready: it is invisible to
+other users, is not introduced to server peers, and gets 451 for commands that
+need registration. Nicknames are compared with the RFC 1459 case mapping of
+`ircd_wire:fold/1`.
+
+When a ready client changes nickname or disconnects, a WHOWAS row is written
+(RFC 2812 section 3.6.3). History is bounded: the newest `?WHOWAS_PER_NICK`
+(10) rows per folded nickname are kept, and when the table exceeds
+`?WHOWAS_MAX` (10000) rows the oldest tenth is dropped. Channel departures are
+delegated to `m:ircd_state_channel`, peer propagation to `m:ircd_state_link`,
+and IRCv3 side effects to `m:ircd_state_v3`.
+""".
 -export([
     client/1,
     identified/1,
@@ -19,23 +44,36 @@
 ]).
 -include("ircd_state.hrl").
 
-%% @doc Local client identity, registration, visibility, and connection stats.
+-doc """
+Return the `client` row of a live local session.
 
-%% Retrieve the Mnesia record associated with a live session process.
+Fails with `badmatch` when `Pid` has no row, so callers use it only for
+sessions known to exist (for example the sender of the current command).
+""".
 -spec client(pid()) -> #client{}.
 client(Pid) ->
     [Client] = mnesia:dirty_read(client, Pid),
     Client.
 
-%% A client is registered once NICK, USER (and PASS when required) are done
-%% and the welcome has been sent. While CAP negotiation holds the welcome
-%% (IRCv3: registration MUST NOT complete before CAP END) the client is not
-%% ready: commands that need registration get 451 and peers do not see it.
+-doc """
+True when the client has completed registration and received the welcome.
+
+That is, `identified/1` holds and `ircd_cap` has marked the connection
+welcomed. While IRCv3 CAP negotiation holds the welcome (registration must not
+complete before `CAP END`), the client is not ready: commands that need
+registration get 451 ERR_NOTREGISTERED and peers do not see the user.
+""".
 -spec ready(#client{}) -> boolean().
 ready(#client{pid = Pid} = Client) ->
     identified(Client) andalso ircd_cap:welcomed(Pid).
 
-%% @doc NICK, USER, and any required PASS have been accepted.
+-doc """
+True when `NICK`, `USER`, and any required `PASS` have been accepted.
+
+The nickname is set (not `*`), `USER` has been given, and either no
+`client_password` is configured or `PASS` matched it. This does not imply the
+welcome has been sent; see `ready/1`.
+""".
 -spec identified(#client{}) -> boolean().
 identified(#client{nick = Nick, user = User, pass = Pass}) ->
     HasIdentity = Nick =/= <<"*">> andalso User =/= undefined,
@@ -43,8 +81,15 @@ identified(#client{nick = Nick, user = User, pass = Pass}) ->
     Authenticated = Password =:= null orelse Pass =:= true,
     HasIdentity andalso Authenticated.
 
-%% Find a registered nickname using the RFC1459 case-folding rules.
-%% `ircd_nicks` is the folded-nick index maintained by the state process.
+-doc """
+Look up a local client by nickname under the RFC 1459 case mapping.
+
+Uses the `ircd_nicks` index (keyed by `ircd_wire:fold/1`) maintained by the
+state process, then re-checks the stored nickname. Returns `undefined` when no
+local session holds the nickname. The client may still be unregistered or held
+by CAP negotiation; callers that need a registered user also check `ready/1`.
+Remote users are not found here.
+""".
 -spec find_nick(binary()) -> undefined | #client{}.
 find_nick(Nick) ->
     case ets:lookup(ircd_nicks, ircd_wire:fold(Nick)) of
@@ -62,7 +107,24 @@ find_nick(Nick) ->
             undefined
     end.
 
-%% Persist nickname or USER changes and send the registration welcome once ready.
+-doc """
+Persist a `NICK`, `USER`, or `PASS` change and complete registration when ready.
+
+`Old` is the client record the command started from and `New` carries the
+changed fields. A nickname of `*` or a field of `undefined` in `New` means
+"unchanged", and the stored channel list is always kept. `Server` is this
+server's name, used as the numeric prefix.
+
+Side effects:
+
+- updates the folded-nickname index `ircd_nicks`;
+- writes a WHOWAS row when a ready client changes nickname;
+- when `NICK` and `USER` are now both done but the required server password
+  was not given, sends 464 ERR_PASSWDMISMATCH followed by `ERROR` and closes
+  the connection;
+- when the client has just become identified and CAP negotiation is not in
+  progress, marks the connection welcomed and calls `send_welcome/2`.
+""".
 -spec save_identity(#client{}, #client{}, binary()) -> ok.
 save_identity(Old, New, Server) ->
     Current = client(Old#client.pid),
@@ -103,8 +165,21 @@ save_identity(Old, New, Server) ->
             ok
     end.
 
-%% @doc Send the numeric burst that completes registration.
-%% The caller marks the connection welcomed before this runs.
+-doc """
+Send the numeric burst that completes registration.
+
+The caller marks the connection welcomed before this runs. A normal
+connection gets 001 RPL_WELCOME to 004 RPL_MYINFO, the 005 RPL_ISUPPORT
+tokens, metadata notifications, and the MOTD (`ircd_state_info:motd/3`). Before
+the numerics it records the signon time, updates the user-count maxima
+(`ircd_state_info:note_user_counts/0`), introduces the user to server peers,
+runs the IRCv3 registration hooks, and logs `client_registered`; after the MOTD
+it rejoins channels remembered for the account.
+
+A connection attaching to an existing session (`attach_to` in `m:ircd_conn`)
+gets the same numerics and MOTD, is not introduced to anyone, and is then
+handed to the holding session.
+""".
 -spec send_welcome(#client{}, binary()) -> ok.
 send_welcome(#client{pid = Pid} = Client, Server) ->
     case ircd_conn:get(Pid, attach_to) of
@@ -165,6 +240,18 @@ numeric_and_close(#client{pid = Pid} = Client, Server) ->
     Pid ! {irc_close, ircd_wire:line(Server, <<"ERROR">>, [], <<"Password required">>)},
     ok.
 
+-doc """
+Handle `PASS <password>` (RFC 2812 section 3.1.1).
+
+`Params` are the command parameters, `Client` the requesting session, and
+`Server` this server's name. After `NICK` and `USER`, or when `PASS` was
+already given, the reply is 462 ERR_ALREADYREGISTRED. Without a parameter it
+is 461 ERR_NEEDMOREPARAMS. The password is compared with the configured
+`client_password` through `ircd_config:secret_match/2`; when no password is
+configured any value is accepted. A match is stored and may complete
+registration through `save_identity/3`. A mismatch is stored as failed and
+answered with 464 ERR_PASSWDMISMATCH. The password is never logged or echoed.
+""".
 -spec pass([binary()], #client{}, binary()) -> ok.
 pass(Params, Client, Server) ->
     case identity_ready(Client) of
@@ -191,6 +278,14 @@ pass_unregistered([Given | _], Client, Server) ->
 identity_ready(#client{nick = Nick, user = User}) ->
     Nick =/= <<"*">> andalso User =/= undefined.
 
+-doc """
+Decode the `<mode>` parameter of `USER` into initial user modes.
+
+RFC 2812 section 3.1.3 defines a numeric bit mask: bit 2 (value 4) sets `+w`
+and bit 3 (value 8) sets `+i`. Other bits are ignored. A non-numeric value,
+such as the RFC 1459 hostname field or the usual `*`, sets no modes and
+returns `{ok, #{}}`. A negative number returns `error`.
+""".
 -spec initial_user_modes(term()) -> error | {ok, #{105 => true, 119 => true}}.
 initial_user_modes(Mode) ->
     try binary_to_integer(Mode) of
@@ -215,14 +310,30 @@ initial_user_modes(Mode) ->
         %% applies to a number).
         error:badarg -> {ok, #{}}
     end.
+
+-doc """
+Create the zeroed traffic counters for a new connection.
+
+The row records the connect time in monotonic seconds. The second argument is
+ignored.
+""".
 -spec put_connection_stats(pid(), term()) -> true.
 put_connection_stats(Pid, _Entry) ->
     ets:insert(ircd_connection_stats, {Pid, erlang:monotonic_time(second), 0, 0, 0, 0}).
 
+-doc """
+Delete the traffic counters of a connection.
+""".
 -spec remove_connection_stats(pid()) -> true.
 remove_connection_stats(Pid) ->
     ets:delete(ircd_connection_stats, Pid).
 
+-doc """
+Return the traffic counters of a connection, or `#{}` when it has none.
+
+`connected_at` is in monotonic seconds. The counters back `STATS l`
+(see `ircd_state_info:stats/3`).
+""".
 -spec connection_stats(pid()) ->
     #{
         connected_at => term(),
@@ -245,6 +356,12 @@ connection_stats(Pid) ->
             #{}
     end.
 
+-doc """
+Add one message of `Bytes` octets to a connection's sent or received counters.
+
+Only the key pairs `sent_messages`/`sent_bytes` and `recv_messages`/`recv_bytes`
+are recognised; any other pair, or a connection without counters, is ignored.
+""".
 -spec update_connection_stats(pid(), term(), term(), term()) -> ok.
 update_connection_stats(Pid, MessagesKey, BytesKey, Bytes) ->
     case {MessagesKey, BytesKey} of
@@ -266,7 +383,20 @@ update_connection_stats_counter(Pid, MessagesPosition, BytesPosition, Bytes) ->
             ok
     end.
 
-%% Broadcast QUIT, leave joined channels, and delete all per-client Mnesia rows.
+-doc """
+Remove a local client: broadcast `QUIT`, leave its channels, and delete its rows.
+
+`Reason` is the quit text (or `none`) and `Server` this server's name. For a
+ready client this also writes a WHOWAS row, holds the nickname briefly
+(`m:ircd_state_net`), propagates `QUIT` to server peers, sends `QUIT` to the
+local users sharing a channel (anonymous `+a` and quiet `+q` channels excepted;
+an anonymous channel instead gets an anonymous `PART`), and records the event
+in channel history. In every case the client leaves its channels (an emptied
+channel is released per the retention policy) and its `client`, `activity`,
+and `user_modes` rows, nickname index entry, administrator entry, capability
+state, IRCv3 state, and traffic counters are removed. Logs
+`client_disconnected`.
+""".
 -spec disconnect(#client{}, none | iodata(), binary()) -> ok.
 disconnect(#client{pid = Pid, channels = Channels} = Client, Reason, Server) ->
     ircd_state_v3:remember_channels(Client),
@@ -338,10 +468,20 @@ quit_recipients(#client{pid = Pid, channels = Channels}) ->
         OtherPid =/= Pid
     ]).
 
+-doc """
+Record the current wall-clock second as the client's last activity.
+
+The value backs the idle time in 317 RPL_WHOISIDLE and the WHOX `l` field.
+""".
 -spec touch_activity(pid()) -> ok.
 touch_activity(Pid) ->
     mnesia:dirty_write(#activity{pid = Pid, last = erlang:system_time(second)}).
 
+-doc """
+Return the user modes of a local session as a map of mode character to `true`.
+
+Unknown sessions have no modes (`#{}`).
+""".
 -spec user_modes(pid()) -> #{char() => true}.
 user_modes(Pid) ->
     case mnesia:dirty_read(user_modes, Pid) of
@@ -349,6 +489,13 @@ user_modes(Pid) ->
         [] -> #{}
     end.
 
+-doc """
+True when `Target` may be shown to `Requester` in user queries.
+
+A client is always visible to itself. Otherwise the target must be ready, and
+a target with user mode `+i` is shown only when the requester is a member of
+one of the target's channels (RFC 2812 section 3.1.5).
+""".
 -spec user_visible(#client{}, #client{}) -> boolean().
 user_visible(#client{pid = Pid}, #client{pid = RequesterPid}) when
     Pid =:= RequesterPid

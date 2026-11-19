@@ -1,4 +1,43 @@
 -module(ircd_session).
+-moduledoc """
+One accepted connection: a client, or an inbound server link.
+
+Each session is a `gen_server` started as a `temporary` child of
+`m:ircd_sessions` by `m:ircd_listener`. It owns the socket (TCP, TLS,
+WebSocket `ws`, or WebSocket over TLS `wss`), the read buffer, and its
+timers. It frames input into IRC lines with `m:ircd_wire` and turns each line
+into a call on `m:ircd_state`, which owns all nickname, channel, and peer
+state. Lines for the client arrive as `{irc, Line}` messages and are written to
+the socket in order.
+
+Lifecycle and bounds:
+
+- The listener transfers socket ownership and then sends `activate`. For TLS
+  the handshake runs here, with a 5-second timeout. The socket is read with
+  `{active, once}`, re-armed after each read has been processed.
+- A connection that has not completed registration (RFC 2812 section 3.1)
+  within 30 seconds is closed. The timeout is fixed server policy.
+- Buffered input without a line end is capped by `ircd_wire:append_pending/2`
+  and `ircd_wire:partial/1`. An over-long tagged client line gets numeric 417
+  and the rest of it is discarded; other malformed input closes the
+  connection.
+- When more than `max_sendq` lines (configuration, default 10000) are queued
+  for a slow reader, the session sends `ERROR :Closing Link` with
+  `Max SendQ exceeded` and closes.
+- `STARTTLS` (IRCv3 `tls`) sends the queued 670 reply in plaintext, then
+  upgrades the same TCP socket with the listener's TLS options.
+- WebSocket connections run the RFC 6455 upgrade with `m:ircd_websocket`
+  first, then carry one IRC line per message; they are always clients.
+
+A connection whose first line is an RFC 2813 `PASS` with a version becomes an
+inbound server link once `SERVER` authenticates against `server_links`. It
+then sends its own `PASS`/`SERVER` and the burst, forwards link commands to
+`m:ircd_state`, and checks liveness with a `PING` 60 seconds after
+authentication and after each answered `PING`, closing the link when no
+matching `PONG` arrives within 30 seconds. With `multiclient`, a further connection for the same account can be
+attached to the primary session: its commands run as that client, and it
+receives a copy of every line the primary session receives.
+""".
 -behaviour(gen_server).
 -include("ircd_wire.hrl").
 -export([
@@ -11,18 +50,27 @@
     terminate/2
 ]).
 
-%% @doc Start a temporary process for one accepted client socket. `ws` and
-%% `wss` are WebSocket listeners over TCP and TLS (IRCv3 WebSocket transport);
-%% the session then speaks RFC 6455 frames, one IRC line per message.
+-doc """
+Start the session process for one accepted socket.
+
+`Kind` is the listener transport: `tcp`, `tls`, or the WebSocket transports
+`ws` and `wss` (over TCP and TLS). `Socket` is the accepted socket and `Peer`
+the client's address as text. The process does nothing until the caller has
+made it the socket's controlling process and sent it `activate`. Called by
+`ircd_sessions:start_child/3`, which enforces `max_clients`.
+""".
 -spec start_link(tcp | tls | ws | wss, port() | ssl:sslsocket(), binary()) ->
     gen_server:start_ret().
 start_link(Kind, Socket, Peer) -> gen_server:start_link(?MODULE, {Kind, Socket, Peer}, []).
 
-%% @doc Initialize the session before socket ownership is transferred to it.
+-doc false.
 init(State) -> {ok, State}.
+-doc false.
 handle_call(_, _, State) -> {reply, {error, unsupported}, State}.
+-doc false.
 handle_cast(_, State) -> {noreply, State}.
 
+-doc false.
 %% Perform the TLS handshake if needed, register the client, then read IRC lines.
 handle_info(activate, {Kind, Socket, Peer} = State) ->
     case handshake(Kind, Socket) of
@@ -148,7 +196,12 @@ attached() ->
 mirror(Line) ->
     lists:foreach(fun(Pid) -> Pid ! {irc_mirror, Line} end, attached()).
 
-%% @doc Redact an inbound server link password held during the handshake.
+-doc """
+Redact secrets from the state shown by `sys:get_status/1` and crash reports.
+
+Between an inbound peer's `PASS` and `SERVER`, the state holds the link
+password; it is replaced by `redacted`. Other states are returned unchanged.
+""".
 -spec format_status(map()) -> map().
 format_status(#{state := State} = Status) ->
     Status#{state := redact_state(State)};
@@ -189,6 +242,7 @@ closing_link(Reason) ->
         )
     ).
 
+-doc false.
 terminate(_, {_, _, Peer, _, {server, _}}) ->
     ok = ircd_state:server_disconnect(Peer);
 terminate(_, _) ->

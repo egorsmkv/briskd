@@ -1,12 +1,36 @@
 -module(ircd_sup).
+-moduledoc """
+Top-level supervisor of the `ircd` application.
+
+Children start in this order under a `rest_for_one` strategy with the default
+restart intensity (one restart in five seconds):
+
+1. `m:ircd_state`, the single owner of nickname, channel, and peer state.
+2. `m:ircd_sessions`, the supervisor of client sessions and inbound links.
+3. `m:ircd_links`, the supervisor of outbound server-link workers.
+4. One `m:ircd_listener` per configured port, in the order `tcp`, `tls`,
+   `ws`, `wss`. A port set to `null` has no listener.
+
+With `rest_for_one`, a restart of the state process also restarts every
+session, link, and listener started after it, so no connection outlives the
+state it refers to. A crashed listener restarts only itself and the listeners
+after it. `m:ircd_shutdown` stops the listeners by their child ids (`tcp`,
+`tls`, `ws`, `wss`) before the tree stops.
+""".
 -behaviour(supervisor).
 -export([start_link/1, init/1]).
 
-%% @doc Start the top-level supervisor for state, sessions, and listeners.
+-doc """
+Start the top-level supervisor, registered as `ircd_sup`.
+
+`Config` is the normalized map from `ircd_config:load/1`; it is passed to the
+state process, the link supervisor, and each listener, and its `max_clients`
+to `m:ircd_sessions`.
+""".
 -spec start_link(map()) -> supervisor:startlink_ret().
 start_link(Config) -> supervisor:start_link({local, ?MODULE}, ?MODULE, Config).
 
-%% @doc Build the supervision tree from the enabled listener configuration.
+-doc false.
 init(Config) ->
     Children = [
         #{id => ircd_state, start => {ircd_state, start_link, [Config]}},

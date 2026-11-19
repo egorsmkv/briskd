@@ -14,14 +14,20 @@
     server_key :: binary(),
     email :: binary() | undefined,
     certfps = [] :: [binary()],
-    %% Seconds since the epoch.
+    %% Microseconds since the epoch (`erlang:system_time(microsecond)`).
     created :: integer(),
     pending :: {binary(), integer()} | undefined
 }).
 %% draft/read-marker timestamps per account and folded target. Disc copies.
 %% `time` is milliseconds since the epoch.
 -record(read_marker, {key :: {binary(), binary()}, time :: integer()}).
-%% Direct-message history between two accounts (draft/chathistory). `key` is
-%% the sorted pair of folded account names; `entries` is newest-first and
-%% capped by history_limit. Cleared at startup under `transient` retention.
--record(direct_history, {key :: {binary(), binary()}, entries = [] :: [map() | tuple()]}).
+%% Direct-message history (draft/chathistory), recorded when at least one side
+%% is logged in. `key` is the sorted pair of the two parties, each
+%% `{account, FoldedAccount}` or `{nick, FoldedNick}`; `entries` is
+%% newest-first and capped by history_limit. Cleared at startup under
+%% `transient` retention.
+-type dm_party() :: {account | nick, binary()}.
+-record(direct_history, {
+    key :: {dm_party(), dm_party()},
+    entries = [] :: [map() | tuple()]
+}).

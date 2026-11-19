@@ -26,12 +26,28 @@
     welcomed/1
 ]).
 
-%% Capability negotiation for one client connection (IRCv3 capability
-%% negotiation, version 302 with cap-notify). The offered set depends on server
-%% configuration and on the connection transport: `sts` advertises an upgrade
-%% port on plaintext connections and a persistence policy on TLS connections.
-%% Version 302 is the highest negotiation version this server enables.
-%% `cap-notify` is implicit at that version and cannot be removed.
+-moduledoc """
+Per-connection capability negotiation state
+([IRCv3 capability negotiation](https://ircv3.net/specs/extensions/capability-negotiation),
+version 302 with [cap-notify](https://ircv3.net/specs/extensions/capability-negotiation#cap-notify)),
+and the capability values this server advertises.
+
+State lives in the `ircd_caps` ETS table, one map per client pid, created by
+`m:ircd_state` and written only from that process; it is transient and
+dropped on disconnect. The `CAP` command itself is handled by
+`m:ircd_state_net`, which uses this module for the state transitions. Each
+connection also records connection facts (`info/1`: `secure`, `certfp`,
+`transport`, `webirc`, `ip`).
+
+The offered set (`advertised/1`) depends on configuration and transport:
+`sts` advertises an upgrade port on plaintext connections and a persistence
+policy on TLS connections, `tls` (STARTTLS) is offered only on plaintext TCP
+with TLS configured, and `draft/account-registration` disappears when
+registration is disabled. `CAP REQ` is atomic: one unknown, unoffered, or
+unrequestable (`sts`) name rejects the whole list. Version 302 is the
+highest negotiation version; at that version `cap-notify` is implicit and
+cannot be removed.
+""".
 
 -define(CAPS, [
     <<"account-notify">>,
@@ -80,61 +96,97 @@
 -define(METADATA_MAX_KEYS, 50).
 -define(METADATA_MAX_VALUE_BYTES, 300).
 
-%% @doc Capability names known to this server, in a stable order.
+-doc """
+Every capability name this server knows, in a stable (advertisement)
+order. Some are offered only under conditions; see `advertised/1`.
+""".
 -spec offered() -> [binary()].
 offered() -> ?CAPS.
 
-%% @doc SASL mechanisms advertised in the `sasl` capability value.
+-doc """
+SASL mechanisms advertised in the `sasl` capability value and in 908
+RPL_SASLMECHS. Implemented in `m:ircd_sasl`.
+""".
 -spec sasl_mechanisms() -> [binary()].
 sasl_mechanisms() -> [<<"EXTERNAL">>, <<"PLAIN">>, <<"SCRAM-SHA-256">>].
 
-%% @doc `{MaxBytes, MaxLines}` for draft/multiline batches.
+-doc """
+`{MaxBytes, MaxLines}` for draft/multiline batches (4096 bytes of combined
+body, 100 lines), as advertised in the capability value.
+""".
 -spec multiline_limits() -> {pos_integer(), pos_integer()}.
 multiline_limits() -> {?MULTILINE_MAX_BYTES, ?MULTILINE_MAX_LINES}.
 
-%% @doc `{MaxSubs, MaxKeys, MaxValueBytes}` for draft/metadata-2.
+-doc """
+`{MaxSubs, MaxKeys, MaxValueBytes}` for draft/metadata-2 (50, 50, 300), as
+advertised in the capability value.
+""".
 -spec metadata_limits() -> {pos_integer(), pos_integer(), pos_integer()}.
 metadata_limits() -> {?METADATA_MAX_SUBS, ?METADATA_MAX_KEYS, ?METADATA_MAX_VALUE_BYTES}.
 
-%% @doc Remember a new plaintext connection that has not negotiated anything.
+-doc """
+Create negotiation state for a new connection with no connection facts.
+Same as `connect(Pid, #{})`.
+""".
 -spec connect(pid()) -> true.
 connect(Pid) ->
     connect(Pid, #{}).
 
-%% @doc Remember a new connection. `Info` carries `secure` (TLS or a trusted
-%% secure WebIRC gateway) and `certfp` (SHA-256 client certificate fingerprint).
+-doc """
+Create negotiation state for a new connection, replacing any old row.
+
+`Info` carries connection facts such as `transport`, `secure` (TLS or a
+trusted secure WebIRC gateway), and `certfp` (lowercase hex SHA-256 client
+certificate fingerprint).
+""".
 -spec connect(pid(), map()) -> true.
 connect(Pid, Info) ->
     ets:insert(ircd_caps, {Pid, (initial())#{info => Info}}).
 
-%% @doc Drop capability state when the connection closes.
+-doc """
+Drop the connection's capability state when it closes or attaches to
+another session.
+""".
 -spec disconnect(pid()) -> true.
 disconnect(Pid) ->
     ets:delete(ircd_caps, Pid).
 
-%% @doc Connection facts recorded at connect time or by WEBIRC.
+-doc """
+Connection facts recorded at connect time, by `STARTTLS`, or by `WEBIRC`.
+""".
 -spec info(pid()) -> map().
 info(Pid) ->
     maps:get(info, state(Pid), #{}).
 
-%% @doc Update one connection fact.
+-doc """
+Set one connection fact, for example `secure` after `STARTTLS` or `WEBIRC`.
+""".
 -spec set_info(pid(), atom(), term()) -> ok.
 set_info(Pid, Key, Value) ->
     State = state(Pid),
     Info = maps:get(info, State, #{}),
     store(Pid, State#{info => Info#{Key => Value}}).
 
-%% @doc Return whether the connection has the named capability enabled.
+-doc """
+Return whether the connection has the named capability enabled, counting
+the implicit `cap-notify` at version 302. Unknown pids have none.
+""".
 -spec enabled(pid(), binary()) -> boolean().
 enabled(Pid, Name) ->
     maps:is_key(Name, effective(state(Pid))).
 
-%% @doc The set of enabled capability names, including implicit cap-notify.
+-doc """
+The set of enabled capability names, including implicit `cap-notify`. Used
+for per-recipient tag filtering in `m:ircd_state_send`.
+""".
 -spec enabled_set(pid()) -> #{binary() => true}.
 enabled_set(Pid) ->
     effective(state(Pid)).
 
-%% @doc Read the connection's negotiation state. A missing row is unnegotiated.
+-doc """
+Read the connection's negotiation state map (`version`, `enabled`,
+`negotiating`, `welcomed`, `info`). A missing row reads as unnegotiated.
+""".
 -spec state(pid()) -> map().
 state(Pid) ->
     case ets:lookup(ircd_caps, Pid) of
@@ -142,12 +194,17 @@ state(Pid) ->
         [] -> initial()
     end.
 
-%% @doc True after the registration welcome has been sent.
+-doc """
+True after the registration welcome (001) has been sent.
+""".
 -spec welcomed(pid()) -> boolean().
 welcomed(Pid) ->
     maps:get(welcomed, state(Pid)).
 
-%% @doc Suspend registration until `CAP END` when the client is not yet welcomed.
+-doc """
+Suspend registration until `CAP END` when the client is not yet welcomed
+(on `CAP LS` or `CAP REQ`, as the specification requires).
+""".
 -spec hold(pid()) -> ok.
 hold(Pid) ->
     State = state(Pid),
@@ -156,8 +213,11 @@ hold(Pid) ->
         false -> store(Pid, State#{negotiating => true})
     end.
 
-%% @doc Remember the highest CAP LS version the client has asked for.
-%% A later unversioned or lower `CAP LS` does not reduce the stored version.
+-doc """
+Record a `CAP LS <version>`: any version of 302 or higher is stored as 302,
+the highest version this server supports. A later unversioned or lower
+`CAP LS` does not reduce the stored version.
+""".
 -spec note_ls(pid(), [binary()]) -> ok.
 note_ls(Pid, Params) ->
     State = state(Pid),
@@ -168,20 +228,31 @@ note_ls(Pid, Params) ->
             ok
     end.
 
-%% @doc Capabilities offered to this connection with their values.
-%% `undefined` means the capability has no value.
+-doc """
+Capabilities offered to this connection with their values, in
+advertisement order. `undefined` means the capability has no value.
+""".
 -spec advertised(pid()) -> [{binary(), undefined | binary()}].
 advertised(Pid) ->
     Info = info(Pid),
     [{Name, Value} || Name <- ?CAPS, {ok, Value} <- [value(Name, Info)]].
 
-%% @doc Enabled capability names in advertisement order.
+-doc """
+Enabled capability names in advertisement order, for `CAP LIST`.
+""".
 -spec list_names(pid()) -> [binary()].
 list_names(Pid) ->
     Enabled = effective(state(Pid)),
     [Name || Name <- ?CAPS, maps:is_key(Name, Enabled)].
 
-%% @doc Apply one atomic `CAP REQ`. Unknown or unoffered names reject the list.
+-doc """
+Apply one atomic `CAP REQ` with space-separated tokens (`name` enables,
+`-name` disables).
+
+Returns `{ack, Tokens}` after applying every token, or `{nak, Tokens}`
+without changing anything when a name is unknown, not offered to this
+connection, unrequestable (`sts`), empty, or is `-cap-notify` at version 302.
+""".
 -spec request(pid(), [binary()]) -> {ack | nak, binary()}.
 request(Pid, Params) ->
     State = state(Pid),
@@ -195,18 +266,29 @@ request(Pid, Params) ->
             {nak, join(Tokens)}
     end.
 
-%% @doc Put back a negotiation state read earlier with state/1.
+-doc """
+Put back a negotiation state read earlier with `state/1`.
+""".
 -spec restore(pid(), map()) -> ok.
 restore(Pid, State) ->
     store(Pid, State).
 
-%% @doc Disable capabilities that the server no longer offers (after CAP DEL).
+-doc """
+Disable capabilities that the server no longer offers to the connection
+(after `CAP DEL`).
+""".
 -spec disable(pid(), [binary()]) -> ok.
 disable(Pid, Names) ->
     State = state(Pid),
     store(Pid, State#{enabled => maps:without(Names, maps:get(enabled, State))}).
 
-%% @doc End negotiation. `welcome` means the held registration reply is due.
+-doc """
+End negotiation (`CAP END`). `Ready` says whether `NICK`/`USER` are done.
+
+Returns `welcome` when the held registration reply is now due (and marks the
+connection welcomed), `pending` when registration is still incomplete, and
+`ignore` when the client was already welcomed.
+""".
 -spec finish(pid(), boolean()) -> welcome | ignore | pending.
 finish(Pid, Ready) ->
     State = state(Pid),
@@ -221,13 +303,20 @@ finish(Pid, Ready) ->
             pending
     end.
 
-%% @doc Client-only tags, preserving last-key-wins order from the parser.
+-doc """
+The client-only (`+`-prefixed) tags of a tag list, in order. The parser
+already applied last-key-wins.
+""".
 -spec client_tags([{binary(), undefined | binary()}]) -> [{binary(), undefined | binary()}].
 client_tags(Tags) ->
     [{Key, Value} || {<<$+, _/binary>> = Key, Value} <- Tags].
 
-%% @doc Label value when labeled responses are active for this connection.
-%% The value is absent when it is empty or longer than 64 bytes.
+-doc """
+The `label` tag value when labeled responses are active for the
+negotiation `State` (both `labeled-response` and `batch` enabled).
+Returns `undefined` otherwise, or when the label is empty or longer than 64
+bytes.
+""".
 -spec label(map(), [{binary(), undefined | binary()}]) -> undefined | binary().
 label(State, Tags) ->
     Enabled = effective(State),
@@ -247,7 +336,12 @@ label(State, Tags) ->
             undefined
     end.
 
-%% @doc Pack capability tokens into trailing parameters of at most `Max` bytes.
+-doc """
+Pack capability tokens, space-separated, into trailing parameters of at
+most `Max` bytes each, for multi-line `CAP LS` / `CAP LIST` replies. A
+single token longer than `Max` gets its own parameter. An empty list gives
+one empty parameter.
+""".
 -spec pack([binary()], pos_integer()) -> [binary()].
 pack([], _Max) ->
     [<<>>];

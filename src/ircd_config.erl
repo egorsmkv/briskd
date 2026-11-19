@@ -1,17 +1,58 @@
 -module(ircd_config).
+-moduledoc """
+Loads and validates the JSON server configuration.
+
+`load/1` reads one JSON file, fills in defaults, validates every key, and
+returns one normalized map. `m:ircd_app` loads the file named by the
+`IRCD_CONFIG` environment variable (default `config/ircd.json`) at startup,
+and `REHASH` reloads the same path. Any missing required value, wrong type,
+or out-of-range value rejects the whole file: the server does not start, and
+a rejected `REHASH` keeps the running configuration. Paths are relative to the
+process working directory unless absolute.
+
+The keys, their defaults, and their meaning are listed in the configuration
+table of the [README](readme.html#configuration). Notable checks:
+
+- At least one of `tcp_port`, `tls_port`, `ws_port`, and `wss_port` is set.
+  Ports are 0 to 65535, and `0` binds an ephemeral port.
+- With `tls_port` or `wss_port`, `certfile` and `keyfile` are required. The
+  TLS listeners allow TLS 1.2 and 1.3 and request an optional client
+  certificate, which is not verified against any CA and serves only as a
+  SHA-256 fingerprint for SASL EXTERNAL.
+- `name` and each `server_links` name are host-like tokens of at most 63
+  characters; a link may not use this server's name, and link names are
+  unique under `ircd_wire:fold/1`.
+- Operator and administrator account names must be distinct.
+
+The module also provides `secret_match/2` for comparing configured passwords.
+""".
 -export([load/1, secret_match/2]).
 
-%% @doc Compare two secrets without leaking their contents through early exit.
-%% Both sides are hashed, then the digests are compared in constant time, so a
-%% length mismatch does not return before the secret has been fully read.
+-doc """
+Compare two secrets without leaking their contents through early exit.
+
+Both sides are hashed with SHA-256 and the digests are compared with
+`crypto:hash_equals/2`, so the time taken does not depend on where the inputs
+first differ, and a length mismatch does not return early. Returns `false`
+when either argument is not a binary. Use it for `PASS`, `OPER`, and server
+link passwords.
+""".
 -spec secret_match(binary(), binary()) -> boolean().
 secret_match(Left, Right) when is_binary(Left), is_binary(Right) ->
     crypto:hash_equals(crypto:hash(sha256, Left), crypto:hash(sha256, Right));
 secret_match(_, _) ->
     false.
 
-%% @doc Read and validate the JSON configuration file.
-%% Returns a normalized map used by the application supervision tree.
+-doc """
+Read and validate the JSON configuration file at `Path`.
+
+Returns `{ok, Config}`, a map with atom keys and every default filled in (for
+example `tcp`, `tls`, `ws`, `wss` ports, `ip`, `tls_options`, `level`,
+`max_clients`, `server_links`, and `config_path`, the absolute path of the
+file). Returns `{error, {invalid_config, Path, Reason}}` when the file cannot
+be read, is not valid JSON, or fails any check; `Reason` names the failed
+check where one exists, for example `{invalid_log_level, Value}`.
+""".
 -spec load(file:filename()) -> {ok, map()} | {error, term()}.
 load(Path) ->
     try

@@ -1,4 +1,21 @@
 -module(ircd_state_net).
+-moduledoc """
+Server topology, services, nickname and channel holds, `CAP` replies, and
+operator server commands.
+
+The functions run only inside the `m:ircd_state` process, which is the single
+writer of the `known_server` and `service` Mnesia rows and of the
+`ircd_holds`, `ircd_inbound_peers`, and `ircd_outbound_ready` ETS tables. All
+of that state is transient and is cleared on restart.
+
+Topology follows RFC 2813: an adjacent peer is registered with hop 1 by
+`register_adjacent/4`, servers behind it arrive as `SERVER` introductions
+(`introduce_server/6`, placement checked by `ircd_route:accept_server/4`), and
+`split/3` removes a lost server together with every server, user, and service
+behind it. Names lost in a split or collision are held for the
+`resource_delay` period (RFC 2813 section 5.7) so a local client cannot take
+them over immediately.
+""".
 -export([
     expire_holds/0,
     cap/3,
@@ -21,12 +38,18 @@
 ]).
 -include("ircd_state.hrl").
 
-%% Topology, services, resource holds, and operator server commands.
-%% Runs only in the state process, which is the single writer.
-
 -define(HOLDS, ircd_holds).
 -define(INBOUND, ircd_inbound_peers).
 
+-doc """
+Record an authenticated, directly connected server peer.
+
+Writes a `known_server` row for `Name` with hop 1, the local server as parent,
+and the link's `Token`, then makes the link reachable by `m:ircd_links`:
+`Kind` `inbound` stores `Pid` (the `m:ircd_session` serving the link) in
+`ircd_inbound_peers`; `outbound` stores it (the `m:ircd_link` worker) in
+`ircd_outbound_ready`.
+""".
 -spec register_adjacent(binary(), binary(), inbound | outbound, pid()) -> ok.
 register_adjacent(Name, Token, Kind, Pid) ->
     Local = local_name(),
@@ -46,6 +69,18 @@ register_adjacent(Name, Token, Kind, Pid) ->
     end,
     ok.
 
+-doc """
+Import a `SERVER` introduction (RFC 2813 section 4.1.2) received on the
+adjacent link `Ingress`.
+
+`Prefix` names the new server's parent; `undefined` means the parent is
+`Ingress`. `HopBin` must be a non-negative decimal and `Token` 1 to 16 digits,
+otherwise the result is `{error, invalid_server}`. Placement is decided by
+`ircd_route:accept_server/4`, whose errors (`loop`, `duplicate_route`,
+`bad_hop`, `unknown_parent`, `invalid_server`) are returned unchanged. An
+accepted server is stored as a `known_server` row and announced to every
+other peer with its hop count increased by one.
+""".
 -spec introduce_server(binary(), undefined | binary(), binary(), binary(), binary(), binary()) ->
     ok | {error, atom()}.
 introduce_server(Ingress, Prefix, Name, HopBin, Token, Info) ->
@@ -77,10 +112,33 @@ introduce_server(Ingress, Prefix, Name, HopBin, Token, Info) ->
             end
     end.
 
+-doc """
+Remove a remote user after a nickname collision.
+
+Local clients sharing a channel with the user see a `QUIT` with reason
+`Nick collision`. The `remote_client` row, its channel memberships, its
+MONITOR presence, and its metadata are dropped; a remote channel left empty
+is deleted and its name is held when no local channel has it. The nickname
+is held. Nothing is sent to peers; the caller announces the collision.
+""".
 -spec remove_remote_user(#remote_client{}) -> ok.
 remove_remote_user(Remote) ->
     drop_remote_user(Remote, <<"Nick collision">>).
 
+-doc """
+Remove the server `Lost` and everything behind it after `SQUIT` or link loss
+(RFC 2813 section 4.1.6).
+
+Each remote user whose home server is lost is removed as in
+`remove_remote_user/1`, with `Reason` as the `QUIT` text; all of those
+`QUIT`s go to local clients in one IRCv3 `netsplit` batch whose parameters are
+`Lost`'s parent (or this server) and `Lost`. Services homed on a lost server
+are deleted. For every lost server the `known_server` row is deleted and
+`SQUIT <name> :<Reason>` is sent to every peer except `Except`, the ingress
+link (`undefined` for a split started on this server). When `Lost` is an
+adjacent peer its peer table entries are removed so no further lines are
+sent to it.
+""".
 -spec split(binary(), binary(), undefined | binary()) -> ok.
 split(Lost, Reason, Except) ->
     Folds = [ircd_wire:fold(Name) || Name <- lost_names(Lost)],
@@ -141,22 +199,63 @@ split(Lost, Reason, Except) ->
     ),
     ok.
 
+-doc """
+Hold a nickname lost in a split or collision so it cannot be taken at once
+(RFC 2813 section 5.7).
+
+The hold lasts `resource_delay` seconds from the configuration, defaulting
+to `ircd_route:resource_delay_seconds/0`; a delay of 0 disables holds. The
+deadline is stored in the `ircd_holds` ETS table under the folded name, in
+monotonic seconds.
+""".
 -spec hold_nick(binary()) -> ok.
 hold_nick(Nick) ->
     hold(nick, Nick).
 
+-doc """
+Hold a channel name whose last remote member was lost, under the same rules
+as `hold_nick/1` (the RFC 2811 channel delay).
+""".
 -spec hold_channel(binary()) -> ok.
 hold_channel(Name) ->
     hold(channel, Name).
 
+-doc """
+True while a hold set by `hold_nick/1` is still in force for `Nick`.
+
+An expired hold found here is deleted.
+""".
 -spec nick_blocked(binary()) -> boolean().
 nick_blocked(Nick) ->
     blocked(nick, Nick).
 
+-doc """
+True while a hold set by `hold_channel/1` is still in force for `Name`.
+
+An expired hold found here is deleted.
+""".
 -spec channel_blocked(binary()) -> boolean().
 channel_blocked(Name) ->
     blocked(channel, Name).
 
+-doc """
+Handle a client `CAP` command (IRCv3 capability negotiation).
+
+- `LS [version]` records the requested version, suspends registration until
+  `CAP END`, and lists the advertised capabilities from `m:ircd_cap`; values
+  (`name=value`) are shown only to clients that asked for version 302.
+- `LIST` lists the enabled capabilities.
+- `REQ` applies the request atomically with `ircd_cap:request/2` and answers
+  `ACK` or `NAK`. The reply is formatted with the capabilities in force before
+  the request; the new set applies from the next line.
+- `END` finishes negotiation and sends the welcome burst when registration is
+  otherwise complete.
+
+An unknown subcommand gets numeric 410 and a missing one 461. A reply that
+does not fit one line continues with `*` only for `LS` and `LIST` at
+version 302; an older client gets one line, and names that do not fit are
+left out.
+""".
 -spec cap(#client{}, binary(), [binary()]) -> ok.
 cap(#client{pid = Pid, nick = Nick} = Client, Server, [Sub | Rest]) ->
     case Sub of
@@ -201,10 +300,14 @@ cap_token(Name, undefined, _) -> Name;
 cap_token(Name, _Value, false) -> Name;
 cap_token(Name, Value, true) -> <<Name/binary, "=", Value/binary>>.
 
-%% @doc Tell cap-notify clients about capabilities whose advertisement changed.
-%% `Before` maps each client pid to its earlier advertised list. A capability
-%% that disappears is `CAP DEL` (never for `sts`) and is disabled. A new
-%% capability, or one whose value changed, is `CAP NEW`.
+-doc """
+Tell `cap-notify` clients about capabilities whose advertisement changed.
+
+`Before` maps each client pid to its earlier advertised list, and `Server` is
+the reply prefix. A capability that disappears is sent as `CAP DEL` (never for
+`sts`) and is disabled. A new capability, or one whose value changed, is sent
+as `CAP NEW`.
+""".
 -spec notify_cap_changes(#{pid() => [{binary(), undefined | binary()}]}, binary()) -> ok.
 notify_cap_changes(Before, Server) ->
     maps:foreach(
@@ -285,6 +388,13 @@ cap_budget(Server, Nick, Sub, Multiline) ->
         end,
     512 - (11 + Star + byte_size(Server) + byte_size(Nick) + byte_size(Sub)).
 
+-doc """
+Answer `SERVLIST` (RFC 2812 section 3.5.1).
+
+Sends numeric 234 (`RPL_SERVLIST`) for every known service whose name matches
+the wildcard `Mask` and whose type equals `Type` (any type when `Type` is
+`*`), then 235 (`RPL_SERVLISTEND`).
+""".
 -spec servlist(binary(), binary(), #client{}, binary()) -> ok.
 servlist(Mask, Type, Client, Server) ->
     lists:foreach(
@@ -313,6 +423,15 @@ servlist(Mask, Type, Client, Server) ->
     ),
     ircd_state_send:numeric(Client, Server, <<"235">>, [Mask, Type], <<"End of service listing">>).
 
+-doc """
+Handle a client `SQUERY` (RFC 2812 section 3.5.2).
+
+Replies 411 without a target, 412 without text, and 401 for an unknown
+service. A service registered on this server delivers the text as a `NOTICE`
+from the client to every local operator (user mode `+o`), with 401 when no
+operator is online. A remote service gets the `SQUERY` forwarded to the peer
+it was learned from.
+""".
 -spec squery([binary()], #client{}, binary()) -> ok.
 squery([], Client, Server) ->
     ircd_state_send:numeric(Client, Server, <<"411">>, [], <<"No recipient given (SQUERY)">>);
@@ -334,6 +453,17 @@ squery([Name, Text | _], Client, Server) ->
             ok
     end.
 
+-doc """
+Import a `SERVICE` introduction (RFC 2813 section 4.1.4) from the peer
+`Peer`.
+
+Accepts the RFC 2813 form `<name> <reserved> <distribution> <type>
+<reserved> :<info>` and a shorter `<name> <distribution> <type> :<info>`.
+The home server is `Prefix`, or `Peer` when there is no prefix. Returns
+`{error, invalid_service}` for a bad parameter list or service name and
+`{error, nickname_collision}` when a local or remote user holds the name.
+The service is stored but not relayed to other peers.
+""".
 -spec import_service(binary(), undefined | binary(), [binary()]) -> ok | {error, atom()}.
 import_service(Peer, Prefix, Params) ->
     case service_params(Params) of
@@ -353,14 +483,30 @@ import_service(Peer, Prefix, Params) ->
             end
     end.
 
+-doc """
+Number of known services, local and imported.
+""".
 -spec service_count() -> non_neg_integer().
 service_count() ->
     mnesia:table_info(service, size).
 
+-doc """
+`SERVER` lines for every known server, nearest first, for a new peer's burst
+(RFC 2813 section 5.3.2).
+
+`Local` is this server's name. A line is prefixed by the server's parent
+(`Local` for an adjacent peer) and carries the stored hop count plus one, as
+seen from the receiving peer.
+""".
 -spec burst_server_lines(binary()) -> [binary()].
 burst_server_lines(Local) ->
     [iolist_to_binary(intro_line(Local, Server)) || Server <- ircd_route:burst_order(known_maps())].
 
+-doc """
+Known servers as `{Name, Hop, Info}`, nearest first, for the `LINKS` reply.
+
+The local server is not included.
+""".
 -spec links_entries() -> [{binary(), non_neg_integer(), binary()}].
 links_entries() ->
     [
@@ -368,6 +514,23 @@ links_entries() ->
      || #{name := Name, hop := Hop, info := Info} <- ircd_route:burst_order(known_maps())
     ].
 
+-doc """
+Run an operator-only server command for a local client.
+
+A client without user mode `+o` gets numeric 481. The caller passes only
+these commands:
+
+- `SQUIT <server> [:<reason>]` runs `split/3` locally and confirms with a
+  `NOTICE`; 402 for an unknown server.
+- `CONNECT <server>` asks `ircd_links:connect_peer/1` to connect a configured
+  peer and confirms with a `NOTICE`; 402 for a name that is not configured.
+- `SERVICE <name> <distribution> <type> [:<info>]` registers a local service
+  and replies 234, or 432 for a bad name and 433 for a name in use.
+- `DIE` and `RESTART` call `init:stop/0` and `init:restart/0` from a new
+  process.
+
+A command missing its required parameters gets 461.
+""".
 -spec oper_command(binary(), [binary()], #client{}, binary()) -> ok.
 oper_command(Command, Params, #client{pid = Pid} = Client, Server) ->
     case maps:is_key($o, ircd_state_client:user_modes(Pid)) of
@@ -649,8 +812,12 @@ blocked(Kind, Name) ->
             false
     end.
 
-%% @doc Drop nickname and channel holds whose delay has passed. Called from the
-%% state's one-second tick so holds nobody asks about again do not accumulate.
+-doc """
+Drop nickname and channel holds whose delay has passed.
+
+Called from the state process's one-second tick so that holds nobody asks
+about again do not accumulate.
+""".
 -spec expire_holds() -> ok.
 expire_holds() ->
     Now = erlang:monotonic_time(second),

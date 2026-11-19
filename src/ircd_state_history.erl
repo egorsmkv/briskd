@@ -24,22 +24,45 @@
 -include("ircd_state.hrl").
 -include("ircd_account.hrl").
 
-%% @doc Message history for draft/chathistory, draft/read-marker, and
-%% draft/message-redaction.
-%%
-%% Channel history is the Mnesia `channel_history` table: newest-first entries
-%% capped by `history_limit`. It survives restart only under `channels`
-%% retention; `transient` retention clears it on startup. Direct-message
-%% history is kept only between two logged-in accounts, in the Mnesia
-%% `direct_history` table, with the same retention as channel history. Recording is
-%% disabled with `"chathistory": false`. Bodies are never logged.
-%%
-%% An entry is a map: `cmd`, `prefix`, `text` (binary, or `{multiline, Lines}`
-%% where each line is `{Concat, Text}`), `msgid`, `time` (ms since epoch),
-%% `tags` (client-only tags), `account`, and `target` (wire spelling).
-%% Entries written before this format are `{Command, Prefix, Text}` tuples.
+-moduledoc """
+Message history for
+[draft/chathistory](https://ircv3.net/specs/extensions/chathistory),
+draft/event-playback,
+[draft/read-marker](https://ircv3.net/specs/extensions/read-marker), and
+[draft/message-redaction](https://ircv3.net/specs/extensions/message-redaction).
 
-%% @doc Build a history entry.
+Runs inside `m:ircd_state`. Channel history is the Mnesia `channel_history`
+table, keyed by folded channel name. Direct-message history is the Mnesia
+`direct_history` table, keyed by the sorted pair of participants; a message
+is recorded only when at least one side is logged in, and only a logged-in
+user can read it. Both lists are stored newest first and are capped by
+`history_limit` (`ircd_state:history_limit/0`): the newest `history_limit`
+messages (`PRIVMSG`, `NOTICE`, `TAGMSG`) and, separately, the newest
+`history_limit` events, so event-playback never pushes messages out. History
+survives restart only under `channels` retention; `transient` retention
+clears both tables on startup. Recording is disabled with
+`"chathistory": false`. Bodies are never logged.
+
+An entry is a map: `cmd`, `prefix`, `text` (binary, or `{multiline, Lines}`
+where each line is `{Concat, Text}`), `msgid`, `time` (ms since epoch),
+`tags` (client-only tags), `account`, and, for direct messages, `target`
+(wire spelling). Events also carry `params` and `notarget`. Entries written
+before this format are `{Command, Prefix, Text}` tuples and are still read.
+
+Read markers are the Mnesia `read_marker` table, keyed by folded account and
+target, and survive every restart; a connection without an account keeps
+them in `m:ircd_conn` until it disconnects. Markers only move forward and are
+synchronized to peers through `m:ircd_state_sync`.
+""".
+
+-doc """
+Build a history entry map from a message's command, sender prefix, text
+(binary or `{multiline, Lines}`), `msgid`, time in milliseconds,
+client-only tags, and sender account.
+
+Stored binaries are copied (`ircd_wire:retain/1`) so they do not pin a
+receive buffer.
+""".
 -spec entry(binary(), iodata(), term(), binary(), integer(), list(), undefined | binary()) -> map().
 entry(Command, Prefix, Text, MsgId, Time, Tags, Account) ->
     #{
@@ -61,7 +84,11 @@ enabled() ->
 limit() ->
     ircd_state:history_limit().
 
-%% @doc Record an accepted channel PRIVMSG or NOTICE.
+-doc """
+Record an accepted `PRIVMSG`, `NOTICE`, or `TAGMSG` entry in the history of
+the channel with folded name `Key`. Other commands and disabled history are
+ignored.
+""".
 -spec note_channel(binary(), map()) -> ok.
 note_channel(Key, #{cmd := Command} = Entry) when
     Command =:= <<"PRIVMSG">>; Command =:= <<"NOTICE">>; Command =:= <<"TAGMSG">>
@@ -79,36 +106,51 @@ note_channel(Key, #{cmd := Command} = Entry) when
 note_channel(_Key, _Entry) ->
     ok.
 
-%% @doc Record a channel event (JOIN, PART, KICK, TOPIC, MODE) for
-%% draft/event-playback. `Params` are the parameters after the channel name.
+-doc """
+Record a channel event (`JOIN`, `PART`, `KICK`, `TOPIC`, `MODE`) for
+draft/event-playback with a fresh `msgid` and time. `Params` are the
+parameters after the channel name and `Text` the trailing parameter or
+`none`.
+""".
 -spec note_event(binary(), binary(), iodata(), [binary()], none | binary()) -> ok.
 note_event(Key, Command, Prefix, Params, Text) ->
     {_, Meta} = event_tags(),
     store_event(Key, Command, Prefix, Params, Text, Meta).
 
-%% @doc Like note_event/5 with the `msgid` and `time` already sent on the live
-%% line (from event_tags/0), so history replays the same identifiers.
+-doc """
+Like `note_event/5` with the `msgid` and `time` already sent on the live
+line (from `event_tags/0`), so history replays the same identifiers.
+""".
 -spec note_event(binary(), binary(), iodata(), [binary()], none | binary(), {binary(), integer()}) ->
     ok.
 note_event(Key, Command, Prefix, Params, Text, Meta) ->
     store_event(Key, Command, Prefix, Params, Text, Meta).
 
-%% @doc Tags for a live channel event plus the metadata to store with it.
-%% Events carry a `msgid` (message-tags) and `time` (server-time) so
-%% draft/event-playback replays them with the identifiers clients saw.
+-doc """
+Tags for a live channel event plus the `{MsgId, TimeMillis}` to store with
+it. Events carry a `msgid` (message-tags) and `time` (server-time) so
+draft/event-playback replays them with the identifiers clients saw.
+""".
 -spec event_tags() -> {list(), {binary(), integer()}}.
 event_tags() ->
     MsgId = ircd_state_send:msgid(),
     Now = erlang:system_time(millisecond),
     {[{<<"msgid">>, MsgId}, {<<"time">>, ircd_state_send:time_value(Now)}], {MsgId, Now}}.
 
-%% @doc Record a QUIT or NICK in the history of every channel the user is on.
-%% These lines have no channel parameter when replayed.
+-doc """
+Record a `QUIT` or `NICK` with a fresh `msgid` and time in the history of
+every channel in `Keys` (folded names). These lines have no channel
+parameter when replayed.
+""".
 -spec note_user_event([binary()], binary(), iodata(), binary()) -> ok.
 note_user_event(Keys, Command, Prefix, Text) ->
     {_, Meta} = event_tags(),
     note_user_event(Keys, Command, Prefix, Text, Meta).
 
+-doc """
+Like `note_user_event/4` with the `{MsgId, TimeMillis}` already sent on the
+live line (from `event_tags/0`).
+""".
 -spec note_user_event([binary()], binary(), iodata(), binary(), {binary(), integer()}) -> ok.
 note_user_event(Keys, Command, Prefix, Text, Meta) ->
     lists:foreach(fun(Key) -> store_event(Key, Command, Prefix, notarget, Text, Meta) end, Keys).
@@ -180,10 +222,14 @@ playable(Pid, Entries) ->
         false -> [E || #{cmd := C} = E <- Entries, C =:= <<"PRIVMSG">> orelse C =:= <<"NOTICE">>]
     end.
 
-%% @doc Record a direct message when at least one side is logged in. Each
-%% side is `{Account | undefined, Nick}`: a logged-in participant is keyed by
-%% account, the other by nickname. Only logged-in users can read history, so a
-%% nickname-keyed side never reads it, even if someone else takes the nick.
+-doc """
+Record a direct `PRIVMSG`, `NOTICE`, or `TAGMSG` when at least one side is
+logged in. Each side is `{Account | undefined, Nick}`: a logged-in
+participant is keyed by folded account, the other by folded nickname.
+`Target` (wire spelling) is stored in the entry. Only logged-in users can
+read history, so a nickname-keyed side never reads it, even if someone else
+takes the nick.
+""".
 -spec note_direct(
     {undefined | binary(), binary()}, {undefined | binary(), binary()}, binary(), map()
 ) ->
@@ -239,7 +285,10 @@ normalize({Command, Prefix, Text}) ->
 normalize(Entry) when is_map(Entry) ->
     Entry.
 
-%% @doc Find an entry by msgid in a channel or direct-message history.
+-doc """
+Find a `PRIVMSG`, `NOTICE`, or `TAGMSG` entry by `msgid` in a channel
+(`{channel, FoldedName}`) or direct-message (`{direct, PairKey}`) history.
+""".
 -spec find({channel, binary()} | {direct, tuple()}, binary()) -> {ok, map()} | error.
 find(Source, MsgId) ->
     case
@@ -267,8 +316,12 @@ remove(Source, MsgId) ->
 
 %%% Replay
 
-%% @doc Replay stored channel history to a joining client under `channels`
-%% retention. Clients with draft/chathistory fetch history themselves.
+-doc """
+Replay stored channel history, oldest first, to a joining client under
+`channels` retention, in a `chathistory` batch when the client has `batch`.
+Without draft/event-playback only `PRIVMSG` and `NOTICE` are replayed.
+Clients with draft/chathistory fetch history themselves and get nothing.
+""".
 -spec replay_on_join(binary(), binary(), pid()) -> ok.
 replay_on_join(Key, Name, Pid) ->
     case
@@ -288,8 +341,12 @@ replay_on_join(Key, Name, Pid) ->
             ok
     end.
 
-%% @doc Send entries (oldest first) to Pid. `Name` is the channel, or
-%% `undefined` to use each entry's stored target.
+-doc """
+Send entries (oldest first) to `Pid` with their stored `msgid`, `time`,
+`account`, and client-only tags. `Name` is the channel, or `undefined` to
+use each entry's stored target. Multiline entries are sent as
+draft/multiline batches. `_Server` is unused.
+""".
 -spec replay_entries(pid(), undefined | binary(), [map()], binary()) -> ok.
 replay_entries(Pid, Name, Entries, _Server) ->
     lists:foreach(fun(Entry) -> replay(Pid, Name, Entry) end, Entries).
@@ -333,7 +390,19 @@ entry_tags(#{msgid := MsgId, time := Time, tags := Tags} = Entry) ->
 
 %%% CHATHISTORY
 
-%% @doc `CHATHISTORY <subcommand> ...` (draft/chathistory).
+-doc """
+`CHATHISTORY <subcommand> ...` (draft/chathistory).
+
+Supports `BEFORE`, `AFTER`, `LATEST`, `AROUND`, and `BETWEEN` with
+`timestamp=` or `msgid=` references, and `TARGETS` with two timestamps. The
+limit is capped by `history_limit`. Results go in a `chathistory` batch
+(`draft/chathistory-targets` for `TARGETS`); a batch with fewer entries
+than the limit carries `draft/chathistory-end`. Channel history is readable
+only by current members, direct history only by a logged-in client.
+
+Errors are `FAIL CHATHISTORY` with `INVALID_PARAMS`, `INVALID_TARGET`, or
+`INVALID_MSGREFTYPE`; no parameters gets 461.
+""".
 -spec chathistory([binary()], #client{}, binary()) -> ok.
 chathistory([Sub | Rest], #client{pid = Pid} = Client, Server) ->
     Upper = string:uppercase(Sub),
@@ -513,7 +582,10 @@ parse_selector(Other) ->
         _ -> error
     end.
 
-%% @doc Parse `YYYY-MM-DDThh:mm:ss[.sss]Z` to milliseconds since the epoch.
+-doc """
+Parse an RFC 3339 timestamp such as `YYYY-MM-DDThh:mm:ss[.sss]Z` to
+milliseconds since the epoch. Returns `error` for anything else.
+""".
 -spec parse_timestamp(binary()) -> {ok, integer()} | error.
 parse_timestamp(Value) ->
     try calendar:rfc3339_to_system_time(binary_to_list(Value), [{unit, millisecond}]) of
@@ -662,8 +734,16 @@ other_party(Mine, [#{account := Sender, target := Target, prefix := Prefix} | _]
 
 %%% MARKREAD
 
-%% @doc `MARKREAD <target> [timestamp=...]` (draft/read-marker). Markers are
-%% stored per account (Mnesia) or, without an account, per connection.
+-doc """
+`MARKREAD <target> [timestamp=...]` (draft/read-marker).
+
+Without a timestamp, replies with the stored marker (`*` when none). A
+timestamp later than the stored one is saved and sent to every connection
+of the same account with read-marker; an older one gets the stored value
+back. Markers are stored per account in Mnesia (and synchronized to peers)
+or, without an account, per connection. Errors are `FAIL MARKREAD` with
+`NEED_MORE_PARAMS` or `INVALID_PARAMS`.
+""".
 -spec markread([binary()], #client{}, binary()) -> ok.
 markread([], #client{pid = Pid}, _Server) ->
     ircd_state_send:fail(
@@ -681,7 +761,10 @@ markread([Target | Rest], #client{pid = Pid} = Client, Server) ->
             )
     end.
 
-%% @doc A read marker target is a channel name or a nickname.
+-doc """
+True when `Target` may carry a read marker: a valid channel name or a valid
+nickname (`ircd_wire:channel/1`, `ircd_wire:nickname/2`).
+""".
 -spec valid_marker_target(binary()) -> boolean().
 valid_marker_target(Target) ->
     ircd_wire:channel(Target) orelse ircd_wire:nickname(Target, ircd_state:nicklen()).
@@ -712,7 +795,10 @@ markread_valid([_Target, Other | _], #client{pid = Pid}, _Server) ->
         Pid, <<"MARKREAD">>, <<"INVALID_PARAMS">>, [Other], <<"Invalid parameters">>
     ).
 
-%% @doc After JOIN, send the channel's read marker to a read-marker client.
+-doc """
+After `JOIN`, send the channel's read marker (`MARKREAD <channel> <value>`)
+to a client with draft/read-marker.
+""".
 -spec markread_on_join(pid(), binary(), binary()) -> ok.
 markread_on_join(Pid, Name, Server) ->
     case ircd_cap:enabled(Pid, <<"draft/read-marker">>) of
@@ -752,7 +838,10 @@ put_marker(Pid, Target, Time) ->
             ircd_state_sync:markread(Folded, ircd_wire:fold(Target), Time)
     end.
 
-%% @doc Move every account's read marker for a renamed channel.
+-doc """
+Move every account's read marker from folded channel name `OldKey` to
+`NewKey` after a channel rename.
+""".
 -spec rename_markers(binary(), binary()) -> ok.
 rename_markers(OldKey, NewKey) ->
     lists:foreach(
@@ -767,8 +856,11 @@ rename_markers(OldKey, NewKey) ->
         mnesia:dirty_all_keys(read_marker)
     ).
 
-%% @doc Apply a read marker that moved forward on another server and tell
-%% this server's read-marker clients of that account.
+-doc """
+Apply a read marker received from another server. Returns `unchanged` when
+the stored marker is already at or past `Time`; otherwise stores it, tells
+this server's read-marker clients of that account, and returns `updated`.
+""".
 -spec remote_marker(binary(), binary(), integer()) -> updated | unchanged.
 remote_marker(Account, Target, Time) ->
     Key = {ircd_wire:fold(Account), ircd_wire:fold(Target)},
@@ -816,9 +908,16 @@ same_account(Pid) ->
 
 %%% REDACT
 
-%% @doc `REDACT <target> <msgid> [:<reason>]` (draft/message-redaction). The
-%% sender's account (or a channel operator, for a channel) may redact. The
-%% entry is removed from history and the REDACT goes to capable recipients.
+-doc """
+`REDACT <target> <msgid> [:<reason>]` (draft/message-redaction).
+
+The sender may redact its own message (same account, or the same
+`nick!user@host` when sent without an account); in a channel a channel
+operator may redact any message. The entry is removed from history and
+`REDACT` goes to recipients with the capability; a channel redaction is also
+sent to peers. Errors are `FAIL REDACT` with `INVALID_TARGET`,
+`REDACT_FORBIDDEN`, or `UNKNOWN_MSGID`; missing parameters get 461.
+""".
 -spec redact([binary()], #client{}, binary()) -> ok.
 redact([Target, MsgId | Rest], #client{pid = Pid} = Client, Server) ->
     Reason =
@@ -947,7 +1046,11 @@ unknown_msgid(Pid, Target, MsgId) ->
         <<"This message does not exist or is too old">>
     ).
 
-%% @doc `:nick!user@host REDACT <channel> <msgid> [:reason]` from a peer.
+-doc """
+`:nick!user@host REDACT <channel> <msgid> [:reason]` from a peer: remove
+the entry from the local channel history, tell local members with
+draft/message-redaction, and relay to the other peers.
+""".
 -spec receive_remote_redact(binary(), binary(), [binary()]) -> ok | {error, term()}.
 receive_remote_redact(Peer, Prefix, [Target, MsgId | Rest]) ->
     Reason =

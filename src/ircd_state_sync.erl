@@ -1,4 +1,27 @@
 -module(ircd_state_sync).
+-moduledoc """
+Network-wide IRCv3 state carried over RFC 2813 server links, so that
+accounts, metadata, and read markers behave the same on every server.
+
+The functions run inside the `m:ircd_state` process. The wire forms are:
+
+```text
+:<server> ACCOUNTSYNC <name> <salt> <iterations> <storedkey> <serverkey> <created> :<certfps>
+:<nick!user@host> METADATA <nick> <key> * [:<value>]
+:<server> METADATA <#channel> <key> * [:<value>]
+:<server> MARKREAD <account> <target> <ms>
+```
+
+Binary fields are base64. Peers are configured, authenticated servers, the
+same trust level as the rest of the burst. Only SCRAM-SHA-256 verifiers
+travel; the email address stays on the server where the account was
+registered. When two servers hold the same account name, the one created
+first wins everywhere (`ircd_account:import/1`). A `METADATA` line without a
+trailing parameter removes the key.
+
+Each received line is applied and then relayed to every other peer with
+`ircd_state_link:relay_except/2`, never back to the link it came from.
+""".
 -export([
     account_created/1,
     burst_lines/1,
@@ -12,27 +35,25 @@
 -include("ircd_state.hrl").
 -include("ircd_account.hrl").
 
-%% @doc Network-wide IRCv3 state carried over RFC 2813 server links, so that
-%% accounts, metadata, and read markers behave the same on every server:
-%%
-%%   :<server> ACCOUNTSYNC <name> <salt> <iterations> <storedkey> <serverkey>
-%%       <created> :<certfps>
-%%   :<nick!user@host> METADATA <nick> <key> * [:<value>]
-%%   :<server> METADATA <#channel> <key> * [:<value>]
-%%   :<server> MARKREAD <account> <target> <ms>
-%%
-%% Binary fields are base64. Peers are configured, authenticated servers, the
-%% same trust level as the rest of the burst. Only SCRAM verifiers travel; the
-%% email address stays on the server where the account was registered. When two
-%% servers hold the same account name, the one created first wins everywhere.
-%% A value without a trailing parameter removes the metadata key.
+-doc """
+Send an `ACCOUNTSYNC` line for a newly usable account to every peer.
 
-%% @doc Announce a usable account to every peer.
+The line carries the name, SCRAM salt, iteration count, StoredKey, ServerKey,
+creation time, and certificate fingerprints, never the email address.
+""".
 -spec account_created(#account{}) -> ok.
 account_created(Account) ->
     ircd_state_link:server_broadcast(account_line(Account)).
 
-%% @doc Accounts, metadata, and read markers for a new peer's burst.
+-doc """
+Lines describing accounts, metadata, and read markers for a new peer's burst.
+
+The argument (the local server name) is unused. The result lists every
+account, then the metadata of each registered local user (prefixed by that
+user), then channel metadata (prefixed by this server), then every read
+marker. Data comes from dirty Mnesia reads and the `ircd_conn` and
+`ircd_chan_meta` ETS tables.
+""".
 -spec burst_lines(binary()) -> [binary()].
 burst_lines(_Server) ->
     Accounts = [iolist_to_binary(account_line(A)) || A <- ircd_account:list()],
@@ -82,7 +103,18 @@ account_line(#account{
         iolist_to_binary(lists:join(<<",">>, Fps))
     ).
 
-%% @doc Apply an account replicated by a peer and pass it on.
+-doc """
+Apply an `ACCOUNTSYNC` line from the peer `Peer` and relay it.
+
+`Prefix` is the source kept on the relayed line. The parameters are the
+account name, base64 salt, iteration count (4096 to 1000000 inclusive),
+base64 StoredKey and ServerKey, creation time, and an optional trailing
+comma-separated fingerprint list. `ircd_account:import/1` decides the
+outcome: a stored account is relayed unchanged to every other peer; a kept
+local account (created no later than the incoming one) stops the line here.
+Returns `{error, invalid_accountsync}` for a wrong parameter count or any
+malformed field.
+""".
 -spec receive_accountsync(binary(), undefined | binary(), [binary()]) -> ok | {error, term()}.
 receive_accountsync(Peer, Prefix, [Name, Salt, I, Stored, ServerKey, Created | Rest]) ->
     try
@@ -132,7 +164,13 @@ receive_accountsync(Peer, Prefix, [Name, Salt, I, Stored, ServerKey, Created | R
 receive_accountsync(_, _, _) ->
     {error, invalid_accountsync}.
 
-%% @doc A local user's metadata key changed (`none` removes it).
+-doc """
+Broadcast a local user's metadata change to every peer.
+
+`Value` is the new value, or `none` to remove the key. Nothing is sent for a
+client that has not finished registration. The line uses the user's
+`nick!user@host` prefix so peers can check its source.
+""".
 -spec user_metadata(#client{}, binary(), none | binary()) -> ok.
 user_metadata(#client{nick = Nick} = Client, Key, Value) ->
     case ircd_state_client:ready(Client) of
@@ -144,7 +182,12 @@ user_metadata(#client{nick = Nick} = Client, Key, Value) ->
             ok
     end.
 
-%% @doc A channel metadata key changed (`none` removes it).
+-doc """
+Broadcast a channel metadata change to every peer, prefixed by this server.
+
+`Value` is the new value, or `none` to remove the key. Changes on local `&`
+channels are never sent.
+""".
 -spec channel_metadata(binary(), binary(), none | binary()) -> ok.
 channel_metadata(Name, Key, Value) ->
     case binary:first(Name) of
@@ -157,7 +200,19 @@ metadata_line(Prefix, Target, Key, none) ->
 metadata_line(Prefix, Target, Key, Value) ->
     ircd_wire:line(Prefix, <<"METADATA">>, [Target, Key, <<"*">>], Value).
 
-%% @doc Apply metadata from a peer, notify local subscribers, and relay it.
+-doc """
+Apply a `METADATA` line from the peer `Peer`, notify local subscribers, and
+relay it to the other peers.
+
+The parameters are the target, the key, a visibility field (ignored), and an
+optional value; a missing value removes the key. A channel target goes to
+`ircd_state_meta:remote_channel_change/4`. For a user target, the nickname in
+`Prefix` must be the target itself and the target must be a remote user
+reached through `Peer`; otherwise the result is
+`{error, metadata_source_mismatch}`. Errors from `m:ircd_state_meta` are
+returned unchanged, and a short parameter list is
+`{error, invalid_metadata}`.
+""".
 -spec receive_metadata(binary(), undefined | binary(), [binary()]) -> ok | {error, term()}.
 receive_metadata(Peer, Prefix, [Target, Key, _Visibility | Rest]) ->
     Value =
@@ -200,7 +255,10 @@ remote_user_change(Peer, Target, Key, Value, Prefix) ->
             {error, metadata_source_mismatch}
     end.
 
-%% @doc A read marker moved forward on this server.
+-doc """
+Broadcast to every peer that `Account`'s read marker for `Target` moved to
+`Time` (milliseconds since the Unix epoch).
+""".
 -spec markread(binary(), binary(), integer()) -> ok.
 markread(Account, Target, Time) ->
     ircd_state_link:server_broadcast(markread_line(Account, Target, Time)).
@@ -208,7 +266,15 @@ markread(Account, Target, Time) ->
 markread_line(Account, Target, Time) ->
     ircd_wire:line(server(), <<"MARKREAD">>, [Account, Target, integer_to_binary(Time)], none).
 
-%% @doc Apply a read marker from a peer when it is newer, and relay it.
+-doc """
+Apply a `MARKREAD <account> <target> <ms>` line from the peer `Peer` and relay
+it when it moved the marker forward.
+
+The target must pass `ircd_state_history:valid_marker_target/1` and the time
+must be a decimal integer, otherwise the result is
+`{error, invalid_markread}`. A marker that is not newer than the stored one
+is accepted but not relayed.
+""".
 -spec receive_markread(binary(), undefined | binary(), [binary()]) -> ok | {error, term()}.
 receive_markread(Peer, Prefix, [Account, Target, Raw | _]) ->
     case ircd_state_history:valid_marker_target(Target) of

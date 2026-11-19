@@ -47,9 +47,9 @@ deletes one entry. Entries written by an older version as
 `{Command, Prefix, Text}` are still read; they have no `msgid` or time.
 Channel events (JOIN, PART, KICK, TOPIC, MODE without the channel key, QUIT,
 NICK, TAGMSG) are recorded for `draft/event-playback`; messages and events
-each keep `history_limit` entries. Direct messages are kept only between two
-logged-in accounts, in the `direct_history` table under the same retention
-rules. Set `"chathistory": false` to record nothing.
+each keep `history_limit` entries. Direct messages are kept when at least one
+side is logged in, keyed by account (or by nickname for a side without an
+account), in the `direct_history` table under the same retention rules. Set `"chathistory": false` to record nothing.
 
 Channel rows gained `created` (RPL_CREATIONTIME), `topic_by`, and
 `topic_at` (RPL_TOPICWHOTIME). Older rows are migrated by appending

@@ -1,4 +1,34 @@
 -module(ircd_link).
+-moduledoc """
+Outbound connection worker for one configured RFC 2813 server peer.
+
+A `gen_server` started by `m:ircd_links`, one per `server_links` entry. It owns
+the TCP or TLS socket, the read buffer, and the link timers. With the entry's
+`tls` flag it connects over TLS with peer verification against the OS CA
+store, SNI, and a host name check. It sends `PASS <password> 0210 |` and
+`SERVER <name> 1 1`, then requires the peer's `PASS` (password compared with
+`ircd_config:secret_match/2`, version starting with four digits) and a
+`SERVER` line naming the configured peer (RFC 2813 sections 4.1.1 and 4.1.2).
+Only then does it send the local burst from `ircd_state:server_burst/0` and
+register the link with `ircd_state:register_adjacent/3`. A failed handshake
+imports nothing. Inbound links from peers are handled by `m:ircd_session`, not
+by this module.
+
+After authentication, input is framed on CRLF with `{active, once}` and parsed
+by `ircd_wire:parse_server/1`. Nick, channel, message, server, and IRCv3
+synchronisation commands go to `ircd_state:server_command/5`; an error reply
+drops the link. `PING` is answered with `PONG`, and other commands are
+ignored. Liveness follows RFC 2813 section 5.1: 60 seconds after
+authentication or after the last matching `PONG` the worker sends `PING`, and
+it drops the link if no `PONG` arrives within 30 seconds.
+
+Any socket error or close, malformed or oversized input, peer `ERROR`, failed
+send (30-second send timeout), missed `PONG`, or a backlog of more than 50000
+queued messages closes the socket. If the link had authenticated,
+`ircd_state:server_disconnect/1` then removes everything behind it. The
+worker reconnects after a fixed 5-second delay. Timer messages carry a
+connection generation, so a timer from an earlier connection is ignored.
+""".
 -behaviour(gen_server).
 -export([
     start_link/2,
@@ -16,10 +46,18 @@
 %% Lines queued for the peer before the link is dropped and reconnected.
 -define(MAX_SENDQ, 50000).
 
-%% @doc Start an outbound RFC 2813 peer connection worker.
+-doc """
+Start the worker for one configured peer, linked to the caller.
+
+`Config` is the server configuration and `Peer` one `server_links` entry
+(`name`, `host`, `port`, `password`, `tls`). The connection is made after
+start-up, so this returns before the peer is reached; a failed
+connection is retried rather than failing the start.
+""".
 -spec start_link(map(), map()) -> gen_server:start_ret().
 start_link(Config, Peer) -> gen_server:start_link(?MODULE, {Config, Peer}, []).
 
+-doc false.
 init({Config, Peer}) ->
     {ok,
         #{
@@ -33,6 +71,7 @@ init({Config, Peer}) ->
         },
         {continue, connect}}.
 
+-doc false.
 handle_continue(connect, State) ->
     case connect(State) of
         {ok, Connected} ->
@@ -51,7 +90,9 @@ handle_continue(connect, State) ->
             retry(State, {connect, Reason})
     end.
 
+-doc false.
 handle_call(_, _, State) -> {reply, {error, unsupported}, State}.
+-doc false.
 handle_cast({send, Line}, #{phase := authenticated, kind := Kind, socket := Socket} = State) ->
     %% A peer that stops reading must not let relayed lines pile up here.
     case process_info(self(), message_queue_len) of
@@ -70,6 +111,7 @@ handle_cast(connect_now, #{phase := disconnected, timer_gen := Gen} = State) ->
 handle_cast(_, State) ->
     {noreply, State}.
 
+-doc false.
 handle_info({reconnect, Gen}, #{timer_gen := Gen} = State) ->
     {noreply, State, {continue, connect}};
 handle_info({reconnect, _Gen}, State) ->
@@ -127,9 +169,14 @@ handle_info({Tag, Socket, Reason}, #{socket := Socket} = State) when
 handle_info(_, State) ->
     {noreply, State}.
 
-%% @doc Remove the configured link password, any password received during
-%% handshake, and the server configuration (which holds every link and operator
-%% password); only the local server name is kept from it.
+-doc """
+Redact secrets from the worker state shown by `sys:get_status/1` and crash
+reports.
+
+Removes the configured link password, any password received during the
+handshake, and the server configuration (which holds every link and operator
+password); only the local server name is kept from it.
+""".
 -spec format_status(map()) -> map().
 format_status(#{state := State} = Status) ->
     Status#{state := redact_state(State)};
@@ -325,7 +372,7 @@ handle_server_line(
 handle_server_line(_Tags, _Prefix, <<"ERROR">>, [Reason | _], #{phase := authenticated} = State) ->
     {error, {peer_fatal_error, Reason}, State};
 handle_server_line(_Tags, _Prefix, _Command, _Params, #{phase := authenticated} = State) ->
-    %% Incoming state bursts and routed commands are not synchronized yet.
+    %% Commands outside the handled set above are ignored.
     {ok, State};
 handle_server_line(_, _, _, _, State) ->
     {error, unexpected_handshake_message, State}.

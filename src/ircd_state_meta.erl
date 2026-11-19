@@ -13,16 +13,43 @@
 ]).
 -include("ircd_state.hrl").
 
-%% @doc draft/metadata-2. User keys live in `ircd_conn` (`metadata`) and are
-%% dropped on disconnect. Channel keys live in the `ircd_chan_meta` ETS table
-%% and are dropped with the channel. Subscriptions are per connection
-%% (`metasubs`). Metadata is local to this server; it is not sent over links.
-%% Every key is public (visibility `*`). Limits are advertised in the
-%% capability value: max-subs, max-keys, and max-value-bytes.
+-moduledoc """
+User and channel metadata:
+[draft/metadata-2](https://ircv3.net/specs/extensions/metadata), with a
+fallback to the deprecated metadata 3.2 numerics for clients that did not
+negotiate the capability.
+
+Runs inside `m:ircd_state`; all storage is in memory and nothing survives a
+restart. Local user keys live in `m:ircd_conn` (`metadata`) and are dropped
+on disconnect. Channel keys live in the `ircd_chan_meta` ETS table and are
+dropped with the channel. Keys of remote users live in `ircd_remote_meta`.
+Subscriptions are per connection (`metasubs`). Changes are sent to peers
+through `m:ircd_state_sync`, and changes from peers arrive through
+`remote_user_change/4` and `remote_channel_change/4`.
+
+Every key is public (visibility `*`). A key is 1 to 64 bytes of
+`[a-z0-9_./-]`; a value must be valid UTF-8. Users may change only their own
+keys and channel operators the channel's keys. Limits come from
+`ircd_cap:metadata_limits/0` and are advertised in the capability value:
+`max-subs`, `max-keys`, and `max-value-bytes`.
+""".
 
 -define(MAX_KEY_BYTES, 64).
 
-%% @doc `METADATA <target> <subcommand> [params]`.
+-doc """
+`METADATA <target> <subcommand> [params]`.
+
+With draft/metadata-2 the subcommands are `GET`, `LIST`, `SET`, `CLEAR`,
+`SYNC`, `SUB`, `UNSUB`, and `SUBS`; `*` as the target is the client itself.
+Values come back as 761 / 766 in a `metadata` batch, subscriptions as
+770 / 771 / 772. Errors are `FAIL METADATA` with `INVALID_TARGET`,
+`SUBCOMMAND_INVALID`, `KEY_INVALID`, `KEY_NO_PERMISSION`, `KEY_NOT_SET`,
+`VALUE_INVALID`, `LIMIT_REACHED`, or `TOO_MANY_SUBS`. A `SET` or `CLEAR` is
+announced to subscribed clients that share the target and sent to peers.
+
+Without the capability, `GET`, `LIST`, `SET`, and `CLEAR` use the metadata
+3.2 numerics (761, 762, 764, 765, 766, 767, 769). Too few parameters gets 461.
+""".
 -spec metadata([binary()], #client{}, binary()) -> ok.
 metadata([Target, Sub | Params], #client{pid = Pid} = Client, Server) ->
     case {ircd_cap:enabled(Pid, <<"draft/metadata-2">>), string:uppercase(Sub)} of
@@ -397,7 +424,10 @@ key_chunks([Key | Rest], Current, Size, Acc) when
 key_chunks([Key | Rest], Current, Size, Acc) ->
     key_chunks(Rest, [Key | Current], Size + byte_size(Key) + 1, Acc).
 
-%% @doc After registration, send the client's own metadata in a metadata batch.
+-doc """
+After registration, send a draft/metadata-2 client its own metadata (set
+before registration) as `METADATA` lines in a `metadata` batch.
+""".
 -spec on_registered(#client{}, binary()) -> ok.
 on_registered(#client{pid = Pid, nick = Nick}, Server) ->
     case ircd_cap:enabled(Pid, <<"draft/metadata-2">>) of
@@ -417,8 +447,12 @@ on_registered(#client{pid = Pid, nick = Nick}, Server) ->
             ok
     end.
 
-%% @doc After JOIN: the joiner receives the channel's and members' subscribed
-%% values; members receive the joiner's subscribed values.
+-doc """
+After `JOIN` of the channel with folded name `Key`: a draft/metadata-2
+joiner receives the channel's and members' subscribed values; subscribed
+members receive the joiner's values. Member values are not exchanged on an
+anonymous (`+a`) channel.
+""".
 -spec on_join(binary(), #client{}, binary()) -> ok.
 on_join(Key, #client{pid = Pid, nick = Nick}, Server) ->
     case mnesia:dirty_read(channel, Key) of
@@ -451,12 +485,18 @@ on_join(Key, #client{pid = Pid, nick = Nick}, Server) ->
             ok
     end.
 
-%% @doc Forget a disconnecting client's metadata.
+-doc """
+Hook for a disconnecting client. Currently a no-op: the client's keys and
+subscriptions are removed with its `m:ircd_conn` row.
+""".
 -spec disconnect(pid()) -> ok.
 disconnect(_Pid) ->
     ok.
 
-%% @doc Forget a channel's metadata when the channel row is deleted.
+-doc """
+Forget the metadata of the channel with folded name `Key` when the channel
+row is deleted.
+""".
 -spec drop_channel(binary()) -> ok.
 drop_channel(Key) ->
     case ets:whereis(ircd_chan_meta) of
@@ -465,7 +505,10 @@ drop_channel(Key) ->
     end,
     ok.
 
-%% @doc Move a channel's metadata to its new key after RENAME.
+-doc """
+Move a channel's metadata from folded name `OldKey` to `NewKey` after
+`RENAME`.
+""".
 -spec rename_channel(binary(), binary()) -> ok.
 rename_channel(OldKey, NewKey) ->
     case ets:lookup(ircd_chan_meta, OldKey) of
@@ -567,7 +610,13 @@ announce(Target, Key, Value, #client{pid = Setter} = Client) ->
         {channel, _, Name} -> ircd_state_sync:channel_metadata(Name, Key, Value)
     end.
 
-%% @doc Metadata of a remote user changed on its home server.
+-doc """
+Apply a metadata change for the remote user `Nick` received from a peer.
+`Value` `none` deletes the key. Subscribed local clients that share a
+channel with the user or monitor it get `METADATA` with `Prefix` as source.
+
+Returns `{error, invalid_metadata_key}` or `{error, unknown_metadata_target}`.
+""".
 -spec remote_user_change(binary(), binary(), none | binary(), binary()) -> ok | {error, term()}.
 remote_user_change(Nick, Key, Value, Prefix) ->
     NickKey = ircd_wire:fold(Nick),
@@ -595,7 +644,13 @@ remote_user_change(Nick, Key, Value, Prefix) ->
             {error, unknown_metadata_target}
     end.
 
-%% @doc Metadata of a shared channel changed on another server.
+-doc """
+Apply a metadata change for channel `Name` received from a peer. `Value`
+`none` deletes the key. Subscribed local members get `METADATA` with
+`Prefix` as source.
+
+Returns `{error, invalid_metadata_key}` for a malformed key.
+""".
 -spec remote_channel_change(binary(), binary(), none | binary(), binary()) -> ok | {error, term()}.
 remote_channel_change(Name, Key, Value, Prefix) ->
     case valid_key(Key) of
@@ -628,7 +683,10 @@ notify_subscribers(Audience, Prefix, Target, Key, Value) ->
     ],
     ircd_state_send:broadcast(Recipients, Prefix, <<"METADATA">>, [Target, Key, <<"*">>], Value).
 
-%% @doc Forget a remote user's metadata when the user leaves the network.
+-doc """
+Forget the metadata of the remote user with folded nick `NickKey` when the
+user leaves the network.
+""".
 -spec forget_remote(binary()) -> ok.
 forget_remote(NickKey) ->
     case ets:whereis(ircd_remote_meta) of
@@ -637,7 +695,10 @@ forget_remote(NickKey) ->
     end,
     ok.
 
-%% @doc Move a remote user's metadata after a nickname change.
+-doc """
+Move a remote user's metadata from folded nick `OldKey` to `NewKey` after a
+nickname change.
+""".
 -spec rename_remote(binary(), binary()) -> ok.
 rename_remote(OldKey, NewKey) ->
     case ets:lookup(ircd_remote_meta, OldKey) of

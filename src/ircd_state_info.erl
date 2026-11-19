@@ -1,4 +1,25 @@
 -module(ircd_state_info).
+-moduledoc """
+Server query, operator, and statistics commands.
+
+Implements the RFC 2812 server queries `MOTD`, `LUSERS`, `STATS`, `LINKS`,
+`TRACE`, `ADMIN`, and `INFO` (section 3.4), the operator commands `OPER`
+(section 3.1.4), `KILL` (section 3.7.1), and `REHASH` (section 4.2), and the
+disabled `USERS` command (446 ERR_USERSDISABLED). Every function runs inside
+the single `m:ircd_state` gen_server process and reads the Mnesia and ETS
+tables that process owns, plus the immutable configuration it keeps in
+`persistent_term`.
+
+In every handler `Client` is the requesting `client` record, `Server` is this
+server's name (the numeric prefix), and `Params` are the command parameters.
+An optional server argument is matched as a wildcard mask against `Server`
+only; a query for another server is answered with 402 ERR_NOSUCHSERVER rather
+than forwarded over server links.
+
+Operator privilege is the `o` user mode of the **local** session, set only by
+a successful `OPER`. Operator and administrator passwords are compared with
+`ircd_config:secret_match/2` and are never logged or placed in replies.
+""".
 -export([
     admin/3,
     info/3,
@@ -16,9 +37,14 @@
 ]).
 -include("ircd_state.hrl").
 
-%% @doc Server query, operator, and statistics commands.
+-doc """
+Check an optional server argument against this server's name.
 
-%% Match an optional server argument against this server's configured name.
+`Params` is the remaining parameter list; its first element, when present, is
+a wildcard mask (see `ircd_state_channel:wildcard_match/2`) matched against
+`Server`. Returns `true` for no argument or a match, otherwise
+`{false, Target}` so the caller can send 402 ERR_NOSUCHSERVER.
+""".
 -spec query_local_server([binary()], term()) -> true | {false, binary()}.
 query_local_server([], _) ->
     true;
@@ -28,6 +54,16 @@ query_local_server([Target | _], Server) ->
         false -> {false, Target}
     end.
 
+-doc """
+Handle `TRACE [<target>]` (RFC 2812 section 3.4.8) for this server only.
+
+With no target, or a target mask matching this server, lists local registered
+users: operators as 204 RPL_TRACEOPERATOR to everyone, and other users as 205
+RPL_TRACEUSER only when the requester is an IRC operator. A target naming a
+local nickname reports just that user. Every listing ends with 262
+RPL_TRACEEND. Any other target, including a remote nickname, gets 402
+ERR_NOSUCHSERVER.
+""".
 -spec trace([binary()], #client{}, binary()) -> ok.
 trace([], Client, Server) ->
     trace_server(Client, Server);
@@ -83,6 +119,12 @@ trace_user(#client{pid = Pid, nick = Nick}, Client, Server) ->
         end,
     ircd_state_send:numeric(Client, Server, Reply, [Label, <<"0">>, Nick], none).
 
+-doc """
+Handle `USERS [<target>]`, which this server keeps disabled (RFC 2812 section 4.5).
+
+Replies 446 ERR_USERSDISABLED, or 402 ERR_NOSUCHSERVER when the target does
+not match this server.
+""".
 -spec users_disabled([binary()], #client{}, binary()) -> ok.
 users_disabled(Params, Client, Server) ->
     case query_local_server(Params, Server) of
@@ -101,6 +143,21 @@ server_wallops(Text, Server) ->
         ],
     ircd_state_send:broadcast(Recipients, Server, <<"WALLOPS">>, [], Text).
 
+-doc """
+Handle `STATS [<query> [<target>]]` (RFC 2812 section 3.4.4).
+
+Supported queries:
+
+- `u`: 242 RPL_STATSUPTIME (uptime from monotonic time);
+- `m`: 212 RPL_STATSCOMMANDS per command, from `ircd_command_stats`;
+- `l`: 211 RPL_STATSLINKINFO per local connection (send queue reported as 0,
+  byte counts in KiB, open time in seconds);
+- `o`: 243 RPL_STATSOLINE per configured operator name (never the password).
+
+Each query, including an unsupported letter or no query at all, ends with 219
+RPL_ENDOFSTATS. A target that does not match this server gets 402
+ERR_NOSUCHSERVER. No operator privilege is required.
+""".
 -spec stats([binary()], #client{}, binary()) -> ok.
 stats(Params, Client, Server) ->
     {Query, Target} =
@@ -206,6 +263,19 @@ report_stats(Query, Client, Server) ->
 two_digits(Value) when Value < 10 -> <<$0, ($0 + Value)>>;
 two_digits(Value) -> integer_to_binary(Value).
 
+-doc """
+Handle `OPER <name> <password>` (RFC 2812 section 3.1.4).
+
+`Name` is folded with `ircd_wire:fold/1` and looked up in the configured
+`operators` and `administrators`. An unknown name gets 491 ERR_NOOPERHOST and a wrong password
+464 ERR_PASSWDMISMATCH; both are logged as `oper_rejected` without the
+password. On success the session gains user mode `+o`, a name listed in
+`administrators` is also recorded as administrator and receives channel
+operator on predefined channels it is already in
+(`ircd_state_channel:grant_predefined_operator/2`), `MODE <nick> +o` is
+broadcast to server peers, the client gets 381 RPL_YOUREOPER and its own
+`MODE +o`, and `oper_accepted` is logged.
+""".
 -spec oper(binary(), binary(), #client{}, binary()) -> ok.
 oper(Name, Password, #client{pid = Pid} = Client, Server) ->
     Credentials = persistent_term:get({ircd_state, operators}, []),
@@ -263,6 +333,18 @@ oper(Name, Password, #client{pid = Pid} = Client, Server) ->
             end
     end.
 
+-doc """
+Handle `KILL <nickname> <comment>` (RFC 2812 section 3.7.1).
+
+Requires user mode `+o` on the local session, otherwise 481
+ERR_NOPRIVILEGES. Missing parameters give 461 ERR_NEEDMOREPARAMS and a
+nickname that is not a local client gives 401 ERR_NOSUCHNICK. The target is
+sent the `KILL` line and closed, users with `+w` receive a `WALLOPS` naming
+the operator and target, and the target is removed through
+`ircd_state_client:disconnect/3` with the comment as the quit reason (which
+also propagates `QUIT` to peers). Returns `quit` when an operator killed its
+own session, otherwise `ok`.
+""".
 -spec kill([binary()], #client{}, binary()) -> ok | quit.
 kill(Params, #client{pid = Pid} = Client, Server) ->
     case maps:is_key($o, ircd_state_client:user_modes(Pid)) of
@@ -294,6 +376,23 @@ kill_target([Nick, Reason | _], Client, Server) ->
 kill_target(_, Client, Server) ->
     ircd_state_send:numeric(Client, Server, <<"461">>, [<<"KILL">>], <<"Not enough parameters">>).
 
+-doc """
+Handle `REHASH` (RFC 2812 section 4.2): reload the JSON configuration file.
+
+Requires user mode `+o`, otherwise 481 ERR_NOPRIVILEGES. The file at the
+startup configuration path is loaded and validated with `ircd_config:load/1`;
+a load error is logged and answered with 400 "Configuration reload failed".
+Settings that need a restart (server name, bind address, listeners, TLS
+options, `mnesia_dir`, `client_password`, `server_links`) must be unchanged,
+otherwise the reply is 400 and nothing is applied.
+
+When accepted, the new configuration replaces the operator, administrator,
+and predefined-channel lists (creating missing predefined channels), the MOTD
+path, admin info, `reop_delay`, `max_clients`, and log format and level.
+Clients with `cap-notify` or `draft/extended-isupport` are told about changed
+capabilities and ISUPPORT tokens, `+w` users get a `WALLOPS`, and the operator
+gets 382 RPL_REHASHING with the file path.
+""".
 -spec rehash(#client{}, binary()) -> ok.
 rehash(#client{pid = Pid} = Client, Server) ->
     case maps:is_key($o, ircd_state_client:user_modes(Pid)) of
@@ -394,6 +493,14 @@ apply_rehash(Config) ->
     ok = logger:update_handler_config(default, formatter, Formatter),
     ok = ircd_log:apply_level(maps:get(level, Config)).
 
+-doc """
+Handle `ADMIN [<target>]` (RFC 2812 section 3.4.9).
+
+The target may be a mask matching this server or the nickname of a local
+client; both answer for this server with 256 RPL_ADMINME, 257 RPL_ADMINLOC1,
+258 RPL_ADMINLOC2, and 259 RPL_ADMINEMAIL from the configured `admin` fields
+("Not configured" when absent). Any other target gets 402 ERR_NOSUCHSERVER.
+""".
 -spec admin([binary()], #client{}, binary()) -> ok.
 admin(Params, Client, Server) ->
     case admin_target(Params, Server) of
@@ -430,7 +537,15 @@ admin_target([Target | _], Server) ->
         false -> {false, Target}
     end.
 
-%% Send the configured MOTD sequence, or the RFC missing-file response.
+-doc """
+Handle `MOTD [<target>]` (RFC 2812 section 3.4.1); also sent after registration.
+
+Reads the configured `motd_file` on each request and sends 375
+RPL_MOTDSTART, one 372 RPL_MOTD per line, and 376 RPL_ENDOFMOTD. Lines are
+split on LF, a trailing CR is removed, and lines longer than 80 octets are
+wrapped. No configured or unreadable file gives 422 ERR_NOMOTD, and a target
+that does not match this server gives 402 ERR_NOSUCHSERVER.
+""".
 -spec motd([binary()], #client{}, binary()) -> ok.
 motd(Params, Client, Server) ->
     case query_local_server(Params, Server) of
@@ -496,6 +611,13 @@ strip_cr(Line) ->
         _ -> Line
     end.
 
+-doc """
+Handle `INFO [<target>]` (RFC 2812 section 3.4.10).
+
+Sends several 371 RPL_INFO lines (version, compile time, patch level, start
+time, and the implemented RFCs) and 374 RPL_ENDOFINFO, or 402
+ERR_NOSUCHSERVER when the target does not match this server.
+""".
 -spec info([binary()], #client{}, binary()) -> ok.
 info(Params, Client, Server) ->
     case query_local_server(Params, Server) of
@@ -521,6 +643,15 @@ info(Params, Client, Server) ->
             ircd_state_send:numeric(Client, Server, <<"374">>, [], <<"End of INFO list">>)
     end.
 
+-doc """
+Handle `LINKS [[<remote server>] <server mask>]` (RFC 2812 section 3.4.5).
+
+A remote server argument must match this server, otherwise 402
+ERR_NOSUCHSERVER. Sends 364 RPL_LINKS for this server (hop count 0 and the
+configured `server_info`) and for each known server from
+`ircd_state_net:links_entries/0`, in both cases only when its name matches the
+mask, then 365 RPL_ENDOFLINKS.
+""".
 -spec links([binary()], #client{}, binary()) -> ok.
 links(Params, Client, Server) ->
     {Remote, Mask} =
@@ -569,8 +700,14 @@ links(Params, Client, Server) ->
 server_info() ->
     maps:get(server_info, persistent_term:get({ircd_state, config}), <<"Erlang/OTP IRC server">>).
 
-%% @doc Record the current local and global registered-user counts so the
-%% maxima reported by RPL_LOCALUSERS/RPL_GLOBALUSERS (265/266) never go down.
+-doc """
+Record the current local and global registered-user counts so the maxima
+reported by 265 RPL_LOCALUSERS and 266 RPL_GLOBALUSERS never go down.
+
+Local counts ready local clients; global adds every remote user. The maxima
+are kept in the state process dictionary, so they reset when that process
+restarts. Returns `{Local, Global}`.
+""".
 -spec note_user_counts() -> {non_neg_integer(), non_neg_integer()}.
 note_user_counts() ->
     Local = ets:foldl(
@@ -594,6 +731,18 @@ get_count(Key) ->
         N -> N
     end.
 
+-doc """
+Handle `LUSERS [<mask> [<target>]]` (RFC 2812 section 3.4.2).
+
+The target must match this server, otherwise 402 ERR_NOSUCHSERVER. Sends 251
+RPL_LUSERCLIENT (visible and invisible users, servers), then 252
+RPL_LUSEROP, 253 RPL_LUSERUNKNOWN, and 254 RPL_LUSERCHANNELS when their
+counts are non-zero, 255 RPL_LUSERME, and 265 RPL_LOCALUSERS and 266
+RPL_GLOBALUSERS with their maxima. Network counts include users, operators,
+and channels known through server links. A mask that does not match this
+server zeroes those counts; the invisible, local, and global figures are
+still reported.
+""".
 -spec lusers([binary()], #client{}, binary()) -> ok.
 lusers(Params, Client, Server) ->
     {Mask, Target} =

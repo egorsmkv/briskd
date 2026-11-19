@@ -1,4 +1,29 @@
 -module(ircd_state_link).
+-moduledoc """
+Server-link burst, import, and propagation of users, channels, and messages
+(RFC 2813).
+
+The functions run inside the `m:ircd_state` process, the single writer of the
+transient `remote_client` and `remote_channel` Mnesia rows that describe users
+and channel memberships behind server links. Each `remote_client` row records
+the adjacent link (`peer`) the user is reached through and its home server.
+
+Import functions (`import_*`, `receive_*`, `update_remote_*`,
+`rename_remote_nick/3`, `remove_*`, `set_remote_away/3`) take `Peer`, the
+adjacent link the line arrived on, and `Prefix`, the source prefix from the
+wire. Source prefixes are trusted only within that link: a user prefix must
+be the exact `nick!user@host` of a remote user whose `peer` is `Peer`, and a
+server prefix must be `Peer` itself or a server introduced through it. Other
+sources are rejected with `{error, Reason}`, which makes the link drop.
+Accepted changes are shown to local clients and relayed to every other peer
+with `relay_except/2`, never back to `Peer`.
+
+Propagate functions announce local events. Nick, quit, away, topic, mode,
+kick, and join go to every peer; channel messages go only to the peers that
+have members in the channel. The burst for a new peer is built by
+`server_burst_lines/1`. Nicknames and channel names are compared with
+`ircd_wire:fold/1`.
+""".
 -export([
     import_remote_join/3,
     import_remote_nick/3,
@@ -40,8 +65,18 @@
 ]).
 -include("ircd_state.hrl").
 
-%% @doc Direct server-link burst, import, and propagation.
+-doc """
+Every line of the state burst sent to a newly authenticated peer (RFC 2813
+section 5.3.2).
 
+`Server` is the local server name, used as the prefix of server-generated
+lines. The order is: known servers nearest first, registered local users as
+`NICK`, remote users (prefixed by their home server), IRCv3 account state
+from `ircd_state_v3:burst_lines/1`, local channels (`NJOIN`, modes, list
+entries, `+O` creator, topic), accounts, metadata, and read markers from
+`ircd_state_sync:burst_lines/1`, and finally remote channels. Members are
+packed into as few `NJOIN` lines as fit in 512 octets.
+""".
 -spec server_burst_lines(binary()) -> [binary() | [binary()]].
 server_burst_lines(Server) ->
     ServerLines = ircd_state_net:burst_server_lines(Server),
@@ -292,10 +327,34 @@ channel_mode_burst(Name, Flags, Password, Limit, Lists, Server) ->
             [{ban, $b}, {exception, $e}, {invite, $I}]
         ),
     FlagLines ++ AccessLines.
+-doc """
+True when `Nick` belongs to a user behind a server link.
+""".
 -spec remote_nick_exists(binary()) -> boolean().
 remote_nick_exists(Nick) ->
     mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) =/= [].
 
+-doc """
+Import a user introduction, the 7-parameter `NICK` of RFC 2813 section 4.1.3.
+
+The parameters are nickname, hop count, username, host, server token, user
+modes, and real name. `Prefix` is the home server: `Peer` itself, or a known
+server reached through `Peer` whose stored hop count is the `NICK` hop count
+plus one. A new user is stored with its home server and distance, reported
+to MONITOR, and relayed to the other peers.
+
+The nickname must be valid, at most the configured length, and not
+`anonymous`; the username 1 to 32 characters of letters, digits, `_`, `.`,
+and `-`; the host 1 to 253 bytes without NUL, space, CR, or LF; the modes `+`
+followed only by `a`, `i`, `o`, `w`, or `B`. The same peer may introduce a
+nickname again, which overwrites the row without relaying it. A nickname held
+by a local client or by a user behind another link is a collision: both
+copies are killed and the name is held, and the result is still `ok`.
+
+Errors: `invalid_hopcount`, `invalid_introduction_prefix`, `invalid_nickname`,
+`reserved_nickname`, `invalid_server_token`, `invalid_username`,
+`invalid_hostname`, `invalid_user_modes`, and `invalid_nick_message`.
+""".
 -spec import_remote_nick(binary(), undefined | binary(), term()) ->
     ok
     | {error,
@@ -470,6 +529,20 @@ remote_nick_line(Prefix, Nick, Hop, User, Host, Token, Modes, Real) ->
 local_server() ->
     maps:get(name, persistent_term:get({ircd_state, config})).
 
+-doc """
+Apply a nickname change by a remote user.
+
+`Peer` is the adjacent link the line arrived on and `Prefix` its source
+prefix, which must be the exact `nick!user@host` of a remote user reached
+through `Peer`. The new nickname must be
+valid, not `anonymous`, and unused by any local or other remote user. The
+`remote_client` row, channel memberships, metadata, and MONITOR presence move
+to the new name and the change is relayed to the other peers. A change that
+only alters case updates the stored spelling without relaying it.
+
+Errors: `unknown_remote_nick` for an untrusted prefix, `invalid_nickname`,
+`reserved_nickname`, and `nickname_collision` (no kill is issued).
+""".
 -spec rename_remote_nick(binary(), binary(), binary()) ->
     ok | {error, invalid_nickname | nickname_collision | reserved_nickname | unknown_remote_nick}.
 rename_remote_nick(Peer, Prefix, Nick) ->
@@ -515,6 +588,16 @@ rename_remote_nick(Peer, Prefix, Nick) ->
             {error, unknown_remote_nick}
     end.
 
+-doc """
+Apply a `QUIT` by a remote user.
+
+`Peer` is the adjacent link the line arrived on and `Prefix` its source
+prefix, which must be the exact `nick!user@host` of a remote user reached
+through `Peer`. The `QUIT` is relayed to
+the other peers, and the user's row, metadata, MONITOR presence, and channel
+memberships through `Peer` are removed; a remote channel left empty is
+deleted. Returns `{error, unknown_remote_nick}` for an untrusted prefix.
+""".
 -spec remove_remote_nick(binary(), binary(), none | iodata()) -> ok | {error, unknown_remote_nick}.
 remove_remote_nick(Peer, Prefix, Reason) ->
     case remote_source(Peer, Prefix) of
@@ -529,6 +612,16 @@ remove_remote_nick(Peer, Prefix, Reason) ->
             {error, unknown_remote_nick}
     end.
 
+-doc """
+Apply an `AWAY` by a remote user.
+
+`Peer` is the adjacent link the line arrived on and `Prefix` its source
+prefix, which must be the exact `nick!user@host` of a remote user reached
+through `Peer`. A message parameter sets
+user mode `a`, and no parameter clears it. `away-notify` clients sharing a
+channel with the user are told, and the line is relayed to the other peers.
+Returns `{error, unknown_remote_nick}` for an untrusted prefix.
+""".
 -spec set_remote_away(binary(), binary(), [binary()]) -> ok | {error, unknown_remote_nick}.
 set_remote_away(Peer, Prefix, Params) ->
     case remote_source(Peer, Prefix) of
@@ -574,6 +667,19 @@ remote_source(Peer, Prefix) ->
             error
     end.
 
+-doc """
+Apply a `TOPIC` change for channel `Name` received from `Peer`.
+
+A server prefix trusted for `Peer` may always set the topic. A user prefix
+must belong to a member reached through `Peer`, and that member needs
+channel operator status when `+t` is set on the remote or local channel. The
+topic is stored on the remote channel and on the local channel of the same
+name, whose members see the `TOPIC` (with the anonymous prefix on a `+a`
+channel), and the line is relayed to the other peers.
+
+Errors: `invalid_channel`, `unknown_remote_source`, `unknown_remote_channel`,
+`remote_user_not_on_channel`, and `remote_topic_requires_operator`.
+""".
 -spec update_remote_topic(binary(), binary(), binary(), term()) ->
     ok
     | {error,
@@ -709,6 +815,22 @@ remove_remote_memberships(Peer, NickKey) ->
         mnesia:dirty_all_keys(remote_channel)
     ).
 
+-doc """
+Import an `NJOIN` (RFC 2813 section 4.2.2) for channel `Name` from `Peer`.
+
+`Members` is the comma-separated member list; `@@` marks the channel creator,
+`@` an operator, and `+` a voiced member. Every nickname must be a remote
+user reached through `Peer`. Members are added to the remote channel. Members
+that are new are shown to local channel members as `JOIN`s collected into one
+IRCv3 `netjoin` batch per peer, sent by `flush_netjoin/1` when the peer sends
+a non-burst command, when its link closes, or one second after the first
+collected join. The `NJOIN` is relayed to the other peers with this server as
+prefix.
+
+Errors: `invalid_channel`, `empty_njoin`, `unknown_remote_member`, and
+`remote_member_from_other_peer`. The spec also lists an `{ok, List}` result,
+which is not returned.
+""".
 -spec import_remote_njoin(binary(), binary(), map()) ->
     ok
     | {error, empty_njoin | invalid_channel | remote_member_from_other_peer | unknown_remote_member}
@@ -765,7 +887,13 @@ show_netjoin(Name, Joined, Peer) ->
     put({ircd_netjoin, Peer}, lists:reverse([{Name, Key} || Key <- Joined], Pending)),
     ok.
 
-%% @doc Send the collected burst JOINs from Peer in one netjoin batch.
+-doc """
+Send the `JOIN`s collected from `Peer`'s `NJOIN` burst lines to local
+channel members in one IRCv3 `netjoin` batch.
+
+Members that left again before the flush are skipped. Does nothing when no
+joins are pending for `Peer`.
+""".
 -spec flush_netjoin(binary()) -> ok.
 flush_netjoin(Peer) ->
     case erase({ircd_netjoin, Peer}) of
@@ -790,6 +918,18 @@ flush_netjoin(Peer) ->
             end
     end.
 
+-doc """
+Apply a `JOIN` of channel `Name` by a remote user.
+
+`Peer` is the adjacent link the line arrived on and `Prefix` its source
+prefix, which must be the exact `nick!user@host` of a remote user reached
+through `Peer`. The user is added as a
+plain member, creating the remote channel row if needed; local members of the
+channel see the `JOIN` and the line is relayed to the other peers. A user who
+is already a member is ignored.
+
+Errors: `unknown_remote_source` and `invalid_channel`.
+""".
 -spec import_remote_join(binary(), binary(), binary()) ->
     ok | {error, invalid_channel | unknown_remote_source}.
 import_remote_join(Peer, Prefix, Name) ->
@@ -819,6 +959,18 @@ import_remote_join(Peer, Prefix, Name) ->
             {error, invalid_channel}
     end.
 
+-doc """
+Apply a `PART` of channel `Name` by a remote user, with optional `Reason`.
+
+`Peer` is the adjacent link the line arrived on and `Prefix` its source
+prefix, which must be the exact `nick!user@host` of a remote user reached
+through `Peer`. Local members of the
+channel see the `PART`, the membership is removed (deleting a remote channel
+left empty), and the line is relayed to the other peers.
+
+Errors: `unknown_remote_source`, `unknown_remote_channel`, and
+`remote_user_not_on_channel`.
+""".
 -spec remove_remote_channel_member(binary(), binary(), binary(), none | iodata()) ->
     ok | {error, remote_user_not_on_channel | unknown_remote_channel | unknown_remote_source}.
 remove_remote_channel_member(Peer, Prefix, Name, Reason) ->
@@ -847,6 +999,22 @@ remove_remote_channel_member(Peer, Prefix, Name, Reason) ->
             {error, unknown_remote_channel}
     end.
 
+-doc """
+Apply a `KICK` of `Nick` from channel `Name` by a remote user.
+
+`Peer` is the adjacent link the line arrived on and `Prefix` its source
+prefix, which must be the exact `nick!user@host` of a remote user reached
+through `Peer`. The kicker must be an
+operator or the creator of the channel through `Peer`. A local target is
+removed from the local channel (which is released when it becomes empty);
+a remote target is removed from the remote channel. Local members see the
+`KICK` (with the anonymous prefix on a `+a` channel), and the line is relayed
+to the other peers.
+
+Errors: `unknown_remote_source`, `unknown_remote_channel`,
+`remote_kick_requires_operator`, `remote_kick_target_not_on_channel`, and
+`unknown_remote_kick_target`.
+""".
 -spec receive_remote_kick(binary(), binary(), binary(), binary(), none | iodata()) ->
     ok
     | {error,
@@ -1019,6 +1187,28 @@ remote_member(<<$@, Nick/binary>>) -> {[operator], Nick};
 remote_member(<<$+, Nick/binary>>) -> {[voice], Nick};
 remote_member(Nick) -> {[member], Nick}.
 
+-doc """
+Apply a `MODE` from `Peer` to a channel or to a remote user.
+
+For a channel, a server prefix trusted for `Peer` is accepted and creates the
+remote channel if it is unknown; such changes are stored silently, as in a
+burst. A user prefix must be an operator or creator member reached through
+`Peer`, and its change is also shown to local members. Supported letters are
+`a i m n p q r s t K`, `k <key>`, `l <limit>` (positive), `b`/`e`/`I <mask>`
+(each list capped at the server's list limit), and `o`/`v`/`O <nick>`. The
+result is stored on the remote channel, copied to the local channel of the
+same name, and relayed to the other peers.
+
+For a user target, `Prefix` must be that remote user; letters `a i o w B` are
+applied and others ignored, local users sharing a channel see the change, and
+it is relayed.
+
+Errors: `unknown_remote_channel`, `remote_mode_requires_operator`,
+`missing_mode_argument`, `missing_channel_limit`, `invalid_channel_limit`,
+`unknown_remote_mode_target`, `{unsupported_channel_mode, Char}`,
+`{extra_mode_arguments, Args}`, `unknown_remote_source`, and
+`remote_user_mode_source_mismatch`.
+""".
 -spec update_remote_modes(binary(), binary(), binary(), term(), [binary()]) ->
     ok
     | {error,
@@ -1288,6 +1478,12 @@ server_user_modes(<<$+, Modes/binary>>) ->
     end;
 server_user_modes(_) ->
     error.
+-doc """
+Deliver a `PRIVMSG`, `NOTICE`, `TAGMSG`, or `SQUERY` from a remote user,
+without message tags.
+
+Same as `receive_remote_message/5` with an empty tag list.
+""".
 -spec receive_remote_message(binary(), undefined | binary(), binary(), [binary()]) ->
     ok
     | {error,
@@ -1300,6 +1496,29 @@ server_user_modes(_) ->
 receive_remote_message(Peer, Prefix, Command, Params) ->
     receive_remote_message(Peer, Prefix, Command, Params, []).
 
+-doc """
+Deliver a `PRIVMSG`, `NOTICE`, or `TAGMSG` from a remote user to its target.
+
+`Peer` is the adjacent link the line arrived on and `Prefix` its source
+prefix, which must be the exact `nick!user@host` of a remote user reached
+through `Peer`. `Params` is the target
+and text (`TAGMSG` needs only the target). Only a `msgid` of at most 64 bytes
+without space or colon, a valid `time`, and client-only tags are kept from
+`Tags`.
+
+- A local nickname receives the message, and it is stored in that user's
+  direct-message history.
+- A channel is delivered to local members when the sender is a member
+  through `Peer`, is not banned (unless an exception matches), and may speak
+  under `+m`; a `+a` channel shows the anonymous prefix. The message is saved
+  in channel history and forwarded to the other peers that have members.
+- A remote nickname has the message forwarded to its link, unless that link
+  is `Peer`.
+
+An unknown target is dropped with `ok`. Errors: `invalid_remote_message`,
+`malformed_remote_prefix`, `remote_prefix_mismatch`, `unknown_remote_source`,
+`unknown_remote_channel`, and `remote_user_not_on_channel`.
+""".
 -spec receive_remote_message(binary(), undefined | binary(), term(), term(), [
     {binary(), undefined | binary()}
 ]) ->
@@ -1501,6 +1720,14 @@ receive_remote_channel_message(Peer, Remote, Prefix, Name, Text, Command, Tags) 
             {error, unknown_remote_channel}
     end.
 
+-doc """
+Send `NAMES` replies (numeric 353) listing the remote members of the channel
+with folded name `Key` to `Client`.
+
+Nothing is sent for an unknown channel, for an anonymous `+a` channel, or for
+a `+p`/`+s` channel the client is not a local member of. The end-of-names
+numeric is left to the caller.
+""".
 -spec remote_names_listing(binary(), #client{}, binary()) -> ok.
 remote_names_listing(Key, Client, Server) ->
     case mnesia:dirty_read(remote_channel, Key) of
@@ -1525,6 +1752,13 @@ remote_names_listing(Key, Client, Server) ->
             ok
     end.
 
+-doc """
+Mode state stored for the remote channel `Name`, or an empty map when it is
+unknown.
+
+Keys are mode characters, `key`, `limit`, `topic`, and the `ban`,
+`exception`, and `invite` mask lists.
+""".
 -spec remote_channel_flags(binary()) -> #{atom() | char() => term()}.
 remote_channel_flags(Name) ->
     case mnesia:dirty_read(remote_channel, ircd_wire:fold(Name)) of
@@ -1532,6 +1766,14 @@ remote_channel_flags(Name) ->
         [] -> #{}
     end.
 
+-doc """
+`NAMES` entries for the remote members of channel `Name`, sorted.
+
+Each entry is the member's role prefix and nickname, or `nick!user@host` for
+a client with `userhost-in-names`. Invisible (`+i`) members are left out
+unless `LocalMember` is true, meaning the requester is a member of the local
+channel.
+""".
 -spec remote_names_entries(binary(), #client{}, term()) -> [binary()].
 remote_names_entries(Name, Client, LocalMember) ->
     case mnesia:dirty_read(remote_channel, ircd_wire:fold(Name)) of
@@ -1549,6 +1791,13 @@ remote_names_entries(Name, Client, LocalMember) ->
 remote_visible_in_names(#remote_client{modes = Modes}, _Client, LocalMember) ->
     LocalMember orelse not maps:is_key($i, Modes).
 
+-doc """
+True when the remote user with folded nickname `NickKey` and user modes
+`Modes` is visible to `Client` in queries.
+
+A user without `+i` is always visible; an invisible user is visible only when
+`Client` is a local member of a channel the user is also in.
+""".
 -spec remote_user_visible_to_requester(term(), map(), #client{}) -> boolean().
 remote_user_visible_to_requester(NickKey, Modes, Client) ->
     not maps:is_key($i, Modes) orelse
@@ -1573,6 +1822,12 @@ remote_user_visible_to_requester(NickKey, Modes, Client) ->
             mnesia:dirty_all_keys(remote_channel)
         ).
 
+-doc """
+Pids of local clients that share a channel with the remote user `NickKey`.
+
+Channels with mode `a` or `q` on either side are skipped. Used, for example,
+to show a remote user's `QUIT` and user mode changes.
+""".
 -spec remote_user_local_recipients(term()) -> [term()].
 remote_user_local_recipients(NickKey) ->
     lists:usort([
@@ -1598,6 +1853,10 @@ remote_display_nick(#remote_client{nick = Nick, user = User, host = Host}, Roles
         end,
     <<(ircd_state_channel:role_prefix(Roles, Pid))/binary, Name/binary>>.
 
+-doc """
+Introduce a newly registered local user to every peer with a 7-parameter
+`NICK` line prefixed by `Server`, the local server name.
+""".
 -spec propagate_introduction(#client{}, iodata()) -> ok.
 propagate_introduction(
     #client{nick = Nick, user = User, host = Host, real = Real, pid = Pid}, Server
@@ -1612,25 +1871,47 @@ propagate_introduction(
         )
     ).
 
+-doc """
+Announce a local user's nickname change to every peer.
+
+`Client` still holds the old nickname, used as the line's prefix, and `Nick`
+is the new one.
+""".
 -spec propagate_nick_change(#client{}, iodata()) -> ok.
 propagate_nick_change(Client, Nick) ->
     server_broadcast(ircd_wire:line(ircd_state_send:prefix(Client), <<"NICK">>, [Nick], none)).
 
+-doc """
+Announce a local user's `AWAY` to every peer; `none` clears the away
+message.
+""".
 -spec propagate_away(#client{}, none | iodata()) -> ok.
 propagate_away(Client, none) ->
     server_broadcast(ircd_wire:line(ircd_state_send:prefix(Client), <<"AWAY">>, [], none));
 propagate_away(Client, Message) ->
     server_broadcast(ircd_wire:line(ircd_state_send:prefix(Client), <<"AWAY">>, [], Message)).
 
+-doc """
+Announce a local user's `QUIT` with `Reason` to every peer.
+""".
 -spec propagate_quit(#client{}, none | iodata()) -> ok.
 propagate_quit(Client, Reason) ->
     server_broadcast(ircd_wire:line(ircd_state_send:prefix(Client), <<"QUIT">>, [], Reason)).
 
+-doc """
+Send a server line to every authenticated peer.
+""".
 -spec server_broadcast(iodata()) -> ok.
 server_broadcast(Line) ->
     relay_except(undefined, Line).
 
-%% Forward one server message to every authenticated peer except the ingress link.
+-doc """
+Send a server line to every authenticated peer except the ingress link.
+
+`Ingress` is the peer the line arrived from, or `undefined` for every peer.
+An exit from `m:ircd_links` (for example, while it is restarting) is caught
+and the line is dropped.
+""".
 -spec relay_except(term(), iodata()) -> ok.
 relay_except(Ingress, Line) ->
     try ircd_links:send_except(Ingress, iolist_to_binary(Line)) of
@@ -1639,6 +1920,14 @@ relay_except(Ingress, Line) ->
         exit:_ -> ok
     end.
 
+-doc """
+Apply a `KILL` of `Nick` received from `Peer`.
+
+The `KILL` is relayed to the other peers with this server as prefix. A local
+user with that nickname receives the `KILL` and is disconnected. A remote user
+with that nickname is removed and its `QUIT` relayed to the other peers. The
+nickname is then held. Always returns `ok`.
+""".
 -spec receive_remote_kill(binary(), binary(), none | iodata()) -> ok.
 receive_remote_kill(Peer, Nick, Reason) ->
     Server = local_server(),
@@ -1660,6 +1949,12 @@ receive_remote_kill(Peer, Nick, Reason) ->
     end,
     ircd_state_net:hold_nick(Nick).
 
+-doc """
+Send a local user's `INVITE` of `Nick` to channel `Name`.
+
+The line goes to `Peer`, the link that reaches the invited user, and to every
+other peer that has members of the channel.
+""".
 -spec propagate_invite(#client{}, iodata(), binary(), binary()) -> ok.
 propagate_invite(Client, Nick, Name, Peer) ->
     Line = iolist_to_binary(
@@ -1683,6 +1978,17 @@ propagate_invite(Client, Nick, Name, Peer) ->
     end,
     ok.
 
+-doc """
+Apply an `INVITE` of `Nick` to channel `Name` sent by a remote user.
+
+`Peer` is the adjacent link the line arrived on and `Prefix` its source
+prefix, which must be the exact `nick!user@host` of a remote user reached
+through `Peer`. A local target is added
+to the invite list of the local channel, if it exists, and receives the
+`INVITE`. A remote target is recorded on the remote channel and the `INVITE`
+is forwarded to its link unless that link is `Peer`. An unknown target is
+ignored. Returns `{error, unknown_remote_nick}` for an untrusted prefix.
+""".
 -spec receive_remote_invite(binary(), binary(), binary(), binary()) ->
     ok | {error, unknown_remote_nick}.
 receive_remote_invite(Peer, Prefix, Nick, Name) ->
@@ -1738,22 +2044,38 @@ remember_remote_invite_link(NickKey, Name) ->
         })
     ).
 
+-doc """
+Announce a local user's `TOPIC` change on channel `Name` to every peer.
+""".
 -spec propagate_topic(#client{}, iodata(), none | iodata()) -> ok.
 propagate_topic(Client, Name, Topic) ->
     server_broadcast(ircd_wire:line(ircd_state_send:prefix(Client), <<"TOPIC">>, [Name], Topic)).
 
+-doc """
+Announce a local user's channel `MODE` change to every peer.
+""".
 -spec propagate_channel_mode(#client{}, iodata(), iodata(), [iodata()]) -> ok.
 propagate_channel_mode(Client, Name, Mode, Args) ->
     server_broadcast(
         ircd_wire:line(ircd_state_send:prefix(Client), <<"MODE">>, [Name, Mode | Args], none)
     ).
 
+-doc """
+Announce a local user's `KICK` of `Nick` from channel `Name` to every peer.
+""".
 -spec propagate_channel_kick(#client{}, iodata(), iodata(), none | iodata()) -> ok.
 propagate_channel_kick(Client, Name, Nick, Reason) ->
     server_broadcast(
         ircd_wire:line(ircd_state_send:prefix(Client), <<"KICK">>, [Name, Nick], Reason)
     ).
 
+-doc """
+Announce a local user joining channel `Name` to every peer.
+
+Sends the user's `JOIN`, an `NJOIN` from this server carrying the member's
+`Roles` (creator, operator, or voice prefix), and the channel's current
+modes, key, limit, and mask lists.
+""".
 -spec propagate_join(#client{}, binary(), [term()]) -> ok.
 propagate_join(Client, Name, Roles) ->
     Server = maps:get(name, persistent_term:get({ircd_state, config})),
@@ -1770,7 +2092,9 @@ propagate_join(Client, Name, Roles) ->
             ok
     end.
 
-%% @doc Send prepared lines to every peer that has members of the channel.
+-doc """
+Send prepared lines to every peer that has members of channel `Name`.
+""".
 -spec propagate_channel_lines(binary(), [iodata()]) -> ok.
 propagate_channel_lines(Name, Lines) ->
     case mnesia:dirty_read(remote_channel, ircd_wire:fold(Name)) of
@@ -1787,9 +2111,18 @@ propagate_channel_lines(Name, Lines) ->
             ok
     end.
 
-%% @doc `BATCH +<ref> draft/multiline <target>` or `BATCH -<ref>` from a peer.
-%% Open batches are kept per peer and reference in the state process and are
-%% bounded by the multiline line limit.
+-doc """
+Open or close a `draft/multiline` batch sent by a remote user.
+
+`BATCH +<ref> draft/multiline <target>` opens a batch; the prefix must be a
+remote user reached through `Peer`, otherwise the result is
+`{error, unknown_remote_source}`. `BATCH -<ref>` closes it and delivers the
+collected message to a local nickname or channel members, or forwards it
+toward a remote target, never back to `Peer`. Closing an unknown or empty
+batch does nothing. Other batch types are `{error, invalid_batch}`. Open
+batches are kept per peer and reference in the state process, each bounded by
+the multiline line limit.
+""".
 -spec receive_remote_batch(binary(), binary(), [binary()], list()) -> ok | {error, term()}.
 receive_remote_batch(Peer, Prefix, [<<"+", Ref/binary>>, <<"draft/multiline">>, Target | _], Tags) ->
     case remote_source(Peer, Prefix) of
@@ -1816,7 +2149,14 @@ receive_remote_batch(Peer, _Prefix, [<<"-", Ref/binary>> | _], _Tags) ->
 receive_remote_batch(_Peer, _Prefix, _Params, _Tags) ->
     {error, invalid_batch}.
 
-%% @doc One PRIVMSG or NOTICE line of an open peer multiline batch.
+-doc """
+Add one `PRIVMSG` or `NOTICE` line to an open peer `draft/multiline` batch.
+
+The line's `batch` tag names the batch, and `Prefix` must match the prefix
+that opened it. Returns `{error, unknown_batch}` when no such batch is open,
+and `{error, invalid_multiline}` (discarding the batch) when the prefix
+differs or the line limit is exceeded.
+""".
 -spec remote_batch_line(binary(), binary(), binary(), [binary()], list()) -> ok | {error, term()}.
 remote_batch_line(Peer, Prefix, Command, [_Target, Text | _], Tags) ->
     {_, Ref} = lists:keyfind(<<"batch">>, 1, Tags),
@@ -1937,6 +2277,12 @@ forward_lines_channel(Ingress, Name, Lines) ->
             ok
     end.
 
+-doc """
+Send a local user's channel `PRIVMSG`, `NOTICE`, or `TAGMSG` to every peer
+that has members of channel `Name`.
+
+`Tags` are the message tags to put on the server line.
+""".
 -spec propagate_channel_message(binary(), none | iodata(), binary(), #client{}, [
     {binary(), undefined | binary()}
 ]) -> ok.

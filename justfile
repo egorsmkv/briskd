@@ -42,6 +42,10 @@ cover:
     rebar3 eunit --cover
     rebar3 cover --verbose --min_coverage 90
 
+# Build the HTML documentation into doc/ with ex_doc.
+docs:
+    rebar3 ex_doc
+
 # Fetch dependencies and formatter plugin.
 deps:
     rebar3 get-deps
