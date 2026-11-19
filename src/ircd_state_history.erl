@@ -587,14 +587,20 @@ peer_account(Nick) ->
 %% returning a time and, for msgid, the entry's index so equal times work.
 selector(<<"LATEST">>, <<"*">>, _Entries) ->
     {ok, latest};
-selector(_Sub, Sel, Entries) ->
+selector(Sub, Sel, Entries) ->
     case parse_selector(Sel) of
         {time, T} ->
             {ok, {time, T}};
         {msgid, Id} ->
             case index_of(Id, Entries, 1) of
-                {ok, I} -> {ok, {index, I}};
-                error -> error
+                {ok, I} ->
+                    {ok, {index, I}};
+                error when Sub =:= <<"LATEST">> ->
+                    %% Per IRCv3 draft/chathistory, an unknown msgid in LATEST
+                    %% falls back to `*` (return the latest messages).
+                    {ok, latest};
+                error ->
+                    error
             end;
         msgreftype ->
             msgreftype;

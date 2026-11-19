@@ -645,7 +645,7 @@ history(Port) ->
         fun(Line) -> ?assert(has(cmd(H2, Line), Invalid)) end,
         [
             <<"CHATHISTORY BETWEEN #hx junk junk 5">>,
-            <<"CHATHISTORY LATEST #hx msgid=unknown 5">>,
+            <<"CHATHISTORY BEFORE #hx msgid=unknown 5">>,
             <<"CHATHISTORY LATEST #hx * 0">>,
             <<"CHATHISTORY LATEST #hx * abc">>,
             <<"CHATHISTORY AFTER #hx timestamp=notatime 5">>,
@@ -655,6 +655,7 @@ history(Port) ->
             <<"CHATHISTORY TARGETS">>
         ]
     ),
+    ?assert(has(cmd(H2, <<"CHATHISTORY LATEST #hx msgid=unknown 5">>), <<"chathistory #hx">>)),
     ?assert(has(cmd(H2, <<"CHATHISTORY">>), <<" 461 histy CHATHISTORY ">>)),
     ?assert(
         has(
