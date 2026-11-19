@@ -712,6 +712,7 @@ burst_command(Command) ->
         <<"ACCOUNTSYNC">>,
         <<"METADATA">>,
         <<"MARKREAD">>,
+        <<"E2EE">>,
         <<"AWAY">>
     ]).
 

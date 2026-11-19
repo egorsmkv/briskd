@@ -579,12 +579,13 @@ process_server_intro(Name, Hop, Token, State) ->
                 true ->
                     Config = persistent_term:get({ircd_state, config}),
                     LocalName = maps:get(name, Config),
+                    Info = maps:get(server_info, Config, <<"Erlang/OTP IRC server">>),
                     Reply = [
                         raw_line(<<"PASS">>, [Password, <<"0210">>, <<"|">>], none),
                         raw_line(
                             <<"SERVER">>,
                             [LocalName, <<"1">>, <<"1">>],
-                            <<"Erlang/OTP IRC server">>
+                            Info
                         )
                     ],
                     Burst = [iolist_to_binary(Line) || Line <- ircd_state:server_burst()],

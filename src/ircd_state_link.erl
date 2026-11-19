@@ -197,8 +197,10 @@ remote_njoin_token(Nick, Roles) ->
     case
         {lists:member(creator, Roles), lists:member(operator, Roles), lists:member(voice, Roles)}
     of
-        {true, _, _} -> <<"@@", Nick/binary>>;
-        {false, true, _} -> <<$@, Nick/binary>>;
+        {true, _, true} -> <<"@@+", Nick/binary>>;
+        {true, _, false} -> <<"@@", Nick/binary>>;
+        {false, true, true} -> <<"@+", Nick/binary>>;
+        {false, true, false} -> <<$@, Nick/binary>>;
         {false, false, true} -> <<$+, Nick/binary>>;
         _ -> Nick
     end.
@@ -252,14 +254,7 @@ channel_burst_lines(
         CreatorLines ++ TopicLines.
 
 njoin_member(#client{nick = Nick}, Roles) ->
-    case
-        {lists:member(creator, Roles), lists:member(operator, Roles), lists:member(voice, Roles)}
-    of
-        {true, _, _} -> <<"@@", Nick/binary>>;
-        {false, true, _} -> <<$@, Nick/binary>>;
-        {false, false, true} -> <<$+, Nick/binary>>;
-        _ -> Nick
-    end.
+    remote_njoin_token(Nick, Roles).
 
 njoin_lines(_Name, [], _Server) ->
     [];

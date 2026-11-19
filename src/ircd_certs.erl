@@ -103,8 +103,16 @@ handle_call(_, _From, State) ->
     {reply, {error, unknown_call}, State}.
 
 -doc false.
-handle_cast(check, State) ->
-    {_, Next} = check(State),
+handle_cast(check, #{interval := OldInterval} = State) ->
+    {_, Checked} = check(State),
+    NewInterval = maps:get(
+        tls_reload_interval, persistent_term:get({ircd_state, config}, #{}), OldInterval
+    ),
+    Next =
+        case NewInterval =:= OldInterval of
+            true -> Checked;
+            false -> schedule(Checked#{interval := NewInterval})
+        end,
     {noreply, Next};
 handle_cast(_, State) ->
     {noreply, State}.

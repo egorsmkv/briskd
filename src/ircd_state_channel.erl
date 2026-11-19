@@ -2599,7 +2599,8 @@ apply_rename(
                     ok
             end,
             ircd_state_meta:rename_channel(OldKey, NewKey),
-            ircd_state_history:rename_markers(OldKey, NewKey)
+            ircd_state_history:rename_markers(OldKey, NewKey),
+            ircd_state_v3:rename_channel(OldKey, Name)
     end,
     logger:info(#{event => channel_renamed, actor => Client#client.nick}),
     Origin = channel_origin_prefix(Channel, Client),

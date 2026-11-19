@@ -6,6 +6,7 @@
     prepare_attach/3,
     rejoin_on_login/2,
     remember_channels/1,
+    rename_channel/2,
     authenticate/3,
     away_on_join/3,
     burst_lines/1,
@@ -1306,4 +1307,33 @@ rejoin_on_login(#client{pid = Pid}, Server) ->
                 [{_, Names}] -> ircd_state_channel:join_channels(Names, [], Pid, Server);
                 [] -> ok
             end
+    end.
+
+-doc """
+Update any `account_rejoin` entry that lists `OldKey` to use the renamed
+channel `NewName`.
+""".
+-spec rename_channel(binary(), binary()) -> ok.
+rename_channel(OldKey, NewName) ->
+    case ets:whereis(ircd_account_channels) of
+        undefined ->
+            ok;
+        _ ->
+            Kept = ircd_wire:retain(NewName),
+            lists:foreach(
+                fun({Account, Names}) ->
+                    Updated = [
+                        case ircd_wire:fold(N) =:= OldKey of
+                            true -> Kept;
+                            false -> N
+                        end
+                     || N <- Names
+                    ],
+                    case Updated =:= Names of
+                        true -> ok;
+                        false -> ets:insert(ircd_account_channels, {Account, Updated})
+                    end
+                end,
+                ets:tab2list(ircd_account_channels)
+            )
     end.

@@ -935,7 +935,25 @@ rename_markers(OldKey, NewKey) ->
                 ok
         end,
         mnesia:dirty_all_keys(read_marker)
-    ).
+    ),
+    case ets:whereis(ircd_conn) of
+        undefined ->
+            ok;
+        _ ->
+            lists:foreach(
+                fun({Pid, Map}) ->
+                    case maps:get(markread, Map, undefined) of
+                        Markers when is_map(Markers), is_map_key(OldKey, Markers) ->
+                            Time = maps:get(OldKey, Markers),
+                            Updated = (maps:remove(OldKey, Markers))#{NewKey => Time},
+                            ircd_conn:put(Pid, markread, Updated);
+                        _ ->
+                            ok
+                    end
+                end,
+                ets:tab2list(ircd_conn)
+            )
+    end.
 
 -doc """
 Apply a read marker received from another server. Returns `unchanged` when

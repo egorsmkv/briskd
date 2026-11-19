@@ -258,8 +258,9 @@ connect(#{peer := #{host := Host, port := Port}} = State) ->
 
 send_handshake(#{kind := Kind, socket := Socket, peer := #{password := Password}, config := Config}) ->
     Server = maps:get(name, Config),
+    Info = maps:get(server_info, Config, <<"Erlang/OTP IRC server">>),
     PassLine = raw_line(<<"PASS">>, [Password, <<"0210">>, <<"|">>], none),
-    ServerLine = raw_line(<<"SERVER">>, [Server, <<"1">>, <<"1">>], <<"Erlang/OTP IRC server">>),
+    ServerLine = raw_line(<<"SERVER">>, [Server, <<"1">>, <<"1">>], Info),
     send(Kind, Socket, <<PassLine/binary, ServerLine/binary>>).
 
 consume(Data, State) ->

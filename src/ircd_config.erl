@@ -80,8 +80,9 @@ load(Path) ->
         MnesiaDir = required_path(maps:get(<<"mnesia_dir">>, Json, <<"data/mnesia">>)),
         Retention = retention(maps:get(<<"retention">>, Json, <<"transient">>)),
         HistoryLimit = history_limit(maps:get(<<"history_limit">>, Json, 100)),
+        NickLen = nicklen(maps:get(<<"nicklen">>, Json, 9)),
         Operators = operators(maps:get(<<"operators">>, Json, [])),
-        Administrators = administrators(maps:get(<<"administrators">>, Json, [])),
+        Administrators = administrators(maps:get(<<"administrators">>, Json, []), NickLen),
         ok = distinct_accounts(Operators, Administrators),
         Channels = channels(maps:get(<<"channels">>, Json, [])),
         ServerLinks = server_links(maps:get(<<"server_links">>, Json, []), Name),
@@ -117,7 +118,7 @@ load(Path) ->
             network => Network,
             network_icon => network_icon(maps:get(<<"network_icon">>, Json, null)),
             sts => sts(maps:get(<<"sts">>, Json, null)),
-            nicklen => nicklen(maps:get(<<"nicklen">>, Json, 9)),
+            nicklen => NickLen,
             resource_delay => resource_delay(maps:get(<<"resource_delay">>, Json, 60)),
             account_password_min => password_min(maps:get(<<"account_password_min">>, Json, 8)),
             account_registration_before_connect => boolean_setting(
@@ -492,25 +493,25 @@ operators(Entries) when is_list(Entries) ->
 %% Administrator accounts use OPER. `nick` is the OPER parameter, folded with
 %% RFC 1459 rules. It does not have to equal the client's current nickname.
 %% The same folded name cannot appear twice or also appear in `operators`.
-administrators(Entries) when is_list(Entries) ->
-    administrators(Entries, [], []);
-administrators(Value) ->
+administrators(Entries, NickLen) when is_list(Entries) ->
+    administrators(Entries, NickLen, [], []);
+administrators(Value, _NickLen) ->
     erlang:error({invalid_administrators, Value}).
 
-administrators([], _Seen, Acc) ->
+administrators([], _NickLen, _Seen, Acc) ->
     lists:reverse(Acc);
-administrators([Entry | Rest], Seen, Acc) ->
-    Account = administrator(Entry),
+administrators([Entry | Rest], NickLen, Seen, Acc) ->
+    Account = administrator(Entry, NickLen),
     {Nick, _Password} = Account,
     case lists:member(Nick, Seen) of
         true -> erlang:error({duplicate_administrator, Nick});
-        false -> administrators(Rest, [Nick | Seen], [Account | Acc])
+        false -> administrators(Rest, NickLen, [Nick | Seen], [Account | Acc])
     end.
 
-administrator(Entry) when is_map(Entry) ->
+administrator(Entry, NickLen) when is_map(Entry) ->
     Nick = maps:get(<<"nick">>, Entry, undefined),
     Password = maps:get(<<"password">>, Entry, undefined),
-    case ircd_wire:nickname(Nick) of
+    case ircd_wire:nickname(Nick, NickLen) of
         true -> ok;
         false -> erlang:error({invalid_administrator, Nick})
     end,
@@ -518,7 +519,7 @@ administrator(Entry) when is_map(Entry) ->
         true -> {ircd_wire:fold(Nick), Password};
         false -> erlang:error({invalid_administrator, Nick})
     end;
-administrator(_) ->
+administrator(_, _NickLen) ->
     erlang:error({invalid_administrator, invalid}).
 
 distinct_accounts(Operators, Administrators) ->
