@@ -5,6 +5,8 @@
   "bind": "0.0.0.0",
   "tcp_port": 6667,
   "tls_port": null,
+  "ws_port": 8080,
+  "wss_port": null,
   "certfile": null,
   "keyfile": null,
   "log_level": "info",

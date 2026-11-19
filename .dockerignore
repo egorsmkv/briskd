@@ -5,5 +5,7 @@
 !rebar.lock
 !src/**
 !include/**
+!priv/**
+!bin/**
 !config/**
 !bench/release.json

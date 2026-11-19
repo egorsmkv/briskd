@@ -24,6 +24,8 @@ services:
       IRCD_COOKIE: ${IRCD_COOKIE:?set IRCD_COOKIE in .env (any long random string)}
     ports:
       - "6667:6667"
+      - "8080:8080"
+      - "127.0.0.1:8081:8081"
       # Uncomment with tls_port/wss_port and certificates in ircd.prod.json:
       # - "6697:6697"
       # - "8443:8443"

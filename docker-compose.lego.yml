@@ -42,6 +42,7 @@ services:
         condition: service_healthy
     ports:
       - "6697:6697"
+      - "8443:8443"
     volumes:
       - ./config/ircd.prod.tls.json:/etc/ircd/ircd.json:ro
       - ircd-certs:/etc/ircd/certs:ro
