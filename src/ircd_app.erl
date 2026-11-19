@@ -9,11 +9,7 @@ start(_, _) ->
         {ok, Config} ->
             #{level := Primary} = logger:get_primary_config(),
             {ok, Previous} = logger:get_handler_config(default),
-            Formatter =
-                case maps:get(log_format, Config) of
-                    <<"json">> -> {ircd_log, #{}};
-                    <<"text">> -> {flatlog, #{template => [time, " ", level, " ", msg]}}
-                end,
+            Formatter = ircd_log:formatter(maps:get(log_format, Config)),
             ok = logger:update_handler_config(default, formatter, Formatter),
             ok = ircd_log:apply_level(maps:get(level, Config)),
             case start_mnesia(maps:get(mnesia_dir, Config)) of

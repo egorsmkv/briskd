@@ -132,7 +132,7 @@ rebar.lock
 - Use `ok`, `{ok, Value}`, and `{error, Reason}` for expected API results. `ircd_wire` also returns `empty` and `error` for lines; keep that contract stable. Reasons are stable atoms, tuples, or maps, and they carry diagnostic context without secrets.
 - Invalid client or peer data is an expected protocol event. Reject it with a bounded log and the appropriate numeric or `ERROR`, and keep the process alive when the session can continue. A broken internal invariant may fail the owning process so supervision restores a clean state.
 - No blanket `catch _:_ -> ok`, no `exit(Pid, kill)` as routine control flow, no infinite retry loops, no silent drops of registered-user commands, and no unbounded list accumulation of lines or members.
-- Log with `logger` through the existing `ircd_log` / flatlog setup. Default format is JSON. Log events, not every channel message.
+- Log with `logger` through `ircd_log`: JSON (default; a map report becomes top-level fields) or `text` (OTP `logger_formatter`). The application has no third-party runtime dependencies. Log events, not every channel message.
 - Document non-obvious functions with `-doc` or `%% @doc`, including timer units and the RFC section for wire constants (512-octet line, RFC 1459 case map, nickname length, channel name limits).
 
 ## 6. OTP process model and fault containment

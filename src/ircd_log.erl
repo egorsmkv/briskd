@@ -1,5 +1,7 @@
 -module(ircd_log).
--export([apply_level/1, client_command/3, command_detail/2, format/2, server_command/3]).
+-export([
+    apply_level/1, client_command/3, command_detail/2, format/2, formatter/1, server_command/3
+]).
 
 %% @doc Apply a configured log level to the primary filter and the default handler.
 %% `trace` is stored in the config map and installed as OTP level `all`, which
@@ -98,21 +100,78 @@ command_detail(_, _) ->
 join_params(Params) ->
     iolist_to_binary(lists:join(<<" ">>, [Param || Param <- Params, is_binary(Param)])).
 
+%% @doc Logger handler formatter for a `log_format` value from configuration.
+%% `json` is `format/2` below; `text` is OTP's logger_formatter on one line.
+-spec formatter(binary()) -> {module(), map()}.
+formatter(<<"json">>) ->
+    {?MODULE, #{}};
+formatter(<<"text">>) ->
+    {logger_formatter, #{template => [time, " ", level, " ", msg, "\n"], single_line => true}}.
+
 %% @doc Format an OTP Logger event as one newline-terminated JSON object.
-%% Flatlog renders the message field; invalid Unicode falls back to Erlang term text.
--spec format(map(), term()) -> iodata().
-format(#{level := Level, meta := Meta} = Event, _) ->
-    Line = flatlog:format(Event, #{template => [msg]}),
-    Message =
-        case unicode:characters_to_binary(Line) of
-            Binary when is_binary(Binary) -> Binary;
-            _ -> iolist_to_binary(io_lib:format("~tp", [Line]))
+%% A map report without a report callback (the `logger:info(#{event => ...})`
+%% events this server logs) becomes top-level fields next to `level` and `time`
+%% (microseconds since the epoch). Any other event, such as a string, a format
+%% call, or an OTP report with its own callback, is rendered by logger_formatter
+%% into `message`. Terms JSON cannot hold (pids, tuples, references, invalid
+%% UTF-8) are written as Erlang term text.
+-spec format(logger:log_event(), logger:formatter_config()) -> iodata().
+format(#{level := Level, meta := Meta, msg := Msg} = Event, _) ->
+    Base = #{level => Level, time => maps:get(time, Meta, 0)},
+    Fields =
+        case Msg of
+            {report, Report} when is_map(Report) ->
+                structured(Report, maps:get(report_cb, Meta, none), Event);
+            _ ->
+                #{message => message(Event)}
         end,
-    [
-        json:encode(#{
-            level => Level,
-            time => maps:get(time, Meta, 0),
-            message => Message
-        }),
-        $\n
-    ].
+    [json:encode(maps:merge(Fields, Base)), $\n].
+
+%% logger_h_common adds `fun logger:format_otp_report/1` to every report that
+%% has no callback of its own, so that default also means "plain report".
+structured(Report, Callback, Event) ->
+    case Callback =:= none orelse Callback =:= fun logger:format_otp_report/1 of
+        true ->
+            maps:fold(fun(Key, Value, Acc) -> Acc#{key(Key) => value(Value)} end, #{}, Report);
+        false ->
+            #{message => message(Event)}
+    end.
+
+message(Event) ->
+    Text = logger_formatter:format(Event, #{template => [msg], single_line => true}),
+    case unicode:characters_to_binary(Text) of
+        Binary when is_binary(Binary) -> Binary;
+        _ -> term_text(Text)
+    end.
+
+key(Key) when is_atom(Key) -> Key;
+key(Key) when is_binary(Key) -> value(Key);
+key(Key) -> term_text(Key).
+
+value(Value) when is_binary(Value) ->
+    case unicode:characters_to_binary(Value) of
+        Value -> Value;
+        _ -> term_text(Value)
+    end;
+value(Value) when is_atom(Value); is_integer(Value); is_float(Value) ->
+    Value;
+value(Value) when is_map(Value) ->
+    maps:fold(fun(Key, Item, Acc) -> Acc#{key(Key) => value(Item)} end, #{}, Value);
+value(Value) when is_list(Value) ->
+    case io_lib:printable_unicode_list(Value) of
+        true -> unicode:characters_to_binary(Value);
+        false -> list_value(Value)
+    end;
+value(Value) ->
+    term_text(Value).
+
+%% A proper list of JSON values stays an array; anything else is term text.
+list_value(Value) ->
+    try
+        [value(Item) || Item <- Value]
+    catch
+        error:_ -> term_text(Value)
+    end.
+
+term_text(Term) ->
+    unicode:characters_to_binary(io_lib:format("~0tp", [Term])).

@@ -393,11 +393,7 @@ apply_rehash(Config) ->
     persistent_term:put({ircd_state, reop_delay}, maps:get(reop_delay, Config)),
     persistent_term:put({ircd_state, server_links}, maps:get(server_links, Config)),
     persistent_term:put({ircd_sessions, max_clients}, maps:get(max_clients, Config)),
-    Formatter =
-        case maps:get(log_format, Config) of
-            <<"json">> -> {ircd_log, #{}};
-            <<"text">> -> {flatlog, #{template => [time, " ", level, " ", msg]}}
-        end,
+    Formatter = ircd_log:formatter(maps:get(log_format, Config)),
     ok = logger:update_handler_config(default, formatter, Formatter),
     ok = ircd_log:apply_level(maps:get(level, Config)).
 
