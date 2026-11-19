@@ -374,6 +374,7 @@ document.addEventListener("keydown", (ev) => {
     closeTopicModal();
     closeCodeModal();
     closeModModal();
+    closeAttachMenu();
     clearComposeMode();
   }
 });
@@ -1293,7 +1294,18 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
   }
 
   const actions = renderActionsEl();
-  if (actions) row.appendChild(actions);
+  if (actions) {
+    row.appendChild(actions);
+    row.addEventListener("click", (ev) => {
+      const target = ev.target as HTMLElement | null;
+      if (target?.closest("button, a, audio, .voice-wave")) return;
+      const wasOpen = row.classList.contains("actions-open");
+      document.querySelectorAll(".msg.actions-open").forEach((el) =>
+        el.classList.remove("actions-open")
+      );
+      if (!wasOpen) row.classList.add("actions-open");
+    });
+  }
 
   wrap.appendChild(row);
   if (atBottom) wrap.scrollTop = wrap.scrollHeight;
@@ -1389,6 +1401,7 @@ function switchBuf(key: string, updateUrl = true): void {
     prev = line;
   }
   wrap.scrollTop = wrap.scrollHeight;
+  updateScrollFab();
   renderTypingBar();
   updateE2eeUi();
   renderBuffers();
@@ -2948,6 +2961,7 @@ function resetVoiceUi(): void {
   const btn = $("btn-voice");
   btn.classList.remove("recording");
   btn.title = t("voice.record");
+  $("send-form").classList.remove("recording-active");
   $("voice-timer").textContent = "";
   $("btn-voice-cancel").classList.add("hidden");
 }
@@ -3066,6 +3080,8 @@ $("btn-voice").addEventListener("click", () => {
     const btn = $("btn-voice");
     btn.classList.add("recording");
     btn.title = t("voice.stop");
+    $("send-form").classList.add("recording-active");
+    closeAttachMenu();
     $("btn-voice-cancel").classList.remove("hidden");
     $("voice-timer").textContent = "0:00";
     voiceTimerId = globalThis.setInterval(() => {
@@ -3102,7 +3118,43 @@ function updateFileButton(): void {
   btn.classList.toggle("hidden", !filesSupported);
   btn.title = `${t("file.attach")} (max ${formatBytes(filesMaxBytes)})`;
   $("btn-code").classList.toggle("hidden", !filesSupported);
+  $("btn-attach-menu").classList.toggle("hidden", !filesSupported);
 }
+
+function closeAttachMenu(): void {
+  $("attach-menu").classList.add("hidden");
+  $("btn-attach-menu").setAttribute("aria-expanded", "false");
+}
+
+$("btn-attach-menu").addEventListener("click", (ev) => {
+  ev.stopPropagation();
+  const menu = $("attach-menu");
+  const nextOpen = menu.classList.contains("hidden");
+  menu.classList.toggle("hidden", !nextOpen);
+  $("btn-attach-menu").setAttribute("aria-expanded", String(nextOpen));
+});
+
+$("btn-attach-file-menu").addEventListener("click", () => {
+  closeAttachMenu();
+  $("btn-file").click();
+});
+
+$("btn-attach-code-menu").addEventListener("click", () => {
+  closeAttachMenu();
+  openCodeModal();
+});
+
+document.addEventListener("click", (ev) => {
+  const target = ev.target as HTMLElement | null;
+  if (!target?.closest("#attach-menu, #btn-attach-menu")) {
+    closeAttachMenu();
+  }
+  if (!target?.closest(".msg")) {
+    document.querySelectorAll(".msg.actions-open").forEach((el) =>
+      el.classList.remove("actions-open")
+    );
+  }
+});
 
 async function uploadBinaryFile(
   body: Blob | Uint8Array,
@@ -3532,6 +3584,72 @@ $<HTMLFormElement>("mod-ban-form").addEventListener("submit", (ev) => {
     renderModModal();
   }
 });
+
+// Keep chat workspace pinned cleanly above the iOS software keyboard
+if (globalThis.visualViewport) {
+  const syncViewport = (): void => {
+    const vv = globalThis.visualViewport;
+    if (!vv) return;
+    const chat = $("chat-view");
+    if (!chat.classList.contains("active")) return;
+    const msgs = $("messages");
+    const wasAtBottom = msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight <
+      80;
+    chat.style.height = `${Math.round(vv.height)}px`;
+    globalThis.scrollTo(0, 0);
+    if (wasAtBottom) msgs.scrollTop = msgs.scrollHeight;
+  };
+  globalThis.visualViewport.addEventListener("resize", syncViewport);
+  globalThis.visualViewport.addEventListener("scroll", syncViewport);
+}
+
+// Scroll-to-bottom floating button
+const scrollFab = $("btn-scroll-bottom");
+const msgsEl = $("messages");
+function updateScrollFab(): void {
+  const dist = msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight;
+  scrollFab.classList.toggle("hidden", dist < 180);
+}
+msgsEl.addEventListener("scroll", updateScrollFab, { passive: true });
+scrollFab.addEventListener("click", () => {
+  msgsEl.scrollTo({ top: msgsEl.scrollHeight, behavior: "smooth" });
+});
+
+// Edge swipe gesture to open/close Channels drawer on touch devices
+let edgeStartX = 0;
+let edgeStartY = 0;
+let edgeActive = false;
+document.addEventListener("touchstart", (ev) => {
+  if (ev.touches.length !== 1) return;
+  const x = ev.touches[0].clientX;
+  const y = ev.touches[0].clientY;
+  const isRtl = document.documentElement.dir === "rtl";
+  const drawerOpen = $("sidebar-left").classList.contains("open");
+  const nearEdge = isRtl ? x > globalThis.innerWidth - 28 : x < 28;
+  if (nearEdge || drawerOpen) {
+    edgeStartX = x;
+    edgeStartY = y;
+    edgeActive = true;
+  } else {
+    edgeActive = false;
+  }
+}, { passive: true });
+
+document.addEventListener("touchend", (ev) => {
+  if (!edgeActive || ev.changedTouches.length !== 1) return;
+  edgeActive = false;
+  const dx = ev.changedTouches[0].clientX - edgeStartX;
+  const dy = ev.changedTouches[0].clientY - edgeStartY;
+  if (Math.abs(dx) < 56 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+  const isRtl = document.documentElement.dir === "rtl";
+  const openSwipe = isRtl ? dx < 0 : dx > 0;
+  const drawerOpen = $("sidebar-left").classList.contains("open");
+  if (openSwipe && !drawerOpen) {
+    toggleDrawer("left");
+  } else if (!openSwipe && drawerOpen) {
+    closeDrawers();
+  }
+}, { passive: true });
 
 // Auto-restore saved WebIRC session across page refreshes
 (function restoreSavedSession() {

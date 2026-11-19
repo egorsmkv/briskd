@@ -97,7 +97,10 @@
       <span class="head-title" id="active-title" data-i18n="status.title">Server Status</span>
       <span class="head-topic" id="active-topic"></span>
       <button type="button" class="small hidden" id="btn-topic" data-i18n="btn.topic">Edit topic</button>
-      <button type="button" class="small hidden" id="btn-mod" data-i18n="btn.mod">Moderate</button>
+      <button type="button" class="small icon-mobile hidden" id="btn-mod" aria-label="Moderate channel" title="Moderate channel">
+        <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        <span class="btn-label" data-i18n="btn.mod">Moderate</span>
+      </button>
       <button type="button" class="small btn-e2ee hidden" id="btn-e2ee" title="Toggle end-to-end encryption for this conversation">E2EE Off</button>
     </div>
     <div class="head-right">
@@ -111,13 +114,29 @@
         <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         <span class="btn-label" data-i18n="btn.settings">Settings</span>
       </button>
-      <button type="button" class="small danger" id="btn-disconnect" data-i18n="btn.disconnect">Disconnect</button>
+      <button type="button" class="small danger icon-mobile" id="btn-disconnect" aria-label="Disconnect" title="Disconnect">
+        <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        <span class="btn-label" data-i18n="btn.disconnect">Disconnect</span>
+      </button>
     </div>
   </header>
 
   <div class="messages" id="messages"></div>
+  <button type="button" class="scroll-bottom-fab hidden" id="btn-scroll-bottom" aria-label="Scroll to latest messages" title="Jump to bottom">
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+  </button>
 
   <div class="composer-wrap">
+    <div class="attach-popover hidden" id="attach-menu" role="menu">
+      <button type="button" class="attach-menu-item" id="btn-attach-file-menu" role="menuitem">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+        <span data-i18n="file.attach">Attach file</span>
+      </button>
+      <button type="button" class="attach-menu-item" id="btn-attach-code-menu" role="menuitem">
+        <span class="attach-code-glyph">&lt;/&gt;</span>
+        <span data-i18n="code.modal.title">Share Code Snippet</span>
+      </button>
+    </div>
     <div class="typing-bar hidden" id="typing-bar" aria-live="polite">
       <span class="typing-dots" aria-hidden="true"><span></span><span></span><span></span></span>
       <span class="typing-text" id="typing-text"></span>
@@ -130,6 +149,7 @@
       <button type="button" class="small" id="btn-compose-cancel" aria-label="Cancel">×</button>
     </div>
     <form class="input-bar" id="send-form">
+      <button type="button" class="small btn-plus hidden" id="btn-attach-menu" aria-label="Attachments" aria-expanded="false" title="Attach file or code snippet">+</button>
       <button type="button" class="small btn-file hidden" id="btn-file" aria-label="Attach file" title="Attach file">
         <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
       </button>
@@ -141,7 +161,10 @@
       </button>
       <button type="button" class="small danger hidden" id="btn-voice-cancel" aria-label="Cancel recording" data-i18n="voice.cancel">Cancel</button>
       <input type="text" id="inp-msg" dir="auto" autocomplete="off" placeholder="Message or /help (Tab to complete nicks, Alt+Up/Down to switch)" data-i18n-placeholder="ph.msg">
-      <button type="submit" class="primary" data-i18n="btn.send">Send</button>
+      <button type="submit" class="primary btn-send" id="btn-send" aria-label="Send">
+        <svg class="send-icon" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        <span class="send-label" data-i18n="btn.send">Send</span>
+      </button>
     </form>
   </div>
 

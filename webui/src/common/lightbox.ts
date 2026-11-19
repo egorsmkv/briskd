@@ -164,6 +164,24 @@ export function openLightbox(items: LightboxItem[], startIndex = 0): void {
     if (ev.target === overlay || ev.target === stage) closeLightbox();
   });
 
+  // Touch swipe left/right for album navigation on iPhone/mobile
+  let swipeStartX = 0;
+  let swipeStartY = 0;
+  stage.addEventListener("touchstart", (ev) => {
+    if (ev.touches.length === 1) {
+      swipeStartX = ev.touches[0].clientX;
+      swipeStartY = ev.touches[0].clientY;
+    }
+  }, { passive: true });
+  stage.addEventListener("touchend", (ev) => {
+    if (zoomed || ev.changedTouches.length !== 1) return;
+    const dx = ev.changedTouches[0].clientX - swipeStartX;
+    const dy = ev.changedTouches[0].clientY - swipeStartY;
+    if (Math.abs(dx) > 48 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+      step(dx < 0 ? 1 : -1);
+    }
+  }, { passive: true });
+
   keyHandler = (ev: KeyboardEvent) => {
     if (ev.key === "Escape") {
       ev.preventDefault();
