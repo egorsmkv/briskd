@@ -56,6 +56,7 @@ to the process working directory unless they are absolute.
 | `monitor_limit` | `100` | Maximum `MONITOR` targets per client |
 | `webirc` | `[]` | Trusted WebIRC gateways, each with `password` and a `hosts` list of IP addresses |
 | `dronebl` | `false` | DroneBL DNSBL lookup and temporary IP banning. Set to `true` for defaults or an object (`enabled`, `zone`, `timeout_ms`, `ban_ttl`, `cache_ttl`, `types`, `skip_private`, `max_entries`, `max_in_flight`) |
+| `webui` | `null` | Opt-in admin HTTP WebUI and JSON API: `{"bind": "127.0.0.1", "port": 8080, "username": "admin", "password": "..."}`. Requires HTTP Basic auth; place behind a TLS reverse proxy for remote access |
 | `account_verification` | `null` | `{"command": ["/abs/program", "args"...], "ttl": 900}`. When set, `REGISTER` needs an email address and the program delivers a verification code (environment `IRCD_ACCOUNT`, `IRCD_EMAIL`, `IRCD_CODE`) |
 
 Set at least one of `tcp_port`, `tls_port`, `ws_port`, or `wss_port`. TLS

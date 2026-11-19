@@ -1,0 +1,575 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ircd admin</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --border: #d8dee6;
+    --text: #1c2430;
+    --muted: #5d6b7d;
+    --accent: #1d4ed8;
+    --accent-hover: #1e40af;
+    --danger: #b91c1c;
+    --danger-hover: #991b1b;
+    --ok: #15803d;
+    --warn: #b45309;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 20px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand h1 { margin: 0; font-size: 17px; }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    background: #dcfce7;
+    color: var(--ok);
+  }
+  .badge.off { background: #fee2e2; color: var(--danger); }
+  .header-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  main { max-width: 1180px; margin: 18px auto; padding: 0 18px 40px; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+  }
+  .card .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+  .card .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
+  .card .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .toolbar {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    margin-bottom: 16px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+  .toolbar .spacer { flex: 1; }
+  button, select, input {
+    font: inherit;
+    padding: 6px 10px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+  }
+  button {
+    cursor: pointer;
+    font-weight: 500;
+  }
+  button:hover { background: #eef2f6; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { background: var(--accent-hover); }
+  button.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+  button.danger:hover { background: var(--danger-hover); }
+  button.small { padding: 3px 8px; font-size: 12px; }
+  #notice {
+    display: none;
+    padding: 10px 14px;
+    border-radius: 6px;
+    margin-bottom: 14px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    font-family: var(--mono);
+    font-size: 12px;
+    white-space: pre-wrap;
+  }
+  #notice.ok { border-color: #86efac; background: #f0fdf4; color: var(--ok); display: block; }
+  #notice.err { border-color: #fca5a5; background: #fef2f2; color: var(--danger); display: block; }
+  .tabs {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+  }
+  .tab {
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: 6px 6px 0 0;
+    background: transparent;
+    padding: 8px 14px;
+    color: var(--muted);
+  }
+  .tab.active {
+    background: var(--surface);
+    border-color: var(--border);
+    color: var(--text);
+    font-weight: 600;
+    margin-bottom: -1px;
+  }
+  .panel {
+    display: none;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 0 6px 6px 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  .panel.active { display: block; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td {
+    text-align: left;
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; background: #fafbfc; }
+  td.mono { font-family: var(--mono); font-size: 12px; }
+  .empty { color: var(--muted); padding: 14px 4px; }
+  .inline-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  .muted { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1 id="srv-name">ircd</h1>
+    <span id="srv-status" class="badge">loading</span>
+    <span id="srv-meta" class="muted"></span>
+  </div>
+  <div class="header-controls">
+    <label class="muted"><input type="checkbox" id="auto-refresh" checked> Auto-refresh (5s)</label>
+    <button type="button" id="btn-refresh">Refresh</button>
+  </div>
+</header>
+
+<main>
+  <div id="notice"></div>
+
+  <section class="grid" id="stats-grid">
+    <div class="card">
+      <div class="label">Sessions</div>
+      <div class="value" id="st-sessions">-</div>
+      <div class="sub" id="st-sessions-sub"></div>
+    </div>
+    <div class="card">
+      <div class="label">Channels</div>
+      <div class="value" id="st-channels">-</div>
+      <div class="sub" id="st-channels-sub"></div>
+    </div>
+    <div class="card">
+      <div class="label">Network</div>
+      <div class="value" id="st-network">-</div>
+      <div class="sub" id="st-network-sub"></div>
+    </div>
+    <div class="card">
+      <div class="label">Accounts</div>
+      <div class="value" id="st-accounts">-</div>
+      <div class="sub" id="st-retention"></div>
+    </div>
+    <div class="card">
+      <div class="label">DroneBL</div>
+      <div class="value" id="st-dronebl">-</div>
+      <div class="sub" id="st-dronebl-sub"></div>
+    </div>
+    <div class="card">
+      <div class="label">Erlang VM</div>
+      <div class="value" id="st-memory">-</div>
+      <div class="sub" id="st-procs"></div>
+    </div>
+  </section>
+
+  <section class="toolbar">
+    <button type="button" class="primary" id="btn-rehash">Rehash Config</button>
+    <button type="button" id="btn-reload-certs">Reload TLS Certs</button>
+    <select id="sel-log-level" aria-label="Log level">
+      <option value="debug">debug</option>
+      <option value="info">info</option>
+      <option value="notice">notice</option>
+      <option value="warning">warning</option>
+      <option value="error">error</option>
+      <option value="critical">critical</option>
+      <option value="alert">alert</option>
+      <option value="emergency">emergency</option>
+    </select>
+    <button type="button" id="btn-log-level">Set Log Level</button>
+    <input type="text" id="inp-backup" placeholder="/tmp/mnesia.bak" size="20">
+    <button type="button" id="btn-backup">Backup Mnesia</button>
+    <span class="spacer"></span>
+    <button type="button" class="danger" id="btn-drain">Drain</button>
+    <button type="button" class="danger" id="btn-stop">Stop Server</button>
+  </section>
+
+  <nav class="tabs" id="tabs">
+    <button type="button" class="tab active" data-tab="clients">Clients (<span id="cnt-clients">0</span>)</button>
+    <button type="button" class="tab" data-tab="channels">Channels (<span id="cnt-channels">0</span>)</button>
+    <button type="button" class="tab" data-tab="links">Links (<span id="cnt-links">0</span>)</button>
+    <button type="button" class="tab" data-tab="accounts">Accounts (<span id="cnt-accounts">0</span>)</button>
+    <button type="button" class="tab" data-tab="dronebl">DroneBL (<span id="cnt-dronebl">0</span>)</button>
+  </nav>
+
+  <section class="panel active" id="panel-clients">
+    <div id="clients-wrap"></div>
+  </section>
+
+  <section class="panel" id="panel-channels">
+    <div id="channels-wrap"></div>
+  </section>
+
+  <section class="panel" id="panel-links">
+    <form class="inline-form" id="form-connect">
+      <input type="text" id="inp-peer" placeholder="Configured peer name" required>
+      <button type="submit" class="primary">Connect Peer</button>
+    </form>
+    <div id="links-wrap"></div>
+  </section>
+
+  <section class="panel" id="panel-accounts">
+    <form class="inline-form" id="form-account">
+      <input type="text" id="inp-acct-name" placeholder="Account name" required>
+      <input type="password" id="inp-acct-pass" placeholder="Password" required>
+      <input type="email" id="inp-acct-email" placeholder="Email (optional)">
+      <button type="submit" class="primary">Create Account</button>
+    </form>
+    <div id="accounts-wrap"></div>
+  </section>
+
+  <section class="panel" id="panel-dronebl">
+    <div id="dronebl-wrap"></div>
+  </section>
+</main>
+
+<script>
+(function() {
+  const $ = (id) => document.getElementById(id);
+
+  function el(tag, text, cls) {
+    const node = document.createElement(tag);
+    if (text !== undefined && text !== null) node.textContent = String(text);
+    if (cls) node.className = cls;
+    return node;
+  }
+
+  function showNotice(ok, text) {
+    const n = $("notice");
+    n.className = ok ? "ok" : "err";
+    n.textContent = text;
+  }
+
+  function fmtUptime(s) {
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    return (d ? d + "d " : "") + h + "h " + m + "m " + sec + "s";
+  }
+
+  function fmtMem(bytes) {
+    return (bytes / (1024 * 1024)).toFixed(1) + " MiB";
+  }
+
+  async function postAction(action, args) {
+    try {
+      const res = await fetch("/api/action", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Requested-With": "ircd-webui"
+        },
+        body: JSON.stringify({ action: action, args: args || [] })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        showNotice(true, action + ": " + JSON.stringify(data));
+        refresh();
+      } else {
+        showNotice(false, action + " failed: " + JSON.stringify(data));
+      }
+    } catch (e) {
+      showNotice(false, action + " error: " + e.message);
+    }
+  }
+
+  function makeTable(headers, rows) {
+    if (!rows.length) return el("div", "None.", "empty");
+    const table = document.createElement("table");
+    const thead = document.createElement("thead");
+    const tr = document.createElement("tr");
+    headers.forEach((h) => tr.appendChild(el("th", h)));
+    thead.appendChild(tr);
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    rows.forEach((cells) => {
+      const r = document.createElement("tr");
+      cells.forEach((cell) => {
+        const td = document.createElement("td");
+        if (cell instanceof Node) {
+          td.appendChild(cell);
+        } else if (cell && typeof cell === "object" && "text" in cell) {
+          td.textContent = String(cell.text);
+          if (cell.cls) td.className = cell.cls;
+        } else {
+          td.textContent = cell === undefined || cell === null ? "" : String(cell);
+        }
+        r.appendChild(td);
+      });
+      tbody.appendChild(r);
+    });
+    table.appendChild(tbody);
+    return table;
+  }
+
+  function replace(id, node) {
+    const wrap = $(id);
+    wrap.textContent = "";
+    wrap.appendChild(node);
+  }
+
+  function render(data) {
+    const st = data.status || {};
+    $("srv-name").textContent = st.name || "ircd";
+    const badge = $("srv-status");
+    badge.textContent = st.status || "unknown";
+    badge.className = st.status === "running" ? "badge" : "badge off";
+    $("srv-meta").textContent =
+      "network " + (st.network || "-") +
+      " | up " + fmtUptime(st.uptime_seconds || 0) +
+      " | listeners: " + (st.listeners || []).map((l) => l.transport + ":" + l.port).join(", ");
+
+    $("st-sessions").textContent = (st.sessions ?? 0) + " / " + (st.max_clients ?? 0);
+    $("st-sessions-sub").textContent =
+      "registered: " + (st.registered_users ?? 0) + ", operators: " + (st.operators_online ?? 0);
+    $("st-channels").textContent = String(st.channels ?? 0);
+    $("st-channels-sub").textContent = "remote: " + (st.remote_channels ?? 0);
+    $("st-network").textContent = String(st.known_servers ?? 0) + " peers";
+    $("st-network-sub").textContent =
+      "remote users: " + (st.remote_users ?? 0) + ", services: " + (st.services ?? 0);
+    $("st-accounts").textContent = String(st.accounts ?? 0);
+    $("st-retention").textContent = "retention: " + (st.retention || "-");
+
+    const dbl = data.dronebl || {};
+    const dblStats = dbl.stats || {};
+    $("st-dronebl").textContent = dblStats.enabled ? (dblStats.bans ?? 0) + " bans" : "disabled";
+    $("st-dronebl-sub").textContent = dblStats.enabled
+      ? "clean cache: " + (dblStats.cached_clean ?? 0) + ", in-flight: " + (dblStats.in_flight ?? 0)
+      : "enable in config";
+
+    $("st-memory").textContent = fmtMem(st.memory_bytes || 0);
+    $("st-procs").textContent = (st.erlang_processes ?? 0) + " processes";
+
+    if (st.log_level && document.activeElement !== $("sel-log-level")) {
+      $("sel-log-level").value = st.log_level;
+    }
+
+    const clients = (data.clients && data.clients.clients) || [];
+    $("cnt-clients").textContent = String(clients.length);
+    replace("clients-wrap", makeTable(
+      ["Nick", "User@Host", "Account", "Modes", "TLS", "Channels", "Action"],
+      clients.map((c) => {
+        const btn = el("button", "Kick", "danger small");
+        btn.type = "button";
+        btn.onclick = () => {
+          const reason = prompt("Kick reason for " + c.nick + ":", "Disconnected by administrator");
+          if (reason !== null) postAction("kick-client", [c.nick, reason]);
+        };
+        return [
+          { text: c.nick || "*", cls: "mono" },
+          { text: (c.user || "-") + "@" + (c.host || "-"), cls: "mono" },
+          c.account || "-",
+          { text: c.modes || "+", cls: "mono" },
+          c.tls ? "yes" : "no",
+          (c.channels || []).join(", "),
+          c.nick ? btn : ""
+        ];
+      })
+    ));
+
+    const channels = (data.channels && data.channels.channels) || [];
+    $("cnt-channels").textContent = String(channels.length);
+    replace("channels-wrap", makeTable(
+      ["Channel", "Local", "Remote", "Modes", "Predefined", "Topic"],
+      channels.map((ch) => [
+        { text: ch.name, cls: "mono" },
+        ch.local_members ?? 0,
+        ch.remote_members ?? 0,
+        { text: ch.modes || "+", cls: "mono" },
+        ch.predefined ? "yes" : "no",
+        ch.topic || ""
+      ])
+    ));
+
+    const linksData = data.links || {};
+    const connected = linksData.connected || [];
+    const configured = linksData.configured || [];
+    $("cnt-links").textContent = String(connected.length);
+    const linkRows = [];
+    connected.forEach((l) => {
+      const btn = el("button", "SQUIT", "danger small");
+      btn.type = "button";
+      btn.onclick = () => {
+        const reason = prompt("SQUIT reason for " + l.server + ":", "Operator disconnect");
+        if (reason !== null) postAction("squit", [l.server, reason]);
+      };
+      linkRows.push([
+        { text: l.server, cls: "mono" },
+        "connected (hop " + (l.hopcount ?? 1) + ")",
+        l.info || "",
+        btn
+      ]);
+    });
+    configured.forEach((cfg) => {
+      const isUp = connected.some((l) => l.server === cfg.name);
+      if (!isUp) {
+        const btn = el("button", "Connect", "primary small");
+        btn.type = "button";
+        btn.onclick = () => postAction("connect", [cfg.name]);
+        linkRows.push([
+          { text: cfg.name, cls: "mono" },
+          "configured (" + cfg.host + ":" + cfg.port + ")",
+          cfg.tls ? "TLS" : "TCP",
+          btn
+        ]);
+      }
+    });
+    replace("links-wrap", makeTable(["Server", "State", "Info", "Action"], linkRows));
+
+    const accounts = (data.accounts && data.accounts.accounts) || [];
+    $("cnt-accounts").textContent = String(accounts.length);
+    replace("accounts-wrap", makeTable(
+      ["Account", "Verified", "Email", "Action"],
+      accounts.map((a) => {
+        const btn = el("button", "Delete", "danger small");
+        btn.type = "button";
+        btn.onclick = () => {
+          if (confirm("Delete account " + a.name + "?")) {
+            postAction("delete-account", [a.name]);
+          }
+        };
+        return [
+          { text: a.name, cls: "mono" },
+          a.verified ? "yes" : "no",
+          a.email || "-",
+          btn
+        ];
+      })
+    ));
+
+    const bans = dbl.bans || [];
+    $("cnt-dronebl").textContent = String(bans.length);
+    replace("dronebl-wrap", makeTable(
+      ["IP", "Code", "Expires In", "Reason", "Action"],
+      bans.map((b) => {
+        const btn = el("button", "Unban", "small");
+        btn.type = "button";
+        btn.onclick = () => postAction("dronebl-unban", [b.ip]);
+        return [
+          { text: b.ip, cls: "mono" },
+          b.code,
+          (b.expires_in ?? 0) + "s",
+          b.reason || "",
+          btn
+        ];
+      })
+    ));
+  }
+
+  async function refresh() {
+    try {
+      const res = await fetch("/api/overview", { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      render(await res.json());
+    } catch (e) {
+      $("srv-status").textContent = "unreachable";
+      $("srv-status").className = "badge off";
+      showNotice(false, "Failed to load server stats: " + e.message);
+    }
+  }
+
+  $("tabs").addEventListener("click", (ev) => {
+    const btn = ev.target.closest(".tab");
+    if (!btn) return;
+    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+    document.querySelectorAll(".panel").forEach((p) => p.classList.remove("active"));
+    btn.classList.add("active");
+    $("panel-" + btn.dataset.tab).classList.add("active");
+  });
+
+  $("btn-refresh").onclick = refresh;
+  $("btn-rehash").onclick = () => postAction("rehash", []);
+  $("btn-reload-certs").onclick = () => postAction("reload-certs", []);
+  $("btn-log-level").onclick = () => postAction("log-level", [$("sel-log-level").value]);
+  $("btn-backup").onclick = () => {
+    const p = $("inp-backup").value.trim();
+    if (!p) { showNotice(false, "Enter a backup file path."); return; }
+    postAction("backup", [p]);
+  };
+  $("btn-drain").onclick = () => {
+    const reason = prompt("Drain reason:", "Server maintenance");
+    if (reason !== null && confirm("Drain all listeners and disconnect clients?")) {
+      postAction("drain", [reason]);
+    }
+  };
+  $("btn-stop").onclick = () => {
+    const reason = prompt("Stop reason:", "Server shutting down");
+    if (reason !== null && confirm("Stop the IRC server?")) {
+      postAction("stop", [reason]);
+    }
+  };
+  $("form-connect").onsubmit = (ev) => {
+    ev.preventDefault();
+    const peer = $("inp-peer").value.trim();
+    if (peer) { postAction("connect", [peer]); $("inp-peer").value = ""; }
+  };
+  $("form-account").onsubmit = (ev) => {
+    ev.preventDefault();
+    const name = $("inp-acct-name").value.trim();
+    const pass = $("inp-acct-pass").value;
+    const email = $("inp-acct-email").value.trim();
+    if (name && pass) {
+      const args = email ? [name, pass, email] : [name, pass];
+      postAction("create-account", args);
+      $("inp-acct-name").value = "";
+      $("inp-acct-pass").value = "";
+      $("inp-acct-email").value = "";
+    }
+  };
+
+  refresh();
+  setInterval(() => {
+    if ($("auto-refresh").checked) refresh();
+  }, 5000);
+})();
+</script>
+</body>
+</html>

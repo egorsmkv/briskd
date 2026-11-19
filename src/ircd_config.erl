@@ -95,6 +95,7 @@ load(Path) ->
             max_sendq => max_sendq(maps:get(<<"max_sendq">>, Json, 10000)),
             flood => flood(maps:get(<<"flood">>, Json, #{})),
             dronebl => dronebl(maps:get(<<"dronebl">>, Json, false)),
+            webui => webui(maps:get(<<"webui">>, Json, null)),
             e2ee => e2ee(maps:get(<<"e2ee">>, Json, null)),
             max_accounts => positive_limit(maps:get(<<"max_accounts">>, Json, 100000)),
             max_empty_channels => positive_limit(maps:get(<<"max_empty_channels">>, Json, 1000)),
@@ -699,3 +700,32 @@ dronebl_types(List) when is_list(List), List =/= [] ->
     lists:usort(List);
 dronebl_types(Value) ->
     erlang:error({invalid_dronebl_types, Value}).
+
+%% Admin WebUI HTTP listener. Disabled when `null` or `false`. Requires an
+%% explicit `port` and non-empty `password`; binds to loopback by default.
+webui(null) ->
+    null;
+webui(false) ->
+    null;
+webui(Map) when is_map(Map) ->
+    Bind = maps:get(<<"bind">>, Map, <<"127.0.0.1">>),
+    true = is_binary(Bind),
+    {ok, IP} = inet:parse_address(binary_to_list(Bind)),
+    Port = maps:get(<<"port">>, Map),
+    true = is_integer(Port, 0, 65535),
+    Username = maps:get(<<"username">>, Map, <<"admin">>),
+    true =
+        is_binary(Username) andalso byte_size(Username) > 0 andalso byte_size(Username) =< 128 andalso
+            binary:match(Username, [<<0>>, <<":">>, <<"\r">>, <<"\n">>]) =:= nomatch,
+    Password = maps:get(<<"password">>, Map),
+    true =
+        is_binary(Password) andalso byte_size(Password) > 0 andalso byte_size(Password) =< 256 andalso
+            binary:match(Password, [<<0>>, <<"\r">>, <<"\n">>]) =:= nomatch,
+    #{
+        ip => IP,
+        port => Port,
+        username => ircd_wire:retain(Username),
+        password => retain_secret(Password)
+    };
+webui(Value) ->
+    erlang:error({invalid_webui, Value}).

@@ -54,8 +54,13 @@ init(Config) ->
      || maps:get(tls_options, Config, []) =/= [],
         maps:get(tls_reload_interval, Config, 60) > 0
     ],
-    Ctl = [
-        #{id => ircd_dronebl, start => {ircd_dronebl, start_link, [Config]}},
-        #{id => ircd_ctl, start => {ircd_ctl, start_link, [Config]}}
-    ],
+    Ctl =
+        [
+            #{id => ircd_dronebl, start => {ircd_dronebl, start_link, [Config]}},
+            #{id => ircd_ctl, start => {ircd_ctl, start_link, [Config]}}
+        ] ++
+            [
+                #{id => ircd_webui, start => {ircd_webui, start_link, [Config]}}
+             || maps:get(webui, Config, null) =/= null
+            ],
     {ok, {#{strategy => rest_for_one}, Children ++ Listeners ++ Certs ++ Ctl}}.

@@ -45,5 +45,6 @@
     "nick_per_minute": 60,
     "register_per_minute": 30
   },
-  "dronebl": false
+  "dronebl": false,
+  "webui": null
 }
