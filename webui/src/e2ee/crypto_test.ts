@@ -1,8 +1,10 @@
 /// <reference lib="deno.ns" />
 import {
   CryptoError,
+  decryptAttachment,
   decryptKeyBackup,
   DoubleRatchet,
+  encryptAttachment,
   encryptKeyBackup,
   fromHex,
   Identity,
@@ -244,4 +246,26 @@ Deno.test("Encrypted key backup roundtrip and wrong passphrase rejection", () =>
     rejectedShort = e instanceof CryptoError;
   }
   assert(rejectedShort, "must reject short passphrase");
+});
+
+Deno.test("Encrypted attachment roundtrip and tamper detection", () => {
+  const raw = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 42, 99]);
+  const res = encryptAttachment(raw);
+  assert(res.ciphertext.length > raw.length, "ciphertext includes GCM tag");
+  const out = decryptAttachment(res.ciphertext, res.key, res.iv, res.sha256);
+  assert(
+    out.length === raw.length && out.every((b, i) => b === raw[i]),
+    "attachment roundtrip mismatch",
+  );
+
+  // Tamper one byte -> SHA-256 integrity check must reject
+  const tampered = new Uint8Array(res.ciphertext);
+  tampered[0] ^= 0xff;
+  let rejectedTamper = false;
+  try {
+    decryptAttachment(tampered, res.key, res.iv, res.sha256);
+  } catch (e) {
+    rejectedTamper = e instanceof CryptoError;
+  }
+  assert(rejectedTamper, "must reject tampered ciphertext");
 });

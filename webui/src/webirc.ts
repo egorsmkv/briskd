@@ -3,8 +3,18 @@ import { dayKey, formatDayLabel, renderIrcMessage } from "./common/format.ts";
 import { currentLang, initLang, setLang, t } from "./common/i18n.ts";
 import { currentTheme, initTheme, setTheme, THEMES } from "./common/theme.ts";
 import { updateDynamicFavicon } from "./common/favicon.ts";
-import { createFileCard, formatBytes } from "./common/file_card.ts";
+import {
+  createAlbumGrid,
+  createEncryptedAttachmentView,
+  createFileCard,
+  E2EE_ATT_PREFIX,
+  type E2eeAttachmentItem,
+  formatBytes,
+  isPreviewImageId,
+  parseE2eeAttachment,
+} from "./common/file_card.ts";
 import { createVoicePlayer } from "./common/voice_player.ts";
+import { encryptAttachment } from "./e2ee/crypto.ts";
 import { E2EE_CAP, E2eeManager } from "./e2ee/manager.ts";
 
 interface WebircSettings {
@@ -99,6 +109,7 @@ interface ChatLine {
   fileId?: string;
   fileName?: string;
   fileSize?: number;
+  albumIds?: string[];
 }
 
 const FEATURES_CAP = "egorsmkv.github.io/features";
@@ -130,6 +141,7 @@ const FILES_CAP = "egorsmkv.github.io/files";
 const FILE_TAG = "+egorsmkv.github.io/file";
 const FILE_NAME_TAG = "+egorsmkv.github.io/file-name";
 const FILE_SIZE_TAG = "+egorsmkv.github.io/file-size";
+const ALBUM_TAG = "+egorsmkv.github.io/album";
 const FILE_ID_RE = /^[0-9a-f]{32}\.[a-z0-9]{1,8}$/;
 
 function fmtDuration(sec?: number): string {
@@ -878,6 +890,7 @@ function addLine(
     fileId?: string;
     fileName?: string;
     fileSize?: number;
+    albumIds?: string[];
   },
 ): void {
   const buf = ensureBuf(bufName);
@@ -898,6 +911,7 @@ function addLine(
     fileId: opts.fileId,
     fileName: opts.fileName,
     fileSize: opts.fileSize,
+    albumIds: opts.albumIds,
   };
   const prev = buf.lines[buf.lines.length - 1];
   buf.lines.push(entry);
@@ -978,6 +992,23 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
       span.className = "msg-redacted-text";
       span.textContent = t("msg.deleted");
       return span;
+    }
+    if (entry.encrypted) {
+      const att = parseE2eeAttachment(entry.text);
+      if (att) {
+        return createEncryptedAttachmentView(att, {
+          voiceLabel: t("voice.label"),
+          downloadLabel: t("file.download"),
+        });
+      }
+    }
+    if (entry.albumIds && entry.albumIds.length > 0) {
+      return createAlbumGrid(
+        entry.albumIds.map((id) => ({
+          url: `/api/files/${id}`,
+          name: id,
+        })),
+      );
     }
     if (entry.voiceId && VOICE_ID_RE.test(entry.voiceId)) {
       return createVoicePlayer({
@@ -1777,6 +1808,12 @@ function handleMessage(raw: string): void {
       const fileSize = Number.isFinite(rawFileSize) && rawFileSize > 0
         ? rawFileSize
         : undefined;
+      const rawAlbum = msg.tags[ALBUM_TAG] || "";
+      const albumIds = rawAlbum
+        ? rawAlbum.split(",").filter((id) =>
+          FILE_ID_RE.test(id) && isPreviewImageId(id)
+        ).slice(0, 10)
+        : undefined;
       const replyTo = msg.tags[REPLY_TAG] || undefined;
       addLine(dest, {
         time,
@@ -1790,6 +1827,7 @@ function handleMessage(raw: string): void {
         fileId,
         fileName,
         fileSize,
+        albumIds: albumIds && albumIds.length > 0 ? albumIds : undefined,
       });
     }
     return;
@@ -2653,6 +2691,26 @@ async function uploadAndSendVoice(
   const btn = $<HTMLButtonElement>("btn-voice");
   btn.disabled = true;
   try {
+    if (e2ee.isBufferEncrypted(target) && filesSupported) {
+      const raw = new Uint8Array(await blob.arrayBuffer());
+      const enc = encryptAttachment(raw);
+      const uploaded = await uploadBinaryFile(enc.ciphertext, "encrypted.bin");
+      if (!uploaded) return;
+      const payload = E2EE_ATT_PREFIX + JSON.stringify({
+        v: 1,
+        kind: "voice",
+        id: uploaded.id,
+        mime: blob.type || "audio/ogg",
+        dur: durSec,
+        bytes: raw.byteLength,
+        key: enc.key,
+        iv: enc.iv,
+        sha256: enc.sha256,
+      });
+      const ok = await e2ee.sendEncrypted(target, payload);
+      if (ok) addLine(target, { nick: myNick, text: payload, encrypted: true });
+      return;
+    }
     const resp = await fetch("/api/voice", {
       method: "POST",
       headers: {
@@ -2776,54 +2834,167 @@ function updateFileButton(): void {
   btn.title = `${t("file.attach")} (max ${formatBytes(filesMaxBytes)})`;
 }
 
-async function uploadAndSendFile(file: File, target: string): Promise<void> {
-  if (!filesSupported) return;
-  if (file.size <= 0) return;
-  if (file.size > filesMaxBytes) {
-    addLine(target, {
-      text: t("file.err.tooLarge", { max: formatBytes(filesMaxBytes) }),
-      kind: "err",
-    });
-    return;
+async function uploadBinaryFile(
+  body: Blob | Uint8Array,
+  filename: string,
+): Promise<{ id: string; name: string; bytes: number } | null> {
+  const resp = await fetch("/api/files", {
+    method: "POST",
+    headers: {
+      "X-Requested-With": "ircd-webui",
+      "Content-Type": "application/octet-stream",
+      "X-File-Name": encodeURIComponent(filename || "file.bin"),
+    },
+    body: body instanceof Uint8Array ? (body as BodyInit) : body,
+  });
+  const data = await resp.json().catch(() => ({})) as {
+    id?: string;
+    name?: string;
+    bytes?: number;
+    error?: string;
+    message?: string;
+  };
+  if (!resp.ok || !data.id || !FILE_ID_RE.test(data.id)) {
+    throw new Error(data.message || data.error || `HTTP ${resp.status}`);
+  }
+  return {
+    id: data.id,
+    name: data.name || filename || data.id,
+    bytes: typeof data.bytes === "number" && data.bytes > 0 ? data.bytes : 0,
+  };
+}
+
+function isRasterImageFile(file: File): boolean {
+  return [
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+  ].includes(file.type) ||
+    isPreviewImageId(
+      `00000000000000000000000000000000.${
+        (file.name.split(".").pop() || "").toLowerCase()
+      }`,
+    );
+}
+
+async function uploadAndSendFiles(
+  files: File[],
+  target: string,
+): Promise<void> {
+  if (!filesSupported || files.length === 0) return;
+  const batch = files.slice(0, 10);
+  for (const f of batch) {
+    if (f.size > filesMaxBytes) {
+      addLine(target, {
+        text: t("file.err.tooLarge", { max: formatBytes(filesMaxBytes) }),
+        kind: "err",
+      });
+      return;
+    }
   }
   const btn = $<HTMLButtonElement>("btn-file");
   btn.disabled = true;
   btn.classList.add("uploading");
   try {
-    const resp = await fetch("/api/files", {
-      method: "POST",
-      headers: {
-        "X-Requested-With": "ircd-webui",
-        "Content-Type": "application/octet-stream",
-        "X-File-Name": encodeURIComponent(file.name || "file.bin"),
-      },
-      body: file,
-    });
-    const data = await resp.json().catch(() => ({})) as {
-      id?: string;
-      name?: string;
-      bytes?: number;
-      error?: string;
-      message?: string;
-    };
-    if (!resp.ok || !data.id || !FILE_ID_RE.test(data.id)) {
-      const reason = data.message || data.error || `HTTP ${resp.status}`;
-      addLine(target, {
-        text: t("file.err.upload", { reason }),
-        kind: "err",
-      });
+    const encrypted = e2ee.isBufferEncrypted(target);
+    const allImages = batch.length >= 2 && batch.every(isRasterImageFile);
+
+    if (encrypted) {
+      if (allImages) {
+        const items: E2eeAttachmentItem[] = [];
+        for (const f of batch) {
+          const raw = new Uint8Array(await f.arrayBuffer());
+          const enc = encryptAttachment(raw);
+          const up = await uploadBinaryFile(enc.ciphertext, "encrypted.bin");
+          if (up) {
+            items.push({
+              id: up.id,
+              name: f.name || "image.png",
+              mime: f.type || "image/png",
+              bytes: raw.byteLength,
+              key: enc.key,
+              iv: enc.iv,
+              sha256: enc.sha256,
+            });
+          }
+        }
+        if (items.length > 0) {
+          const payload = E2EE_ATT_PREFIX + JSON.stringify({
+            v: 1,
+            kind: "album",
+            items,
+          });
+          const ok = await e2ee.sendEncrypted(target, payload);
+          if (ok) {
+            addLine(target, { nick: myNick, text: payload, encrypted: true });
+          }
+        }
+      } else {
+        for (const f of batch) {
+          if (f.size <= 0) continue;
+          const raw = new Uint8Array(await f.arrayBuffer());
+          const enc = encryptAttachment(raw);
+          const up = await uploadBinaryFile(enc.ciphertext, "encrypted.bin");
+          if (!up) continue;
+          const payload = E2EE_ATT_PREFIX + JSON.stringify({
+            v: 1,
+            kind: "file",
+            id: up.id,
+            name: f.name || "file.bin",
+            mime: f.type || "application/octet-stream",
+            bytes: raw.byteLength,
+            key: enc.key,
+            iv: enc.iv,
+            sha256: enc.sha256,
+          });
+          const ok = await e2ee.sendEncrypted(target, payload);
+          if (ok) {
+            addLine(target, { nick: myNick, text: payload, encrypted: true });
+          }
+        }
+      }
       return;
     }
-    const cleanName = data.name || file.name || data.id;
-    const size = typeof data.bytes === "number" && data.bytes > 0
-      ? data.bytes
-      : file.size;
-    const encodedName = encodeURIComponent(cleanName);
-    sendRaw(
-      `@${FILE_TAG}=${data.id};${FILE_NAME_TAG}=${encodedName};${FILE_SIZE_TAG}=${size} PRIVMSG ${target} :[File: ${cleanName} (${
-        formatBytes(size)
-      })] /api/files/${data.id}`,
-    );
+
+    if (allImages) {
+      const ids: string[] = [];
+      for (const f of batch) {
+        if (f.size <= 0) continue;
+        const up = await uploadBinaryFile(f, f.name || "image.png");
+        if (up && isPreviewImageId(up.id)) ids.push(up.id);
+      }
+      if (ids.length >= 2) {
+        sendRaw(
+          `@${ALBUM_TAG}=${
+            ids.join(",")
+          } PRIVMSG ${target} :[Album: ${ids.length} images]`,
+        );
+      } else if (ids.length === 1) {
+        const id = ids[0];
+        sendRaw(
+          `@${FILE_TAG}=${id};${FILE_NAME_TAG}=${
+            encodeURIComponent(batch[0].name || id)
+          };${FILE_SIZE_TAG}=${batch[0].size} PRIVMSG ${target} :[File: ${
+            batch[0].name || id
+          }] /api/files/${id}`,
+        );
+      }
+      return;
+    }
+
+    for (const f of batch) {
+      if (f.size <= 0) continue;
+      const up = await uploadBinaryFile(f, f.name || "file.bin");
+      if (!up) continue;
+      const size = up.bytes || f.size;
+      const encodedName = encodeURIComponent(up.name);
+      sendRaw(
+        `@${FILE_TAG}=${up.id};${FILE_NAME_TAG}=${encodedName};${FILE_SIZE_TAG}=${size} PRIVMSG ${target} :[File: ${up.name} (${
+          formatBytes(size)
+        })] /api/files/${up.id}`,
+      );
+    }
   } catch (e) {
     addLine(target, {
       text: t("file.err.upload", { reason: errorMessage(e) }),
@@ -2835,13 +3006,13 @@ async function uploadAndSendFile(file: File, target: string): Promise<void> {
   }
 }
 
-function shareFileInActiveBuffer(file: File): void {
+function shareFilesInActiveBuffer(files: File[]): void {
   const buf = buffers.get(activeBuf);
   if (!buf || buf.name === "*status") {
     addLine("*status", { text: t("file.err.target"), kind: "err" });
     return;
   }
-  void uploadAndSendFile(file, buf.name);
+  void uploadAndSendFiles(files, buf.name);
 }
 
 const fileInp = $<HTMLInputElement>("inp-file");
@@ -2856,8 +3027,8 @@ $("btn-file").addEventListener("click", () => {
 });
 
 fileInp.addEventListener("change", () => {
-  const file = fileInp.files?.[0];
-  if (file) shareFileInActiveBuffer(file);
+  const files = fileInp.files ? Array.from(fileInp.files) : [];
+  if (files.length > 0) shareFilesInActiveBuffer(files);
 });
 
 const messagesDropZone = $("messages");
@@ -2874,19 +3045,21 @@ messagesDropZone.addEventListener("dragleave", () => {
 messagesDropZone.addEventListener("drop", (ev) => {
   messagesDropZone.classList.remove("drag-over");
   if (!filesSupported) return;
-  const file = ev.dataTransfer?.files?.[0];
-  if (file) {
+  const files = ev.dataTransfer?.files ? Array.from(ev.dataTransfer.files) : [];
+  if (files.length > 0) {
     ev.preventDefault();
-    shareFileInActiveBuffer(file);
+    shareFilesInActiveBuffer(files);
   }
 });
 
 msgInp.addEventListener("paste", (ev) => {
   if (!filesSupported) return;
-  const file = ev.clipboardData?.files?.[0];
-  if (file) {
+  const files = ev.clipboardData?.files
+    ? Array.from(ev.clipboardData.files)
+    : [];
+  if (files.length > 0) {
     ev.preventDefault();
-    shareFileInActiveBuffer(file);
+    shareFilesInActiveBuffer(files);
   }
 });
 

@@ -1,10 +1,15 @@
 /**
- * Custom zero-dependency file attachment card for WebIRC.
+ * Custom zero-dependency file attachment card, multi-image album grid, and
+ * E2EE encrypted attachment loader for WebIRC.
  *
- * Renders inline image previews for safe raster formats (PNG, JPEG, GIF, WebP)
- * and color-coded, theme-aware file cards with size badges and one-click
- * download links for documents, archives, text, media, and general files.
+ * Renders inline image previews (opening the full-screen Lightbox on click)
+ * for safe raster formats (PNG, JPEG, GIF, WebP), multi-image albums, and
+ * color-coded file cards with size badges and one-click download links.
  */
+
+import { type LightboxItem, openLightbox } from "./lightbox.ts";
+import { createVoicePlayer } from "./voice_player.ts";
+import { decryptAttachment } from "../e2ee/crypto.ts";
 
 export type FileCategory =
   | "image"
@@ -18,7 +23,100 @@ export interface FileCardOptions {
   fileId: string;
   fileName: string;
   fileSize?: number;
+  srcUrl?: string;
+  previewImage?: boolean;
+  encrypted?: boolean;
   downloadLabel?: string;
+}
+
+export const E2EE_ATT_PREFIX = "__ircd_e2ee_att__:";
+
+export interface E2eeAttachmentItem {
+  id: string;
+  name: string;
+  mime: string;
+  bytes: number;
+  key: string;
+  iv: string;
+  sha256: string;
+}
+
+export type E2eeAttachmentPayload =
+  | {
+    v: 1;
+    kind: "voice";
+    id: string;
+    mime: string;
+    dur: number;
+    bytes: number;
+    key: string;
+    iv: string;
+    sha256: string;
+  }
+  | {
+    v: 1;
+    kind: "file";
+    id: string;
+    name: string;
+    mime: string;
+    bytes: number;
+    key: string;
+    iv: string;
+    sha256: string;
+  }
+  | {
+    v: 1;
+    kind: "album";
+    items: E2eeAttachmentItem[];
+  };
+
+const decryptedBlobCache = new Map<string, string>();
+const SAFE_E2EE_ID_RE = /^[0-9a-f]{32}\.[a-z0-9]{1,8}$/;
+const SAFE_IMAGE_MIMES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+]);
+
+export function parseE2eeAttachment(
+  text: string,
+): E2eeAttachmentPayload | null {
+  if (!text.startsWith(E2EE_ATT_PREFIX)) return null;
+  try {
+    const parsed = JSON.parse(text.slice(E2EE_ATT_PREFIX.length)) as Partial<
+      E2eeAttachmentPayload
+    >;
+    if (parsed.v !== 1) return null;
+    if (
+      parsed.kind === "voice" && typeof parsed.id === "string" &&
+      SAFE_E2EE_ID_RE.test(parsed.id) && typeof parsed.key === "string" &&
+      typeof parsed.iv === "string" && typeof parsed.sha256 === "string"
+    ) {
+      return parsed as E2eeAttachmentPayload;
+    }
+    if (
+      parsed.kind === "file" && typeof parsed.id === "string" &&
+      SAFE_E2EE_ID_RE.test(parsed.id) && typeof parsed.key === "string" &&
+      typeof parsed.iv === "string" && typeof parsed.sha256 === "string"
+    ) {
+      return parsed as E2eeAttachmentPayload;
+    }
+    if (
+      parsed.kind === "album" && Array.isArray(parsed.items) &&
+      parsed.items.length > 0 && parsed.items.length <= 10 &&
+      parsed.items.every((it) =>
+        it && typeof it.id === "string" && SAFE_E2EE_ID_RE.test(it.id) &&
+        typeof it.key === "string" && typeof it.iv === "string" &&
+        typeof it.sha256 === "string"
+      )
+    ) {
+      return parsed as E2eeAttachmentPayload;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp"]);
@@ -113,27 +211,32 @@ function makeFileSvg(kind: FileCategory | "download"): SVGSVGElement {
 }
 
 export function createFileCard(opts: FileCardOptions): HTMLElement {
-  const url = `/api/files/${opts.fileId}`;
+  const url = opts.srcUrl || `/api/files/${opts.fileId}`;
   const displayName = opts.fileName || opts.fileId;
-  const { kind, ext } = classifyFile(opts.fileId);
+  const { kind, ext } = classifyFile(opts.fileName || opts.fileId);
   const sizeText = formatBytes(opts.fileSize);
-  const preview = isPreviewImageId(opts.fileId);
+  const preview = opts.previewImage ?? isPreviewImageId(opts.fileId);
 
   const card = document.createElement("div");
   card.className = preview ? "file-card file-card-image" : "file-card";
 
   if (preview) {
-    const link = document.createElement("a");
+    const link = document.createElement("button");
+    link.type = "button";
     link.className = "file-preview-link";
-    link.href = url;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
+    link.title = displayName;
+    link.setAttribute("aria-label", displayName);
     const img = document.createElement("img");
     img.className = "file-preview-img";
     img.src = url;
     img.alt = displayName;
     img.loading = "lazy";
     link.appendChild(img);
+    link.onclick = () => {
+      openLightbox([
+        { url, name: displayName, sizeText, encrypted: opts.encrypted },
+      ], 0);
+    };
     card.appendChild(link);
   }
 
@@ -160,7 +263,9 @@ export function createFileCard(opts: FileCardOptions): HTMLElement {
   meta.className = "file-meta";
   const extPill = document.createElement("span");
   extPill.className = `file-ext file-ext-${kind}`;
-  extPill.textContent = ext.toUpperCase();
+  extPill.textContent = opts.encrypted
+    ? `🔒 ${ext.toUpperCase()}`
+    : ext.toUpperCase();
   meta.appendChild(extPill);
   if (sizeText) {
     const sizeEl = document.createElement("span");
@@ -188,4 +293,146 @@ export function createFileCard(opts: FileCardOptions): HTMLElement {
 
   card.appendChild(row);
   return card;
+}
+
+export function createAlbumGrid(
+  items: LightboxItem[],
+  encrypted = false,
+): HTMLElement {
+  const grid = document.createElement("div");
+  const cols = items.length >= 5 ? "cols-3" : "cols-2";
+  grid.className = `album-grid ${cols}`;
+  items.forEach((item, idx) => {
+    const tile = document.createElement("button");
+    tile.type = "button";
+    tile.className = "album-tile";
+    tile.title = item.name;
+    tile.setAttribute("aria-label", item.name);
+    const img = document.createElement("img");
+    img.src = item.url;
+    img.alt = item.name;
+    img.loading = "lazy";
+    tile.appendChild(img);
+    if (encrypted && idx === 0) {
+      const badge = document.createElement("span");
+      badge.className = "album-e2ee-badge";
+      badge.textContent = "🔒 E2EE";
+      tile.appendChild(badge);
+    }
+    tile.onclick = () => openLightbox(items, idx);
+    grid.appendChild(tile);
+  });
+  return grid;
+}
+
+async function fetchAndDecryptBlobUrl(
+  id: string,
+  mime: string,
+  key: string,
+  iv: string,
+  sha256: string,
+): Promise<string> {
+  const cached = decryptedBlobCache.get(id);
+  if (cached) return cached;
+  const resp = await fetch(`/api/files/${id}`);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const ct = new Uint8Array(await resp.arrayBuffer());
+  const pt = decryptAttachment(ct, key, iv, sha256);
+  const safeMime = SAFE_IMAGE_MIMES.has(mime) || mime.startsWith("audio/")
+    ? mime
+    : "application/octet-stream";
+  const blob = new Blob([pt as BlobPart], { type: safeMime });
+  const url = URL.createObjectURL(blob);
+  if (decryptedBlobCache.size > 80) {
+    const first = decryptedBlobCache.entries().next().value;
+    if (first) {
+      URL.revokeObjectURL(first[1]);
+      decryptedBlobCache.delete(first[0]);
+    }
+  }
+  decryptedBlobCache.set(id, url);
+  return url;
+}
+
+export function createEncryptedAttachmentView(
+  payload: E2eeAttachmentPayload,
+  opts: { voiceLabel: string; downloadLabel: string },
+): HTMLElement {
+  const host = document.createElement("div");
+  host.className = "e2ee-att-host";
+  const loading = document.createElement("span");
+  loading.className = "e2ee-att-status";
+  loading.textContent = "🔒 Decrypting attachment...";
+  host.appendChild(loading);
+
+  if (payload.kind === "voice") {
+    void fetchAndDecryptBlobUrl(
+      payload.id,
+      payload.mime || "audio/ogg",
+      payload.key,
+      payload.iv,
+      payload.sha256,
+    ).then((blobUrl) => {
+      host.textContent = "";
+      host.appendChild(
+        createVoicePlayer({
+          voiceId: payload.id,
+          srcUrl: blobUrl,
+          durationSec: payload.dur,
+          label: opts.voiceLabel,
+          encrypted: true,
+        }),
+      );
+    }).catch(() => {
+      loading.textContent = "🔒 Failed to decrypt voice message";
+    });
+  } else if (payload.kind === "file") {
+    void fetchAndDecryptBlobUrl(
+      payload.id,
+      payload.mime || "application/octet-stream",
+      payload.key,
+      payload.iv,
+      payload.sha256,
+    ).then((blobUrl) => {
+      host.textContent = "";
+      host.appendChild(
+        createFileCard({
+          fileId: payload.id,
+          fileName: payload.name || payload.id,
+          fileSize: payload.bytes,
+          srcUrl: blobUrl,
+          previewImage: SAFE_IMAGE_MIMES.has(payload.mime),
+          encrypted: true,
+          downloadLabel: opts.downloadLabel,
+        }),
+      );
+    }).catch(() => {
+      loading.textContent = "🔒 Failed to decrypt file";
+    });
+  } else if (payload.kind === "album") {
+    void Promise.all(
+      payload.items.map(async (it) => {
+        const url = await fetchAndDecryptBlobUrl(
+          it.id,
+          it.mime || "image/png",
+          it.key,
+          it.iv,
+          it.sha256,
+        );
+        return {
+          url,
+          name: it.name || it.id,
+          sizeText: formatBytes(it.bytes),
+          encrypted: true,
+        } satisfies LightboxItem;
+      }),
+    ).then((items) => {
+      host.textContent = "";
+      host.appendChild(createAlbumGrid(items, true));
+    }).catch(() => {
+      loading.textContent = "🔒 Failed to decrypt image album";
+    });
+  }
+
+  return host;
 }

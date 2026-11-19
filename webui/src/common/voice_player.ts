@@ -15,8 +15,10 @@ const peakCache = new Map<string, number[]>();
 
 export interface VoicePlayerOptions {
   voiceId: string;
+  srcUrl?: string;
   durationSec?: number;
   label: string;
+  encrypted?: boolean;
   playAriaLabel?: string;
   pauseAriaLabel?: string;
 }
@@ -152,7 +154,7 @@ function makeSvgIcon(kind: "play" | "pause"): SVGSVGElement {
 }
 
 export function createVoicePlayer(opts: VoicePlayerOptions): HTMLElement {
-  const url = `/api/voice/${opts.voiceId}`;
+  const url = opts.srcUrl || `/api/voice/${opts.voiceId}`;
   let totalDur = opts.durationSec && opts.durationSec > 0
     ? opts.durationSec
     : 0;
@@ -219,7 +221,7 @@ export function createVoicePlayer(opts: VoicePlayerOptions): HTMLElement {
 
   const codecBadge = document.createElement("span");
   codecBadge.className = "voice-codec";
-  codecBadge.textContent = "OPUS";
+  codecBadge.textContent = opts.encrypted ? "🔒 OPUS" : "OPUS";
 
   const speedBtn = document.createElement("button");
   speedBtn.type = "button";
