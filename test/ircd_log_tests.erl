@@ -111,6 +111,11 @@ text_formatter_single_line_test() ->
     ?assertMatch({_, _}, binary:match(Line, <<"event: started">>)),
     ?assertEqual(<<"\n">>, binary:part(Line, byte_size(Line), -1)).
 
+json_invalid_characters_test() ->
+    %% A lone surrogate makes logger_formatter raise; the line is still JSON.
+    Decoded = decode(#{level => info, meta => #{time => 1}, msg => {string, [16#D800]}}),
+    ?assertEqual(<<"{string,[55296]}">>, maps:get(<<"message">>, Decoded)).
+
 decode(Event) ->
     {Module, Config} = ircd_log:formatter(<<"json">>),
     [Json, $\n] = Module:format(Event, Config),

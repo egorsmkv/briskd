@@ -137,11 +137,17 @@ structured(Report, Callback, Event) ->
             #{message => message(Event)}
     end.
 
-message(Event) ->
-    Text = logger_formatter:format(Event, #{template => [msg], single_line => true}),
-    case unicode:characters_to_binary(Text) of
-        Binary when is_binary(Binary) -> Binary;
-        _ -> term_text(Text)
+%% logger_formatter raises on some invalid character data (a lone UTF-16
+%% surrogate, for example); the raw message is then logged as term text.
+message(#{msg := Msg} = Event) ->
+    try logger_formatter:format(Event, #{template => [msg], single_line => true}) of
+        Text ->
+            case unicode:characters_to_binary(Text) of
+                Binary when is_binary(Binary) -> Binary;
+                _ -> term_text(Text)
+            end
+    catch
+        error:_ -> term_text(Msg)
     end.
 
 key(Key) when is_atom(Key) -> Key;

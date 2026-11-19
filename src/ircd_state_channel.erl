@@ -300,11 +300,7 @@ add_member(Key, Name, #client{pid = Pid} = Client, Server, Password) ->
             {false, _, true} -> [operator];
             _ -> [member]
         end,
-    NewMembers =
-        case Role of
-            Roles when is_list(Roles) -> Members#{Pid => Roles};
-            _ -> Members#{Pid => [Role]}
-        end,
+    NewMembers = Members#{Pid => Role},
     Joined = length(Client#client.channels),
     case ircd_state_net:channel_blocked(Canonical) of
         true ->

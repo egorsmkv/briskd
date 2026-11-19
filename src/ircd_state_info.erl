@@ -10,7 +10,6 @@
     query_local_server/2,
     rehash/2,
     note_user_counts/0,
-    squery/3,
     stats/3,
     trace/3,
     users_disabled/3
@@ -89,15 +88,6 @@ users_disabled(Params, Client, Server) ->
         {false, Target} ->
             ircd_state_send:numeric(Client, Server, <<"402">>, [Target], <<"No such server">>)
     end.
-
-squery([], Client, Server) ->
-    ircd_state_send:numeric(Client, Server, <<"411">>, [], <<"No recipient given (SQUERY)">>);
-squery([_Service], Client, Server) ->
-    ircd_state_send:numeric(Client, Server, <<"412">>, [], <<"No text to send">>);
-squery([_Service, <<>> | _], Client, Server) ->
-    ircd_state_send:numeric(Client, Server, <<"412">>, [], <<"No text to send">>);
-squery([Service | _], Client, Server) ->
-    ircd_state_send:numeric(Client, Server, <<"401">>, [Service], <<"No such nick/channel">>).
 
 server_wallops(Text, Server) ->
     Recipients =

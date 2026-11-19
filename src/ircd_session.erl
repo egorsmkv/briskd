@@ -258,10 +258,8 @@ websocket_frames(Data, {Kind, Socket, Peer, _, Role} = State) ->
                     %% WebSocket connections are always clients, never server links.
                     case Role of
                         awaiting ->
-                            case promote_client({Kind, Socket, Peer, <<>>, awaiting}) of
-                                {ok, Client} -> websocket_messages(Frames, Client);
-                                error -> {stop, normal, State}
-                            end;
+                            Client = promote_client({Kind, Socket, Peer, <<>>, awaiting}),
+                            websocket_messages(Frames, Client);
                         _ ->
                             websocket_messages(Frames, {Kind, Socket, Peer, <<>>, Role})
                     end
@@ -425,13 +423,9 @@ reject_long_line(_Tags, {_, _, _, _, {server, _}}) ->
 reject_long_line(_Tags, {_, _, _, _, {server_pass, _}}) ->
     error;
 reject_long_line(Tags, {_, _, _, _, awaiting} = State) ->
-    case promote_client(State) of
-        {ok, ClientState} ->
-            ok = ircd_state:input_too_long(Tags),
-            {ok, ClientState};
-        error ->
-            error
-    end;
+    ClientState = promote_client(State),
+    ok = ircd_state:input_too_long(Tags),
+    {ok, ClientState};
 reject_long_line(Tags, {_, _, _, _, client} = State) ->
     ok = ircd_state:input_too_long(Tags),
     {ok, State}.
@@ -463,12 +457,7 @@ process_line(Tags, <<"SERVER">>, [Name, Hop, Token, _Info], _Bytes, State) ->
         _ -> error
     end;
 process_line(Tags, Command, Params, Bytes, {_, _, _, _, awaiting} = State) ->
-    case promote_client(State) of
-        {ok, ClientState} ->
-            process_client_line(Tags, Command, Params, Bytes, ClientState);
-        error ->
-            error
-    end;
+    process_client_line(Tags, Command, Params, Bytes, promote_client(State));
 process_line(_Tags, _Command, _Params, _Bytes, {_, _, _, _, {server_pass, _}}) ->
     error;
 process_line(_Tags, <<"QUIT">>, _Params, _Bytes, {_, _, _, _, {attached, _}}) ->
@@ -600,11 +589,10 @@ process_client_line(Tags, Command, Params, Bytes, {_, _, _, _, client} = State) 
         ok -> {ok, State}
     end.
 
+%% The first client command turns an awaiting connection into a client.
 promote_client({Kind, Socket, Peer, Buffer, awaiting}) ->
     ok = ircd_state:connect(Peer, connection_info(Kind, Socket)),
-    {ok, {Kind, Socket, Peer, Buffer, client}};
-promote_client(_) ->
-    error.
+    {Kind, Socket, Peer, Buffer, client}.
 
 set_link_password({Kind, Socket, Peer, Buffer, awaiting}, Password) ->
     {Kind, Socket, Peer, Buffer, {server_pass, Password}}.
@@ -615,9 +603,7 @@ set_role({Kind, Socket, Peer, Buffer, _}, Role) ->
 set_peer_and_role({Kind, Socket, _Peer, Buffer, _}, Peer, Role) ->
     {Kind, Socket, Peer, Buffer, Role}.
 
-peer_of({_, _, Peer, _, _}) -> Peer;
-peer_of({_, _, Peer}) -> Peer;
-peer_of(_) -> <<"unknown">>.
+peer_of({_, _, Peer, _, _}) -> Peer.
 
 valid_server_version(<<A, B, C, D, _/binary>> = Version) ->
     byte_size(Version) =< 14 andalso A >= $0 andalso A =< $9 andalso B >= $0 andalso B =< $9 andalso

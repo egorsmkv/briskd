@@ -219,8 +219,6 @@ load_table(Table, Fields, Options) ->
     case mnesia:force_load_table(Table) of
         yes ->
             ok;
-        ok ->
-            ok;
         Error ->
             logger:warning("Replacing unloaded Mnesia table ~p after ~p", [Table, Error]),
             replace_table(Table, Fields, Options)
@@ -632,10 +630,6 @@ other_call({server_command, Peer, Prefix, Command, Params, Tags}, _, Server) whe
     {reply, ircd_state_link:receive_remote_message(Peer, Prefix, Command, Params, Tags), Server};
 other_call({server_command, Peer, Prefix, Command, Params, _Tags}, From, Server) ->
     other_call({server_command, Peer, Prefix, Command, Params}, From, Server);
-other_call({server_command, Peer, Prefix, Command, Params}, _, Server) when
-    is_binary(Prefix), (Command =:= <<"PRIVMSG">> orelse Command =:= <<"NOTICE">>)
-->
-    {reply, ircd_state_link:receive_remote_message(Peer, Prefix, Command, Params, []), Server};
 other_call({server_command, Peer, Prefix, <<"SERVER">>, [Name, Hop, Token, Info | _]}, _, Server) ->
     {reply, ircd_state_net:introduce_server(Peer, Prefix, Name, Hop, Token, Info), Server};
 other_call({server_command, Peer, _Prefix, <<"SQUIT">>, [Target | Rest]}, _, Server) ->
@@ -1343,8 +1337,6 @@ registered_command(<<"WHOWAS">>, [NickMasks | Rest], Client, Server) ->
     end;
 registered_command(<<"MOTD">>, Params, Client, Server) ->
     ircd_state_info:motd(Params, Client, Server);
-registered_command(<<"AWAY">>, _, Client, Server) ->
-    ircd_state_send:numeric(Client, Server, <<"461">>, [<<"AWAY">>], <<"Not enough parameters">>);
 registered_command(Command, [], Client, Server) when
     Command =:= <<"JOIN">>;
     Command =:= <<"PART">>;
@@ -1379,16 +1371,6 @@ change_nick(Nick, Client, Server) ->
             end;
         {true, _, _, true} ->
             nick_in_use(Client, Nick, Server);
-        {true, _, #client{pid = Pid}, _} when Pid =/= Client#client.pid ->
-            remember_wanted_nick(Client, Nick),
-            ircd_state_send:numeric(
-                Client, Server, <<"433">>, [Nick], <<"Nickname is already in use">>
-            );
-        {true, _, _, true} ->
-            remember_wanted_nick(Client, Nick),
-            ircd_state_send:numeric(
-                Client, Server, <<"433">>, [Nick], <<"Nickname is already in use">>
-            );
         {true, _, _, false} when Nick =:= Client#client.nick ->
             ok;
         {true, _, _, false} ->

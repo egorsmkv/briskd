@@ -29,6 +29,10 @@ run-config config:
 xref:
     rebar3 xref
 
+# Run Dialyzer (mnesia is added to the PLT in rebar.config).
+dialyzer:
+    rebar3 dialyzer
+
 # Run the Erlang unit test suite.
 test:
     rebar3 eunit
