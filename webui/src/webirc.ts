@@ -3,6 +3,7 @@ import { dayKey, formatDayLabel, renderIrcMessage } from "./common/format.ts";
 import { currentLang, initLang, setLang, t } from "./common/i18n.ts";
 import { currentTheme, initTheme, setTheme, THEMES } from "./common/theme.ts";
 import { updateDynamicFavicon } from "./common/favicon.ts";
+import { createVoicePlayer } from "./common/voice_player.ts";
 import { E2EE_CAP, E2eeManager } from "./e2ee/manager.ts";
 
 interface WebircSettings {
@@ -868,19 +869,11 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
 
   const renderBodyContent = (): Node => {
     if (entry.voiceId && VOICE_ID_RE.test(entry.voiceId)) {
-      const box = document.createElement("div");
-      box.className = "voice-player";
-      const label = document.createElement("span");
-      label.className = "voice-label";
-      const durText = entry.voiceDur ? ` (${fmtDuration(entry.voiceDur)})` : "";
-      label.textContent = `${t("voice.label")}${durText}`;
-      const audio = document.createElement("audio");
-      audio.controls = true;
-      audio.preload = "metadata";
-      audio.src = `/api/voice/${entry.voiceId}`;
-      box.appendChild(label);
-      box.appendChild(audio);
-      return box;
+      return createVoicePlayer({
+        voiceId: entry.voiceId,
+        durationSec: entry.voiceDur,
+        label: t("voice.label"),
+      });
     }
     return renderIrcMessage(entry.text, fmtOpts);
   };
