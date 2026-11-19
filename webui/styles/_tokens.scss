@@ -1,4 +1,32 @@
-:root,
+:root {
+  color-scheme: light;
+  --bg: #f4f6f9;
+  --surface: #ffffff;
+  --surface-alt: #f8fafc;
+  --sidebar: #f1f5f9;
+  --hover: #e2e8f0;
+  --border: #dbe3ec;
+  --text: #0f172a;
+  --muted: #526071;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-fg: #ffffff;
+  --accent-soft: rgba(37, 99, 235, 0.1);
+  --danger: #dc2626;
+  --danger-hover: #b91c1c;
+  --ok: #15803d;
+  --warn: #b45309;
+  --badge-ok-bg: #dcfce7;
+  --badge-off-bg: #fee2e2;
+  --notice-ok-bg: #f0fdf4;
+  --notice-ok-border: #86efac;
+  --notice-err-bg: #fef2f2;
+  --notice-err-border: #fca5a5;
+  --shadow: 0 1px 3px rgba(15, 23, 42, 0.08), 0 8px 24px rgba(15, 23, 42, 0.05);
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
 :root[data-theme="hacker"] {
   color-scheme: dark;
   --bg: #050a07;
@@ -26,40 +54,6 @@
   --shadow: 0 0 0 1px rgba(0, 230, 77, 0.16), 0 8px 28px rgba(0, 0, 0, 0.65);
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --font: var(--mono);
-}
-
-:root[data-theme]:not([data-theme="hacker"]) {
-  --font: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-  --accent-fg: #ffffff;
-}
-
-:root[data-theme="light"] {
-  color-scheme: light;
-  --bg: #f4f6f9;
-  --surface: #ffffff;
-  --surface-alt: #f8fafc;
-  --sidebar: #f1f5f9;
-  --hover: #e2e8f0;
-  --border: #dbe3ec;
-  --text: #0f172a;
-  --muted: #526071;
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --accent-fg: #ffffff;
-  --accent-soft: rgba(37, 99, 235, 0.1);
-  --danger: #dc2626;
-  --danger-hover: #b91c1c;
-  --ok: #15803d;
-  --warn: #b45309;
-  --badge-ok-bg: #dcfce7;
-  --badge-off-bg: #fee2e2;
-  --notice-ok-bg: #f0fdf4;
-  --notice-ok-border: #86efac;
-  --notice-err-bg: #fef2f2;
-  --notice-err-border: #fca5a5;
-  --shadow: 0 1px 3px rgba(15, 23, 42, 0.08), 0 8px 24px rgba(15, 23, 42, 0.05);
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --font: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
 }
 
 :root[data-theme="dark"] {

@@ -52,11 +52,17 @@ export const THEMES: ThemeMeta[] = [
 ];
 
 const VALID_THEMES = new Set<string>(THEMES.map((t) => t.id));
-const STORAGE_KEY = "ircd-webui-theme";
+let activeStorageKey = "ircd-webui-theme";
+let activeDarkFallback: Theme = "dark";
+
+export interface ThemeInitOptions {
+  defaultTheme?: Theme;
+  storageKey?: string;
+}
 
 export function currentTheme(): Theme {
-  const attr = document.documentElement.getAttribute("data-theme") || "hacker";
-  return VALID_THEMES.has(attr) ? (attr as Theme) : "hacker";
+  const attr = document.documentElement.getAttribute("data-theme") || "light";
+  return VALID_THEMES.has(attr) ? (attr as Theme) : "light";
 }
 
 export function applyTheme(
@@ -65,7 +71,9 @@ export function applyTheme(
 ): void {
   document.documentElement.setAttribute("data-theme", theme);
   const isLight = theme === "light" || theme === "solarized-light";
-  const label = isLight ? "Hacker" : "Light";
+  const label = isLight
+    ? (activeDarkFallback === "hacker" ? "Hacker" : "Dark")
+    : "Light";
   for (const btn of buttons) {
     if (btn) btn.textContent = label;
   }
@@ -77,28 +85,37 @@ export function setTheme(
 ): void {
   applyTheme(theme, buttons);
   try {
-    localStorage.setItem(STORAGE_KEY, theme);
+    localStorage.setItem(activeStorageKey, theme);
   } catch {
     // Ignore storage errors.
   }
 }
 
-export function initTheme(buttons: Array<HTMLElement | null> = []): () => void {
+export function initTheme(
+  buttons: Array<HTMLElement | null> = [],
+  opts: ThemeInitOptions = {},
+): () => void {
+  activeStorageKey = opts.storageKey || "ircd-webui-theme";
+  activeDarkFallback = opts.defaultTheme === "hacker" ? "hacker" : "dark";
+
   let saved: string | null = null;
   try {
-    saved = localStorage.getItem(STORAGE_KEY);
+    saved = localStorage.getItem(activeStorageKey);
   } catch {
     // Ignore storage errors in restricted contexts.
   }
+  const prefersDark = typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const fallback: Theme = opts.defaultTheme ?? (prefersDark ? "dark" : "light");
   const initial: Theme = saved && VALID_THEMES.has(saved)
     ? (saved as Theme)
-    : "hacker";
+    : fallback;
   applyTheme(initial, buttons);
 
   const toggle = () => {
     const cur = currentTheme();
     const next: Theme = cur === "light" || cur === "solarized-light"
-      ? "hacker"
+      ? activeDarkFallback
       : "light";
     setTheme(next, buttons);
   };

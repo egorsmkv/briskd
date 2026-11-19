@@ -92,20 +92,30 @@ body {
   margin-bottom: 12px;
 }
 
-/* Workspace layout */
+/* Workspace layout (members pane collapsed by default) */
 #chat-view {
   display: none;
   height: 100vh;
   height: 100dvh;
   position: relative;
-  grid-template-columns: 236px 1fr 220px;
+  grid-template-columns: 236px 1fr;
   grid-template-rows: 52px 1fr 60px;
   grid-template-areas:
-    "left head right"
-    "left main right"
-    "left input right";
+    "left head"
+    "left main"
+    "left input";
   &.active {
     display: grid;
+  }
+  &.members-open {
+    grid-template-columns: 236px 1fr 220px;
+    grid-template-areas:
+      "left head right"
+      "left main right"
+      "left input right";
+    .sidebar-right {
+      display: flex;
+    }
   }
 }
 
@@ -437,7 +447,7 @@ body {
   grid-area: right;
   background: var(--sidebar);
   border-left: 1px solid var(--border);
-  display: flex;
+  display: none;
   flex-direction: column;
   overflow: hidden;
 }
@@ -834,7 +844,8 @@ body.font-large .messages {
 }
 
 @media (max-width: 960px) {
-  #chat-view {
+  #chat-view,
+  #chat-view.members-open {
     grid-template-columns: 210px 1fr;
     grid-template-areas:
       "left head"
@@ -845,6 +856,7 @@ body.font-large .messages {
     display: inline-flex;
   }
   .sidebar-right {
+    display: flex;
     position: fixed;
     top: 0;
     right: 0;

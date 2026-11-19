@@ -149,7 +149,10 @@ function parseIrc(raw: string): IrcMessage | null {
 }
 
 const themeButtons = [$("btn-theme-1"), $("btn-theme-2")];
-initTheme(themeButtons);
+initTheme(themeButtons, {
+  defaultTheme: "hacker",
+  storageKey: "ircd-webirc-theme",
+});
 
 const settings: WebircSettings = loadSettings();
 
@@ -721,9 +724,18 @@ function toggleDrawer(side: "left" | "right"): void {
 }
 
 $("btn-menu").onclick = () => toggleDrawer("left");
-$("btn-members").onclick = () => toggleDrawer("right");
+$("btn-members").onclick = () => {
+  if (window.innerWidth > 960) {
+    $("chat-view").classList.toggle("members-open");
+  } else {
+    toggleDrawer("right");
+  }
+};
 $("btn-close-left").onclick = closeDrawers;
-$("btn-close-right").onclick = closeDrawers;
+$("btn-close-right").onclick = () => {
+  $("chat-view").classList.remove("members-open");
+  closeDrawers();
+};
 $("drawer-backdrop").onclick = closeDrawers;
 
 function switchBuf(key: string): void {
