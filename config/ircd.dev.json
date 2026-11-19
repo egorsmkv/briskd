@@ -32,7 +32,17 @@
     "nick_per_minute": 60,
     "register_per_minute": 30
   },
-  "dronebl": false,
+  "dronebl": {
+    "enabled": true,
+    "zone": "dnsbl.dronebl.org",
+    "timeout_ms": 3000,
+    "ban_ttl": 3600,
+    "cache_ttl": 300,
+    "types": "all",
+    "skip_private": true,
+    "max_entries": 10000,
+    "max_in_flight": 64
+  },
   "webui": {
     "bind": "0.0.0.0",
     "port": 8081,
