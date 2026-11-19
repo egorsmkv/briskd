@@ -33,5 +33,16 @@
   "chathistory": true,
   "utf8_only": false,
   "monitor_limit": 100,
-  "webirc": []
+  "webirc": [],
+  "flood": {
+    "lines_burst": 500,
+    "lines_per_second": 50,
+    "messages_burst": 200,
+    "messages_per_second": 20,
+    "join_burst": 50,
+    "join_per_minute": 60,
+    "nick_burst": 50,
+    "nick_per_minute": 60,
+    "register_per_minute": 30
+  }
 }

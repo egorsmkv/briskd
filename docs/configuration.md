@@ -102,3 +102,19 @@ entries are rejected at startup.
 Backup, restore, and schema migration are described in
 [docs/mnesia.md](mnesia.md). A restored directory follows the same
 retention policy as a normal start.
+
+`flood` configures client flood and spam protection (`ircd_flood`). Set `"flood": null` to disable all flood limits, or pass an object overriding any of these integer fields (unknown keys are rejected):
+
+| `flood` key | Default | Range | Description |
+| --- | --- | --- | --- |
+| `lines_burst` | `500` | `1..100000` | Per-connection token bucket capacity for incoming lines |
+| `lines_per_second` | `50` | `1..10000` | Line tokens restored per second (`QUIT` and `PONG` cost 0) |
+| `messages_burst` | `200` | `1..100000` | Per-connection token bucket capacity for messages (`PRIVMSG`, `NOTICE`, `TAGMSG`, `INVITE`, `KNOCK`, and opening a `draft/multiline` batch) |
+| `messages_per_second` | `20` | `1..10000` | Message tokens restored per second (multi-target messages cost one token per target) |
+| `join_burst` | `50` | `1..10000` | Per-connection token bucket capacity for channel joins |
+| `join_per_minute` | `60` | `1..100000` | Channel join tokens restored per minute (one token per channel in `JOIN`) |
+| `nick_burst` | `50` | `1..10000` | Per-connection token bucket capacity for post-registration `NICK` changes |
+| `nick_per_minute` | `60` | `1..100000` | Nickname change tokens restored per minute |
+| `register_per_minute` | `30` | `1..10000` | Per-host `REGISTER` rate limit per minute (`FAIL REGISTER TEMPORARILY_UNAVAILABLE` when exceeded) |
+
+Local IRC operators (`+o`) are exempt from per-connection flood disconnection. Changes to `flood` take effect immediately on `REHASH`.

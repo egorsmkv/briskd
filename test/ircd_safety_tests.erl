@@ -68,7 +68,12 @@ max_sendq_config_test() ->
         Load(<<",\"flood\":{\"messages_burst\":5}">>)
     ),
     ?assertMatch({error, _}, Load(<<",\"flood\":{\"unknown_key\":1}">>)),
-    ?assertMatch({error, _}, Load(<<",\"flood\":{\"lines_burst\":0}">>)).
+    ?assertMatch({error, _}, Load(<<",\"flood\":{\"lines_burst\":0}">>)),
+    ?assertMatch({ok, #{flood := #{lines_burst := 500}}}, ircd_config:load("config/ircd.json")),
+    ?assertMatch({ok, #{flood := #{lines_burst := 500}}}, ircd_config:load("config/ircd.dev.json")),
+    ?assertMatch(
+        {ok, #{flood := #{lines_burst := 500}}}, ircd_config:load("config/ircd.prod.json")
+    ).
 
 flood_bucket_pure_test() ->
     %% Burst of 3, refill 1 per 1000 ms.
