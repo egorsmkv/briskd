@@ -1,4 +1,5 @@
 import { currentTheme, initTheme, setTheme, THEMES } from "./common/theme.ts";
+import { E2EE_CAP, E2eeManager } from "./e2ee/manager.ts";
 
 interface WebircSettings {
   density: "comfortable" | "compact";
@@ -58,6 +59,7 @@ interface ChatLine {
   text: string;
   kind: "" | "sys" | "err" | "action" | "notice";
   mention?: boolean;
+  encrypted?: boolean;
 }
 
 interface BufferState {
@@ -201,7 +203,10 @@ $("settings-modal").addEventListener("click", (ev) => {
   if (ev.target === $("settings-modal")) closeSettings();
 });
 document.addEventListener("keydown", (ev) => {
-  if (ev.key === "Escape") closeSettings();
+  if (ev.key === "Escape") {
+    closeSettings();
+    closeE2eeModal();
+  }
 });
 
 $<HTMLSelectElement>("opt-density").onchange = (ev) => {
@@ -267,9 +272,170 @@ let saslPass = "";
 let autoChannels: string[] = [];
 let activeBuf = "*status";
 let memberFilter = "";
+let advertisedCaps: string[] = [];
 const buffers = new Map<string, BufferState>();
 const sentHistory: string[] = [];
 let histPos = -1;
+
+const e2ee = new E2eeManager({
+  sendRaw: (line) => sendRaw(line),
+  onDecrypted: (ev) => {
+    addLine(ev.target, {
+      time: ev.time,
+      nick: ev.nick,
+      text: ev.text,
+      encrypted: true,
+    });
+  },
+  onNotice: (target, text, kind) => {
+    addLine(target, { text, kind });
+  },
+  onStateChange: () => {
+    updateE2eeUi();
+    renderBuffers();
+    if ($("e2ee-modal").classList.contains("open")) renderE2eeModal();
+  },
+});
+
+function updateE2eeUi(): void {
+  const buf = buffers.get(activeBuf);
+  const btn = $("btn-e2ee");
+  const form = $("send-form");
+  const inp = $<HTMLInputElement>("inp-msg");
+  if (!buf || buf.name === "*status") {
+    btn.style.display = "none";
+    form.classList.remove("e2ee-active");
+    inp.placeholder = "Message or /help (Tab to complete nicks, Alt+Up/Down to switch)";
+    return;
+  }
+  btn.style.display = "inline-flex";
+  const on = e2ee.isBufferEncrypted(buf.name);
+  const ready = e2ee.isReady();
+  btn.classList.toggle("on", on);
+  btn.textContent = on ? "🔒 E2EE On" : "🔓 E2EE Off";
+  if (!ready) {
+    btn.title = e2ee.isServerSupported()
+      ? "Log in with a SASL account to enable E2EE"
+      : "Server does not have E2EE enabled";
+  } else {
+    btn.title = on
+      ? "End-to-end encryption is active for this conversation (click to disable)"
+      : "Click to enable end-to-end encryption for this conversation";
+  }
+  form.classList.toggle("e2ee-active", on);
+  inp.placeholder = on
+    ? `Encrypted message to ${buf.name} (E2EE) or /help...`
+    : "Message or /help (Tab to complete nicks, Alt+Up/Down to switch)";
+}
+
+function renderE2eeModal(): void {
+  const st = e2ee.getStatus();
+  const banner = $("e2ee-status-banner");
+  banner.className = "e2ee-status-banner";
+  if (!st.serverSupported) {
+    banner.classList.add("warn");
+    banner.textContent = "Server does not advertise egorsmkv.github.io/e2ee.";
+  } else if (!st.account) {
+    banner.classList.add("warn");
+    banner.textContent = "Connect with a SASL account to publish device keys and use E2EE.";
+  } else if (!st.bound) {
+    banner.textContent = "Publishing and binding E2EE device keys...";
+  } else {
+    banner.classList.add("ok");
+    banner.textContent = "E2EE active (X3DH + Double Ratchet for DMs, Sender Keys for channels).";
+  }
+
+  $("e2ee-account").textContent = st.account || "-";
+  $("e2ee-device").textContent = st.deviceId ? String(st.deviceId) : "-";
+  $("e2ee-prekeys").textContent = st.bound ? String(st.prekeyCount) : "-";
+  $("e2ee-sessions").textContent = String(st.sessionCount);
+  $("e2ee-fingerprint").textContent = st.fingerprint || "-";
+
+  const buf = buffers.get(activeBuf);
+  const canRotate = st.bound && !!buf && isChan(buf.name);
+  $<HTMLButtonElement>("btn-e2ee-rotate").disabled = !canRotate;
+  $<HTMLButtonElement>("btn-e2ee-replenish").disabled = !st.bound;
+  $<HTMLButtonElement>("btn-e2ee-reset").disabled = !st.account;
+
+  const peersEl = $("e2ee-peers");
+  peersEl.textContent = "";
+  if (st.trustedPeers.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "e2ee-empty";
+    empty.textContent = "No peer devices pinned yet. Send or receive an encrypted message to establish sessions.";
+    peersEl.appendChild(empty);
+  } else {
+    for (const p of st.trustedPeers) {
+      const row = document.createElement("div");
+      row.className = "e2ee-peer-row";
+      const info = document.createElement("div");
+      info.className = "e2ee-peer-info";
+      const title = document.createElement("div");
+      title.className = "peer-id";
+      title.textContent = `${p.account} (device ${p.device})`;
+      const sn = document.createElement("div");
+      sn.className = "peer-sn";
+      sn.textContent = `Safety #: ${p.safetyNumber}`;
+      info.appendChild(title);
+      info.appendChild(sn);
+
+      const forget = document.createElement("button");
+      forget.type = "button";
+      forget.className = "small";
+      forget.textContent = "Forget";
+      forget.title = "Forget pinned identity key and session for this device";
+      forget.onclick = () => {
+        e2ee.forgetPeer(p.key);
+        renderE2eeModal();
+      };
+      row.appendChild(info);
+      row.appendChild(forget);
+      peersEl.appendChild(row);
+    }
+  }
+}
+
+function openE2eeModal(): void {
+  renderE2eeModal();
+  $("e2ee-modal").classList.add("open");
+}
+
+function closeE2eeModal(): void {
+  $("e2ee-modal").classList.remove("open");
+}
+
+$("btn-e2ee").onclick = () => {
+  const buf = buffers.get(activeBuf);
+  if (!buf || buf.name === "*status") return;
+  const on = e2ee.toggleBuffer(buf.name);
+  if (e2ee.isReady()) {
+    addLine(buf.name, {
+      text: on
+        ? "End-to-end encryption enabled for this conversation."
+        : "End-to-end encryption disabled for this conversation.",
+      kind: "sys",
+    });
+  }
+};
+$("btn-e2ee-keys").onclick = openE2eeModal;
+$("btn-close-e2ee").onclick = closeE2eeModal;
+$("e2ee-modal").addEventListener("click", (ev) => {
+  if (ev.target === $("e2ee-modal")) closeE2eeModal();
+});
+$("btn-e2ee-replenish").onclick = () => {
+  e2ee.replenishPrekeys(20);
+  addLine("*status", { text: "Uploaded 20 fresh E2EE one-time prekeys.", kind: "sys" });
+};
+$("btn-e2ee-rotate").onclick = () => {
+  const buf = buffers.get(activeBuf);
+  if (buf && isChan(buf.name)) void e2ee.rotateChannelKey(buf.name);
+};
+$("btn-e2ee-reset").onclick = () => {
+  if (confirm("Reset your E2EE device keys and sessions? Peers will see a new identity key.")) {
+    e2ee.resetDevice();
+    renderE2eeModal();
+  }
+};
 
 function updateTitle(): void {
   let totalUnread = 0;
@@ -307,6 +473,7 @@ function addLine(
     nick?: string;
     text: string;
     kind?: ChatLine["kind"];
+    encrypted?: boolean;
   },
 ): void {
   const buf = ensureBuf(bufName);
@@ -319,6 +486,7 @@ function addLine(
     text: opts.text,
     kind: opts.kind || "",
     mention,
+    encrypted: opts.encrypted,
   };
   const prev = buf.lines[buf.lines.length - 1];
   buf.lines.push(entry);
@@ -407,6 +575,13 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
     t.textContent = entry.time;
     meta.appendChild(n);
     meta.appendChild(t);
+    if (entry.encrypted) {
+      const badge = document.createElement("span");
+      badge.className = "msg-e2ee";
+      badge.textContent = "E2EE";
+      badge.title = "End-to-end encrypted";
+      meta.appendChild(badge);
+    }
 
     const body = document.createElement("div");
     body.className = "msg-text";
@@ -461,6 +636,7 @@ function switchBuf(key: string): void {
     prev = line;
   }
   wrap.scrollTop = wrap.scrollHeight;
+  updateE2eeUi();
   renderBuffers();
   renderMembers();
   updateTitle();
@@ -473,7 +649,13 @@ function buildBufRow(buf: BufferState, key: string): HTMLElement {
 
   const label = document.createElement("span");
   label.className = "buf-name";
-  label.textContent = buf.name === "*status" ? "Server" : buf.name;
+  if (key !== "*status" && e2ee.isBufferEncrypted(buf.name)) {
+    const lock = document.createElement("span");
+    lock.className = "buf-lock";
+    lock.textContent = "🔒";
+    label.appendChild(lock);
+  }
+  label.appendChild(document.createTextNode(buf.name === "*status" ? "Server" : buf.name));
   item.appendChild(label);
 
   const right = document.createElement("span");
@@ -597,23 +779,39 @@ function handleMessage(raw: string): void {
     sendRaw(`PONG :${params[0] || ""}`);
     return;
   }
+  if (e2ee.handleIrc(msg)) {
+    return;
+  }
   if (command === "CAP") {
     const sub = (params[1] || "").toUpperCase();
     if (sub === "LS") {
-      const caps = [
+      const more = params[2] === "*";
+      const listStr = more ? params[3] || "" : params[2] || "";
+      for (const tok of listStr.split(" ").filter(Boolean)) {
+        const eq = tok.indexOf("=");
+        advertisedCaps.push(eq === -1 ? tok : tok.slice(0, eq));
+      }
+      if (more) return;
+      const wanted = [
         "message-tags",
         "server-time",
         "echo-message",
         "batch",
         "draft/chathistory",
+        "draft/multiline",
         "away-notify",
         "account-notify",
         "extended-join",
+        E2EE_CAP,
       ];
-      if (saslPass) caps.push("sasl");
-      sendRaw(`CAP REQ :${caps.join(" ")}`);
+      if (saslPass) wanted.push("sasl");
+      const toReq = wanted.filter((c) => advertisedCaps.includes(c));
+      if (toReq.length > 0) sendRaw(`CAP REQ :${toReq.join(" ")}`);
+      else sendRaw("CAP END");
     } else if (sub === "ACK") {
-      if (saslPass && (params[2] || "").includes("sasl")) {
+      const acked = (params[2] || "").split(" ").filter(Boolean);
+      if (acked.includes(E2EE_CAP)) e2ee.setServerSupported(true);
+      if (saslPass && acked.includes("sasl")) {
         sendRaw("AUTHENTICATE PLAIN");
       } else {
         sendRaw("CAP END");
@@ -628,7 +826,12 @@ function handleMessage(raw: string): void {
     sendRaw(`AUTHENTICATE ${auth}`);
     return;
   }
+  if (command === "900") {
+    if (params[2]) e2ee.setAccount(params[2]);
+    return;
+  }
   if (command === "903") {
+    if (saslUser || myNick) e2ee.setAccount(saslUser || myNick);
     addLine("*status", { time, text: params[1] || "SASL authentication successful", kind: "sys" });
     sendRaw("CAP END");
     return;
@@ -641,6 +844,8 @@ function handleMessage(raw: string): void {
   if (command === "001") {
     myNick = params[0] || myNick;
     $("my-nick").textContent = myNick;
+    e2ee.setMyNick(myNick);
+    e2ee.onRegistered();
     addLine("*status", { time, text: params[1] || "Connected", kind: "sys" });
     for (const ch of autoChannels) sendRaw(`JOIN ${ch}`);
     return;
@@ -667,6 +872,7 @@ function handleMessage(raw: string): void {
         if (activeBuf === chan.toLowerCase()) switchBuf("*status");
         else renderBuffers();
       } else {
+        e2ee.onMemberLeft(chan);
         if (settings.joinPart) {
           addLine(chan, { time, text: `${nick} left (${params[1] || ""})`, kind: "sys" });
         }
@@ -679,6 +885,7 @@ function handleMessage(raw: string): void {
     buffers.forEach((buf) => {
       if (buf.members.has(nick)) {
         buf.members.delete(nick);
+        if (isChan(buf.name)) e2ee.onMemberLeft(buf.name);
         if (settings.joinPart) {
           addLine(buf.name, { time, text: `${nick} quit (${params[0] || ""})`, kind: "sys" });
         }
@@ -692,6 +899,7 @@ function handleMessage(raw: string): void {
     if (nick.toLowerCase() === myNick.toLowerCase()) {
       myNick = next;
       $("my-nick").textContent = myNick;
+      e2ee.setMyNick(myNick);
     }
     buffers.forEach((buf) => {
       if (buf.members.has(nick)) {
@@ -773,6 +981,7 @@ function handleMessage(raw: string): void {
     const victim = params[1];
     const buf = buffers.get(chan.toLowerCase());
     if (buf) buf.members.delete(victim);
+    if (victim.toLowerCase() !== myNick.toLowerCase()) e2ee.onMemberLeft(chan);
     addLine(chan, {
       time,
       text: `${victim} was kicked by ${nick} (${params[2] || ""})`,
@@ -814,6 +1023,8 @@ function connectSocket(url: string): void {
   addLine("*status", { text: `Connecting to ${url}...`, kind: "sys" });
 
   ws.onopen = () => {
+    advertisedCaps = [];
+    e2ee.resetConnection();
     sendRaw("CAP LS 302");
     sendRaw(`NICK ${myNick}`);
     sendRaw(`USER ${myNick} 0 * :${myNick}`);
@@ -825,6 +1036,7 @@ function connectSocket(url: string): void {
     addLine("*status", { text: "WebSocket connection error.", kind: "err" });
   };
   ws.onclose = () => {
+    e2ee.resetConnection();
     $("status-dot").classList.add("off");
     $("btn-reconnect").style.display = "inline-flex";
     addLine("*status", { text: "Disconnected from server.", kind: "err" });
@@ -847,6 +1059,7 @@ function showHelp(target: string): void {
     "/names [#chan] | /list [filter]",
     "/away [message] | /back | /setname <realname>",
     "/monitor +|- <nick> | /history [limit]",
+    "/e2ee [on|off|status|rotate|verify|reset]",
     "/oper <name> <pass> | /kill <nick> <reason> | /rehash",
     "/clear | /raw <line> | /quit [reason]",
   ];
@@ -972,6 +1185,45 @@ function runSlashCommand(raw: string, buf: BufferState | undefined): void {
         $("messages").textContent = "";
       }
       return;
+    case "e2ee": {
+      const parts = rest.split(/\s+/).filter(Boolean);
+      const sub = (parts[0] || "status").toLowerCase();
+      if (sub === "on") {
+        if (buf && buf.name !== "*status" && e2ee.setBufferEncrypted(buf.name, true)) {
+          addLine(buf.name, { text: "End-to-end encryption enabled.", kind: "sys" });
+        }
+      } else if (sub === "off") {
+        if (buf && buf.name !== "*status") {
+          e2ee.setBufferEncrypted(buf.name, false);
+          addLine(buf.name, { text: "End-to-end encryption disabled.", kind: "sys" });
+        }
+      } else if (sub === "rotate") {
+        if (buf && isChan(buf.name)) void e2ee.rotateChannelKey(buf.name);
+        else addLine(target, { text: "Switch to a channel to rotate its Sender Key.", kind: "err" });
+      } else if (sub === "verify") {
+        const who = (parts[1] || (!isChan(target) && target !== "*status" ? target : "")).toLowerCase();
+        const st = e2ee.getStatus();
+        const matches = who
+          ? st.trustedPeers.filter((p) => p.account === who)
+          : st.trustedPeers;
+        if (matches.length === 0) {
+          addLine(target, { text: "No pinned E2EE peer devices found.", kind: "sys" });
+        } else {
+          for (const p of matches) {
+            addLine(target, {
+              text: `Safety # for ${p.account} (device ${p.device}): ${p.safetyNumber}`,
+              kind: "sys",
+            });
+          }
+        }
+      } else if (sub === "reset") {
+        e2ee.resetDevice();
+        addLine(target, { text: "E2EE device keys reset.", kind: "sys" });
+      } else {
+        openE2eeModal();
+      }
+      return;
+    }
     case "oper": {
       const parts = rest.split(/\s+/).filter(Boolean);
       if (parts.length >= 2) sendRaw(`OPER ${parts[0]} ${parts[1]}`);
@@ -1123,6 +1375,13 @@ $<HTMLFormElement>("send-form").addEventListener("submit", (ev) => {
   }
   if (!buf || buf.name === "*status") {
     addLine("*status", { text: "Join a channel first (e.g. /join #lobby) or type /help.", kind: "err" });
+    return;
+  }
+  if (e2ee.isBufferEncrypted(buf.name)) {
+    const dest = buf.name;
+    void e2ee.sendEncrypted(dest, raw).then((ok) => {
+      if (ok) addLine(dest, { nick: myNick, text: raw, encrypted: true });
+    });
     return;
   }
   sendRaw(`PRIVMSG ${buf.name} :${raw}`);

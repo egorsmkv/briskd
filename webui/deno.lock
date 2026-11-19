@@ -1,8 +1,11 @@
 {
   "version": "4",
   "specifiers": {
+    "npm:@noble/ciphers@1.2.1": "1.2.1",
+    "npm:@noble/hashes@1.7.1": "1.7.1",
     "npm:esbuild@0.25.2": "0.25.2",
-    "npm:sass@1.86.3": "1.86.3"
+    "npm:sass@1.86.3": "1.86.3",
+    "npm:tweetnacl@1.0.3": "1.0.3"
   },
   "npm": {
     "@esbuild/aix-ppc64@0.25.2": {
@@ -79,6 +82,12 @@
     },
     "@esbuild/win32-x64@0.25.2": {
       "integrity": "sha512-kM3HKb16VIXZyIeVrM1ygYmZBKybX8N4p754bw390wGO3Tf2j4L2/WYL+4suWujpgf6GBYs3jv7TyUivdd05JA=="
+    },
+    "@noble/ciphers@1.2.1": {
+      "integrity": "sha512-rONPWMC7PeExE077uLE4oqWrZ1IvAfz3oH9LibVAcVCopJiA9R62uavnbEzdkVmJYI6M6Zgkbeb07+tWjlq2XA=="
+    },
+    "@noble/hashes@1.7.1": {
+      "integrity": "sha512-B8XBPsn4vT/KJAGqDzbwztd+6Yte3P4V7iafm24bxgDe/mlRuK6xmWPuCNrKt2vDafZ8MfJLlchDG/vYafQEjQ=="
     },
     "@parcel/watcher-android-arm64@2.6.0": {
       "integrity": "sha512-trgpLSCKRC/huFjXX/Smh+0sWe4+YtKfktIToiMl59ghz7z+qkH6kMvNnUbLyRs9N11t8l4svSCs1+5B3rOAhA=="
@@ -208,12 +217,18 @@
     },
     "source-map-js@1.2.4": {
       "integrity": "sha512-J7ZjMvHd9O1fcT/5V09QWaaSl2BbWx3F6O08spde82Namf9UB0GxRVIPiNbVsdKkoizHiSpTodo3vp2bAy91MA=="
+    },
+    "tweetnacl@1.0.3": {
+      "integrity": "sha512-6rt+RN7aOi1nGMyC4Xa5DdYiukl2UWCbcJft7YhxReBGQD7OAM8Pbxw6YMo4r2diNEA8FEmu32YOn9rhaiE5yw=="
     }
   },
   "workspace": {
     "dependencies": [
+      "npm:@noble/ciphers@1.2.1",
+      "npm:@noble/hashes@1.7.1",
       "npm:esbuild@0.25.2",
-      "npm:sass@1.86.3"
+      "npm:sass@1.86.3",
+      "npm:tweetnacl@1.0.3"
     ]
   }
 }

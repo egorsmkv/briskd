@@ -1,7 +1,9 @@
 {
+  "nodeModulesDir": "auto",
   "tasks": {
     "build": "deno run --allow-read --allow-write --allow-env --allow-run build.ts",
-    "check": "deno check src/admin.ts src/signup.ts src/verify.ts src/webirc.ts"
+    "check": "deno check src/admin.ts src/signup.ts src/verify.ts src/webirc.ts",
+    "test": "deno test src/e2ee/crypto_test.ts"
   },
   "compilerOptions": {
     "lib": ["dom", "dom.iterable", "es2022"],
@@ -9,6 +11,9 @@
   },
   "imports": {
     "esbuild": "npm:esbuild@0.25.2",
-    "sass": "npm:sass@1.86.3"
+    "sass": "npm:sass@1.86.3",
+    "tweetnacl": "npm:tweetnacl@1.0.3",
+    "@noble/hashes": "npm:@noble/hashes@1.7.1",
+    "@noble/ciphers": "npm:@noble/ciphers@1.2.1"
   }
 }

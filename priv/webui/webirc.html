@@ -76,11 +76,13 @@
       <span class="head-title" id="active-title">Server Status</span>
       <span class="head-topic" id="active-topic"></span>
       <button type="button" class="small hidden" id="btn-topic">Edit topic</button>
+      <button type="button" class="small btn-e2ee hidden" id="btn-e2ee" title="Toggle end-to-end encryption for this conversation">E2EE Off</button>
     </div>
     <div class="head-right">
       <span class="my-nick" id="my-nick"></span>
       <button type="button" class="small tablet-only" id="btn-members" aria-label="Toggle members">Users</button>
       <button type="button" class="small primary hidden" id="btn-reconnect">Reconnect</button>
+      <button type="button" class="small" id="btn-e2ee-keys" title="E2EE keys and safety numbers">Keys</button>
       <button type="button" class="small" id="btn-settings-2">Settings</button>
       <button type="button" class="small" id="btn-theme-2">Dark</button>
       <button type="button" class="small danger" id="btn-disconnect">Disconnect</button>
@@ -144,6 +146,37 @@
         <input type="checkbox" id="opt-notify">
         <span>Desktop notifications on mentions</span>
       </label>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="e2ee-modal" role="dialog" aria-modal="true" aria-labelledby="e2ee-title">
+  <div class="modal-card modal-wide">
+    <div class="modal-head">
+      <h2 id="e2ee-title">End-to-End Encryption (E2EE)</h2>
+      <button type="button" class="small" id="btn-close-e2ee" aria-label="Close E2EE dialog">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="e2ee-status-banner" id="e2ee-status-banner"></div>
+      <div class="e2ee-kv-grid">
+        <div class="e2ee-kv"><span class="k">Account</span><span class="v" id="e2ee-account">-</span></div>
+        <div class="e2ee-kv"><span class="k">Device ID</span><span class="v" id="e2ee-device">-</span></div>
+        <div class="e2ee-kv"><span class="k">One-time Prekeys</span><span class="v" id="e2ee-prekeys">-</span></div>
+        <div class="e2ee-kv"><span class="k">Active Sessions</span><span class="v" id="e2ee-sessions">-</span></div>
+      </div>
+      <div class="setting-group">
+        <div class="setting-label">Your Identity Fingerprint</div>
+        <div class="e2ee-fp" id="e2ee-fingerprint">-</div>
+      </div>
+      <div class="e2ee-actions">
+        <button type="button" class="small" id="btn-e2ee-replenish">Upload Prekeys</button>
+        <button type="button" class="small" id="btn-e2ee-rotate">Rotate Channel Key</button>
+        <button type="button" class="small danger" id="btn-e2ee-reset">Reset Device Keys</button>
+      </div>
+      <div class="setting-group">
+        <div class="setting-label">Trusted Peer Devices (TOFU Safety Numbers)</div>
+        <div class="e2ee-peers" id="e2ee-peers"></div>
+      </div>
     </div>
   </div>
 </div>

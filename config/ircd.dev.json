@@ -11,6 +11,7 @@
   "mnesia_dir": "/var/lib/ircd/mnesia",
   "retention": "channels",
   "history_limit": 100,
+  "e2ee": {},
   "administrators": [
     {"nick": "yehor", "password": "devpass"},
     {"nick": "admin", "password": "devpass"},
