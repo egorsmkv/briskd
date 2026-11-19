@@ -308,7 +308,9 @@ handle_webirc_page(Socket, WebircHtml) ->
             P1 = binary:replace(P0, <<"__WS_PORT__">>, WsBin, [global]),
             P2 = binary:replace(P1, <<"__WSS_PORT__">>, WssBin, [global]),
             Page = binary:replace(P2, <<"__DEFAULT_CHANNELS__">>, DefaultChans, [global]),
-            send_nonce_html(Socket, Page, <<"connect-src 'self' ws: wss:; ">>)
+            send_nonce_html(
+                Socket, Page, <<"connect-src 'self' ws: wss:; img-src 'self' data:; ">>
+            )
     end.
 
 port_to_bin(null) -> <<>>;

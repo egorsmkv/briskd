@@ -1,4 +1,5 @@
 import { currentTheme, initTheme, setTheme, THEMES } from "./common/theme.ts";
+import { updateDynamicFavicon } from "./common/favicon.ts";
 import { E2EE_CAP, E2eeManager } from "./e2ee/manager.ts";
 
 interface WebircSettings {
@@ -273,6 +274,9 @@ let autoChannels: string[] = [];
 let activeBuf = "*status";
 let memberFilter = "";
 let advertisedCaps: string[] = [];
+let isRegistered = false;
+let hiddenUnread = 0;
+let hiddenMentions = 0;
 const buffers = new Map<string, BufferState>();
 const sentHistory: string[] = [];
 let histPos = -1;
@@ -438,8 +442,8 @@ $("btn-e2ee-reset").onclick = () => {
 };
 
 function updateTitle(): void {
-  let totalUnread = 0;
-  let totalMentions = 0;
+  let totalUnread = hiddenUnread;
+  let totalMentions = hiddenMentions;
   buffers.forEach((b) => {
     totalUnread += b.unread;
     totalMentions += b.mentions;
@@ -447,7 +451,25 @@ function updateTitle(): void {
   if (totalMentions > 0) document.title = `(@${totalMentions}) ${BASE_TITLE}`;
   else if (totalUnread > 0) document.title = `(${totalUnread}) ${BASE_TITLE}`;
   else document.title = BASE_TITLE;
+  updateDynamicFavicon({
+    connected: isRegistered,
+    unread: totalUnread,
+    mentions: totalMentions,
+  });
 }
+
+function clearHiddenCounters(): void {
+  if (hiddenUnread > 0 || hiddenMentions > 0) {
+    hiddenUnread = 0;
+    hiddenMentions = 0;
+    updateTitle();
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) clearHiddenCounters();
+});
+window.addEventListener("focus", clearHiddenCounters);
 
 function ensureBuf(name: string): BufferState {
   const key = name.toLowerCase();
@@ -492,11 +514,20 @@ function addLine(
   buf.lines.push(entry);
   if (buf.lines.length > 600) buf.lines.shift();
 
+  const isFromOther = !!entry.nick && entry.nick.toLowerCase() !== myNick.toLowerCase();
+  const isDm = !isChan(bufName) && bufName !== "*status";
+  const isAlert = mention || (isDm && isFromOther && !opts.kind);
+
   if (bufName.toLowerCase() === activeBuf) {
     appendLineDom(entry, prev);
+    if (document.hidden && isFromOther && !opts.kind) {
+      hiddenUnread += 1;
+      if (isAlert) hiddenMentions += 1;
+      updateTitle();
+    }
   } else {
     buf.unread += 1;
-    if (mention) buf.mentions += 1;
+    if (isAlert) buf.mentions += 1;
     renderBuffers();
     updateTitle();
   }
@@ -843,9 +874,11 @@ function handleMessage(raw: string): void {
   }
   if (command === "001") {
     myNick = params[0] || myNick;
+    isRegistered = true;
     $("my-nick").textContent = myNick;
     e2ee.setMyNick(myNick);
     e2ee.onRegistered();
+    updateTitle();
     addLine("*status", { time, text: params[1] || "Connected", kind: "sys" });
     for (const ch of autoChannels) sendRaw(`JOIN ${ch}`);
     return;
@@ -1036,7 +1069,11 @@ function connectSocket(url: string): void {
     addLine("*status", { text: "WebSocket connection error.", kind: "err" });
   };
   ws.onclose = () => {
+    isRegistered = false;
+    hiddenUnread = 0;
+    hiddenMentions = 0;
     e2ee.resetConnection();
+    updateTitle();
     $("status-dot").classList.add("off");
     $("btn-reconnect").style.display = "inline-flex";
     addLine("*status", { text: "Disconnected from server.", kind: "err" });
@@ -1289,11 +1326,15 @@ $("btn-topic").onclick = () => {
 };
 
 $("btn-disconnect").onclick = () => {
+  isRegistered = false;
+  hiddenUnread = 0;
+  hiddenMentions = 0;
   if (ws && ws.readyState === WebSocket.OPEN) {
     sendRaw("QUIT :Leaving WebIRC");
     ws.close();
   }
   ws = null;
+  updateTitle();
   $("chat-view").classList.remove("active");
   $("connect-view").style.display = "flex";
 };
