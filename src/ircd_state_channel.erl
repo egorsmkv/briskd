@@ -93,12 +93,14 @@ in `channels`, so a predefined channel stays available. Otherwise the
 channel row, its message history, and its metadata are deleted.
 """.
 -spec release_if_empty(#channel{}, term()) -> ok.
-release_if_empty(#channel{name = <<$!, _/binary>>} = Channel, Remaining) ->
+release_if_empty(#channel{key = Key, name = <<$!, _/binary>>} = Channel, Remaining) ->
+    note_channel_empty(Key),
     mnesia:dirty_write(track_opless(Channel, Remaining)),
     prune_empty_channels();
 release_if_empty(#channel{key = Key} = Channel, Remaining) ->
     case ircd_state:retention() =:= channels orelse ircd_state:predefined_channel(Key) of
         true ->
+            note_channel_empty(Key),
             mnesia:dirty_write(Channel#channel{members = Remaining}),
             prune_empty_channels();
         false ->
@@ -107,10 +109,36 @@ release_if_empty(#channel{key = Key} = Channel, Remaining) ->
 
 drop_channel_row(#channel{key = Key, name = Name}) ->
     unindex_safe_channel(Name),
+    clear_channel_empty(Key),
     ircd_state_meta:drop_channel(Key),
     mnesia:dirty_delete(channel, Key),
     mnesia:dirty_delete(channel_history, Key),
     ok.
+
+note_channel_empty(Key) ->
+    case ets:whereis(ircd_empty_channels) of
+        undefined -> ok;
+        _ -> ets:insert(ircd_empty_channels, {Key, erlang:system_time(second)})
+    end,
+    ok.
+
+clear_channel_empty(Key) ->
+    case ets:whereis(ircd_empty_channels) of
+        undefined -> ok;
+        _ -> ets:delete(ircd_empty_channels, Key)
+    end,
+    ok.
+
+empty_since(Key, Created) ->
+    case ets:whereis(ircd_empty_channels) of
+        undefined ->
+            channel_age_key(Created);
+        _ ->
+            case ets:lookup(ircd_empty_channels, Key) of
+                [{Key, Since}] -> Since;
+                [] -> channel_age_key(Created)
+            end
+    end.
 
 -doc """
 Populate the `ircd_safe_channels` ETS short-name index from the stored
@@ -118,6 +146,7 @@ Populate the `ircd_safe_channels` ETS short-name index from the stored
 """.
 -spec index_safe_channels() -> ok.
 index_safe_channels() ->
+    Now = erlang:system_time(second),
     case ets:whereis(ircd_safe_channels) of
         undefined ->
             ok;
@@ -126,8 +155,19 @@ index_safe_channels() ->
             lists:foreach(
                 fun(Key) ->
                     case mnesia:dirty_read(channel, Key) of
-                        [#channel{name = Name}] -> index_safe_channel(Name);
-                        [] -> ok
+                        [#channel{name = Name, members = Members}] ->
+                            index_safe_channel(Name),
+                            case map_size(Members) of
+                                0 ->
+                                    case ets:whereis(ircd_empty_channels) of
+                                        undefined -> ok;
+                                        _ -> ets:insert(ircd_empty_channels, {Key, Now})
+                                    end;
+                                _ ->
+                                    ok
+                            end;
+                        [] ->
+                            ok
                     end
                 end,
                 mnesia:dirty_all_keys(channel)
@@ -175,7 +215,7 @@ prune_empty_channels() ->
         max_empty_channels, persistent_term:get({ircd_state, config}, #{}), 1000
     ),
     Empty = [
-        {channel_age_key(Created), Key, Channel}
+        {has_retained_state(Channel), empty_since(Key, Created), Key, Channel}
      || Key <- mnesia:dirty_all_keys(channel),
         [#channel{members = Members, created = Created} = Channel] <- [
             mnesia:dirty_read(channel, Key)
@@ -188,10 +228,18 @@ prune_empty_channels() ->
     case Excess > 0 of
         true ->
             Oldest = lists:sublist(lists:sort(Empty), Excess),
-            lists:foreach(fun({_, _, C}) -> drop_channel_row(C) end, Oldest);
+            lists:foreach(fun({_, _, _, C}) -> drop_channel_row(C) end, Oldest);
         false ->
             ok
     end.
+
+has_retained_state(#channel{
+    key = Key, topic = Topic, flags = Flags, lists = Lists, password = Password, limit = Limit
+}) ->
+    Topic =/= <<>> orelse map_size(Flags) > 0 orelse map_size(Lists) > 0 orelse
+        Password =/= undefined orelse Limit =/= undefined orelse
+        mnesia:dirty_read(channel_history, Key) =/= [] orelse
+        mnesia:dirty_read(channel_meta, Key) =/= [].
 
 channel_age_key(Created) when is_integer(Created) -> Created;
 channel_age_key(_) -> 0.
@@ -335,18 +383,21 @@ reop_channels(Server) ->
 
 maybe_expire_empty(_Channel, _Now, 0) ->
     ok;
-maybe_expire_empty(#channel{key = Key, created = Created} = Channel, Now, Ttl) when
-    is_integer(Created)
-->
+maybe_expire_empty(#channel{key = Key, created = Created} = Channel, Now, Ttl) ->
+    %% Under `channels` retention, channels with stored state or history are
+    %% preserved across restarts and idle periods; TTL expiry only removes
+    %% empty channels under `transient` retention (or completely blank rows).
+    Eligible =
+        ircd_state:retention() =:= transient orelse not has_retained_state(Channel),
+    Since = empty_since(Key, Created),
     case
-        Now - Created >= Ttl andalso not ircd_state:predefined_channel(Key) andalso
+        Eligible andalso Since > 0 andalso Now - Since >= Ttl andalso
+            not ircd_state:predefined_channel(Key) andalso
             mnesia:dirty_read(remote_channel, Key) =:= []
     of
         true -> drop_channel_row(Channel);
         false -> ok
-    end;
-maybe_expire_empty(_, _, _) ->
-    ok.
+    end.
 
 maybe_reop(#channel{members = Members} = Channel, Server) ->
     HasOperator = lists:any(
@@ -643,6 +694,7 @@ finish_join(
         members = NewMembers,
         invited = lists:delete(Pid, Invited)
     }),
+    clear_channel_empty(Key),
     index_safe_channel(Canonical),
     mnesia:dirty_write(Client#client{channels = [Key | Channels]}),
     ircd_state_link:propagate_join(Client, Canonical, maps:get(Pid, NewMembers)),

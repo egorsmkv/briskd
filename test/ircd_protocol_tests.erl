@@ -19,7 +19,7 @@ predefined_test_() ->
 
 protocol() ->
     Dir = filename:join(
-        "/tmp", "ircd-protocol-" ++ integer_to_list(erlang:unique_integer([positive]))
+        "/tmp", "ircd-protocol-" ++ integer_to_list(erlang:system_time(nanosecond))
     ),
     ok = filelib:ensure_dir(filename:join(Dir, "db")),
     Config = filename:join(Dir, "ircd.json"),
@@ -250,7 +250,7 @@ restore_from_backup(Dir) ->
 %% PRIVMSG/NOTICE history. Sessions, operator mode, and peer rows do not.
 retention() ->
     Dir = filename:join(
-        "/tmp", "ircd-retention-" ++ integer_to_list(erlang:unique_integer([positive]))
+        "/tmp", "ircd-retention-" ++ integer_to_list(erlang:system_time(nanosecond))
     ),
     ok = filelib:ensure_dir(filename:join(Dir, "db")),
     Db = filename:join(Dir, "db"),
@@ -278,6 +278,8 @@ retention() ->
         send(Alice, <<"MODE #kept +l 1">>),
         _ = recv(Alice),
         send(Alice, <<"MODE #kept +b banned!*@*">>),
+        _ = recv(Alice),
+        send(Alice, <<"METADATA #kept SET theme :dark">>),
         _ = recv(Alice),
         send(Alice, <<"PRIVMSG #kept :hist-old">>),
         send(Alice, <<"NOTICE #kept :hist-mid">>),
@@ -332,6 +334,9 @@ retention() ->
         ?assert(has(Modes, <<" 324 ">>)),
         ?assert(has(Modes, <<"+tkl">>)),
         ?assert(has(Modes, <<"secret 1">>)),
+        send(Carol, <<"METADATA #kept GET theme">>),
+        Meta = recv(Carol),
+        ?assert(has(Meta, <<" 761 #kept theme * :dark">>)),
         send(Carol, <<"TOPIC #kept :changed">>),
         ?assert(has(recv(Carol), <<" 482 ">>)),
         Dave = register_client(Again, <<"dave">>, <<"Dave">>),
@@ -353,7 +358,7 @@ retention() ->
 %% not. `channels` retention keeps a later topic instead of the configured one.
 predefined() ->
     Dir = filename:join(
-        "/tmp", "ircd-predefined-" ++ integer_to_list(erlang:unique_integer([positive]))
+        "/tmp", "ircd-predefined-" ++ integer_to_list(erlang:system_time(nanosecond))
     ),
     ok = filelib:ensure_dir(filename:join(Dir, "db")),
     Db = filename:join(Dir, "db"),
@@ -447,7 +452,7 @@ predefined() ->
 
 rejected_retention() ->
     Dir = filename:join(
-        "/tmp", "ircd-retention-bad-" ++ integer_to_list(erlang:unique_integer([positive]))
+        "/tmp", "ircd-retention-bad-" ++ integer_to_list(erlang:system_time(nanosecond))
     ),
     ok = filelib:ensure_dir(filename:join(Dir, "db")),
     Config = filename:join(Dir, "ircd.json"),

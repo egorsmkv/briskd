@@ -32,3 +32,5 @@
 %% for accepted channel PRIVMSG and NOTICE. The list is capped by history_limit.
 %% Entries are maps; rows written by older releases may still hold tuples.
 -record(channel_history, {channel :: binary(), entries = [] :: [map() | tuple()]}).
+%% Durable channel metadata (draft/metadata-2), kept alongside the channel row.
+-record(channel_meta, {channel :: binary(), entries = #{} :: map()}).

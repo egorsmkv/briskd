@@ -54,7 +54,24 @@ drain(Reason) ->
         Sessions
     ),
     Left = wait(erlang:monotonic_time(millisecond) + Grace * 1000),
+    flush_state_and_mnesia(),
     logger:notice(#{event => shutdown_drained, remaining_sessions => Left}),
+    ok.
+
+%% Ensure `ircd_state` has processed all session `'DOWN'` messages (writing
+%% WHOWAS and cleaning up channel memberships) and flush Mnesia's disk log
+%% before the supervision tree terminates.
+flush_state_and_mnesia() ->
+    try sys:get_state(ircd_state, 5000) of
+        _ -> ok
+    catch
+        _:_ -> ok
+    end,
+    try mnesia:dump_log() of
+        _ -> ok
+    catch
+        _:_ -> ok
+    end,
     ok.
 
 sessions() ->

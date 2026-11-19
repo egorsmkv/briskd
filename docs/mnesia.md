@@ -27,7 +27,8 @@ decided by the setting loaded at that start.
 | Read markers (`read_marker`, per account and target) | Kept | Kept |
 | End-to-end encryption device bundles (`e2ee_device`, public keys only) | Kept | Kept |
 | End-to-end encryption offline queue (`e2ee_queue`, ciphertext until acknowledged or `queue_ttl`) | Kept | Kept |
-| IRCv3 connection state: capabilities, MONITOR lists, metadata, SASL progress | Deleted | Deleted |
+| Channel metadata (`channel_meta`, synced with `ircd_chan_meta`) | Kept for safe `!` channels; deleted for ordinary channels | Kept |
+| IRCv3 connection state: capabilities, MONITOR lists, user metadata, SASL progress | Deleted | Deleted |
 | Direct-message history between accounts (`direct_history`) | Deleted | Kept, newest `history_limit` entries per pair |
 
 A restart therefore drops live nick occupancy, operator status, and peer state

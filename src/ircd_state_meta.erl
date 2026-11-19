@@ -6,6 +6,7 @@
     remote_channel_change/4,
     remote_user_change/4,
     rename_remote/2,
+    restore_channels/0,
     metadata/3,
     on_join/3,
     on_registered/2,
@@ -19,13 +20,15 @@ User and channel metadata:
 fallback to the deprecated metadata 3.2 numerics for clients that did not
 negotiate the capability.
 
-Runs inside `m:ircd_state`; all storage is in memory and nothing survives a
-restart. Local user keys live in `m:ircd_conn` (`metadata`) and are dropped
-on disconnect. Channel keys live in the `ircd_chan_meta` ETS table and are
-dropped with the channel. Keys of remote users live in `ircd_remote_meta`.
-Subscriptions are per connection (`metasubs`). Changes are sent to peers
-through `m:ircd_state_sync`, and changes from peers arrive through
-`remote_user_change/4` and `remote_channel_change/4`.
+Runs inside `m:ircd_state`. Local user keys live in `m:ircd_conn`
+(`metadata`) and are dropped on disconnect. Channel keys live in the
+`ircd_chan_meta` ETS table and are persisted in the Mnesia `channel_meta`
+table so they survive restarts for channels kept by the active `retention`
+policy (safe `!` channels under `transient` retention, and all channels under
+`channels` retention) and are dropped with the channel. Keys of remote users
+live in `ircd_remote_meta`. Subscriptions are per connection (`metasubs`).
+Changes are sent to peers through `m:ircd_state_sync`, and changes from peers
+arrive through `remote_user_change/4` and `remote_channel_change/4`.
 
 Every key is public (visibility `*`). A key is 1 to 64 bytes of
 `[a-z0-9_./-]`; a value must be valid UTF-8. Users may change only their own
@@ -494,6 +497,25 @@ disconnect(_Pid) ->
     ok.
 
 -doc """
+Restore `ircd_chan_meta` ETS entries from the durable `channel_meta` Mnesia
+table for every channel kept by the startup retention policy, and drop
+`channel_meta` rows whose channel no longer exists.
+""".
+-spec restore_channels() -> ok.
+restore_channels() ->
+    lists:foreach(
+        fun(Key) ->
+            case {mnesia:dirty_read(channel, Key), mnesia:dirty_read(channel_meta, Key)} of
+                {[_], [#channel_meta{entries = Map}]} when is_map(Map), map_size(Map) > 0 ->
+                    ets:insert(ircd_chan_meta, {Key, Map});
+                _ ->
+                    mnesia:dirty_delete(channel_meta, Key)
+            end
+        end,
+        mnesia:dirty_all_keys(channel_meta)
+    ).
+
+-doc """
 Forget the metadata of the channel with folded name `Key` when the channel
 row is deleted.
 """.
@@ -503,7 +525,11 @@ drop_channel(Key) ->
         undefined -> ok;
         _ -> ets:delete(ircd_chan_meta, Key)
     end,
-    ok.
+    try mnesia:dirty_delete(channel_meta, Key) of
+        ok -> ok
+    catch
+        _:_ -> ok
+    end.
 
 -doc """
 Move a channel's metadata from folded name `OldKey` to `NewKey` after
@@ -514,9 +540,11 @@ rename_channel(OldKey, NewKey) ->
     case ets:lookup(ircd_chan_meta, OldKey) of
         [{_, Map}] ->
             ets:delete(ircd_chan_meta, OldKey),
-            ets:insert(ircd_chan_meta, {NewKey, Map});
+            ets:insert(ircd_chan_meta, {NewKey, Map}),
+            mnesia:dirty_delete(channel_meta, OldKey),
+            mnesia:dirty_write(#channel_meta{channel = NewKey, entries = Map});
         [] ->
-            ok
+            mnesia:dirty_delete(channel_meta, OldKey)
     end,
     ok.
 
@@ -537,9 +565,11 @@ write({user, Pid, _}, Map) ->
     ircd_conn:put(Pid, metadata, Map);
 write({channel, Key, _}, Map) when map_size(Map) =:= 0 ->
     ets:delete(ircd_chan_meta, Key),
+    mnesia:dirty_delete(channel_meta, Key),
     ok;
 write({channel, Key, _}, Map) ->
     ets:insert(ircd_chan_meta, {Key, Map}),
+    mnesia:dirty_write(#channel_meta{channel = Key, entries = Map}),
     ok.
 
 %% Users may change only their own keys; channel operators change channel keys.

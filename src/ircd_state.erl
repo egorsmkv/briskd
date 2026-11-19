@@ -60,19 +60,21 @@ messages RFC 2813; IRCv3 commands are dispatched to their own modules.
 ## Mnesia tables
 
 `init/1` creates (or loads and migrates) these `disc_copies` tables:
-`client`, `channel`, `channel_history`, `activity`, `whowas`, `user_modes`,
-`remote_client`, `remote_channel`, `known_server`, `service`, `account`,
-`read_marker`, `e2ee_device`, `e2ee_queue`, and `direct_history`. On every
-start it clears `client`, `activity`, `user_modes`, and all imported peer
-state (`remote_client`, `remote_channel`, `known_server`, `service`).
-`whowas`, safe `!` channels, `account`, `read_marker`, `e2ee_device`, and
-`e2ee_queue` always survive a restart. The JSON `retention` setting decides
-the rest:
+`client`, `channel`, `channel_history`, `channel_meta`, `activity`, `whowas`,
+`user_modes`, `remote_client`, `remote_channel`, `known_server`, `service`,
+`account`, `read_marker`, `e2ee_device`, `e2ee_queue`, and `direct_history`.
+On every start it clears `client`, `activity`, `user_modes`, and all imported
+peer state (`remote_client`, `remote_channel`, `known_server`, `service`).
+`whowas`, safe `!` channels (with their metadata), `account`, `read_marker`,
+`e2ee_device`, and `e2ee_queue` always survive a restart. The JSON `retention`
+setting decides the rest:
 
-- `transient` (default): ordinary channels and both history tables are
-  deleted; safe channels are kept with their membership cleared.
+- `transient` (default): ordinary channels, their metadata, and both history
+  tables are deleted; safe channels and their metadata are kept with their
+  membership cleared.
 - `channels`: every channel row is kept with membership cleared, together
-  with its history; history of channels that no longer exist is dropped.
+  with its history and metadata, plus direct-message history; history and
+  metadata of channels that no longer exist are dropped.
 
 Configured `channels` entries are then created when no row exists. See
 `docs/mnesia.md` for backup, restore, and migration.
@@ -294,6 +296,7 @@ init(#{name := Name} = Config) ->
     ensure_ets(ircd_remote_meta),
     ensure_ets(ircd_e2ee_bound),
     ensure_ets(ircd_safe_channels),
+    ensure_ets(ircd_empty_channels),
     ok = ircd_flood:init(),
     persistent_term:put({?MODULE, config}, Config),
     persistent_term:put({?MODULE, config_path}, maps:get(config_path, Config)),
@@ -306,6 +309,7 @@ init(#{name := Name} = Config) ->
     table(client, record_info(fields, client), [{index, [nick]}]),
     table(channel, record_info(fields, channel), []),
     table(channel_history, record_info(fields, channel_history), []),
+    table(channel_meta, record_info(fields, channel_meta), []),
     table(activity, record_info(fields, activity), []),
     table(whowas, record_info(fields, whowas), []),
     table(user_modes, record_info(fields, user_modes), []),
@@ -330,6 +334,7 @@ init(#{name := Name} = Config) ->
             client,
             channel,
             channel_history,
+            channel_meta,
             activity,
             whowas,
             user_modes,
@@ -542,6 +547,7 @@ reset_channels() ->
             {atomic, ok} = mnesia:clear_table(direct_history),
             ok
     end,
+    ircd_state_meta:restore_channels(),
     ircd_state_channel:index_safe_channels().
 
 cleared_membership(Channel) ->
