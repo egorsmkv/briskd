@@ -7,6 +7,8 @@ await Deno.mkdir(outDir, { recursive: true });
 const tsEntries = ["admin", "signup", "verify", "webirc"];
 const scssEntries = ["admin", "signup", "verify", "webirc"];
 
+const browserTargets = ["chrome80", "firefox78", "safari13", "edge80"];
+
 await esbuild.build({
   entryPoints: tsEntries.map((name) => ({
     in: `src/${name}.ts`,
@@ -16,16 +18,21 @@ await esbuild.build({
   bundle: true,
   minify: true,
   format: "iife",
-  target: ["es2019", "chrome80", "firefox78", "safari13", "edge80"],
+  target: ["es2019", ...browserTargets],
   sourcemap: false,
 });
 
 for (const name of scssEntries) {
-  const result = sass.compile(`styles/${name}.scss`, {
-    style: "compressed",
+  const compiled = sass.compile(`styles/${name}.scss`, {
+    style: "expanded",
     loadPaths: ["styles"],
   });
-  await Deno.writeTextFile(`${outDir}/${name}.css`, result.css);
+  const lowered = await esbuild.transform(compiled.css, {
+    loader: "css",
+    minify: true,
+    target: browserTargets,
+  });
+  await Deno.writeTextFile(`${outDir}/${name}.css`, lowered.code);
 }
 
 await esbuild.stop();

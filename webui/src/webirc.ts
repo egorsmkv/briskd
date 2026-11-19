@@ -1,4 +1,47 @@
-import { initTheme } from "./common/theme.ts";
+import { currentTheme, initTheme, setTheme, THEMES } from "./common/theme.ts";
+
+interface WebircSettings {
+  density: "comfortable" | "compact";
+  fontSize: "small" | "normal" | "large";
+  timestamps: boolean;
+  joinPart: boolean;
+  notifyMentions: boolean;
+}
+
+const SETTINGS_KEY = "ircd-webirc-settings";
+
+function loadSettings(): WebircSettings {
+  const defaults: WebircSettings = {
+    density: "comfortable",
+    fontSize: "normal",
+    timestamps: true,
+    joinPart: true,
+    notifyMentions: false,
+  };
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (!raw) return defaults;
+    const parsed = JSON.parse(raw) as Partial<WebircSettings>;
+    return {
+      density: parsed.density === "compact" ? "compact" : "comfortable",
+      fontSize:
+        parsed.fontSize === "small" || parsed.fontSize === "large" ? parsed.fontSize : "normal",
+      timestamps: parsed.timestamps !== false,
+      joinPart: parsed.joinPart !== false,
+      notifyMentions: parsed.notifyMentions === true,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+function saveSettings(s: WebircSettings): void {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+  } catch {
+    // ignore
+  }
+}
 
 interface IrcMessage {
   tags: Record<string, string>;
@@ -99,7 +142,102 @@ function parseIrc(raw: string): IrcMessage | null {
   return { tags, prefix, nick, command, params };
 }
 
-initTheme([$("btn-theme-1"), $("btn-theme-2")]);
+const themeButtons = [$("btn-theme-1"), $("btn-theme-2")];
+initTheme(themeButtons);
+
+const settings: WebircSettings = loadSettings();
+
+function applySettings(): void {
+  document.body.classList.toggle("density-compact", settings.density === "compact");
+  document.body.classList.toggle("hide-timestamps", !settings.timestamps);
+  document.body.classList.toggle("font-small", settings.fontSize === "small");
+  document.body.classList.toggle("font-large", settings.fontSize === "large");
+  $<HTMLSelectElement>("opt-density").value = settings.density;
+  $<HTMLSelectElement>("opt-fontsize").value = settings.fontSize;
+  $<HTMLInputElement>("opt-timestamps").checked = settings.timestamps;
+  $<HTMLInputElement>("opt-joinpart").checked = settings.joinPart;
+  $<HTMLInputElement>("opt-notify").checked = settings.notifyMentions;
+}
+
+function renderThemeSwatches(): void {
+  const grid = $("theme-grid");
+  grid.textContent = "";
+  const active = currentTheme();
+  for (const t of THEMES) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "theme-swatch" + (t.id === active ? " active" : "");
+    const chip = document.createElement("span");
+    chip.className = "swatch-chip";
+    chip.style.backgroundColor = t.swatchBg;
+    chip.style.borderColor = t.swatchAccent;
+    const label = document.createElement("span");
+    label.textContent = t.name;
+    btn.appendChild(chip);
+    btn.appendChild(label);
+    btn.onclick = () => {
+      setTheme(t.id, themeButtons);
+      renderThemeSwatches();
+    };
+    grid.appendChild(btn);
+  }
+}
+
+function openSettings(): void {
+  renderThemeSwatches();
+  applySettings();
+  $("settings-modal").classList.add("open");
+}
+
+function closeSettings(): void {
+  $("settings-modal").classList.remove("open");
+}
+
+applySettings();
+$("btn-settings-1").onclick = openSettings;
+$("btn-settings-2").onclick = openSettings;
+$("btn-close-settings").onclick = closeSettings;
+$("settings-modal").addEventListener("click", (ev) => {
+  if (ev.target === $("settings-modal")) closeSettings();
+});
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") closeSettings();
+});
+
+$<HTMLSelectElement>("opt-density").onchange = (ev) => {
+  const v = (ev.target as HTMLSelectElement).value;
+  settings.density = v === "compact" ? "compact" : "comfortable";
+  saveSettings(settings);
+  applySettings();
+};
+$<HTMLSelectElement>("opt-fontsize").onchange = (ev) => {
+  const v = (ev.target as HTMLSelectElement).value;
+  settings.fontSize = v === "small" || v === "large" ? v : "normal";
+  saveSettings(settings);
+  applySettings();
+};
+$<HTMLInputElement>("opt-timestamps").onchange = (ev) => {
+  settings.timestamps = (ev.target as HTMLInputElement).checked;
+  saveSettings(settings);
+  applySettings();
+};
+$<HTMLInputElement>("opt-joinpart").onchange = (ev) => {
+  settings.joinPart = (ev.target as HTMLInputElement).checked;
+  saveSettings(settings);
+  applySettings();
+};
+$<HTMLInputElement>("opt-notify").onchange = async (ev) => {
+  const checked = (ev.target as HTMLInputElement).checked;
+  if (checked && typeof Notification !== "undefined" && Notification.permission === "default") {
+    try {
+      await Notification.requestPermission();
+    } catch {
+      // ignore
+    }
+  }
+  settings.notifyMentions = checked;
+  saveSettings(settings);
+};
 
 const bodyData = document.body.dataset;
 const WS_PORT = bodyData.wsPort || "";
@@ -193,6 +331,15 @@ function addLine(
     if (mention) buf.mentions += 1;
     renderBuffers();
     updateTitle();
+  }
+  if (
+    mention &&
+    settings.notifyMentions &&
+    typeof Notification !== "undefined" &&
+    Notification.permission === "granted" &&
+    document.hidden
+  ) {
+    new Notification(`${entry.nick} in ${bufName}`, { body: entry.text });
   }
 }
 
@@ -506,7 +653,7 @@ function handleMessage(raw: string): void {
       switchBuf(chan.toLowerCase());
       sendRaw(`CHATHISTORY LATEST ${chan} * 50`);
     }
-    addLine(chan, { time, text: `${nick} joined ${chan}`, kind: "sys" });
+    if (settings.joinPart) addLine(chan, { time, text: `${nick} joined ${chan}`, kind: "sys" });
     renderMembers();
     return;
   }
@@ -520,7 +667,9 @@ function handleMessage(raw: string): void {
         if (activeBuf === chan.toLowerCase()) switchBuf("*status");
         else renderBuffers();
       } else {
-        addLine(chan, { time, text: `${nick} left (${params[1] || ""})`, kind: "sys" });
+        if (settings.joinPart) {
+          addLine(chan, { time, text: `${nick} left (${params[1] || ""})`, kind: "sys" });
+        }
         renderMembers();
       }
     }
@@ -530,7 +679,9 @@ function handleMessage(raw: string): void {
     buffers.forEach((buf) => {
       if (buf.members.has(nick)) {
         buf.members.delete(nick);
-        addLine(buf.name, { time, text: `${nick} quit (${params[0] || ""})`, kind: "sys" });
+        if (settings.joinPart) {
+          addLine(buf.name, { time, text: `${nick} quit (${params[0] || ""})`, kind: "sys" });
+        }
       }
     });
     renderMembers();
