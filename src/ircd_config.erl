@@ -92,6 +92,9 @@ load(Path) ->
             server_info => ServerInfo,
             shutdown_grace => shutdown_grace(maps:get(<<"shutdown_grace">>, Json, 5)),
             max_sendq => max_sendq(maps:get(<<"max_sendq">>, Json, 10000)),
+            tls_reload_interval => tls_reload_interval(
+                maps:get(<<"tls_reload_interval">>, Json, 60)
+            ),
             multiclient => boolean_setting(multiclient, maps:get(<<"multiclient">>, Json, false)),
             account_rejoin => boolean_setting(
                 account_rejoin, maps:get(<<"account_rejoin">>, Json, false)
@@ -222,6 +225,11 @@ shutdown_grace(Value) -> erlang:error({invalid_shutdown_grace, Value}).
 %% Lines queued for one client before it is disconnected (Max SendQ exceeded).
 max_sendq(Value) when is_integer(Value, 100, 1000000) -> Value;
 max_sendq(Value) -> erlang:error({invalid_max_sendq, Value}).
+
+%% Seconds between TLS certificate file checks (ircd_certs); 0 disables.
+tls_reload_interval(0) -> 0;
+tls_reload_interval(Value) when is_integer(Value, 5, 86400) -> Value;
+tls_reload_interval(Value) -> erlang:error({invalid_tls_reload_interval, Value}).
 
 %% Longest nickname. RFC 1459 uses 9; larger values are an operator choice
 %% and must match every linked server.

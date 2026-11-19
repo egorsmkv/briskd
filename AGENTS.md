@@ -99,6 +99,7 @@ src/ircd_state_meta.erl      # draft/metadata-2
 src/ircd_state_sync.erl      # accounts, metadata, read markers across server links
 src/ircd_state_queries.erl   # WHO/WHOIS/WHOWAS and related numerics
 src/ircd_listener.erl        # TCP or TLS accept loop
+src/ircd_certs.erl           # TLS certificate file watcher and live reload
 src/ircd_session.erl         # one client connection
 src/ircd_sessions.erl        # client supervisor and max_clients admission
 src/ircd_link.erl            # one direct server peer

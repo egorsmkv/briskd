@@ -1,0 +1,53 @@
+# TLS certificates from an ACME CA (Let's Encrypt by default) with lego.
+# Use together with the production file:
+#
+#   cp deploy/lego/lego.env.example lego.env      # then edit it
+#   docker compose -f docker-compose.prod.yml -f docker-compose.lego.yml up -d --build
+#
+# The lego service obtains the certificate for LEGO_DOMAINS, renews it when
+# it is due, and writes fullchain.pem and privkey.pem to the ircd-certs
+# volume (deploy/lego/lego.sh). ircd waits until the first certificate exists,
+# serves TLS on 6697 with config/ircd.prod.tls.json, and reloads a renewed
+# certificate without a restart (ircd_certs, tls_reload_interval).
+
+services:
+  lego:
+    image: goacme/lego:v5.6.0
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/deploy/lego.sh"]
+    env_file:
+      - lego.env
+    ports:
+      # HTTP-01 challenge server. Remove for DNS-01; publish 443 for TLS-ALPN-01.
+      - "80:80"
+    volumes:
+      - lego-data:/data
+      - ircd-certs:/certs
+      - ./deploy/lego/lego.sh:/deploy/lego.sh:ro
+    healthcheck:
+      test: ["CMD", "test", "-s", "/certs/fullchain.pem"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  ircd:
+    depends_on:
+      lego:
+        condition: service_healthy
+    ports:
+      - "6697:6697"
+    volumes:
+      - ./config/ircd.prod.tls.json:/etc/ircd/ircd.json:ro
+      - ircd-certs:/etc/ircd/certs:ro
+
+volumes:
+  # ACME account key and certificates (lego's own storage).
+  lego-data:
+  # Published certificate and key, read-only for ircd.
+  ircd-certs:

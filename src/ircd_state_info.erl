@@ -477,6 +477,9 @@ rehash_config(NewConfig, Path, Client, Server) ->
             %% event is not lost when the reload lowers the level.
             logger:notice(#{event => oper_rehash, nick => Client#client.nick, result => accepted}),
             apply_rehash(NewConfig),
+            %% Certificate paths are static, their contents are not: reload
+            %% renewed certificates now instead of at the next interval.
+            ok = ircd_certs:check_async(),
             ircd_state_net:notify_cap_changes(Advertised, Server),
             notify_isupport_changes(Tokens, ircd_isupport:tokens(), Clients, Server),
             server_wallops(

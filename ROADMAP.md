@@ -82,6 +82,10 @@ in the referenced RFC.
   long-lived Mnesia data in `docs/mnesia.md`.
 - [x] Add restart-level verification for each state category that is intended
   to persist.
+- [x] ACME certificates with lego (`docker-compose.lego.yml`,
+  `deploy/lego/lego.sh`): issuance and renewal by HTTP-01, TLS-ALPN-01, or
+  DNS-01, and live reload of renewed certificates (`ircd_certs`,
+  `tls_reload_interval`) without dropping connections.
 - [x] Resource bounds (implementation policy):
   - A client whose outgoing queue passes `max_sendq` lines is disconnected
     with `Max SendQ exceeded`. An outbound link that stops reading is

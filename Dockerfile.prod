@@ -20,13 +20,16 @@ RUN rebar3 as prod release
 
 FROM debian:trixie-slim
 
+# The ircd user has a fixed UID/GID (10001) so files written for it by other
+# containers (TLS keys from lego, see docker-compose.lego.yml) can be owned by it.
 # Runtime libraries the bundled ERTS and the crypto/ssl NIFs link against.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         bash ca-certificates libssl3t64 libstdc++6 libtinfo6 libzstd1 zlib1g \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system ircd \
-    && useradd --system --gid ircd --home-dir /var/lib/ircd --shell /usr/sbin/nologin ircd \
+    && groupadd --system --gid 10001 ircd \
+    && useradd --system --uid 10001 --gid ircd --home-dir /var/lib/ircd \
+        --shell /usr/sbin/nologin ircd \
     && mkdir -p /var/lib/ircd/mnesia /etc/ircd \
     && chown -R ircd:ircd /var/lib/ircd
 

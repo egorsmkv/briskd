@@ -10,6 +10,9 @@ restart intensity (one restart in five seconds):
 3. `m:ircd_links`, the supervisor of outbound server-link workers.
 4. One `m:ircd_listener` per configured port, in the order `tcp`, `tls`,
    `ws`, `wss`. A port set to `null` has no listener.
+5. `m:ircd_certs`, the TLS certificate watcher, when a `tls` or `wss`
+   listener is configured and `tls_reload_interval` is not 0. It restarts the
+   `tls` and `wss` listeners after a certificate renewal.
 
 With `rest_for_one`, a restart of the state process also restarts every
 session, link, and listener started after it, so no connection outlives the
@@ -45,4 +48,10 @@ init(Config) ->
         #{id => Kind, start => {ircd_listener, start_link, [Kind, Port, Config]}}
      || Kind <- [tcp, tls, ws, wss], Port <- [maps:get(Kind, Config)], Port =/= null
     ],
-    {ok, {#{strategy => rest_for_one}, Children ++ Listeners}}.
+    %% Last, so a restart of the watcher affects nothing else (rest_for_one).
+    Certs = [
+        #{id => ircd_certs, start => {ircd_certs, start_link, [Config]}}
+     || maps:get(tls_options, Config, []) =/= [],
+        maps:get(tls_reload_interval, Config, 60) > 0
+    ],
+    {ok, {#{strategy => rest_for_one}, Children ++ Listeners ++ Certs}}.

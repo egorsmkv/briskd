@@ -21,6 +21,7 @@ to the process working directory unless they are absolute.
 | `channels` | `[]` | Channels created at startup when absent. Each entry has `name` and optional `topic`, `key`, `limit`, and `modes` |
 | `motd_file` | `null` | Text file served by `MOTD` |
 | `shutdown_grace` | `5` | Seconds a graceful shutdown waits for sessions to close (0..300) |
+| `tls_reload_interval` | `60` | Seconds between checks of the TLS certificate and key files (including `sni` pairs); a changed, valid pair is reloaded without a restart. `0` disables; otherwise 5..86400 |
 | `admin_name`, `admin_location1`, `admin_location2`, `admin_email` | See config | Values returned by `ADMIN` |
 | `reop_delay` | `30` | Base delay in seconds before re-opping an operatorless safe channel |
 | `resource_delay` | `60` | Seconds a nickname or channel released by a quit or netsplit stays unavailable (437); `0` disables |
