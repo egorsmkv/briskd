@@ -163,6 +163,11 @@ smtp_web_verify_integration() ->
                 byte_size(integer_to_binary(WebPort))
         ),
 
+        %% Visiting /verify without query parameters renders the verification form.
+        {200, FormBody} = http_get(WebPort, <<"/verify">>),
+        ?assert(has(FormBody, <<"<title>Verify Account - ircd</title>">>)),
+        ?assert(has(FormBody, <<"action=\"/verify\"">>)),
+
         %% Click the verification link over HTTP (no Basic Auth required).
         {200, Body1} = http_get(WebPort, PathAndQuery),
         ?assert(has(Body1, <<"Account verified">>)),

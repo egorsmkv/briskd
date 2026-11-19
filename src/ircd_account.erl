@@ -4,6 +4,8 @@
     min_password/0,
     import/1,
     list/0,
+    list_all/0,
+    force_verify/1,
     verify/2,
     by_certfp/1,
     check_password/2,
@@ -120,6 +122,38 @@ list() ->
      || Key <- mnesia:dirty_all_keys(account),
         [#account{pending = undefined} = Account] <- [mnesia:dirty_read(account, Key)]
     ].
+
+-doc """
+All accounts, including non-expired pending registrations, for admin inspection.
+""".
+-spec list_all() -> [#account{}].
+list_all() ->
+    Now = erlang:system_time(millisecond),
+    [
+        Account
+     || Key <- mnesia:dirty_all_keys(account),
+        [Account] <- [mnesia:dirty_read(account, Key)],
+        case Account#account.pending of
+            undefined -> true;
+            {_, Expires} -> Now =< Expires
+        end
+    ].
+
+-doc """
+Administratively verify a pending account without requiring its email code.
+""".
+-spec force_verify(binary()) -> {ok, #account{}} | {error, already_verified | no_such_account}.
+force_verify(Name) ->
+    case mnesia:dirty_read(account, ircd_wire:fold(Name)) of
+        [#account{pending = undefined}] ->
+            {error, already_verified};
+        [#account{} = Account] ->
+            Verified = Account#account{pending = undefined},
+            mnesia:dirty_write(Verified),
+            {ok, Verified};
+        [] ->
+            {error, no_such_account}
+    end.
 
 -doc """
 Store an account replicated from a peer server and return `stored`, or

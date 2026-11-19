@@ -372,6 +372,15 @@ handle_state_action({create_account, Name, Password, Email}, _Server) ->
         {error, Reason} ->
             {error, Reason}
     end;
+handle_state_action({verify_account, Name}, _Server) ->
+    case ircd_account:force_verify(Name) of
+        {ok, #account{name = Actual} = Account} ->
+            logger:notice(#{event => ctl_account_verified, account => Actual}),
+            ircd_state_sync:account_created(Account),
+            {ok, #{status => <<"verified">>, account => Actual}};
+        {error, Reason} ->
+            {error, Reason}
+    end;
 handle_state_action({delete_account, Name}, Server) ->
     Key = ircd_wire:fold(Name),
     case mnesia:dirty_read(account, Key) of
@@ -497,6 +506,10 @@ dispatch([<<"create-account">>, Name, Password | Rest], Format) ->
         end,
     cmd_state_call({create_account, Name, Password, Email}, Format, fun(#{account := A}) ->
         <<"Created account ", A/binary>>
+    end);
+dispatch([<<"verify-account">>, Name | _], Format) ->
+    cmd_state_call({verify_account, Name}, Format, fun(#{account := A}) ->
+        <<"Verified account ", A/binary>>
     end);
 dispatch([<<"delete-account">>, Name | _], Format) ->
     cmd_state_call({delete_account, Name}, Format, fun(#{account := A}) ->
@@ -943,6 +956,7 @@ cmd_accounts(Format) ->
     Entries = lists:sort([
         #{
             name => Name,
+            verified => Pending =:= undefined,
             email =>
                 case Email of
                     undefined -> null;
@@ -951,12 +965,16 @@ cmd_accounts(Format) ->
             certfps => length(Fps),
             created_us => Created
         }
-     || #account{name = Name, email = Email, certfps = Fps, created = Created} <-
-            ircd_account:list()
+     || #account{
+            name = Name, email = Email, certfps = Fps, created = Created, pending = Pending
+        } <-
+            ircd_account:list_all()
     ]),
     Lines = [
         iolist_to_binary([
             maps:get(name, E),
+            <<" | verified=">>,
+            atom_to_binary(maps:get(verified, E)),
             <<" | email=">>,
             null_star(maps:get(email, E)),
             <<" | certfps=">>,

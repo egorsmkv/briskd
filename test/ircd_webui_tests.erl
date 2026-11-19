@@ -198,6 +198,31 @@ live_webui() ->
         ),
         ?assertMatch(#{<<"error">> := <<"account_exists">>}, json:decode(DupBody)),
 
+        %% Admin WebUI lists pending accounts and can verify them with verify-account.
+        {ok, _} = ircd_account:create(
+            <<"penduser">>, <<"p@example.com">>, <<"strongpass123">>, [], {<<"CODE1234">>, 60000}
+        ),
+        {200, _, OvPend} = http_req(
+            Port, <<"GET">>, <<"/api/overview">>, [{<<"Authorization">>, GoodAuth}], <<>>
+        ),
+        #{<<"accounts">> := #{<<"accounts">> := AcctsBefore}} = json:decode(OvPend),
+        ?assert(
+            lists:any(
+                fun
+                    (#{<<"name">> := <<"penduser">>, <<"verified">> := false}) -> true;
+                    (_) -> false
+                end,
+                AcctsBefore
+            )
+        ),
+        {200, _, VerifyActBody} = post_action(Port, GoodAuth, <<"verify-account">>, [<<"penduser">>]),
+        ?assertMatch(
+            #{<<"status">> := <<"verified">>, <<"account">> := <<"penduser">>},
+            json:decode(VerifyActBody)
+        ),
+        {400, _, AlreadyBody} = post_action(Port, GoodAuth, <<"verify-account">>, [<<"penduser">>]),
+        ?assertMatch(#{<<"error">> := <<"already_verified">>}, json:decode(AlreadyBody)),
+
         %% 404 for unknown path.
         {404, _, _} = http_req(
             Port, <<"GET">>, <<"/nope">>, [{<<"Authorization">>, GoodAuth}], <<>>

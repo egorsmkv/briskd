@@ -307,6 +307,21 @@ peer_ip(Socket) ->
         _ -> <<"unknown">>
     end.
 
+handle_verify(Socket, <<>>) ->
+    Config = persistent_term:get({ircd_state, config}, #{}),
+    case maps:get(account_verification, Config, null) of
+        null ->
+            send_json(Socket, 404, <<"Not Found">>, #{error => <<"verification_disabled">>});
+        _ ->
+            send_response(
+                Socket,
+                200,
+                <<"OK">>,
+                <<"text/html; charset=utf-8">>,
+                [{<<"Content-Security-Policy">>, verify_csp()}],
+                verify_form_page(<<>>)
+            )
+    end;
 handle_verify(Socket, Query) ->
     Config = persistent_term:get({ircd_state, config}, #{}),
     case maps:get(account_verification, Config, null) of
@@ -382,6 +397,29 @@ parse_verify_query(Query) ->
     catch
         _:_ -> error
     end.
+
+verify_form_page(AccountPrefill) ->
+    EscAcct = escape_html(AccountPrefill),
+    iolist_to_binary([
+        <<"<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">">>,
+        <<"<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">">>,
+        <<"<title>Verify Account - ircd</title>">>,
+        <<"<style>:root{color-scheme:light dark}body{font-family:system-ui,sans-serif;max-width:420px;margin:64px auto;padding:0 20px;line-height:1.5}">>,
+        <<"label{display:block;font-size:13px;font-weight:500;margin:12px 0 4px}">>,
+        <<"input{width:100%;box-sizing:border-box;font:inherit;padding:8px 10px;border-radius:5px;border:1px solid #8886}">>,
+        <<"button{margin-top:16px;width:100%;font:inherit;padding:9px 14px;border-radius:5px;border:0;background:#1d4ed8;color:#fff;cursor:pointer;font-weight:500}</style></head><body>">>,
+        <<"<h1>Verify IRC Account</h1>">>,
+        <<"<p>Enter your account name and the verification code from your email.</p>">>,
+        <<"<form method=\"get\" action=\"/verify\">">>,
+        <<"<label for=\"account\">Account name</label>">>,
+        <<"<input id=\"account\" name=\"account\" required maxlength=\"64\" value=\"">>,
+        EscAcct,
+        <<"\">">>,
+        <<"<label for=\"code\">Verification code</label>">>,
+        <<"<input id=\"code\" name=\"code\" required maxlength=\"64\" autocomplete=\"one-time-code\">">>,
+        <<"<button type=\"submit\">Verify Account</button>">>,
+        <<"</form></body></html>">>
+    ]).
 
 verify_page(Title, Message, Ok) ->
     Accent =
@@ -491,6 +529,7 @@ allowed_action(<<"kick-client">>) -> true;
 allowed_action(<<"connect">>) -> true;
 allowed_action(<<"squit">>) -> true;
 allowed_action(<<"create-account">>) -> true;
+allowed_action(<<"verify-account">>) -> true;
 allowed_action(<<"delete-account">>) -> true;
 allowed_action(<<"backup">>) -> true;
 allowed_action(<<"drain">>) -> true;

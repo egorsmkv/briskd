@@ -502,8 +502,17 @@
     const accounts = (data.accounts && data.accounts.accounts) || [];
     $("cnt-accounts").textContent = String(accounts.length);
     replace("accounts-wrap", makeTable(
-      ["Account", "Email", "CertFPs", "Action"],
+      ["Account", "Status", "Email", "CertFPs", "Action"],
       accounts.map((a) => {
+        const wrap = document.createElement("span");
+        wrap.style.display = "inline-flex";
+        wrap.style.gap = "6px";
+        if (a.verified === false) {
+          const vbtn = el("button", "Verify", "primary small");
+          vbtn.type = "button";
+          vbtn.onclick = () => postAction("verify-account", [a.name]);
+          wrap.appendChild(vbtn);
+        }
         const btn = el("button", "Delete", "danger small");
         btn.type = "button";
         btn.onclick = () => {
@@ -511,11 +520,13 @@
             postAction("delete-account", [a.name]);
           }
         };
+        wrap.appendChild(btn);
         return [
           { text: a.name, cls: "mono" },
+          a.verified === false ? "pending" : "verified",
           a.email || "-",
           a.certfps ?? 0,
-          btn
+          wrap
         ];
       })
     ));

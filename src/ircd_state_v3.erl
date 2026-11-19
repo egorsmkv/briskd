@@ -831,7 +831,7 @@ signup_account_web(Name, Email0, Password, PeerIP) ->
                             Pending =
                                 case Verification of
                                     #{ttl := Ttl} ->
-                                        {verification_code(), erlang:system_time(second) + Ttl};
+                                        {verification_code(), Ttl * 1000};
                                     null ->
                                         undefined
                                 end,
