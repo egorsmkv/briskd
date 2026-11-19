@@ -242,6 +242,8 @@ handle_connection(
             handle_static(Socket, Name, Static);
         {ok, <<"GET">>, {<<"/api/altcha">>, _Query}, _Headers, _Body} ->
             send_json(Socket, 200, <<"OK">>, ircd_altcha:create_challenge());
+        {ok, <<"POST">>, {<<"/api/webirc/verify">>, _Query}, Headers, Body} ->
+            handle_webirc_verify_api(Socket, Headers, Body);
         {ok, <<"GET">>, {Path, _Query}, Headers, _Body} when
             Path =:= <<"/">>;
             Path =:= <<"/webirc">>;
@@ -390,6 +392,35 @@ default_channels(Config) ->
                 [] -> <<"#lobby">>;
                 _ -> iolist_to_binary(lists:join(<<",">>, Names))
             end
+    end.
+
+handle_webirc_verify_api(Socket, Headers, Body) ->
+    case maps:get(<<"x-requested-with">>, Headers, undefined) of
+        <<"ircd-webui">> ->
+            try json:decode(Body) of
+                Req when is_map(Req) ->
+                    case require_altcha(Req) of
+                        ok ->
+                            send_json(Socket, 200, <<"OK">>, #{status => <<"verified">>});
+                        {error, Code, Msg} ->
+                            send_json(Socket, 400, <<"Bad Request">>, #{
+                                error => Code, message => Msg
+                            })
+                    end;
+                _ ->
+                    send_json(Socket, 400, <<"Bad Request">>, #{
+                        error => <<"invalid_request">>,
+                        message => <<"Invalid verification request.">>
+                    })
+            catch
+                _:_ ->
+                    send_json(Socket, 400, <<"Bad Request">>, #{
+                        error => <<"invalid_json">>,
+                        message => <<"Invalid JSON request.">>
+                    })
+            end;
+        _ ->
+            send_json(Socket, 403, <<"Forbidden">>, #{error => <<"missing_csrf_header">>})
     end.
 
 handle_recover_page(Socket, RecoverHtml, Query) ->

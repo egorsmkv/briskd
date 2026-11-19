@@ -1,4 +1,5 @@
-import { byId as $, errorMessage } from "./common/dom.ts";
+import { byId as $, errorMessage, postJson } from "./common/dom.ts";
+import { initAltcha } from "./common/altcha.ts";
 import { dayKey, formatDayLabel, renderIrcMessage } from "./common/format.ts";
 import { currentLang, initLang, setLang, t } from "./common/i18n.ts";
 import { currentTheme, initTheme, setTheme, THEMES } from "./common/theme.ts";
@@ -599,42 +600,6 @@ function clearSession(): void {
     $<HTMLInputElement>("inp-channels").value = qChan;
   }
 })();
-
-async function shareWebirc(btn: HTMLElement): Promise<void> {
-  const buf = buffers.get(activeBuf);
-  const sharePath = buf && isChan(buf.name) ? bufferToPath(buf.name) : "/";
-  const shareUrl = new URL(sharePath, location.href).toString();
-  const title = BASE_TITLE;
-  const text = buf && isChan(buf.name)
-    ? `Join ${buf.name} on ${BASE_TITLE}`
-    : `Join ${BASE_TITLE}`;
-
-  if (typeof navigator.share === "function") {
-    try {
-      await navigator.share({ title, text, url: shareUrl });
-      return;
-    } catch {
-      // User cancelled or share unsupported; fall back to clipboard
-    }
-  }
-  const orig = btn.textContent || "Share";
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(shareUrl);
-      btn.textContent = "Copied!";
-      setTimeout(() => {
-        btn.textContent = orig;
-      }, 1800);
-      return;
-    }
-  } catch {
-    // Fall through to prompt
-  }
-  prompt("Copy WebIRC link:", shareUrl);
-}
-
-$("btn-share-1").onclick = () => void shareWebirc($("btn-share-1"));
-$("btn-share-2").onclick = () => void shareWebirc($("btn-share-2"));
 
 let ws: WebSocket | null = null;
 let lastWsUrl = "";
@@ -1440,7 +1405,7 @@ function buildBufRow(buf: BufferState, key: string): HTMLElement {
   if (buf.unread > 0) {
     const b = document.createElement("span");
     b.className = "buf-badge" + (buf.mentions > 0 ? " mention" : "");
-    b.textContent = String(buf.unread);
+    b.textContent = buf.unread > 99 ? "99+" : String(buf.unread);
     right.appendChild(b);
   }
   if (key !== "*status") {
@@ -1460,6 +1425,11 @@ function buildBufRow(buf: BufferState, key: string): HTMLElement {
       }
     };
     right.appendChild(close);
+  } else {
+    const spacer = document.createElement("span");
+    spacer.className = "buf-close-spacer";
+    spacer.setAttribute("aria-hidden", "true");
+    right.appendChild(spacer);
   }
   item.appendChild(right);
   item.onclick = () => switchBuf(key);
@@ -2457,20 +2427,59 @@ function startSession(opts: {
   }
 }
 
-$<HTMLFormElement>("connect-form").addEventListener("submit", (ev) => {
+const connectErr = $("connect-err");
+const loginAltcha = initAltcha(
+  $<HTMLInputElement>("altcha-check"),
+  $("altcha-label"),
+  (msg) => {
+    connectErr.textContent = msg;
+    connectErr.style.display = "block";
+  },
+);
+
+$<HTMLFormElement>("connect-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
-  const pathBuf = pathToBuffer(location.pathname);
-  startSession({
-    nick: $<HTMLInputElement>("inp-nick").value.trim(),
-    acct: $<HTMLInputElement>("inp-acct").value.trim(),
-    pass: $<HTMLInputElement>("inp-pass").value,
-    channels: $<HTMLInputElement>("inp-channels").value
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean),
-    wsUrl: $<HTMLInputElement>("inp-ws").value.trim(),
-    targetBuf: pathBuf || undefined,
-  });
+  connectErr.style.display = "none";
+  const altchaPayload = loginAltcha.getPayload();
+  if (!altchaPayload) {
+    connectErr.textContent = "Please complete the ALTCHA verification.";
+    connectErr.style.display = "block";
+    return;
+  }
+  const btn = $<HTMLButtonElement>("btn-connect");
+  btn.disabled = true;
+  try {
+    const res = await postJson<{ error?: string; message?: string }>(
+      "/api/webirc/verify",
+      { altcha: altchaPayload },
+    );
+    if (!res.ok) {
+      connectErr.textContent = res.data.message ||
+        "ALTCHA verification failed. Please try again.";
+      connectErr.style.display = "block";
+      loginAltcha.reset();
+      return;
+    }
+    loginAltcha.reset();
+    const pathBuf = pathToBuffer(location.pathname);
+    startSession({
+      nick: $<HTMLInputElement>("inp-nick").value.trim(),
+      acct: $<HTMLInputElement>("inp-acct").value.trim(),
+      pass: $<HTMLInputElement>("inp-pass").value,
+      channels: $<HTMLInputElement>("inp-channels").value
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+      wsUrl: $<HTMLInputElement>("inp-ws").value.trim(),
+      targetBuf: pathBuf || undefined,
+    });
+  } catch (e) {
+    connectErr.textContent = `Verification failed: ${errorMessage(e)}`;
+    connectErr.style.display = "block";
+    loginAltcha.reset();
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 globalThis.addEventListener("popstate", () => {
@@ -2938,13 +2947,14 @@ function pickOpusMime(): string {
   return "";
 }
 
-function updateVoiceButton(): void {
-  const btn = $("btn-voice");
-  const canRecord = voiceSupported &&
+function canRecordVoice(): boolean {
+  return voiceSupported &&
     typeof MediaRecorder !== "undefined" &&
     Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
-  btn.classList.toggle("hidden", !canRecord);
-  btn.title = voiceRecorder ? t("voice.stop") : t("voice.record");
+}
+
+function updateVoiceButton(): void {
+  updateAttachControls();
 }
 
 function resetVoiceUi(): void {
@@ -2960,6 +2970,7 @@ function resetVoiceUi(): void {
   voiceChunks = [];
   const btn = $("btn-voice");
   btn.classList.remove("recording");
+  btn.classList.add("hidden");
   btn.title = t("voice.record");
   $("send-form").classList.remove("recording-active");
   $("voice-timer").textContent = "";
@@ -3078,6 +3089,7 @@ $("btn-voice").addEventListener("click", () => {
     };
     rec.start(250);
     const btn = $("btn-voice");
+    btn.classList.remove("hidden");
     btn.classList.add("recording");
     btn.title = t("voice.stop");
     $("send-form").classList.add("recording-active");
@@ -3113,30 +3125,48 @@ $("btn-voice-cancel").addEventListener("click", () => {
 let filesSupported = false;
 let filesMaxBytes = 10485760;
 
+function updateAttachControls(): void {
+  const voiceOk = canRecordVoice();
+  const anyAttach = filesSupported || voiceOk;
+  $("btn-attach-menu").classList.toggle("hidden", !anyAttach);
+  $("btn-attach-file-menu").classList.toggle("hidden", !filesSupported);
+  $("btn-attach-code-menu").classList.toggle("hidden", !filesSupported);
+  $("btn-attach-voice-menu").classList.toggle("hidden", !voiceOk);
+  if (filesSupported) {
+    $("attach-file-desc").textContent = `${t("attach.file.desc")} (max ${
+      formatBytes(filesMaxBytes)
+    })`;
+  }
+}
+
 function updateFileButton(): void {
-  const btn = $("btn-file");
-  btn.classList.toggle("hidden", !filesSupported);
-  btn.title = `${t("file.attach")} (max ${formatBytes(filesMaxBytes)})`;
-  $("btn-code").classList.toggle("hidden", !filesSupported);
-  $("btn-attach-menu").classList.toggle("hidden", !filesSupported);
+  updateAttachControls();
+}
+
+function openAttachModal(): void {
+  const buf = buffers.get(activeBuf);
+  if (!buf || buf.name === "*status") {
+    addLine("*status", { text: t("file.err.target"), kind: "err" });
+    return;
+  }
+  updateAttachControls();
+  $("attach-modal").classList.add("open");
 }
 
 function closeAttachMenu(): void {
-  $("attach-menu").classList.add("hidden");
-  $("btn-attach-menu").setAttribute("aria-expanded", "false");
+  $("attach-modal").classList.remove("open");
 }
 
-$("btn-attach-menu").addEventListener("click", (ev) => {
-  ev.stopPropagation();
-  const menu = $("attach-menu");
-  const nextOpen = menu.classList.contains("hidden");
-  menu.classList.toggle("hidden", !nextOpen);
-  $("btn-attach-menu").setAttribute("aria-expanded", String(nextOpen));
+$("btn-attach-menu").addEventListener("click", openAttachModal);
+$("btn-close-attach").addEventListener("click", closeAttachMenu);
+$("attach-modal").addEventListener("click", (ev) => {
+  if (ev.target === $("attach-modal")) closeAttachMenu();
 });
 
 $("btn-attach-file-menu").addEventListener("click", () => {
   closeAttachMenu();
-  $("btn-file").click();
+  fileInp.value = "";
+  fileInp.click();
 });
 
 $("btn-attach-code-menu").addEventListener("click", () => {
@@ -3144,11 +3174,13 @@ $("btn-attach-code-menu").addEventListener("click", () => {
   openCodeModal();
 });
 
+$("btn-attach-voice-menu").addEventListener("click", () => {
+  closeAttachMenu();
+  $("btn-voice").click();
+});
+
 document.addEventListener("click", (ev) => {
   const target = ev.target as HTMLElement | null;
-  if (!target?.closest("#attach-menu, #btn-attach-menu")) {
-    closeAttachMenu();
-  }
   if (!target?.closest(".msg")) {
     document.querySelectorAll(".msg.actions-open").forEach((el) =>
       el.classList.remove("actions-open")
@@ -3215,7 +3247,7 @@ async function uploadAndSendFiles(
       return;
     }
   }
-  const btn = $<HTMLButtonElement>("btn-file");
+  const btn = $<HTMLButtonElement>("btn-attach-menu");
   btn.disabled = true;
   btn.classList.add("uploading");
   try {
@@ -3338,16 +3370,6 @@ function shareFilesInActiveBuffer(files: File[]): void {
 }
 
 const fileInp = $<HTMLInputElement>("inp-file");
-$("btn-file").addEventListener("click", () => {
-  const buf = buffers.get(activeBuf);
-  if (!buf || buf.name === "*status") {
-    addLine("*status", { text: t("file.err.target"), kind: "err" });
-    return;
-  }
-  fileInp.value = "";
-  fileInp.click();
-});
-
 fileInp.addEventListener("change", () => {
   const files = fileInp.files ? Array.from(fileInp.files) : [];
   if (files.length > 0) shareFilesInActiveBuffer(files);
@@ -3400,7 +3422,6 @@ function closeCodeModal(): void {
   $("code-modal").classList.remove("open");
 }
 
-$("btn-code").onclick = openCodeModal;
 $("btn-close-code").onclick = closeCodeModal;
 $("btn-cancel-code").onclick = closeCodeModal;
 $("code-modal").addEventListener("click", (ev) => {

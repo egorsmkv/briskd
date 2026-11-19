@@ -34,7 +34,6 @@
     <div class="connect-top">
       <h1>__NETWORK_NAME__ WebIRC</h1>
       <div class="head-actions">
-        <button type="button" class="small" id="btn-share-1" data-i18n="btn.share">Share</button>
         <button type="button" class="small" id="btn-settings-1" data-i18n="btn.settings">Settings</button>
       </div>
     </div>
@@ -63,7 +62,16 @@
         <label for="inp-ws" data-i18n="connect.ws">WebSocket URL</label>
         <input type="text" id="inp-ws" dir="ltr" required>
       </div>
-      <button type="submit" class="primary btn-full" data-i18n="connect.btn">Connect</button>
+      <div class="field">
+        <div class="altcha-box">
+          <label class="altcha-left" for="altcha-check">
+            <input type="checkbox" id="altcha-check">
+            <span id="altcha-label">I'm not a robot</span>
+          </label>
+          <a class="altcha-brand" href="https://altcha.org/" target="_blank" rel="noopener noreferrer">ALTCHA</a>
+        </div>
+      </div>
+      <button type="submit" class="primary btn-full" id="btn-connect" data-i18n="connect.btn">Connect</button>
     </form>
     <p class="foot-links">
       <a href="/signup" data-i18n="foot.signup">Create account</a> &middot; <a href="/verify" data-i18n="foot.verify">Verify account</a> &middot; <a href="/recover" data-i18n="foot.recover">Recover password</a>
@@ -127,16 +135,6 @@
   </button>
 
   <div class="composer-wrap">
-    <div class="attach-popover hidden" id="attach-menu" role="menu">
-      <button type="button" class="attach-menu-item" id="btn-attach-file-menu" role="menuitem">
-        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-        <span data-i18n="file.attach">Attach file</span>
-      </button>
-      <button type="button" class="attach-menu-item" id="btn-attach-code-menu" role="menuitem">
-        <span class="attach-code-glyph">&lt;/&gt;</span>
-        <span data-i18n="code.modal.title">Share Code Snippet</span>
-      </button>
-    </div>
     <div class="typing-bar hidden" id="typing-bar" aria-live="polite">
       <span class="typing-dots" aria-hidden="true"><span></span><span></span><span></span></span>
       <span class="typing-text" id="typing-text"></span>
@@ -149,13 +147,9 @@
       <button type="button" class="small" id="btn-compose-cancel" aria-label="Cancel">×</button>
     </div>
     <form class="input-bar" id="send-form">
-      <button type="button" class="small btn-plus hidden" id="btn-attach-menu" aria-label="Attachments" aria-expanded="false" title="Attach file or code snippet">+</button>
-      <button type="button" class="small btn-file hidden" id="btn-file" aria-label="Attach file" title="Attach file">
-        <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-      </button>
+      <button type="button" class="small btn-plus hidden" id="btn-attach-menu" aria-label="Attach" title="Attach file, code, or voice message">+</button>
       <input type="file" id="inp-file" multiple class="hidden">
-      <button type="button" class="small btn-code hidden" id="btn-code" aria-label="Share code snippet" title="Share code snippet">&lt;/&gt;</button>
-      <button type="button" class="small btn-voice hidden" id="btn-voice" aria-label="Record voice message" title="Record OPUS voice message">
+      <button type="button" class="small btn-voice hidden" id="btn-voice" aria-label="Stop and send voice message" title="Stop & send voice message">
         <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
         <span class="voice-timer" id="voice-timer"></span>
       </button>
@@ -264,9 +258,6 @@
             <input type="checkbox" id="opt-link-previews" checked>
             <span data-i18n="settings.link_previews">Link previews (OpenGraph cards)</span>
           </label>
-        </div>
-        <div class="e2ee-actions">
-          <button type="button" class="small" id="btn-share-2" data-i18n="btn.share.link">Share WebIRC Link</button>
         </div>
       </div>
 
@@ -383,6 +374,44 @@
           <button type="submit" class="small danger" data-i18n="mod.ban.btn">Ban Mask</button>
         </form>
         <div class="mod-ban-list" id="mod-ban-list"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="attach-modal" role="dialog" aria-modal="true" aria-labelledby="attach-modal-title">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="attach-modal-title" data-i18n="attach.title">Attach to Message</h2>
+      <button type="button" class="small" id="btn-close-attach" aria-label="Close attachments">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="attach-list">
+        <button type="button" class="attach-option hidden" id="btn-attach-file-menu">
+          <span class="attach-option-icon attach-icon-file">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+          </span>
+          <span class="attach-option-text">
+            <strong data-i18n="file.attach">Attach file</strong>
+            <span class="muted" id="attach-file-desc" data-i18n="attach.file.desc">Images, albums, documents, or archives</span>
+          </span>
+        </button>
+        <button type="button" class="attach-option hidden" id="btn-attach-code-menu">
+          <span class="attach-option-icon attach-icon-code">&lt;/&gt;</span>
+          <span class="attach-option-text">
+            <strong data-i18n="code.modal.title">Share Code Snippet</strong>
+            <span class="muted" data-i18n="attach.code.desc">Syntax-highlighted paste with copy button</span>
+          </span>
+        </button>
+        <button type="button" class="attach-option hidden" id="btn-attach-voice-menu">
+          <span class="attach-option-icon attach-icon-voice">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+          </span>
+          <span class="attach-option-text">
+            <strong data-i18n="voice.label">Voice message</strong>
+            <span class="muted" data-i18n="attach.voice.desc">Record and send an OPUS audio clip</span>
+          </span>
+        </button>
       </div>
     </div>
   </div>
