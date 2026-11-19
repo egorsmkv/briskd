@@ -15,7 +15,7 @@ body {
 
 .connect-card {
   width: 100%;
-  max-width: 440px;
+  max-width: 480px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -64,8 +64,13 @@ body {
 
 .row-2 {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  .field {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+  }
 }
 
 .btn-full {
@@ -286,15 +291,22 @@ body {
 }
 
 .join-box {
-  padding: 10px 8px;
+  height: 60px;
+  padding: 0 10px;
   border-top: 1px solid var(--border);
   display: flex;
+  align-items: center;
   gap: 6px;
+  flex-shrink: 0;
   input {
     width: 100%;
     min-width: 0;
-    padding: 6px 8px;
+    height: 34px;
+    padding: 0 9px;
     font-size: 13px;
+  }
+  button {
+    height: 34px;
   }
 }
 
@@ -338,6 +350,7 @@ body {
   &.sys,
   &.action,
   &.notice {
+    align-items: baseline;
     color: var(--muted);
     font-size: 13px;
     padding-left: 10px;
@@ -346,6 +359,7 @@ body {
     font-style: italic;
   }
   &.err {
+    align-items: baseline;
     color: var(--danger);
     font-size: 13px;
     padding-left: 10px;
@@ -390,6 +404,8 @@ body {
   color: var(--muted);
   font-family: var(--mono);
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  min-width: 36px;
   flex-shrink: 0;
 }
 
@@ -402,13 +418,18 @@ body {
   grid-area: input;
   background: var(--surface);
   border-top: 1px solid var(--border);
-  padding: 10px 16px;
+  padding: 0 16px;
   display: flex;
   gap: 8px;
   align-items: center;
   input {
     flex: 1;
-    padding: 9px 12px;
+    height: 38px;
+    padding: 0 12px;
+  }
+  button {
+    height: 38px;
+    padding: 0 16px;
   }
 }
 
@@ -422,14 +443,16 @@ body {
 }
 
 .members-head {
-  padding: 10px 10px 8px;
+  padding: 0;
   border-bottom: 1px solid var(--border);
   .members-head-top {
+    height: 52px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--border);
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    margin-bottom: 6px;
   }
   .members-title {
     font-size: 11px;
@@ -439,8 +462,10 @@ body {
     font-weight: 700;
   }
   input {
-    width: 100%;
-    padding: 5px 8px;
+    width: calc(100% - 16px);
+    margin: 8px;
+    height: 32px;
+    padding: 0 9px;
     font-size: 12.5px;
   }
 }
@@ -495,11 +520,15 @@ body.hide-timestamps .msg-time {
 
 body.density-compact {
   .msg {
-    padding: 2px 6px;
+    padding: 2px 8px;
     gap: 8px;
     align-items: baseline;
     &.grouped {
-      padding-left: 6px;
+      padding-left: 8px;
+      .compact-time {
+        position: static;
+        opacity: 0.65;
+      }
     }
   }
   .avatar {
@@ -513,8 +542,11 @@ body.density-compact {
   }
   .msg-meta {
     display: inline-flex;
-    flex-direction: row-reverse;
-    gap: 8px;
+    align-items: baseline;
+    gap: 6px;
+    .msg-time {
+      order: -1;
+    }
   }
 }
 
@@ -592,7 +624,7 @@ body.font-large .messages {
 
 .theme-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 

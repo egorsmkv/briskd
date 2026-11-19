@@ -40,6 +40,12 @@ header {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+  label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+  }
 }
 
 main {
@@ -89,6 +95,13 @@ main {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  button,
+  select,
+  input {
+    height: 34px;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
   .spacer {
     flex: 1;
   }
@@ -103,7 +116,7 @@ main {
   display: flex;
   gap: 4px;
   border-bottom: 1px solid var(--border);
-  margin-bottom: 12px;
+  margin-bottom: 0;
   flex-wrap: wrap;
 }
 
