@@ -6,7 +6,12 @@
   "tls_port": null,
   "ws_port": 8080,
   "network": "DevNet",
-  "motd_file": "config/motd.txt",
+  "server_info": "DevNet IRC for developers and IT staff",
+  "admin_name": "DevNet operators",
+  "admin_location1": "Development network",
+  "admin_location2": "irc.dev",
+  "admin_email": "ops@irc.dev",
+  "motd_file": "config/motd.dev.txt",
   "account_password_min": 4,
   "mnesia_dir": "/var/lib/ircd/mnesia",
   "retention": "channels",
@@ -16,8 +21,111 @@
     "openai": { "base_url": "https://api.openai.com/v1", "api_key_env": "OPENAI_API_KEY", "model": "gpt-6-luna" }
   },
   "bots": [
-    { "nick": "helper", "provider": "openai", "channels": ["#lobby"],
-      "system_prompt": "You are a friendly helper. Answer briefly." }
+    {
+      "nick": "guide",
+      "realname": "DevNet guide (machine-generated answers)",
+      "provider": "openai",
+      "system_prompt_file": "config/prompts/guide.txt",
+      "channels": ["#lobby"],
+      "temperature": 0.4,
+      "max_reply_lines": 8
+    },
+    {
+      "nick": "helpdesk",
+      "realname": "IT helpdesk assistant (machine-generated answers)",
+      "provider": "openai",
+      "system_prompt_file": "config/prompts/helpdesk.txt",
+      "channels": ["#helpdesk"],
+      "temperature": 0.4,
+      "max_reply_lines": 8
+    },
+    {
+      "nick": "coder",
+      "realname": "Software engineering assistant (machine-generated answers)",
+      "provider": "openai",
+      "system_prompt_file": "config/prompts/coder.txt",
+      "channels": ["#dev"],
+      "temperature": 0.3,
+      "max_tokens": 800,
+      "max_reply_lines": 10
+    },
+    {
+      "nick": "reviewer",
+      "realname": "Code review assistant (machine-generated answers)",
+      "provider": "openai",
+      "system_prompt_file": "config/prompts/reviewer.txt",
+      "channels": ["#review"],
+      "context": "channel",
+      "history_lines": 30,
+      "temperature": 0.2,
+      "max_tokens": 800,
+      "max_reply_lines": 10
+    },
+    {
+      "nick": "oncall",
+      "realname": "Incident and operations assistant (machine-generated answers)",
+      "provider": "openai",
+      "system_prompt_file": "config/prompts/oncall.txt",
+      "channels": ["#ops", "#incident"],
+      "context": "channel",
+      "history_lines": 40,
+      "temperature": 0.2,
+      "max_tokens": 800,
+      "max_reply_lines": 12,
+      "requests_per_minute": 12
+    },
+    {
+      "nick": "sysadm",
+      "realname": "Systems assistant (machine-generated answers)",
+      "provider": "openai",
+      "system_prompt_file": "config/prompts/sysadm.txt",
+      "channels": ["#infra"],
+      "temperature": 0.3,
+      "max_tokens": 800,
+      "max_reply_lines": 10
+    },
+    {
+      "nick": "netops",
+      "realname": "Network assistant (machine-generated answers)",
+      "provider": "openai",
+      "system_prompt_file": "config/prompts/netops.txt",
+      "channels": ["#net"],
+      "temperature": 0.3,
+      "max_tokens": 800,
+      "max_reply_lines": 10
+    },
+    {
+      "nick": "secop",
+      "realname": "Security assistant (machine-generated answers)",
+      "provider": "openai",
+      "system_prompt_file": "config/prompts/secop.txt",
+      "channels": ["#security"],
+      "temperature": 0.2,
+      "max_tokens": 800,
+      "max_reply_lines": 10
+    },
+    {
+      "nick": "dbadmin",
+      "realname": "Database assistant (machine-generated answers)",
+      "provider": "openai",
+      "system_prompt_file": "config/prompts/dbadmin.txt",
+      "channels": ["#data"],
+      "temperature": 0.2,
+      "max_tokens": 800,
+      "max_reply_lines": 10
+    },
+    {
+      "nick": "scribe",
+      "realname": "Documentation assistant (machine-generated answers)",
+      "provider": "openai",
+      "system_prompt_file": "config/prompts/scribe.txt",
+      "channels": ["#docs"],
+      "context": "channel",
+      "history_lines": 30,
+      "temperature": 0.5,
+      "max_tokens": 900,
+      "max_reply_lines": 12
+    }
   ],
   "voice": {
     "endpoint": "http://rustfs:9000",
@@ -51,9 +159,19 @@
     {"nick": "ops", "password": "devpass"}
   ],
   "channels": [
-    {"name": "#lobby", "topic": "Lobby", "modes": "nt"},
-    {"name": "#dev", "topic": "Development", "modes": "nt"},
-    {"name": "#random", "topic": "Random", "modes": "n"}
+    {"name": "#lobby", "topic": "Welcome to DevNet. Introductions and where to ask. Mention guide.", "modes": "nt"},
+    {"name": "#announcements", "topic": "Staff announcements. Moderated: only operators and voiced users speak.", "modes": "ntm"},
+    {"name": "#helpdesk", "topic": "IT support: access, devices, mail, VPN. Mention helpdesk. Do not paste passwords or tokens.", "modes": "nt"},
+    {"name": "#dev", "topic": "Software design, debugging, and implementation. Mention coder.", "modes": "nt"},
+    {"name": "#review", "topic": "Code review. Mention reviewer. Recent lines are sent to the model when reviewer answers.", "modes": "nt"},
+    {"name": "#ops", "topic": "Deploys, changes, and reliability. Mention oncall. Recent lines are sent to the model when oncall answers. No secrets.", "modes": "nt"},
+    {"name": "#incident", "topic": "Active incidents. Mention oncall. Recent lines are sent to the model when oncall answers. Keep secrets out.", "modes": "nt"},
+    {"name": "#infra", "topic": "Hosts, containers, storage, and platform. Mention sysadm.", "modes": "nt"},
+    {"name": "#net", "topic": "DNS, routing, firewalls, and TLS. Mention netops.", "modes": "nt"},
+    {"name": "#security", "topic": "Defensive security and reviews. Mention secop. Do not paste secrets or exploit material.", "modes": "nt"},
+    {"name": "#data", "topic": "Schemas, queries, migrations, and backups. Mention dbadmin. Do not paste production data.", "modes": "nt"},
+    {"name": "#docs", "topic": "Runbooks, decision notes, and status updates. Mention scribe. Recent lines are sent to the model when scribe answers.", "modes": "nt"},
+    {"name": "#random", "topic": "Off topic. Keep it kind.", "modes": "n"}
   ],
   "flood": {
     "lines_burst": 500,

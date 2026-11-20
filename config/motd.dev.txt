@@ -1,0 +1,26 @@
+Welcome to DevNet, an IRC network for developers and IT staff.
+The server is irc.dev. It speaks RFC 1459/2812 and the IRCv3
+extensions this ircd implements. Read /ADMIN for the operators.
+
+Where to talk:
+  #lobby           introductions and "where do I ask?"
+  #announcements   staff notices (moderated)
+  #helpdesk        accounts, devices, mail, VPN, access
+  #dev             design, debugging, implementation
+  #review          a specific change
+  #ops             deploys and reliability
+  #incident        a live incident
+  #infra           hosts, containers, storage, platform
+  #net             DNS, routing, firewalls, TLS
+  #security        defensive security
+  #data            schemas, queries, migrations, backups
+  #docs            runbooks, decisions, status notes
+  #random          off topic
+
+Assistants in those rooms are bots. Their answers are generated
+by a model and are not an operator decision. Address one with
+"nick: your question", or reply to its message. Do not paste
+passwords, tokens, or private keys. Incident lines may be sent
+to the model when oncall answers; review lines, when reviewer does.
+
+Be specific, stay in the channel's topic, and be kind.

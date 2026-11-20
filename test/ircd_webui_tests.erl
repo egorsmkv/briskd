@@ -232,6 +232,30 @@ live_webui() ->
         ),
         {200, _, _} = post_action(Port, GoodAuth, <<"log-level">>, [<<"warning">>]),
 
+        %% A body that arrives slowly (as an upload from a phone does) is read
+        %% to the end: each chunk comes within the per-read timeout, though
+        %% the whole takes longer than one.
+        SlowBody = iolist_to_binary(
+            json:encode(#{action => <<"log-level">>, args => [<<"info">>]})
+        ),
+        {ok, Slow} = gen_tcp:connect("127.0.0.1", Port, [binary, {active, false}, {packet, raw}]),
+        ok = gen_tcp:send(Slow, [
+            <<"POST /api/action HTTP/1.1\r\nHost: x\r\nAuthorization: ">>,
+            GoodAuth,
+            <<"\r\nX-Requested-With: ircd-webui\r\nContent-Type: application/json\r\n">>,
+            <<"Content-Length: ">>,
+            integer_to_binary(byte_size(SlowBody)),
+            <<"\r\n\r\n">>
+        ]),
+        Half = byte_size(SlowBody) div 2,
+        timer:sleep(3500),
+        ok = gen_tcp:send(Slow, binary:part(SlowBody, 0, Half)),
+        timer:sleep(3500),
+        ok = gen_tcp:send(Slow, binary:part(SlowBody, Half, byte_size(SlowBody) - Half)),
+        {200, _, SlowReply} = parse_response(read_all(Slow, <<>>)),
+        ?assertMatch(#{<<"status">> := <<"updated">>}, json:decode(SlowReply)),
+        ok = gen_tcp:close(Slow),
+
         {200, _, RehashBody} = post_action(Port, GoodAuth, <<"rehash">>, []),
         ?assertMatch(#{<<"status">> := <<"rehashed">>}, json:decode(RehashBody)),
 

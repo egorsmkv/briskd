@@ -47,7 +47,10 @@ Security controls:
 - `POST /api/action` requires the `X-Requested-With: ircd-webui` header to
   prevent cross-origin CSRF.
 - Each connection handles a single HTTP/1.1 request (`Connection: close`) with
-  a 16 KiB size cap, a 5-second timeout, and at most 16 concurrent handlers.
+  a 16 KiB size cap (uploads: the voice and files limits), at most 5 seconds
+  between received chunks, and at most 16 concurrent handlers. An upload body
+  may take 30 seconds plus one second per 32 KiB in total, enough for a phone
+  on a slow uplink.
 - Intended for loopback access (`127.0.0.1`) or placement behind a TLS
   reverse proxy (nginx/Caddy) when exposed remotely.
 """.
@@ -1436,7 +1439,8 @@ read_body(Socket, Method, Path, Headers, Rest) ->
                 Len when Len > MaxBytes ->
                     {error, payload_too_large};
                 Len ->
-                    read_exact(Socket, Len, Rest, Method, Path, Headers)
+                    Deadline = erlang:monotonic_time(millisecond) + body_time_ms(Len),
+                    read_exact(Socket, Len, Rest, Method, Path, Headers, Deadline)
             catch
                 _:_ -> {error, invalid_content_length}
             end
@@ -1449,15 +1453,29 @@ max_body_bytes(<<"POST">>, {<<"/api/files">>, _}) ->
 max_body_bytes(_, _) ->
     ?MAX_REQUEST_BYTES.
 
-read_exact(_Socket, Len, Buf, Method, Path, Headers) when byte_size(Buf) >= Len ->
+%% Time allowed for a whole request body: 30 s plus a second per 32 KiB, so
+%% a 5 MiB photo from a phone on a slow uplink (about 0.3 Mbit/s) still
+%% arrives, while a stalled sender is cut off by the per-read timeout.
+body_time_ms(Len) ->
+    30000 + (Len div 32768) * 1000.
+
+%% Read the body as it arrives. Each read waits up to ?IO_TIMEOUT_MS for more
+%% bytes (a stalled sender), and the whole body must arrive by Deadline. A
+%% single recv for all remaining bytes would give a large upload only
+%% ?IO_TIMEOUT_MS in total, which a mobile connection does not meet.
+read_exact(_Socket, Len, Buf, Method, Path, Headers, _Deadline) when byte_size(Buf) >= Len ->
     {ok, Method, Path, Headers, binary:part(Buf, 0, Len)};
-read_exact(Socket, Len, Buf, Method, Path, Headers) ->
-    Remaining = Len - byte_size(Buf),
-    case gen_tcp:recv(Socket, Remaining, ?IO_TIMEOUT_MS) of
+read_exact(Socket, Len, Buf, Method, Path, Headers, Deadline) ->
+    Left = Deadline - erlang:monotonic_time(millisecond),
+    case Left > 0 andalso gen_tcp:recv(Socket, 0, min(Left, ?IO_TIMEOUT_MS)) of
         {ok, Chunk} when is_binary(Chunk) ->
-            read_exact(Socket, Len, <<Buf/binary, Chunk/binary>>, Method, Path, Headers);
+            read_exact(
+                Socket, Len, <<Buf/binary, Chunk/binary>>, Method, Path, Headers, Deadline
+            );
         {error, Reason} ->
-            {error, Reason}
+            {error, Reason};
+        false ->
+            {error, timeout}
     end.
 
 split_path(RawPath) ->

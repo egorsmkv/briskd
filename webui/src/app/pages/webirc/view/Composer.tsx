@@ -91,7 +91,13 @@ export function Composer() {
           >
             <Icon name="plus" size={18} />
           </button>
-          <input type="file" id="inp-file" multiple class="hidden" />
+          <input
+            type="file"
+            id="inp-file"
+            multiple
+            class="sr-only"
+            tabIndex={-1}
+          />
           <button
             type="button"
             class="small btn-voice hidden"

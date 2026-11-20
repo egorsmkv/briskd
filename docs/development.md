@@ -11,9 +11,12 @@ cp .dev.env.example .dev.env
 docker compose -f docker-compose.dev.yml up --build
 ```
 
-Set `OPENAI_API_KEY` in `.dev.env` to enable the `helper` AI bot from
-`config/ircd.dev.json`. When it is empty the server starts without that bot
-(see [AI assistant bots](bots.md)).
+Set `OPENAI_API_KEY` in `.dev.env` to enable the DevNet assistants in
+`config/ircd.dev.json` (`guide`, `helpdesk`, `coder`, `reviewer`, `oncall`,
+`sysadm`, `netops`, `secop`, `dbadmin`, and `scribe`). Their prompts are
+`config/prompts/*.txt`. When the variable is empty the server starts without
+those bots (see [AI assistant bots](bots.md)). The development message of the
+day is `config/motd.dev.txt`.
 
 The development server is available at `localhost:6667`, and IRC over
 WebSocket at `ws://localhost:8080`. To run the container

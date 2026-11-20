@@ -1099,6 +1099,9 @@ svg.icon {
   gap: 8px;
 }
 
+// One choice of the attach menu. A <button>, so it wraps its text
+// explicitly (buttons default to nowrap here), and hover styles apply only
+// where there is hover, so a tapped option does not stay highlighted.
 .attach-option {
   display: flex;
   align-items: center;
@@ -1107,21 +1110,29 @@ svg.icon {
   width: 100%;
   height: auto;
   min-height: 64px;
-  padding: 12px 14px;
-  border-radius: 10px;
+  padding: 12px 12px 12px 14px;
+  border-radius: var(--radius-lg);
   border: 1px solid var(--border);
-  background: var(--bg);
+  background: var(--surface);
   color: var(--text);
   text-align: start;
+  white-space: normal;
   cursor: pointer;
-  transition: border-color 0.14s ease, background-color 0.14s ease;
+  transition: border-color 0.14s var(--ease), background-color 0.14s var(--ease);
   &.hidden {
     display: none;
   }
-  &:hover,
   &:active {
-    border-color: var(--accent);
     background: var(--hover);
+  }
+  &:focus-visible {
+    border-color: var(--accent);
+  }
+  @media (hover: hover) {
+    &:hover {
+      border-color: var(--border-strong);
+      background: var(--hover);
+    }
   }
 }
 
@@ -1138,16 +1149,16 @@ svg.icon {
   font-size: 13px;
   font-weight: 700;
   &.attach-icon-file {
-    background: rgba(59, 130, 246, 0.15);
-    color: #3b82f6;
+    background: var(--accent-soft);
+    color: var(--accent-text);
   }
   &.attach-icon-code {
-    background: rgba(168, 85, 247, 0.15);
-    color: #a855f7;
+    background: color-mix(in srgb, var(--nick-3) 16%, var(--surface));
+    color: var(--nick-3);
   }
   &.attach-icon-voice {
-    background: rgba(16, 185, 129, 0.15);
-    color: #10b981;
+    background: color-mix(in srgb, var(--nick-2) 16%, var(--surface));
+    color: var(--nick-2);
   }
 }
 
@@ -1165,8 +1176,9 @@ svg.icon {
     line-height: 1.25;
   }
   .muted {
-    font-size: 12px;
-    line-height: 1.35;
+    font-size: 12.5px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
   }
 }
 
