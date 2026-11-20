@@ -73,8 +73,8 @@ valid_chunk(_) ->
 
 -doc """
 Decode the joined chunks and check the description: valid base64, at most
-12 KiB, starting with `v=0`, with at least one `m=audio` line and no other
-media type.
+12 KiB, starting with `v=0`, lines ending in CRLF or LF with no other CR
+or NUL, and at least one `m=audio` line and no other media type.
 """.
 -spec decode_sdp(binary()) -> {ok, binary()} | {error, atom()}.
 decode_sdp(Base64) ->
@@ -82,15 +82,19 @@ decode_sdp(Base64) ->
         Sdp when byte_size(Sdp) > ?MAX_SDP_BYTES ->
             {error, too_large};
         <<"v=0", _/binary>> = Sdp ->
-            Media = [
-                M
-             || Line <- binary:split(Sdp, [<<"\r\n">>, <<"\n">>], [global]),
-                <<"m=", M/binary>> <- [Line]
-            ],
-            Audio = [M || <<"audio ", _/binary>> = M <- Media],
-            case Media =/= [] andalso length(Audio) =:= length(Media) of
-                true -> {ok, Sdp};
-                false -> {error, not_audio}
+            Lines = binary:split(Sdp, [<<"\r\n">>, <<"\n">>], [global]),
+            %% A NUL or a CR that does not end a line could hide an `m=` line
+            %% from this check while another parser still sees it.
+            case lists:any(fun(L) -> binary:match(L, [<<"\r">>, <<0>>]) =/= nomatch end, Lines) of
+                true ->
+                    {error, invalid_sdp};
+                false ->
+                    Media = [M || <<"m=", M/binary>> <- Lines],
+                    Audio = [M || <<"audio ", _/binary>> = M <- Media],
+                    case Media =/= [] andalso length(Audio) =:= length(Media) of
+                        true -> {ok, Sdp};
+                        false -> {error, not_audio}
+                    end
             end;
         _ ->
             {error, invalid_sdp}

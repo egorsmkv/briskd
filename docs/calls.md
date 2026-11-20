@@ -69,7 +69,8 @@ Clients request the `egorsmkv.github.io/calls` capability. Session
 descriptions do not fit an IRC line and contain line breaks, so they travel
 base64-encoded in numbered chunks of at most 400 characters (at most 40
 chunks and 12 KiB decoded). Descriptions must be complete (gather ICE
-candidates before sending) and contain only audio.
+candidates before sending) and contain only audio. Lines end in CRLF or LF; a
+description with any other CR or a NUL byte is refused.
 
 ```text
 CALL OFFER   <nick> <token> <part> <total> :<chunk>   caller → callee
@@ -116,13 +117,31 @@ Errors are standard replies, `FAIL CALL <code> [<token>] :<text>`:
 it sends an NG `offer` (with `ICE=force`, `UDP/TLS/RTP/SAVPF`, `rtcp-mux`
 required, SDES off) and later an `answer`, and a `delete` when the call ends.
 NG requests are retried twice, one second apart; after that the call fails
-with `media-error`. A call ends when either user disconnects, and the other is
+with `media-error`. Requests still in flight when a call ends are dropped, so
+a retry never reaches rtpengine after the `delete`. The `rtpengine` host is
+resolved when the server starts and again for each new call, and NG replies
+are accepted only from that address and port; rtpengine must answer from the
+address it is configured on (the default). A call ends when either user disconnects, and the other is
 told. Call state is kept in memory, so a server restart ends all calls.
 
 Logs contain `call_started`, `call_answered` (with setup time), `call_ended`
 (with reason and duration), and `call_media_error`, identified by an internal
 call id. Nicknames, descriptions, and addresses are not logged, and `CALL`
 lines are not included in command logging.
+
+## Security notes
+
+- Each description is checked for shape and media type only. rtpengine runs
+  ICE connectivity checks (STUN) towards the candidates a client sends, so a
+  client can make rtpengine send STUN packets to an address of its choosing.
+  Media flows only after ICE succeeds. Run rtpengine where its outbound UDP is
+  limited to what browsers need, and keep the NG port private.
+- There is no per-user call block list: any user who negotiated the
+  capability can ring any other one. `calls_per_minute` applies per
+  connection, so a user who reconnects gets a fresh allowance; client flood
+  and connection limits still apply. `require_account` restricts calls to
+  logged-in users.
+- `TARGET_BUSY` tells a caller that the callee is in a call.
 
 ## Testing
 

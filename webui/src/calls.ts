@@ -47,6 +47,9 @@ interface Assembly {
   parts: string[];
 }
 
+/** The call ended while the microphone prompt or ICE gathering was pending. */
+class Cancelled extends Error {}
+
 function randomToken(): string {
   const alphabet =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -137,13 +140,14 @@ export class CallManager {
     const token = randomToken();
     this.set({ phase: "calling", peer: nick, token, outgoing: true });
     try {
-      const pc = await this.preparePeer();
+      const pc = await this.preparePeer(token);
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       await gathered(pc);
       if (this.view.token !== token) return; // cancelled meanwhile
       this.sendSdp("OFFER", nick, token, pc.localDescription?.sdp || "");
     } catch (err) {
+      if (err instanceof Cancelled || this.view.token !== token) return;
       this.finish(nick, `Call failed: ${errorText(err)}`);
       throw err;
     }
@@ -156,7 +160,7 @@ export class CallManager {
     this.stopTone();
     this.set({ phase: "connecting" });
     try {
-      const pc = await this.preparePeer();
+      const pc = await this.preparePeer(token);
       await pc.setRemoteDescription({ type: "offer", sdp: this.remoteOffer });
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
@@ -164,6 +168,7 @@ export class CallManager {
       if (this.view.token !== token) return;
       this.sendSdp("ANSWER", peer, token, pc.localDescription?.sdp || "");
     } catch (err) {
+      if (err instanceof Cancelled || this.view.token !== token) return;
       this.hooks.send(`CALL HANGUP ${peer} ${token} :failed`);
       this.finish(peer, `Call failed: ${errorText(err)}`);
     }
@@ -361,11 +366,16 @@ export class CallManager {
     );
   }
 
-  private async preparePeer(): Promise<RTCPeerConnection> {
+  /**
+   * Open the microphone and a peer connection for the call `token`. If the
+   * call ends while the permission prompt is open, the new stream is stopped
+   * at once (so the microphone is not left on) and `Cancelled` is thrown.
+   */
+  private async preparePeer(token: string): Promise<RTCPeerConnection> {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error("this browser cannot record audio (HTTPS is required)");
     }
-    this.stream = await navigator.mediaDevices.getUserMedia({
+    const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
@@ -373,6 +383,11 @@ export class CallManager {
       },
       video: false,
     });
+    if (this.view.token !== token) {
+      for (const t of stream.getTracks()) t.stop();
+      throw new Cancelled("call ended");
+    }
+    this.stream = stream;
     // rtpengine terminates ICE and DTLS on each leg; no STUN/TURN is needed.
     const pc = new RTCPeerConnection({
       iceServers: [],

@@ -45,7 +45,7 @@ EXTERNAL. Every mechanism starts with the empty challenge `<<>>`, sent as
 """.
 -spec start(binary(), map()) -> {continue, binary(), state()} | {error, unknown_mechanism}.
 start(Mechanism, Context) ->
-    case string:uppercase(Mechanism) of
+    case ircd_wire:upper(Mechanism) of
         <<"PLAIN">> -> {continue, <<>>, plain};
         <<"EXTERNAL">> -> {continue, <<>>, {external, maps:get(certfp, Context, undefined)}};
         <<"SCRAM-SHA-256">> -> {continue, <<>>, {scram_first, undefined}};

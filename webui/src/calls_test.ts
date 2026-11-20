@@ -96,3 +96,33 @@ Deno.test("disabled manager ignores call()", async () => {
   await calls.call("alice");
   assert(sent.length === 0 && calls.state.phase === "idle", "no call");
 });
+
+Deno.test("hanging up during the microphone prompt stops the microphone", async () => {
+  const { calls, sent } = setup();
+  let stopped = 0;
+  let grant: (s: MediaStream) => void = () => {};
+  const stream = {
+    getTracks: () => [{ stop: () => stopped++ }],
+  } as unknown as MediaStream;
+  const nav = navigator as unknown as Record<string, unknown>;
+  const had = Object.getOwnPropertyDescriptor(nav, "mediaDevices");
+  Object.defineProperty(nav, "mediaDevices", {
+    configurable: true,
+    value: {
+      getUserMedia: () => new Promise<MediaStream>((r) => (grant = r)),
+    },
+  });
+  try {
+    const pending = calls.call("alice");
+    assert(calls.state.phase === "calling", "calling while the prompt is open");
+    calls.hangup();
+    assert(calls.state.phase === "idle", "idle after hangup");
+    grant(stream);
+    await pending;
+    assert(stopped === 1, "late microphone stream stopped");
+    assert(!sent.some((l) => l.startsWith("CALL OFFER")), "no offer sent");
+  } finally {
+    if (had) Object.defineProperty(nav, "mediaDevices", had);
+    else delete nav.mediaDevices;
+  }
+});

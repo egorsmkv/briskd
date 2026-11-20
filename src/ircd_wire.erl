@@ -48,7 +48,8 @@ the RFC 1459 case mapping.
     partial/1,
     retain/1,
     retain_fields/1,
-    safe_channel/1
+    safe_channel/1,
+    upper/1
 ]).
 
 -include("ircd_wire.hrl").
@@ -490,6 +491,24 @@ lower($]) -> $};
 lower(92) -> $|;
 lower($^) -> $~;
 lower(C) -> C.
+
+-doc """
+Upper-case ASCII letters `a`-`z`; every other byte is unchanged.
+
+Use it for command words and subcommands from the wire. Unlike
+`string:uppercase/1`, it accepts any bytes: `string:uppercase/1` raises
+`badarg` on invalid UTF-8, which in `m:ircd_state` would take down the state
+process.
+
+```erlang
+1> ircd_wire:upper(<<"hangup", 255>>).
+<<"HANGUP", 255>>
+```
+""".
+-spec upper(binary()) -> binary().
+upper(Value) -> <<<<(upper_byte(C))>> || <<C>> <= Value>>.
+upper_byte(C) when C >= $a, C =< $z -> C - 32;
+upper_byte(C) -> C.
 
 -doc """
 Check a nickname with the RFC 1459 length limit of 9 octets.

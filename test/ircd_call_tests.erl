@@ -64,6 +64,94 @@ sdp_test() ->
     ?assert(lists:all(fun(C) -> byte_size(C) =< 400 end, Chunks)),
     ?assertEqual(Long, base64:decode(iolist_to_binary(Chunks))).
 
+%% A NUL or a CR that does not end a line could hide `m=video` from the
+%% audio-only check, so both are refused.
+sdp_line_ending_test() ->
+    Audio = sdp(<<"audio">>),
+    BareCr = <<Audio/binary, "a=x\rm=video 9 UDP/TLS/RTP/SAVPF 96\r\n">>,
+    ?assertEqual({error, invalid_sdp}, ircd_call_proto:decode_sdp(base64:encode(BareCr))),
+    Nul = <<Audio/binary, "a=x", 0, "\r\n">>,
+    ?assertEqual({error, invalid_sdp}, ircd_call_proto:decode_sdp(base64:encode(Nul))),
+    Lf = binary:replace(Audio, <<"\r\n">>, <<"\n">>, [global]),
+    ?assertEqual({ok, Lf}, ircd_call_proto:decode_sdp(base64:encode(Lf))).
+
+%% `string:uppercase/1` raises on invalid UTF-8; the wire helper must not.
+upper_test() ->
+    ?assertEqual(<<"HANGUP">>, ircd_wire:upper(<<"hangup">>)),
+    ?assertEqual(<<"OFFER", 255, "X">>, ircd_wire:upper(<<"offer", 255, "x">>)),
+    ?assertEqual(<<"SCRAM-SHA-256">>, ircd_wire:upper(<<"scram-sha-256">>)),
+    ?assertEqual(<<>>, ircd_wire:upper(<<>>)).
+
+%%% NG socket
+
+%% Replies are accepted only from rtpengine's address and port; a datagram
+%% from anywhere else is dropped even when it carries a pending cookie.
+ng_source_test() ->
+    {ok, Sock} = gen_udp:open(0, [binary, {active, false}]),
+    try
+        Reply = <<"c00kie d6:result2:oke">>,
+        Pending = #{<<"c00kie">> => #{id => <<"x">>, op => offer, timer => undefined}},
+        State = #{
+            sock => Sock,
+            ng => {"127.0.0.1", 2223},
+            ng_ip => {127, 0, 0, 1},
+            pending => Pending,
+            calls => #{}
+        },
+        {noreply, #{pending := P1}} =
+            ircd_calls:handle_info({udp, Sock, {10, 0, 0, 9}, 2223, Reply}, State),
+        ?assertEqual(Pending, P1),
+        {noreply, #{pending := P2}} =
+            ircd_calls:handle_info({udp, Sock, {127, 0, 0, 1}, 4000, Reply}, State),
+        ?assertEqual(Pending, P2),
+        {noreply, #{pending := P3}} =
+            ircd_calls:handle_info({udp, Sock, {127, 0, 0, 1}, 2223, Reply}, State),
+        ?assertEqual(#{}, P3)
+    after
+        gen_udp:close(Sock)
+    end.
+
+%% Ending a call drops its NG requests still in flight, so a retry cannot
+%% send the offer again after the delete and recreate the call in rtpengine.
+ng_pending_dropped_on_end_test() ->
+    {ok, Sock} = gen_udp:open(0, [binary, {active, false}]),
+    try
+        Caller = self(),
+        Token = <<"tok12345">>,
+        Timer = erlang:send_after(60000, self(), never),
+        Call = #{
+            id => <<"call-1">>,
+            token => Token,
+            caller => Caller,
+            callee => list_to_pid("<0.1.0>"),
+            state => offering,
+            started => erlang:monotonic_time(millisecond),
+            timer => undefined,
+            timer_ref => undefined,
+            monitors => []
+        },
+        State = #{
+            server => <<"irc.test">>,
+            sock => Sock,
+            ng => {"127.0.0.1", 9},
+            ng_ip => {127, 0, 0, 1},
+            calls => #{<<"call-1">> => Call},
+            parties => #{{Caller, Token} => <<"call-1">>},
+            busy => #{Caller => <<"call-1">>},
+            pending => #{
+                <<"a">> => #{id => <<"call-1">>, op => offer, timer => Timer},
+                <<"b">> => #{id => <<"other">>, op => offer, timer => undefined}
+            }
+        },
+        {noreply, #{pending := Pending, calls := Calls}} =
+            ircd_calls:handle_cast({hangup, Caller, Token, <<"cancelled">>}, State),
+        ?assertEqual([<<"b">>], maps:keys(Pending)),
+        ?assertEqual(#{}, Calls),
+        ?assertEqual(false, erlang:read_timer(Timer))
+    after
+        gen_udp:close(Sock)
+    end.
+
 ng_test() ->
     Offer = ircd_call_proto:offer(<<"c1">>, <<"f1">>, <<"v=0">>),
     Framed = iolist_to_binary(ircd_call_proto:frame(<<"ck">>, Offer)),
@@ -167,6 +255,24 @@ live() ->
         %% A client without the capability cannot use CALL.
         send(Dave, <<"CALL HANGUP alice tokendave1\r\n">>),
         ?assert(has(recv_until(Dave, <<"NEED_CAPABILITY">>), <<"FAIL CALL NEED_CAPABILITY">>)),
+
+        %% Invalid UTF-8 in a subcommand is an unknown subcommand, not a crash
+        %% of ircd_state (string:uppercase/1 raised badarg here). The same
+        %% applies to METADATA and CHATHISTORY.
+        StatePid = whereis(ircd_state),
+        send(Carol, <<"CALL ", 255, "OFFER bob tokencarol 1 1 :AAAA\r\n">>),
+        ?assert(
+            has(recv_until(Carol, <<"UNKNOWN_SUBCOMMAND">>), <<"FAIL CALL UNKNOWN_SUBCOMMAND :">>)
+        ),
+        send(Carol, <<"METADATA * ", 255, "GET x\r\nCHATHISTORY ", 255, "LATEST #a * 1\r\n">>),
+        %% A token that is a trailing parameter with a space is not echoed.
+        send(Carol, <<"CALL HANGUP bob :tok 12345\r\n">>),
+        ?assert(
+            has(recv_until(Carol, <<"FAIL CALL INVALID_PARAMS">>), <<"FAIL CALL INVALID_PARAMS :">>)
+        ),
+        send(Carol, <<"PING :still-here\r\n">>),
+        ?assert(has(recv_until(Carol, <<"still-here">>), <<"PONG">>)),
+        ?assertEqual(StatePid, whereis(ircd_state)),
 
         %% Offer in two chunks; rtpengine sees the joined description.
         Offer = <<(sdp(<<"audio">>))/binary, (binary:copy(<<"a=x-pad:1\r\n">>, 40))/binary>>,

@@ -481,7 +481,7 @@ Errors are `FAIL CHATHISTORY` with `INVALID_PARAMS`, `INVALID_TARGET`, or
 """.
 -spec chathistory([binary()], #client{}, binary()) -> ok.
 chathistory([Sub | Rest], #client{pid = Pid} = Client, Server) ->
-    Upper = string:uppercase(Sub),
+    Upper = ircd_wire:upper(Sub),
     Max = limit(),
     case {Upper, Rest} of
         {<<"TARGETS">>, [A, B, Limit]} ->

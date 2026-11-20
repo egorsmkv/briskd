@@ -85,7 +85,7 @@ this process; invalid ones get `FAIL CALL`.
 """.
 -spec command([binary()], #client{}, binary()) -> ok.
 command([Sub0 | Params], #client{pid = Pid} = Client, Server) ->
-    Sub = string:uppercase(Sub0),
+    Sub = ircd_wire:upper(Sub0),
     case caller_ok(Pid) of
         ok -> dispatch(Sub, Params, Client, Server);
         {error, Code, Text} -> fail(Pid, Code, [], Text)
@@ -127,7 +127,7 @@ dispatch(Sub, [Nick, Token, PartBin, TotalBin, Chunk | _], #client{pid = Pid}, _
         {true, {ok, Part, Total}, true} ->
             cast({answer, Pid, Token, Part, Total, Chunk});
         _ ->
-            fail(Pid, <<"INVALID_PARAMS">>, [Token], <<"Invalid CALL parameters">>)
+            fail(Pid, <<"INVALID_PARAMS">>, echo(Token), <<"Invalid CALL parameters">>)
     end;
 dispatch(Sub, [_Nick, Token | Rest], #client{pid = Pid}, _Server) when
     Sub =:= <<"RINGING">>; Sub =:= <<"REJECT">>; Sub =:= <<"HANGUP">>
@@ -139,9 +139,9 @@ dispatch(Sub, [_Nick, Token | Rest], #client{pid = Pid}, _Server) when
                     [R | _] -> ircd_call_proto:reason(R);
                     [] -> <<"normal">>
                 end,
-            cast({binary_to_atom(string:lowercase(Sub)), Pid, Token, Reason});
+            cast({signal(Sub), Pid, Token, Reason});
         false ->
-            fail(Pid, <<"INVALID_PARAMS">>, [Token], <<"Invalid call token">>)
+            fail(Pid, <<"INVALID_PARAMS">>, [], <<"Invalid call token">>)
     end;
 dispatch(Sub, _Params, #client{pid = Pid}, _Server) when
     Sub =:= <<"OFFER">>;
@@ -152,7 +152,27 @@ dispatch(Sub, _Params, #client{pid = Pid}, _Server) when
 ->
     fail(Pid, <<"INVALID_PARAMS">>, [], <<"Not enough parameters">>);
 dispatch(Sub, _Params, #client{pid = Pid}, _Server) ->
-    fail(Pid, <<"UNKNOWN_SUBCOMMAND">>, [Sub], <<"Unknown CALL subcommand">>).
+    Context =
+        case
+            Sub =/= <<>> andalso
+                lists:all(fun(C) -> C >= $A andalso C =< $Z end, binary_to_list(Sub))
+        of
+            true when byte_size(Sub) =< 16 -> [Sub];
+            _ -> []
+        end,
+    fail(Pid, <<"UNKNOWN_SUBCOMMAND">>, Context, <<"Unknown CALL subcommand">>).
+
+%% Only a well-formed token is echoed in FAIL context: a trailing parameter
+%% may hold spaces or a leading colon that would break the reply's framing.
+echo(Token) ->
+    case ircd_call_proto:valid_token(Token) of
+        true -> [Token];
+        false -> []
+    end.
+
+signal(<<"RINGING">>) -> ringing;
+signal(<<"REJECT">>) -> reject;
+signal(<<"HANGUP">>) -> hangup.
 
 %% The callee: a different local user that negotiated the capability.
 callee(Nick, Pid) ->
@@ -198,18 +218,20 @@ init(Config) ->
     Calls = maps:get(calls, Config),
     {ok, Sock} = gen_udp:open(0, [binary, {active, true}]),
     {Host, Port} = maps:get(rtpengine, Calls),
-    {ok, #{
+    State = #{
         server => maps:get(name, Config),
         limits => Calls,
         sock => Sock,
         ng => {binary_to_list(Host), Port},
+        ng_ip => undefined,
         calls => #{},
         parties => #{},
         busy => #{},
         chunks => #{},
         pending => #{},
         rate => #{}
-    }}.
+    },
+    {ok, resolve_ng(State)}.
 
 -doc false.
 handle_call(_, _, State) -> {reply, {error, unsupported}, State}.
@@ -229,11 +251,15 @@ handle_cast(_, State) ->
     {noreply, State}.
 
 -doc false.
-handle_info({udp, Sock, _Ip, _Port, Packet}, #{sock := Sock} = State) ->
+handle_info({udp, Sock, Ip, Port, Packet}, #{sock := Sock, ng := {_, Port}, ng_ip := Ip} = State) ->
     case ircd_call_proto:parse_reply(Packet) of
         {ok, Cookie, Result} -> {noreply, ng_reply(Cookie, Result, State)};
         error -> {noreply, State}
     end;
+handle_info({udp, Sock, _Ip, _Port, _Packet}, #{sock := Sock} = State) ->
+    %% Only rtpengine's NG address may answer; anything else is dropped
+    %% before parsing (the random cookie is the second line of defense).
+    {noreply, State};
 handle_info({ng_retry, Cookie}, #{pending := Pending} = State) ->
     case maps:find(Cookie, Pending) of
         {ok, #{tries := Tries} = Req} when Tries < ?NG_TRIES ->
@@ -517,6 +543,7 @@ end_call(
     }),
     State1 = State#{
         calls := maps:remove(Id, maps:get(calls, State)),
+        pending := drop_pending(Id, maps:get(pending, State)),
         parties := maps:without([{Caller, Token}, {Callee, Token}], maps:get(parties, State)),
         busy := maps:without([Caller, Callee], maps:get(busy, State))
     },
@@ -550,7 +577,10 @@ cancel(Timer) ->
 
 %%% rtpengine NG
 
-ng_request(Id, Op, Message, #{pending := Pending} = State) ->
+ng_request(Id, Op, Message, State0) ->
+    %% Re-resolve once per request so a restarted rtpengine container with a
+    %% new address is found; retries and deletes reuse the address.
+    #{pending := Pending} = State = resolve_ng(State0),
     Cookie = cookie(),
     Packet = iolist_to_binary(ircd_call_proto:frame(Cookie, Message)),
     send_ng(Packet, State),
@@ -558,8 +588,33 @@ ng_request(Id, Op, Message, #{pending := Pending} = State) ->
     Req = #{id => Id, op => Op, packet => Packet, tries => 1, timer => Timer},
     State#{pending := Pending#{Cookie => Req}}.
 
-send_ng(Packet, #{sock := Sock, ng := {Host, Port}}) ->
-    case gen_udp:send(Sock, Host, Port, Packet) of
+%% A request still in flight for an ended call must not be retried after the
+%% NG `delete`: a retransmitted `offer` would recreate the call in rtpengine.
+drop_pending(Id, Pending) ->
+    maps:filter(
+        fun
+            (_, #{id := I, timer := Timer}) when I =:= Id ->
+                cancel(Timer),
+                false;
+            (_, _) ->
+                true
+        end,
+        Pending
+    ).
+
+resolve_ng(#{ng := {Host, _}, ng_ip := Old} = State) ->
+    case inet:getaddr(Host, inet) of
+        {ok, Ip} ->
+            State#{ng_ip := Ip};
+        {error, Reason} ->
+            logger:warning(#{event => rtpengine_resolve_failed, reason => Reason}),
+            State#{ng_ip := Old}
+    end.
+
+send_ng(_Packet, #{ng_ip := undefined}) ->
+    logger:warning(#{event => rtpengine_send_failed, reason => unresolved});
+send_ng(Packet, #{sock := Sock, ng := {_, Port}, ng_ip := Ip}) ->
+    case gen_udp:send(Sock, Ip, Port, Packet) of
         ok -> ok;
         {error, Reason} -> logger:warning(#{event => rtpengine_send_failed, reason => Reason})
     end.

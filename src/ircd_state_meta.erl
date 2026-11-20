@@ -55,7 +55,7 @@ Without the capability, `GET`, `LIST`, `SET`, and `CLEAR` use the metadata
 """.
 -spec metadata([binary()], #client{}, binary()) -> ok.
 metadata([Target, Sub | Params], #client{pid = Pid} = Client, Server) ->
-    case {ircd_cap:enabled(Pid, <<"draft/metadata-2">>), string:uppercase(Sub)} of
+    case {ircd_cap:enabled(Pid, <<"draft/metadata-2">>), ircd_wire:upper(Sub)} of
         {false, Upper} ->
             legacy(Upper, Target, Params, Client, Server);
         {true, <<"SUB">>} ->

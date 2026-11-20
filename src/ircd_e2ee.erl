@@ -153,7 +153,7 @@ command(Params, #client{pid = Pid} = Client, Server) ->
         {true, []} ->
             fail(Pid, <<"NEED_MORE_PARAMS">>, [], <<"Missing subcommand">>);
         {true, [Sub | Rest]} ->
-            subcommand(string:uppercase(Sub), Rest, Client, Server)
+            subcommand(ircd_wire:upper(Sub), Rest, Client, Server)
     end.
 
 subcommand(<<"PUBLISH">>, [Dev, Identity, Spk, Signature | _], Client, Server) ->
@@ -728,7 +728,7 @@ without storing it.
 -spec receive_link(binary(), binary(), [binary()], [{binary(), undefined | binary()}]) ->
     ok | {error, term()}.
 receive_link(Peer, Prefix, [Sub | Params], Tags) ->
-    try link_command(string:uppercase(Sub), Peer, Prefix, Params, Tags) of
+    try link_command(ircd_wire:upper(Sub), Peer, Prefix, Params, Tags) of
         {ok, Line} ->
             ircd_state_link:relay_except(Peer, Line),
             ok;
