@@ -103,6 +103,14 @@ bot when it starts with the nickname followed by `:` or `,` (`helper: what is
 a netsplit?`), or contains `@helper` as a word. Matching uses the RFC 1459
 case mapping. The addressing prefix is removed before the question is sent.
 
+**Replies.** A message carrying `+draft/reply` (IRCv3 reply client tag) that
+points at one of the bot's own messages is answered too, without a mention.
+The bot learns its messages' `msgid`s through `echo-message` and remembers
+its last 500 lines, so a reply to an older answer is recognized; the model
+is told which of its messages the user replied to. In both cases the answer's
+first line carries `+draft/reply` pointing at the question, so clients that
+support replies show it threaded.
+
 **Answers.** In a channel the first line starts with the asker's nickname
 (`alice: …`). Each line is sized so the delivered line stays within the
 512-octet limit, multi-byte characters are never split, blank lines are

@@ -4,16 +4,23 @@ One configured AI assistant bot (the `bots` configuration key).
 
 The bot is a local client without a socket. It registers with `m:ircd_state`
 the way `m:ircd_session` does, so the calling process is the client: it
-negotiates `message-tags`, sends `NICK` and `USER`, sets user mode `+B`
+negotiates `message-tags` and `echo-message`, sends `NICK` and `USER`, sets user mode `+B`
 (advertised as `BOT=B`, so its messages carry the `bot` tag), and joins its
 configured channels. Lines for the bot arrive as `{irc, Line}` messages and
 are parsed with `ircd_wire:parse_server/1`.
 
 When a channel message addresses the bot (`nick: question`, `nick, question`,
-or `@nick`; every message with `respond_to: all`), or a user sends it a
+`@nick`, or a `+draft/reply` to one of the bot's own messages; every message
+with `respond_to: all`), or a user sends it a
 private message with `direct_messages` enabled, the bot calls the configured
 OpenAI-compatible provider in a monitored worker process and answers with
-`PRIVMSG` lines. While a request runs it sends `+typing=active` `TAGMSG`s.
+`PRIVMSG` lines; the first line carries `+draft/reply` pointing at the
+question when it had a `msgid`. While a request runs it sends
+`+typing=active` `TAGMSG`s.
+
+The bot learns the `msgid` of each line it sends from the `echo-message`
+copy and keeps the last `?MAX_OWN_MSGIDS` with their text, so a reply to an
+older answer is recognized and quoted to the model.
 
 Loop and abuse protection:
 
@@ -42,6 +49,8 @@ from `format_status/1`.
 -define(TYPING_MS, 4000).
 -define(NICK_RETRY_MS, 60000).
 -define(MAX_ASSISTANT_BYTES, 4000).
+-define(MAX_OWN_MSGIDS, 500).
+-define(QUOTE_BYTES, 200).
 
 -doc """
 Start a bot. `Bot` is one normalized entry of the `bots` configuration list
@@ -65,7 +74,9 @@ init(Bot) ->
         busy => #{},
         history => #{},
         dm_seq => 0,
-        typing_timer => undefined
+        typing_timer => undefined,
+        own_msgids => #{},
+        own_order => queue:new()
     }}.
 
 -doc false.
@@ -144,7 +155,8 @@ format_status(Status) ->
                 Provider = maps:get(provider, Bot),
                 S#{
                     bot := Bot#{provider := Provider#{api_key => redacted}},
-                    history := redacted
+                    history := redacted,
+                    own_msgids := redacted
                 };
             (_, Value) ->
                 Value
@@ -158,7 +170,7 @@ register(#{bot := Bot, nick := Nick} = State) ->
     ok = ircd_state:connect(maps:get(server_name, Bot), #{
         transport => bot, secure => true
     }),
-    cmd(<<"CAP">>, [<<"REQ">>, <<"message-tags">>]),
+    cmd(<<"CAP">>, [<<"REQ">>, <<"message-tags echo-message">>]),
     cmd(<<"NICK">>, [Nick]),
     cmd(<<"USER">>, [maps:get(user, Bot), <<"0">>, <<"*">>, maps:get(realname, Bot)]),
     cmd(<<"CAP">>, [<<"END">>]),
@@ -225,9 +237,15 @@ handle_line(_Tags, _Prefix, Code, [_, Channel | _], #{bot := Bot} = State) when
     State;
 handle_line(Tags, Prefix, <<"PRIVMSG">>, [Target, Text | _], #{registered := true} = State) ->
     Sender = source_nick(Prefix),
-    case ignored(Tags, Sender, Text, State) of
-        true -> State;
-        false -> message(Sender, Target, Text, State)
+    case is_self(Sender, State) of
+        true ->
+            %% echo-message: learn the msgid of our own line.
+            note_own(tag(<<"msgid">>, Tags), Text, State);
+        false ->
+            case ignored(Tags, Sender, Text, State) of
+                true -> State;
+                false -> message(Tags, Sender, Target, Text, State)
+            end
     end;
 handle_line(_Tags, _Prefix, _Command, _Params, State) ->
     State.
@@ -237,20 +255,60 @@ source_nick(undefined) ->
 source_nick(Prefix) ->
     hd(binary:split(Prefix, <<"!">>)).
 
-%% Never answer ourselves, other bots (the `bot` tag), servers, or CTCP.
-ignored(Tags, Sender, Text, #{nick := Nick}) ->
+is_self(Sender, #{nick := Nick}) ->
+    ircd_wire:fold(Sender) =:= ircd_wire:fold(Nick).
+
+%% Never answer other bots (the `bot` tag), servers, or CTCP.
+ignored(Tags, Sender, Text, _State) ->
     Sender =:= <<>> orelse
         binary:match(Sender, <<".">>) =/= nomatch orelse
-        ircd_wire:fold(Sender) =:= ircd_wire:fold(Nick) orelse
         lists:keymember(<<"bot">>, 1, Tags) orelse
         is_ctcp(Text).
+
+tag(Key, Tags) ->
+    case lists:keyfind(Key, 1, Tags) of
+        {_, Value} when is_binary(Value) -> valid_msgid(Value);
+        _ -> undefined
+    end.
+
+%% Server msgids are short tokens; anything else is not used as a reference.
+valid_msgid(Value) when byte_size(Value) > 0, byte_size(Value) =< 128 ->
+    case re:run(Value, <<"^[A-Za-z0-9._:-]+$">>, [{capture, none}]) of
+        match -> Value;
+        nomatch -> undefined
+    end;
+valid_msgid(_) ->
+    undefined.
+
+%% Remember our last ?MAX_OWN_MSGIDS lines (msgid => text), oldest evicted.
+note_own(undefined, _Text, State) ->
+    State;
+note_own(MsgId, Text, #{own_msgids := Own, own_order := Order} = State) ->
+    Quote = ircd_bot_ai:clean_input(binary:part(Text, 0, min(byte_size(Text), ?QUOTE_BYTES))),
+    Own1 = Own#{MsgId => Quote},
+    Order1 = queue:in(MsgId, Order),
+    case queue:len(Order1) > ?MAX_OWN_MSGIDS of
+        true ->
+            {{value, Old}, Order2} = queue:out(Order1),
+            State#{own_msgids := maps:remove(Old, Own1), own_order := Order2};
+        false ->
+            State#{own_msgids := Own1, own_order := Order1}
+    end.
+
+%% The bot's line a message replies to (`+draft/reply`), if it is one of ours.
+replied_line(Tags, #{own_msgids := Own}) ->
+    case tag(<<"+draft/reply">>, Tags) of
+        undefined -> undefined;
+        MsgId -> maps:get(MsgId, Own, undefined)
+    end.
 
 is_ctcp(<<1, "ACTION ", _/binary>>) -> false;
 is_ctcp(<<1, _/binary>>) -> true;
 is_ctcp(_) -> false.
 
-message(Sender, Target, Text0, #{bot := Bot, nick := Nick} = State) ->
+message(Tags, Sender, Target, Text0, #{bot := Bot, nick := Nick} = State) ->
     Text = action_text(Sender, Text0),
+    Origin = #{msgid => tag(<<"msgid">>, Tags), quote => replied_line(Tags, State)},
     case is_channel(Target) of
         true ->
             Key = ircd_wire:fold(Target),
@@ -266,22 +324,30 @@ message(Sender, Target, Text0, #{bot := Bot, nick := Nick} = State) ->
                 case maps:get(respond_to, Bot) of
                     all when Text =:= Text0 -> {true, Text};
                     all -> false;
-                    mention -> ircd_bot_ai:addressed(Nick, Text)
+                    mention -> mention_or_reply(Nick, Text, Text0, Origin)
                 end,
             case Trigger of
-                {true, Question} -> ask(Target, Sender, Question, State1);
+                {true, Question} -> ask(Target, Sender, Question, Origin, State1);
                 false -> State1
             end;
         false ->
             case maps:get(direct_messages, Bot) of
                 true when Text =:= Text0 ->
-                    ask(Sender, Sender, Text, State);
+                    ask(Sender, Sender, Text, Origin, State);
                 true ->
                     State;
                 false ->
                     notice(Sender, <<"I only answer in channels.">>),
                     State
             end
+    end.
+
+%% Addressed by name, or a reply to one of the bot's own lines.
+mention_or_reply(Nick, Text, Text0, #{quote := Quote}) ->
+    case ircd_bot_ai:addressed(Nick, Text) of
+        {true, _} = Addressed -> Addressed;
+        false when Quote =/= undefined, Text =:= Text0 -> {true, Text};
+        false -> false
     end.
 
 action_text(Sender, <<1, "ACTION ", Rest/binary>>) ->
@@ -294,7 +360,7 @@ is_channel(_) -> false.
 
 %%% Requests
 
-ask(Target, Asker, Question0, #{bot := Bot} = State) ->
+ask(Target, Asker, Question0, Origin, #{bot := Bot} = State) ->
     Question = ircd_bot_ai:clean_input(Question0),
     Key = ircd_wire:fold(Target),
     #{busy := Busy, pending := Pending} = State,
@@ -310,7 +376,7 @@ ask(Target, Asker, Question0, #{bot := Bot} = State) ->
         true ->
             case take_token(State) of
                 {ok, State1} ->
-                    start_request(Target, Key, Asker, Question, Bot, State1);
+                    start_request(Target, Key, Asker, Question, Origin, Bot, State1);
                 limited ->
                     logger:notice(#{event => bot_rate_limited, bot => maps:get(nick, Bot)}),
                     notice(Asker, <<"Too many requests; please try again in a minute.">>),
@@ -318,8 +384,14 @@ ask(Target, Asker, Question0, #{bot := Bot} = State) ->
             end
     end.
 
-start_request(Target, Key, Asker, Question, Bot, #{nick := Nick} = State) ->
+start_request(Target, Key, Asker, Question0, Origin, Bot, #{nick := Nick} = State) ->
     InChannel = is_channel(Target),
+    %% A reply quotes the bot line it answers, so the model knows the thread.
+    Question =
+        case maps:get(quote, Origin) of
+            undefined -> Question0;
+            Quote -> <<"(replying to your message \"", Quote/binary, "\") ", Question0/binary>>
+        end,
     UserTurn =
         case InChannel of
             true -> <<Asker/binary, ": ", Question/binary>>;
@@ -355,6 +427,7 @@ start_request(Target, Key, Asker, Question, Bot, #{nick := Nick} = State) ->
         target => Target,
         asker => Asker,
         user_turn => UserTurn,
+        reply_to => maps:get(msgid, Origin),
         worker => Worker,
         mref => MRef,
         guard => Guard
@@ -386,7 +459,7 @@ finish(#{key := Key, target := Target, asker := Asker} = Req, Result, #{bot := B
     State1 = State#{busy := maps:remove(Key, maps:get(busy, State))},
     case Result of
         {ok, Text} ->
-            reply(Target, Asker, Text, State1),
+            reply(Target, Asker, Text, maps:get(reply_to, Req), State1),
             %% Channel context already holds the question line.
             Turns =
                 case maps:get(context, Bot) =:= channel andalso is_channel(Target) of
@@ -415,7 +488,7 @@ failure_reason(Reason) when is_atom(Reason) -> Reason;
 failure_reason(Reason) when is_tuple(Reason) -> element(1, Reason);
 failure_reason(_) -> other.
 
-reply(Target, Asker, Text, #{bot := Bot, nick := Nick}) ->
+reply(Target, Asker, Text, ReplyTo, #{bot := Bot, nick := Nick}) ->
     Prefix =
         case is_channel(Target) of
             true -> <<Asker/binary, ": ">>;
@@ -428,7 +501,13 @@ reply(Target, Asker, Text, #{bot := Bot, nick := Nick}) ->
         [] ->
             typing(Target, <<"done">>);
         [First | Rest] ->
-            cmd(<<"PRIVMSG">>, [Target, <<Prefix/binary, First/binary>>]),
+            %% Thread the answer under the question (`+draft/reply`).
+            Tags =
+                case ReplyTo of
+                    undefined -> [];
+                    MsgId -> [{<<"+draft/reply">>, MsgId}]
+                end,
+            command(<<"PRIVMSG">>, [Target, <<Prefix/binary, First/binary>>], Tags),
             lists:foreach(fun(Line) -> cmd(<<"PRIVMSG">>, [Target, Line]) end, Rest)
     end.
 

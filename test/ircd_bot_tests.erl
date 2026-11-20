@@ -252,6 +252,20 @@ live() ->
         ?assert(lists:member(<<"Mock answer\nline two">>, Contents)),
         _ = recv_until(Alice, <<"line two">>),
 
+        %% A reply (+draft/reply) to the bot's answer is answered without a
+        %% mention, quotes the answered line, and is threaded under the question.
+        BotMsgId = msgid_of(Answer, <<"PRIVMSG #lobby :alice: Mock answer">>),
+        send(Alice, [<<"@+draft/reply=">>, BotMsgId, <<" PRIVMSG #lobby :why so?\r\n">>]),
+        Reply = json:decode(receive_request()),
+        ?assertEqual(
+            <<"alice: (replying to your message \"alice: Mock answer\") why so?">>,
+            maps:get(<<"content">>, lists:last(maps:get(<<"messages">>, Reply)))
+        ),
+        Threaded = recv_until(Alice, <<"line two">>),
+        ?assert(has(Threaded, <<"+draft/reply=">>)),
+        %% A reply to a message the bot did not send is ignored.
+        send(Alice, <<"@+draft/reply=someoneelse PRIVMSG #lobby :not for the bot\r\n">>),
+
         %% NOTICE and CTCP never trigger a request.
         send(Alice, <<"NOTICE #lobby :helper: notice\r\nPRIVMSG #lobby :\x01VERSION\x01\r\n">>),
 
@@ -294,6 +308,12 @@ live_config(Db, MockPort) ->
         list_to_binary(Db),
         <<"\"}">>
     ]).
+
+%% The msgid tag of the first line containing Needle.
+msgid_of(Lines, Needle) ->
+    [Line | _] = [L || L <- binary:split(Lines, <<"\r\n">>, [global]), has(L, Needle)],
+    {match, [Id]} = re:run(Line, <<"[@;]msgid=([^; ]+)">>, [{capture, [1], binary}]),
+    Id.
 
 receive_request() ->
     receive

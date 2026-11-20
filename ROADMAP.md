@@ -300,7 +300,8 @@ always-on bouncer details, and Sable's PostgreSQL history server.
   `api_key` or `api_key_env`, per-bot model, system prompt (inline or file),
   channels, and limits.
 - [x] Bots as socketless local clients (`ircd_bot`, `ircd_bots`): `+B` bot
-  mode, channel joins, answers to mentions and private messages, typing
+  mode, channel joins, answers to mentions, `+draft/reply` replies to its own
+  messages (threaded answers), and private messages, typing
   indicators, conversation or channel context, per-target and per-minute
   limits, reconnect after `KILL`, rejoin after `KICK`.
 - [x] Reply lines sized for the 512-octet limit without splitting UTF-8
