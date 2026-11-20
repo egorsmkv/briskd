@@ -1577,6 +1577,36 @@ function sendRaw(line: string): void {
   }
 }
 
+// Heartbeat: once registered, send `ISON <own nick>` (RFC 2812 section 4.9)
+// every HEARTBEAT_MS so idle WebSocket proxies keep the connection open and a
+// dead connection is noticed. Replies to our own probes (303 RPL_ISON) are
+// hidden; after HEARTBEAT_MAX_MISSED unanswered probes the socket is closed.
+const HEARTBEAT_MS = 30_000;
+const HEARTBEAT_MAX_MISSED = 2;
+let heartbeatTimer: number | null = null;
+let heartbeatPending = 0;
+
+function startHeartbeat(): void {
+  stopHeartbeat();
+  heartbeatTimer = setInterval(() => {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !isRegistered) return;
+    if (heartbeatPending >= HEARTBEAT_MAX_MISSED) {
+      addLine("*status", { text: "Server stopped responding.", kind: "err" });
+      stopHeartbeat();
+      ws.close();
+      return;
+    }
+    heartbeatPending++;
+    sendRaw(`ISON ${myNick}`);
+  }, HEARTBEAT_MS);
+}
+
+function stopHeartbeat(): void {
+  if (heartbeatTimer !== null) clearInterval(heartbeatTimer);
+  heartbeatTimer = null;
+  heartbeatPending = 0;
+}
+
 function handleMessage(raw: string): void {
   const msg = parseIrc(raw);
   if (!msg) return;
@@ -1711,6 +1741,11 @@ function handleMessage(raw: string): void {
     updateTitle();
     addLine("*status", { time, text: params[1] || "Connected", kind: "sys" });
     for (const ch of autoChannels) sendRaw(`JOIN ${ch}`);
+    startHeartbeat();
+    return;
+  }
+  if (command === "303" && heartbeatPending > 0) {
+    heartbeatPending--;
     return;
   }
   if (command === "JOIN") {
@@ -2162,6 +2197,7 @@ function connectSocket(url: string): void {
     addLine("*status", { text: "WebSocket connection error.", kind: "err" });
   };
   ws.onclose = () => {
+    stopHeartbeat();
     isRegistered = false;
     hiddenUnread = 0;
     hiddenMentions = 0;
@@ -2563,6 +2599,7 @@ $("btn-conn").onclick = () => {
     return;
   }
   clearSession();
+  stopHeartbeat();
   isRegistered = false;
   hiddenUnread = 0;
   hiddenMentions = 0;
