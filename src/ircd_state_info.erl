@@ -507,7 +507,7 @@ static_unchanged(NewConfig) ->
 %% Apply an accepted reload and tell clients what changed.
 reload(NewConfig, Audit, Wallops, Server) ->
     Clients = [Pid || {Pid, _} <- ets:tab2list(ircd_caps)],
-    Advertised = maps:from_list([{Pid, ircd_cap:advertised(Pid)} || Pid <- Clients]),
+    Advertised = #{Pid => ircd_cap:advertised(Pid) || Pid <- Clients},
     Tokens = ircd_isupport:tokens(),
     %% Logged before the new log level takes effect, so the audit event is not
     %% lost when the reload lowers the level.

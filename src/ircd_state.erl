@@ -45,7 +45,11 @@
     wildcard_match/2
 ]).
 -include("ircd_state.hrl").
+%% Used by record_info(fields, ...) when the Mnesia tables are created, which
+%% ELP's unused-include check does not count.
+% elp:ignore W0020 (record_info/2 use)
 -include("ircd_account.hrl").
+% elp:ignore W0020 (record_info/2 use)
 -include("ircd_e2ee.hrl").
 
 -moduledoc """
@@ -554,18 +558,24 @@ pads(_Table, Missing, Default) ->
 -spec ensure_bag(atom()) -> ok.
 ensure_bag(Name) ->
     case ets:whereis(Name) of
-        undefined -> Name = ets:new(Name, [named_table, public, bag]);
-        _ -> true = ets:delete_all_objects(Name)
-    end,
-    ok.
+        undefined ->
+            _ = ets:new(Name, [named_table, public, bag]),
+            ok;
+        _ ->
+            true = ets:delete_all_objects(Name),
+            ok
+    end.
 
 -spec ensure_ets(atom()) -> ok.
 ensure_ets(Name) ->
     case ets:whereis(Name) of
-        undefined -> Name = ets:new(Name, [named_table, public, set]);
-        _ -> true = ets:delete_all_objects(Name)
-    end,
-    ok.
+        undefined ->
+            _ = ets:new(Name, [named_table, public, set]),
+            ok;
+        _ ->
+            true = ets:delete_all_objects(Name),
+            ok
+    end.
 
 reset_channels() ->
     case retention() of

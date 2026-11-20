@@ -41,6 +41,18 @@ xref:
 dialyzer:
     rebar3 dialyzer
 
+# Lint Erlang sources with ELP; fails on any diagnostic. Dependencies'
+# headers under _build are not this project's code, so only these paths run.
+lint:
+    elp lint --no-connect --path src
+    elp lint --no-connect --path test
+    elp lint --no-connect --path include
+
+# Type-check with eqWAlizer (ELP). A report, not a gate: modules are not yet
+# typed to eqWAlizer's stricter rules.
+eqwalize:
+    elp eqwalize-all --no-connect
+
 # Run the Erlang unit test suite (the web UI tests fetch the built assets).
 test: build-webui
     rebar3 eunit

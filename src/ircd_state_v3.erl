@@ -244,7 +244,7 @@ invite_notify(
 ) ->
     Recipients = [
         Pid
-     || {Pid, Roles} <- maps:to_list(Members),
+     || Pid := Roles <- Members,
         Pid =/= InviterPid,
         Pid =/= TargetPid,
         not maps:is_key($i, Flags) orelse lists:member(operator, Roles),

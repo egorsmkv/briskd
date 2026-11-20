@@ -55,7 +55,6 @@ Subcommands:
 ]).
 -include("ircd_state.hrl").
 -include("ircd_account.hrl").
--include("ircd_e2ee.hrl").
 
 -define(MAX_CTL_BYTES, 65536).
 
@@ -1100,7 +1099,7 @@ cmd_drain(Reason, Format) ->
 
 cmd_stop(Reason, Format) ->
     ok = ircd_shutdown:drain(Reason),
-    erlang:spawn(fun() -> init:stop() end),
+    erlang:spawn(fun init:stop/0),
     reply_ok(
         Format,
         #{status => <<"stopping">>, reason => Reason},

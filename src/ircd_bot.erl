@@ -132,7 +132,7 @@ handle_info({bot_timeout, Ref}, #{pending := Pending} = State) ->
 handle_info({'DOWN', MRef, process, _Pid, Reason}, #{pending := Pending} = State) ->
     %% A worker sends its result before exiting, so a DOWN for a request that
     %% is still pending means the worker failed without answering.
-    case [R || {R, #{mref := M}} <- maps:to_list(Pending), M =:= MRef] of
+    case [R || R := #{mref := M} <- Pending, M =:= MRef] of
         [Ref] ->
             {Req, Rest} = maps:take(Ref, Pending),
             _ = erlang:cancel_timer(maps:get(guard, Req)),
@@ -527,7 +527,7 @@ remember(Key, NewTurns, #{bot := Bot, history := History, dm_seq := Seq} = State
         0 ->
             State;
         _ ->
-            Turns = lists:sublist(lists:reverse(NewTurns) ++ history(Key, State), Limit),
+            Turns = lists:sublist(lists:reverse(NewTurns, history(Key, State)), Limit),
             History1 = evict(Key, History),
             State#{history := History1#{Key => {Seq + 1, Turns}}, dm_seq := Seq + 1}
     end.

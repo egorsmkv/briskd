@@ -1,0 +1,13 @@
+# ELP lint configuration (`just lint`; editors read it too).
+# Codes: https://whatsapp.github.io/erlang-language-platform/docs/erlang-error-index/
+# Suppress one occurrence with a comment on the line above:
+#   % elp:ignore W0011 (reason)
+
+[erlang_service]
+# The compiler already runs with warnings_as_errors (rebar.config).
+warnings_as_errors = true
+
+# Shared record field types live next to the records in include/*.hrl, which
+# the modules that own those Mnesia tables include (AGENTS.md section 4).
+[linters.W0083]
+enabled = false

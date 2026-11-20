@@ -124,10 +124,7 @@ sasl_unit() ->
     Bare = <<"n=unit1,r=clientnonce">>,
     {continue, ServerFirst, State} =
         ircd_sasl:step({scram_first, undefined}, <<"y,a=Unit1,", Bare/binary>>),
-    Attrs = maps:from_list([
-        {K, V}
-     || <<K, $=, V/binary>> <- binary:split(ServerFirst, <<",">>, [global])
-    ]),
+    Attrs = #{K => V || <<K, $=, V/binary>> <- binary:split(ServerFirst, <<",">>, [global])},
     #{$r := Nonce, $s := Salt64, $i := Iter} = Attrs,
     Salted = crypto:pbkdf2_hmac(
         sha256, <<"password1">>, base64:decode(Salt64), binary_to_integer(Iter), 32

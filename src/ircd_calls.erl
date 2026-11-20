@@ -295,12 +295,12 @@ handle_info({ng_retry, Cookie}, #{pending := Pending} = State) ->
             {noreply, State}
     end;
 handle_info({assembly_timeout, Key, Ref}, #{chunks := Chunks} = State) ->
-    case maps:find(Key, Chunks) of
-        {ok, #{ref := Ref}} ->
+    case Chunks of
+        #{Key := #{ref := Ref}} ->
             {Pid, Token, _} = Key,
             fail(Pid, <<"TIMEOUT">>, [Token], <<"Session description incomplete">>),
             {noreply, State#{chunks := maps:remove(Key, Chunks)}};
-        _ ->
+        #{} ->
             {noreply, State}
     end;
 handle_info({call_timer, Id, Ref}, #{calls := Calls} = State) ->
@@ -317,11 +317,11 @@ handle_info({call_timer, Id, Ref}, #{calls := Calls} = State) ->
     end;
 handle_info({'DOWN', _MRef, process, Pid, _}, #{busy := Busy, chunks := Chunks} = State) ->
     State1 = State#{chunks := maps:filter(fun({P, _, _}, _) -> P =/= Pid end, Chunks)},
-    case maps:find(Pid, Busy) of
-        {ok, Id} ->
+    case Busy of
+        #{Pid := Id} ->
             Call = maps:get(Id, maps:get(calls, State1)),
             {noreply, end_call(Call, <<"disconnected">>, {except, Pid}, State1)};
-        error ->
+        #{} ->
             {noreply, State1}
     end;
 handle_info(_, State) ->
@@ -364,8 +364,8 @@ offer_chunk(Pid, _Callee, Token, Part, Total, Chunk, State) ->
     add_chunk({Pid, Token, offer}, Part, Total, Chunk, #{}, State).
 
 answer_chunk(Pid, Token, Part, Total, Chunk, #{parties := Parties, calls := Calls} = State) ->
-    case maps:find({Pid, Token}, Parties) of
-        {ok, Id} ->
+    case Parties of
+        #{{Pid, Token} := Id} ->
             case maps:get(Id, Calls) of
                 #{callee := Pid, state := ringing} ->
                     add_chunk({Pid, Token, answer}, Part, Total, Chunk, #{}, State);
@@ -373,7 +373,7 @@ answer_chunk(Pid, Token, Part, Total, Chunk, #{parties := Parties, calls := Call
                     fail(Pid, <<"INVALID_STATE">>, [Token], <<"The call cannot be answered now">>),
                     State
             end;
-        error ->
+        #{} ->
             fail(Pid, <<"UNKNOWN_CALL">>, [Token], <<"No such call">>),
             State
     end.
@@ -381,9 +381,9 @@ answer_chunk(Pid, Token, Part, Total, Chunk, #{parties := Parties, calls := Call
 %% Chunks arrive in order 1..Total; the description is handled when complete.
 add_chunk(Key, 1, Total, Chunk, Extra, #{chunks := Chunks} = State) ->
     Chunks1 =
-        case maps:find(Key, Chunks) of
-            {ok, Old} -> cancel_assembly(Old, Chunks, Key);
-            error -> Chunks
+        case Chunks of
+            #{Key := Old} -> cancel_assembly(Old, Chunks, Key);
+            #{} -> Chunks
         end,
     Ref = make_ref(),
     Timer = erlang:send_after(?ASSEMBLY_MS, self(), {assembly_timeout, Key, Ref}),
@@ -600,9 +600,9 @@ put_call(#{id := Id, caller := Caller, callee := Callee, token := Token} = Call,
     }.
 
 lookup(Pid, Token, #{parties := Parties, calls := Calls}) ->
-    case maps:find({Pid, Token}, Parties) of
-        {ok, Id} -> maps:find(Id, Calls);
-        error -> error
+    case Parties of
+        #{{Pid, Token} := Id} -> maps:find(Id, Calls);
+        #{} -> error
     end.
 
 set_timer(Call, Seconds) ->
@@ -666,9 +666,9 @@ ng_reply(Cookie, Result, #{pending := Pending} = State) ->
         {#{id := Id, op := Op, timer := Timer}, Rest} ->
             cancel(Timer),
             State1 = State#{pending := Rest},
-            case maps:find(Id, maps:get(calls, State1)) of
-                {ok, Call} -> media_result(Op, Result, Call, State1);
-                error -> State1
+            case maps:get(calls, State1) of
+                #{Id := Call} -> media_result(Op, Result, Call, State1);
+                #{} -> State1
             end;
         error ->
             State

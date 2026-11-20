@@ -33,8 +33,6 @@ the session (already gone) gets no reply. A worker that crashes resumes the
 continuation with `{error, {worker, Reason}}`.
 """.
 
--include("ircd_state.hrl").
-
 %% Workers allowed at once (implementation policy). A derivation takes a few
 %% milliseconds, so this bounds CPU use and memory under a login flood.
 -define(MAX_IN_FLIGHT, 32).

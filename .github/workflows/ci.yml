@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   test:
-    name: format and eunit
+    name: format, lint, and eunit
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -29,7 +29,7 @@ jobs:
           -v "${GITHUB_WORKSPACE}:/workspace"
           -w /workspace
           ircd-ci
-          sh -c "just format-check && just test"
+          sh -c "just format-check && just lint && just test"
 
   e2ee:
     name: E2EE end-to-end (two linked servers, Python clients)

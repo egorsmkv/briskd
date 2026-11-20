@@ -930,7 +930,7 @@ trim_conn_markers(Markers, Target, Max) ->
         true ->
             Markers;
         false ->
-            Sorted = lists:sort([{T, K} || {K, T} <- maps:to_list(Markers)]),
+            Sorted = lists:sort([{T, K} || K := T <- Markers]),
             DropCount = map_size(Markers) - (Max - 1),
             DropKeys = [K || {_, K} <- lists:sublist(Sorted, DropCount)],
             maps:without(DropKeys, Markers)
@@ -1237,8 +1237,8 @@ receive_remote_redact(Peer, Prefix, [Target, MsgId | Rest]) ->
         {error, _} ->
             {error, unknown_remote_source};
         {{ok, #remote_client{key = NickKey} = Remote}, [#remote_channel{members = Members}]} ->
-            case maps:find(NickKey, Members) of
-                {ok, {Peer, Roles}} ->
+            case Members of
+                #{NickKey := {Peer, Roles}} ->
                     Operator = lists:member(operator, Roles),
                     case
                         remote_redact_allowed(Operator, Remote, Prefix, find({channel, Key}, MsgId))
@@ -1246,7 +1246,7 @@ receive_remote_redact(Peer, Prefix, [Target, MsgId | Rest]) ->
                         true -> apply_remote_redact(Peer, Prefix, Target, MsgId, Reason);
                         false -> {error, redact_forbidden}
                     end;
-                _ ->
+                #{} ->
                     {error, remote_user_not_on_channel}
             end;
         {{ok, _}, []} ->

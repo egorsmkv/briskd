@@ -406,10 +406,10 @@ handle_cast({lookup, IP, SessionPid}, #{in_flight := InFlight, workers := Worker
                 clean ->
                     {noreply, State};
                 lookup ->
-                    case maps:find(IP, InFlight) of
-                        {ok, Waiters} ->
+                    case InFlight of
+                        #{IP := Waiters} ->
                             {noreply, State#{in_flight := InFlight#{IP => [SessionPid | Waiters]}}};
-                        error ->
+                        #{} ->
                             MaxWorkers = maps:get(max_in_flight, Cfg, 64),
                             case maps:size(InFlight) >= MaxWorkers of
                                 true ->

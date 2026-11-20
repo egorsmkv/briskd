@@ -747,14 +747,14 @@ update_remote_topic(Peer, Prefix, Name, Topic) ->
                 {{ok, #remote_client{key = NickKey}}, [
                     #remote_channel{members = Members, flags = Flags}
                 ]} ->
-                    case maps:find(NickKey, Members) of
-                        {ok, {Peer, Roles}} ->
+                    case Members of
+                        #{NickKey := {Peer, Roles}} ->
                             Restricted = maps:is_key($t, Flags) orelse local_channel_mode(Key, $t),
                             case Restricted andalso not lists:member(operator, Roles) of
                                 true -> {error, remote_topic_requires_operator};
                                 false -> store_remote_topic(Peer, Prefix, Key, Name, Topic)
                             end;
-                        _ ->
+                        #{} ->
                             {error, remote_user_not_on_channel}
                     end;
                 {error, _} ->
@@ -843,8 +843,8 @@ remove_remote_memberships(Peer, NickKey) ->
         fun(ChannelKey) ->
             case mnesia:dirty_read(remote_channel, ChannelKey) of
                 [#remote_channel{members = Members} = Channel] ->
-                    case maps:find(NickKey, Members) of
-                        {ok, {Peer, _Roles}} ->
+                    case Members of
+                        #{NickKey := {Peer, _Roles}} ->
                             Remaining = maps:remove(NickKey, Members),
                             case map_size(Remaining) of
                                 0 ->
@@ -856,7 +856,7 @@ remove_remote_memberships(Peer, NickKey) ->
                                         })
                                     )
                             end;
-                        _ ->
+                        #{} ->
                             ok
                     end;
                 _ ->
@@ -1026,8 +1026,8 @@ Errors: `unknown_remote_source`, `unknown_remote_channel`, and
 remove_remote_channel_member(Peer, Prefix, Name, Reason) ->
     case {remote_source(Peer, Prefix), mnesia:dirty_read(remote_channel, ircd_wire:fold(Name))} of
         {{ok, #remote_client{key = NickKey}}, [#remote_channel{members = Members} = Channel]} ->
-            case maps:find(NickKey, Members) of
-                {ok, {Peer, _Roles}} ->
+            case Members of
+                #{NickKey := {Peer, _Roles}} ->
                     broadcast_remote_channel_event(Name, Prefix, <<"PART">>, Reason),
                     Remaining = maps:remove(NickKey, Members),
                     case map_size(Remaining) of
@@ -1040,7 +1040,7 @@ remove_remote_channel_member(Peer, Prefix, Name, Reason) ->
                     end,
                     relay_except(Peer, ircd_wire:line(Prefix, <<"PART">>, [Name], Reason)),
                     ok;
-                _ ->
+                #{} ->
                     {error, remote_user_not_on_channel}
             end;
         {error, _} ->
@@ -1077,13 +1077,13 @@ receive_remote_kick(Peer, Prefix, Name, Nick, Reason) ->
     Key = ircd_wire:fold(Name),
     case {remote_source(Peer, Prefix), mnesia:dirty_read(remote_channel, Key)} of
         {{ok, #remote_client{key = SourceKey}}, [#remote_channel{members = Members} = Channel]} ->
-            case maps:find(SourceKey, Members) of
-                {ok, {Peer, Roles}} ->
+            case Members of
+                #{SourceKey := {Peer, Roles}} ->
                     case lists:member(operator, Roles) orelse lists:member(creator, Roles) of
                         true -> apply_remote_kick(Peer, Prefix, Name, Nick, Reason, Channel);
                         false -> {error, remote_kick_requires_operator}
                     end;
-                _ ->
+                #{} ->
                     {error, remote_kick_requires_operator}
             end;
         {error, _} ->
@@ -1307,11 +1307,11 @@ update_remote_channel_modes(Peer, Prefix, Name, ModeString, Args) ->
                     false ->
                         case remote_source(Peer, Prefix) of
                             {ok, #remote_client{key = NickKey}} ->
-                                case maps:find(NickKey, Members) of
-                                    {ok, {Peer, Roles}} ->
+                                case Members of
+                                    #{NickKey := {Peer, Roles}} ->
                                         lists:member(operator, Roles) orelse
                                             lists:member(creator, Roles);
-                                    _ ->
+                                    #{} ->
                                         false
                                 end;
                             error ->
@@ -1792,7 +1792,7 @@ forward_channel(Ingress, Name, Prefix, Command, Text, Tags) ->
     case mnesia:dirty_read(remote_channel, ircd_wire:fold(Name)) of
         [#remote_channel{members = Members}] ->
             Line = iolist_to_binary(ircd_wire:message(Tags, Prefix, Command, [Name], Text)),
-            Peers = lists:usort([MemberPeer || {_Nick, {MemberPeer, _}} <- maps:to_list(Members)]),
+            Peers = lists:usort([MemberPeer || _Nick := {MemberPeer, _} <- Members]),
             lists:foreach(
                 fun(Dest) ->
                     case ircd_route:should_forward(Ingress, Dest) of
@@ -1811,8 +1811,8 @@ receive_remote_channel_message(Peer, Remote, Prefix, Name, Text, Command, Tags) 
     case {mnesia:dirty_read(remote_channel, Key), mnesia:dirty_read(channel, Key)} of
         {[#remote_channel{members = RemoteMembers, flags = RemoteFlags}], [Channel]} ->
             NickKey = Remote#remote_client.key,
-            case maps:find(NickKey, RemoteMembers) of
-                {ok, {Peer, Roles}} ->
+            case RemoteMembers of
+                #{NickKey := {Peer, Roles}} ->
                     Flags = maps:merge(RemoteFlags, Channel#channel.flags),
                     Banned =
                         ircd_state_channel:mask_matches(Channel, ban, Remote) andalso
@@ -1841,7 +1841,7 @@ receive_remote_channel_message(Peer, Remote, Prefix, Name, Text, Command, Tags) 
                         false ->
                             ok
                     end;
-                _ ->
+                #{} ->
                     {error, remote_user_not_on_channel}
             end;
         {[#remote_channel{members = RemoteMembers}], []} ->
@@ -2098,7 +2098,7 @@ propagate_invite(Client, Nick, Name, Peer) ->
     _ = ircd_links:send(Peer, Line),
     case mnesia:dirty_read(remote_channel, ircd_wire:fold(Name)) of
         [#remote_channel{members = Members}] ->
-            Peers = lists:usort([MemberPeer || {_Nick, {MemberPeer, _}} <- maps:to_list(Members)]),
+            Peers = lists:usort([MemberPeer || _Nick := {MemberPeer, _} <- Members]),
             lists:foreach(
                 fun(Other) ->
                     case ircd_route:should_forward(Peer, Other) of
@@ -2230,7 +2230,7 @@ propagate_join(Client, Name, Roles) ->
     case mnesia:dirty_read(channel, ircd_wire:fold(Name)) of
         [#channel{flags = Flags, password = Password, limit = Limit, lists = Lists}] ->
             lists:foreach(
-                fun(Line) -> server_broadcast(Line) end,
+                fun server_broadcast/1,
                 channel_mode_burst(Name, Flags, Password, Limit, Lists, Server)
             );
         [] ->
@@ -2244,7 +2244,7 @@ Send prepared lines to every peer that has members of channel `Name`.
 propagate_channel_lines(Name, Lines) ->
     case mnesia:dirty_read(remote_channel, ircd_wire:fold(Name)) of
         [#remote_channel{members = Members}] ->
-            Peers = lists:usort([Peer || {_Nick, {Peer, _Roles}} <- maps:to_list(Members)]),
+            Peers = lists:usort([Peer || _Nick := {Peer, _Roles} <- Members]),
             Bins = [iolist_to_binary(Line) || Line <- Lines],
             lists:foreach(
                 fun(Peer) ->
@@ -2431,8 +2431,8 @@ deliver_remote_multiline(
                             [#channel{name = Name, members = LM, flags = LF} = Channel],
                             [Remote]
                         } ->
-                            case maps:find(NickKey, RM) of
-                                {ok, {Peer, Roles}} ->
+                            case RM of
+                                #{NickKey := {Peer, Roles}} ->
                                     Flags = maps:merge(RF, LF),
                                     Banned =
                                         ircd_state_channel:mask_matches(Channel, ban, Remote) andalso
@@ -2489,7 +2489,7 @@ deliver_remote_multiline(
                                         false ->
                                             ok
                                     end;
-                                _ ->
+                                #{} ->
                                     ok
                             end;
                         _ ->
@@ -2527,7 +2527,7 @@ forward_lines_channel(Ingress, Name, Lines) ->
     case mnesia:dirty_read(remote_channel, ircd_wire:fold(Name)) of
         [#remote_channel{members = Members}] ->
             Bins = [iolist_to_binary(Line) || Line <- Lines],
-            Peers = lists:usort([MemberPeer || {_Nick, {MemberPeer, _}} <- maps:to_list(Members)]),
+            Peers = lists:usort([MemberPeer || _Nick := {MemberPeer, _} <- Members]),
             lists:foreach(
                 fun(Dest) ->
                     case ircd_route:should_forward(Ingress, Dest) of
@@ -2556,7 +2556,7 @@ propagate_channel_message(Name, Text, Command, Client, Tags) ->
             Line = iolist_to_binary(
                 ircd_wire:message(Tags, ircd_state_send:prefix(Client), Command, [Name], Text)
             ),
-            Peers = lists:usort([Peer || {_Nick, {Peer, _Roles}} <- maps:to_list(Members)]),
+            Peers = lists:usort([Peer || _Nick := {Peer, _Roles} <- Members]),
             lists:foreach(fun(Peer) -> _ = ircd_links:send(Peer, Line) end, Peers),
             ok;
         [] ->

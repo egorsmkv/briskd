@@ -1760,8 +1760,7 @@ knock(Name, ReasonParams, #client{pid = Pid} = Client, Server) ->
                         {false, true} ->
                             Operators = [
                                 MemberPid
-                             || {MemberPid, Roles} <- maps:to_list(Members),
-                                lists:member(operator, Roles)
+                             || MemberPid := Roles <- Members, lists:member(operator, Roles)
                             ],
                             case Operators of
                                 [] ->
@@ -2548,12 +2547,12 @@ rename([Old, New | Rest], #client{pid = Pid} = Client, Server) ->
                 not CaseOnly andalso
                     (mnesia:dirty_read(channel, NewKey) =/= [] orelse
                         mnesia:dirty_read(remote_channel, NewKey) =/= []),
-            if
-                Roles =:= undefined ->
+            case Roles of
+                undefined ->
                     ircd_state_send:numeric(
                         Client, Server, <<"442">>, [Canonical], <<"You're not on that channel">>
                     );
-                true ->
+                _ ->
                     case lists:member(operator, Roles) of
                         false ->
                             ircd_state_send:numeric(

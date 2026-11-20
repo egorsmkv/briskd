@@ -251,7 +251,7 @@ authzid(<<"a=", Authz/binary>>) -> {ok, scram_unescape(Authz)};
 authzid(_) -> error.
 
 attributes(Parts) ->
-    maps:from_list([{Key, Value} || <<Key, $=, Value/binary>> <- Parts]).
+    #{Key => Value || <<Key, $=, Value/binary>> <- Parts}.
 
 scram_unescape(Value) ->
     binary:replace(binary:replace(Value, <<"=2C">>, <<",">>, [global]), <<"=3D">>, <<"=">>, [

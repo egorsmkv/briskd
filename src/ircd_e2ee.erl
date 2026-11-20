@@ -684,10 +684,7 @@ burst_lines() ->
         [device_line(D) | prekeys_lines(Account, Dev, Prekeys)]
      || #e2ee_device{key = {_, Dev}, account = Account, prekeys = Prekeys} = D <- Devices
     ]),
-    Accounts = maps:from_list([
-        {Key, Account}
-     || #e2ee_device{key = {Key, _}, account = Account} <- Devices
-    ]),
+    Accounts = #{Key => Account || #e2ee_device{key = {Key, _}, account = Account} <- Devices},
     QueueLines = [
         queue_line(maps:get(Folded, Accounts, Folded), Entry)
      || #e2ee_queue{key = {Folded, _, _}} = Entry <- mnesia:dirty_select(e2ee_queue, [

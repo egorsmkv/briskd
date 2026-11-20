@@ -1048,9 +1048,9 @@ bot(Entry, Providers, NickLen) when is_map(Entry) ->
     end,
     ProviderName = maps:get(<<"provider">>, Entry, undefined),
     Provider =
-        case maps:find(ProviderName, Providers) of
-            {ok, P} -> P;
-            error -> erlang:error({unknown_ai_provider, Nick, ProviderName})
+        case Providers of
+            #{ProviderName := P} -> P;
+            #{} -> erlang:error({unknown_ai_provider, Nick, ProviderName})
         end,
     Model =
         case maps:get(<<"model">>, Entry, null) of
@@ -1141,15 +1141,13 @@ system_prompt(Nick, Entry) ->
     end.
 
 bot_channels(Nick, Channels) when is_list(Channels), length(Channels) =< ?MAX_BOT_CHANNELS ->
-    lists:map(
-        fun(Channel) ->
-            case is_binary(Channel) andalso ircd_wire:channel(Channel) of
-                true -> ircd_wire:retain(Channel);
-                false -> erlang:error({invalid_bot_channel, Nick, Channel})
-            end
-        end,
-        Channels
-    );
+    [
+        case is_binary(Channel) andalso ircd_wire:channel(Channel) of
+            true -> ircd_wire:retain(Channel);
+            false -> erlang:error({invalid_bot_channel, Nick, Channel})
+        end
+     || Channel <- Channels
+    ];
 bot_channels(Nick, Channels) ->
     erlang:error({invalid_bot, Nick, channels, Channels}).
 

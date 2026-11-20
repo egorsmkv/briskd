@@ -146,7 +146,7 @@ reaction_persistence_test() ->
             none,
             <<"m2">>,
             1001,
-            [{<<"+draft/reply">>, <<"m1">>}, {<<"+draft/react">>, <<"👍">>}],
+            [{<<"+draft/reply">>, <<"m1">>}, {<<"+draft/react">>, <<"👍"/utf8>>}],
             <<"bob">>
         ),
         Typing = ircd_state_history:entry(

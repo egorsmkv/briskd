@@ -203,7 +203,7 @@ authenticate_payload(Bin) ->
     Payload.
 
 scram_attrs(Message) ->
-    maps:from_list([{K, V} || <<K, $=, V/binary>> <- binary:split(Message, <<",">>, [global])]).
+    #{K => V || <<K, $=, V/binary>> <- binary:split(Message, <<",">>, [global])}.
 
 identity_notifications(Port) ->
     Watcher = client(Port, <<"watch">>, ?ALL_CAPS),
