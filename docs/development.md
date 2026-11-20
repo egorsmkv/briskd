@@ -43,7 +43,7 @@ If `just` is installed, `just --list` shows the available commands:
 | `just xref` | Check for undefined and deprecated calls |
 | `just dialyzer` | Run Dialyzer with strict warnings |
 | `just lint` | Lint `src/`, `test/`, and `include/` with ELP; fails on any diagnostic |
-| `just eqwalize` | Type-check `src/` with eqWAlizer (ELP); fails on any finding |
+| `just eqwalize` | Type-check `src/` and `test/` with eqWAlizer (ELP); fails on any finding |
 | `just test` | Run the EUnit suite, including the two-server interop test |
 | `just cover` | Run the suite with coverage; fail below 90% |
 | `just docs` | Build the HTML documentation into `doc/` |
@@ -77,10 +77,13 @@ the eqWAlizer type checker, and a language server for editors.
       elp lint --no-connect --path src --diagnostic-filter W0032 --apply-fix --one-shot
   ```
 
-- `just eqwalize` type-checks `src/` with eqWAlizer and runs in CI. It is
+- `just eqwalize` type-checks `src/` and `test/` with eqWAlizer and runs in CI. It is
   stricter than Dialyzer: an expression whose type is wider than the spec
-  expects is an error, so `term()` must be narrowed before use. Test modules
-  are excluded in `.elp.toml` because they pass ill-typed input on purpose.
+  expects is an error, so `term()` must be narrowed before use. Tests are
+  checked too: socket data is matched as `{ok, <<_/binary>> = Data}`, and a
+  test of bad input passes a value of the right type that is still invalid
+  (for example `{0, 0, 0, 0, 0, 0, 0, -1}` as an address), or calls a
+  function whose spec accepts `term()` because it rejects anything else.
 - Keep the code typed rather than suppressed:
   - Read the running configuration with `ircd_config:current/0` (typed as
     `ircd_config:config()`), or `current_or_empty/0` where code also runs

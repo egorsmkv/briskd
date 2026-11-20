@@ -25,7 +25,7 @@ trim_ows_test() ->
 dronebl_peer_test() ->
     lists:foreach(
         fun(IP) ->
-            Text = list_to_binary(inet:ntoa(IP)),
+            Text = ircd_wire:ip_text(IP),
             ?assertEqual({ok, IP}, ircd_dronebl:parse_peer(Text)),
             ?assertEqual({ok, IP}, ircd_dronebl:parse_peer(IP))
         end,
@@ -33,7 +33,7 @@ dronebl_peer_test() ->
     ),
     ?assertEqual(error, ircd_dronebl:parse_peer({256, 0, 0, 1})),
     ?assertEqual(error, ircd_dronebl:parse_peer({0, 0, 0, 0, 0, 0, 0, 65536})),
-    ?assertEqual(error, ircd_dronebl:parse_peer({1, 2, 3})).
+    ?assertEqual(error, ircd_dronebl:parse_peer({0, 0, 0, 0, 0, 0, 0, -1})).
 
 email_key_test() ->
     ?assertEqual(<<"a@b.example">>, ircd_account:email_key(<<"  A@B.Example ">>)),

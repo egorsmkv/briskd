@@ -242,7 +242,7 @@ sasl_start_and_trivial_steps_test() ->
     ?assertEqual({error, failed}, ircd_sasl:step({external, undefined}, <<>>)),
     ?assertEqual({error, failed}, ircd_sasl:step({scram_done, <<"n">>}, <<"junk">>)),
     ?assertEqual({success, <<"n">>}, ircd_sasl:step({scram_done, <<"n">>}, <<>>)),
-    ?assertEqual({error, failed}, ircd_sasl:step(bogus, <<>>)),
+    ?assertEqual({error, failed}, ircd_sasl:step({scram_done, <<"n">>}, <<"extra">>)),
     %% Malformed SCRAM client-first messages.
     ?assertEqual({error, failed}, ircd_sasl:step({scram_first, undefined}, <<"p=x,,n=a,r=b">>)),
     ?assertEqual({error, failed}, ircd_sasl:step({scram_first, undefined}, <<"n">>)),

@@ -410,13 +410,13 @@ read_http(S, Acc) ->
             ]),
             {Head, read_body(S, Rest, binary_to_integer(Len))};
         [_] ->
-            {ok, Data} = gen_tcp:recv(S, 0, 5000),
+            {ok, <<_/binary>> = Data} = gen_tcp:recv(S, 0, 5000),
             read_http(S, <<Acc/binary, Data/binary>>)
     end.
 
 read_body(_S, Body, Len) when byte_size(Body) >= Len -> binary:part(Body, 0, Len);
 read_body(S, Body, Len) ->
-    {ok, Data} = gen_tcp:recv(S, 0, 5000),
+    {ok, <<_/binary>> = Data} = gen_tcp:recv(S, 0, 5000),
     read_body(S, <<Body/binary, Data/binary>>, Len).
 
 register_client(Port, Nick) ->
@@ -432,7 +432,7 @@ recv_until(Sock, Needle) -> recv_until(Sock, Needle, <<>>).
 recv_until(Sock, Needle, Acc) ->
     case binary:match(Acc, Needle) of
         nomatch ->
-            {ok, Bin} = gen_tcp:recv(Sock, 0, 5000),
+            {ok, <<_/binary>> = Bin} = gen_tcp:recv(Sock, 0, 5000),
             recv_until(Sock, Needle, <<Acc/binary, Bin/binary>>);
         _ ->
             Acc

@@ -280,8 +280,10 @@ recv_loop(Sock, Needle, Deadline, Acc) ->
         nomatch ->
             Left = Deadline - erlang:monotonic_time(millisecond),
             case Left > 0 andalso gen_tcp:recv(Sock, 0, Left) of
-                {ok, Bin} -> recv_loop(Sock, Needle, Deadline, <<Acc/binary, Bin/binary>>);
-                _ -> error({no_match, Needle, Acc})
+                {ok, <<_/binary>> = Bin} ->
+                    recv_loop(Sock, Needle, Deadline, <<Acc/binary, Bin/binary>>);
+                _ ->
+                    error({no_match, Needle, Acc})
             end
     end.
 

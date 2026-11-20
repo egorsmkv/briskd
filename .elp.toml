@@ -1,7 +1,0 @@
-# ELP project settings (https://whatsapp.github.io/erlang-language-platform/).
-
-[eqwalizer]
-# Test modules pass ill-typed input on purpose (malformed lines, bad config
-# values, decoded JSON from a live socket), so `just eqwalize` checks src/
-# only. An editor still shows eqWAlizer types in test files on hover.
-ignore_modules = ["*_tests"]

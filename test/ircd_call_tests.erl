@@ -410,7 +410,10 @@ live() ->
         %% Every call above has ended (hangup, reject, busy, disconnect,
         %% media error, ring timeout): nothing is left in the call table, no
         %% party is still monitored, and no NG request or timer is pending.
-        Calls = whereis(ircd_calls),
+        Calls =
+            case whereis(ircd_calls) of
+                CallsPid when is_pid(CallsPid) -> CallsPid
+            end,
         #{calls := C, parties := P, busy := B, chunks := Ch, pending := Pe} =
             sys:get_state(Calls),
         ?assertEqual({#{}, #{}, #{}, #{}, #{}}, {C, P, B, Ch, Pe}),
@@ -523,7 +526,7 @@ ng_loop(S, Test, FailNext) ->
             ng_loop(S, Test, true);
         {udp, S, Ip, Port, Packet} ->
             [Cookie, Body] = binary:split(Packet, <<" ">>),
-            {ok, #{<<"command">> := Cmd} = Msg} = ircd_bencode:decode(Body),
+            {ok, #{<<"command">> := <<_/binary>> = Cmd} = Msg} = ircd_bencode:decode(Body),
             Test ! {ng, binary_to_atom(Cmd), Msg},
             {Reply, Fail1} =
                 case {Cmd, FailNext} of
@@ -569,7 +572,7 @@ recv_until(Sock, Needle, Done, Timeout, Acc) ->
         true ->
             Acc;
         false ->
-            {ok, Bin} = gen_tcp:recv(Sock, 0, Timeout),
+            {ok, <<_/binary>> = Bin} = gen_tcp:recv(Sock, 0, Timeout),
             recv_until(Sock, Needle, Done, Timeout, <<Acc/binary, Bin/binary>>)
     end.
 

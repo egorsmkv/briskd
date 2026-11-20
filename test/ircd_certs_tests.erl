@@ -214,7 +214,7 @@ ssl_recv_until(S, Needle) ->
 ssl_recv_until(S, Needle, Acc) ->
     case binary:match(Acc, Needle) of
         nomatch ->
-            {ok, Data} = ssl:recv(S, 0, 5000),
+            {ok, <<_/binary>> = Data} = ssl:recv(S, 0, 5000),
             ssl_recv_until(S, Needle, <<Acc/binary, Data/binary>>);
         _ ->
             Acc
@@ -223,7 +223,7 @@ ssl_recv_until(S, Needle, Acc) ->
 tcp_recv_until(S, Needle, Acc) ->
     case binary:match(Acc, Needle) of
         nomatch ->
-            {ok, Data} = gen_tcp:recv(S, 0, 5000),
+            {ok, <<_/binary>> = Data} = gen_tcp:recv(S, 0, 5000),
             tcp_recv_until(S, Needle, <<Acc/binary, Data/binary>>);
         _ ->
             Acc

@@ -178,7 +178,7 @@ smtp_web_verify_integration() ->
 
         %% Extract the code from the email link query string.
         [_, QueryPart] = binary:split(PathAndQuery, <<"?">>),
-        Pairs = uri_string:dissect_query(QueryPart),
+        [_ | _] = Pairs = uri_string:dissect_query(QueryPart),
         {_, AliceCode} = lists:keyfind(<<"code">>, 1, Pairs),
 
         %% POST /api/verify without ALTCHA is rejected.
@@ -317,7 +317,7 @@ connect_tcp(Port) ->
 recv_until(Sock, Needle, Acc) ->
     case binary:match(Acc, Needle) of
         nomatch ->
-            {ok, Bin} = gen_tcp:recv(Sock, 0, 5000),
+            {ok, <<_/binary>> = Bin} = gen_tcp:recv(Sock, 0, 5000),
             recv_until(Sock, Needle, <<Acc/binary, Bin/binary>>);
         _ ->
             Acc
@@ -367,7 +367,7 @@ test_altcha_payload(Number) ->
 
 read_all(Sock, Acc) ->
     case gen_tcp:recv(Sock, 0, 5000) of
-        {ok, Chunk} -> read_all(Sock, <<Acc/binary, Chunk/binary>>);
+        {ok, <<_/binary>> = Chunk} -> read_all(Sock, <<Acc/binary, Chunk/binary>>);
         {error, closed} -> Acc
     end.
 

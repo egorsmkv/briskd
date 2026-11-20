@@ -550,7 +550,7 @@ http_req(Port, Method, Path, Headers, Body) ->
 
 read_all(Sock, Acc) ->
     case gen_tcp:recv(Sock, 0, 5000) of
-        {ok, Chunk} -> read_all(Sock, <<Acc/binary, Chunk/binary>>);
+        {ok, <<_/binary>> = Chunk} -> read_all(Sock, <<Acc/binary, Chunk/binary>>);
         {error, closed} -> Acc
     end.
 

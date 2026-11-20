@@ -644,7 +644,7 @@ log_format_test() ->
                 nested => #{<<"k">> => [1, 2], inner => #{x => self()}},
                 bad => <<255>>,
                 list => "text",
-                improper => [a | b],
+                improper => improper(a, b),
                 float => 1.5
             }}
     },
@@ -728,7 +728,8 @@ cap_values_test() ->
         ?assertEqual(
             {<<"sts">>, <<"duration=60,preload">>}, lists:keyfind(<<"sts">>, 1, Advertised)
         ),
-        {_, Registration} = lists:keyfind(<<"draft/account-registration">>, 1, Advertised),
+        {_, <<_/binary>> = Registration} =
+            lists:keyfind(<<"draft/account-registration">>, 1, Advertised),
         ?assertEqual(nomatch, binary:match(Registration, <<"before-connect">>)),
         ?assertNotEqual(nomatch, binary:match(Registration, <<"email-required">>))
     end).
@@ -736,9 +737,14 @@ cap_values_test() ->
 %%% ircd_isupport
 
 isupport_empty_tokens_test() ->
-    Client = #client{pid = self()},
+    Client = #client{pid = self(), host = <<"h">>},
     ?assertEqual(ok, ircd_isupport:send_tokens(Client, <<"srv">>, [], false)),
     receive
         Unexpected -> ?assertEqual(nothing, Unexpected)
     after 0 -> ok
     end.
+
+%% An improper list ([a | b]); the log formatter must render it. Built here
+%% because a typed literal cannot be improper.
+improper(Head, Tail) ->
+    [Head | Tail].

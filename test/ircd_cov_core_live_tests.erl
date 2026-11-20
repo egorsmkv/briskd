@@ -74,6 +74,7 @@ live() ->
 
 listener_callbacks() ->
     {_, Pid, _, _} = lists:keyfind(tcp, 1, supervisor:which_children(ircd_sup)),
+    true = is_pid(Pid),
     ?assertEqual({error, unsupported}, gen_server:call(Pid, anything)),
     ok = gen_server:cast(Pid, anything),
     Pid ! anything,
@@ -546,8 +547,8 @@ certificate(Dir) ->
         }),
     CertFile = filename:join(Dir, "server.pem"),
     KeyFile = filename:join(Dir, "server.key"),
-    {_, Cert} = lists:keyfind(cert, 1, ServerConf),
-    {_, {KeyType, KeyDer}} = lists:keyfind(key, 1, ServerConf),
+    {_, <<_/binary>> = Cert} = lists:keyfind(cert, 1, ServerConf),
+    {_, {'RSAPrivateKey' = KeyType, <<_/binary>> = KeyDer}} = lists:keyfind(key, 1, ServerConf),
     ok = file:write_file(CertFile, public_key:pem_encode([{'Certificate', Cert, not_encrypted}])),
     ok = file:write_file(KeyFile, public_key:pem_encode([{KeyType, KeyDer, not_encrypted}])),
     {list_to_binary(CertFile), list_to_binary(KeyFile)}.
@@ -594,7 +595,7 @@ collect(Sock, Acc, N) when N < 60 ->
             _ -> 100
         end,
     case gen_tcp:recv(Sock, 0, Timeout) of
-        {ok, Bin} -> collect(Sock, <<Acc/binary, Bin/binary>>, N + 1);
+        {ok, <<_/binary>> = Bin} -> collect(Sock, <<Acc/binary, Bin/binary>>, N + 1);
         {error, timeout} when Acc =:= <<>>, N < 15 -> collect(Sock, Acc, N + 1);
         {error, _} -> Acc
     end;
@@ -641,8 +642,8 @@ peer_port(Pid) ->
         {Kind, Socket, _, _, _} ->
             Result =
                 case Kind of
-                    tcp -> inet:peername(Socket);
-                    ws -> inet:peername(Socket);
+                    tcp when is_port(Socket) -> inet:peername(Socket);
+                    ws when is_port(Socket) -> inet:peername(Socket);
                     _ -> ssl:peername(Socket)
                 end,
             case Result of

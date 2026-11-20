@@ -1,5 +1,6 @@
 -module(ircd_ctl_tests).
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("kernel/include/file.hrl").
 
 offline_commands_test() ->
     ?assertMatch({ok, _}, ircd_ctl:run(["help"])),
@@ -46,8 +47,8 @@ live_ctl() ->
     {ok, _} = application:ensure_all_started(ircd),
     try
         %% Verify Unix domain socket exists with 0600 permissions.
-        {ok, Info} = file:read_file_info(SockPath),
-        ?assertEqual(8#600, element(8, Info) band 8#777),
+        {ok, #file_info{mode = Mode}} = file:read_file_info(SockPath),
+        ?assert(is_integer(Mode) andalso Mode band 8#777 =:= 8#600),
 
         %% ping & status
         {ok, PingJson} = ircd_ctl:run(["ping", "--json"]),
@@ -174,7 +175,7 @@ register_client(Port, Nick) ->
 recv_until(Sock, Needle, Acc) ->
     case binary:match(Acc, Needle) of
         nomatch ->
-            {ok, Bin} = gen_tcp:recv(Sock, 0, 5000),
+            {ok, <<_/binary>> = Bin} = gen_tcp:recv(Sock, 0, 5000),
             recv_until(Sock, Needle, <<Acc/binary, Bin/binary>>);
         _ ->
             Acc
@@ -185,7 +186,7 @@ read_all(Sock) ->
 
 read_all(Sock, Acc) ->
     case gen_tcp:recv(Sock, 0, 5000) of
-        {ok, Bin} -> read_all(Sock, <<Acc/binary, Bin/binary>>);
+        {ok, <<_/binary>> = Bin} -> read_all(Sock, <<Acc/binary, Bin/binary>>);
         {error, closed} -> Acc
     end.
 

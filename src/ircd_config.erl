@@ -370,7 +370,8 @@ first differ, and a length mismatch does not return early. Returns `false`
 when either argument is not a binary. Use it for `PASS`, `OPER`, and server
 link passwords.
 """.
--spec secret_match(binary(), binary()) -> boolean().
+%% Any non-binary (an unset `null` secret, for example) never matches.
+-spec secret_match(term(), term()) -> boolean().
 secret_match(Left, Right) when is_binary(Left), is_binary(Right) ->
     crypto:hash_equals(crypto:hash(sha256, Left), crypto:hash(sha256, Right));
 secret_match(_, _) ->

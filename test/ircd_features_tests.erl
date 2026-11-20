@@ -1,5 +1,6 @@
 -module(ircd_features_tests).
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("ircd/include/ircd_channel.hrl").
 
 config_features_test() ->
     TmpDir = filename:join([
@@ -161,10 +162,10 @@ reaction_persistence_test() ->
         ok = ircd_state_history:note_channel(Key, Msg),
         ok = ircd_state_history:note_channel(Key, React),
         ok = ircd_state_history:note_channel(Key, Typing),
-        [{channel_history, Key, Entries}] = mnesia:dirty_read(channel_history, Key),
+        [#channel_history{entries = Entries}] = mnesia:dirty_read(channel_history, Key),
         %% Typing TAGMSG must NOT be persisted; PRIVMSG + reaction TAGMSG MUST be persisted.
         ?assertEqual(2, length(Entries)),
-        ?assertEqual([<<"m2">>, <<"m1">>], [maps:get(msgid, E) || E <- Entries]),
+        ?assertEqual([<<"m2">>, <<"m1">>], [maps:get(msgid, E) || #{} = E <- Entries]),
         mnesia:dirty_delete(channel_history, Key)
     after
         case Old of

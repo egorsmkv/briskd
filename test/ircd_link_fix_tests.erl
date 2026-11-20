@@ -245,7 +245,7 @@ history_ids(Key) ->
     end.
 
 peer_batches(Peer) ->
-    {dictionary, Dict} = process_info(whereis(ircd_state), dictionary),
+    {dictionary, Dict} = process_info(state_pid(), dictionary),
     [K || {{ircd_peer_batch, P, _} = K, _} <- Dict, P =:= Peer].
 
 %%% Peer MODE +o/+v whose target is a local member
@@ -446,7 +446,7 @@ recv_loop(Sock, Needle, Deadline, Strict, Acc) ->
         nomatch ->
             Left = Deadline - erlang:monotonic_time(millisecond),
             case Left > 0 andalso gen_tcp:recv(Sock, 0, Left) of
-                {ok, Bin} ->
+                {ok, <<_/binary>> = Bin} ->
                     recv_loop(Sock, Needle, Deadline, Strict, <<Acc/binary, Bin/binary>>);
                 _ when Strict ->
                     error({no_match, Needle, Acc});
@@ -469,3 +469,8 @@ line_end(Acc, Needle) ->
 
 has(Bin, Needle) ->
     binary:match(Bin, Needle) =/= nomatch.
+
+state_pid() ->
+    case whereis(ircd_state) of
+        Pid when is_pid(Pid) -> Pid
+    end.

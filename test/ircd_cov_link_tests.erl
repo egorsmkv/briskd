@@ -1,5 +1,6 @@
 -module(ircd_cov_link_tests).
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("ircd/include/ircd_channel.hrl").
 
 %% RFC 2813 server links driven through inbound peer sockets: burst contents,
 %% import of servers, users, channels, modes, and topics, propagation to the
@@ -706,10 +707,10 @@ edge() ->
         send(Alice, <<"METADATA &loc SET k :v">>),
         sync(Alice),
         [Safe] = [
-            element(3, Row)
-         || K <- mnesia:dirty_all_keys(channel),
+            Name
+         || K <- ircd_state:table_keys(channel),
             binary:first(K) =:= $!,
-            Row <- mnesia:dirty_read(channel, K)
+            #channel{name = Name} <- mnesia:dirty_read(channel, K)
         ],
         send(Alice, <<"MODE ", Safe/binary, " +a">>),
         sync(Alice),
@@ -989,7 +990,7 @@ recv_loop(Sock, Needle, Deadline, Strict, Acc) ->
         nomatch ->
             Left = Deadline - erlang:monotonic_time(millisecond),
             case Left > 0 andalso gen_tcp:recv(Sock, 0, Left) of
-                {ok, Bin} ->
+                {ok, <<_/binary>> = Bin} ->
                     recv_loop(Sock, Needle, Deadline, Strict, <<Acc/binary, Bin/binary>>);
                 _ when Strict ->
                     error({no_match, Needle, Acc});

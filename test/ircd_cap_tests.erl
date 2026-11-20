@@ -86,7 +86,7 @@ capability_values_test() ->
             {<<"sasl">>, <<"EXTERNAL,PLAIN,SCRAM-SHA-256">>},
             lists:keyfind(<<"sasl">>, 1, Advertised)
         ),
-        {_, Multiline} = lists:keyfind(<<"draft/multiline">>, 1, Advertised),
+        {_, <<_/binary>> = Multiline} = lists:keyfind(<<"draft/multiline">>, 1, Advertised),
         ?assertMatch({match, _}, re:run(Multiline, <<"max-bytes=[0-9]+">>)),
         ?assertEqual({<<"batch">>, undefined}, lists:keyfind(<<"batch">>, 1, Advertised))
     end).

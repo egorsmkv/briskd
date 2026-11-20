@@ -27,8 +27,8 @@ run() ->
         }),
     CertFile = filename:join(Dir, "server.pem"),
     KeyFile = filename:join(Dir, "server.key"),
-    {_, ServerCert} = lists:keyfind(cert, 1, ServerConf),
-    {_, {KeyType, KeyDer}} = lists:keyfind(key, 1, ServerConf),
+    {_, <<_/binary>> = ServerCert} = lists:keyfind(cert, 1, ServerConf),
+    {_, {'RSAPrivateKey' = KeyType, <<_/binary>> = KeyDer}} = lists:keyfind(key, 1, ServerConf),
     ok = file:write_file(
         CertFile, public_key:pem_encode([{'Certificate', ServerCert, not_encrypted}])
     ),
@@ -155,7 +155,10 @@ wait_code() ->
 wait_code(0) ->
     erlang:error(no_verification_code);
 wait_code(N) ->
-    Dir = os:getenv("IRCD_CONFIG"),
+    Dir =
+        case os:getenv("IRCD_CONFIG") of
+            Path when is_list(Path) -> Path
+        end,
     File = filename:join(filename:dirname(Dir), "code"),
     case file:read_file(File) of
         {ok, Code} when byte_size(Code) =:= 8 ->
@@ -361,6 +364,7 @@ listener_ports() ->
     lists:foreach(
         fun(Kind) ->
             {_, Pid, _, _} = lists:keyfind(Kind, 1, supervisor:which_children(ircd_sup)),
+            true = is_pid(Pid),
             ?assertEqual({ok, listener_port(Kind)}, ircd_listener:port(Pid))
         end,
         [tcp, tls]

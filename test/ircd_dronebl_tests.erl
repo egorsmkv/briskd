@@ -171,7 +171,7 @@ register_client(Port, Nick) ->
 recv_until(Sock, Needle, Acc) ->
     case binary:match(Acc, Needle) of
         nomatch ->
-            {ok, Bin} = gen_tcp:recv(Sock, 0, 5000),
+            {ok, <<_/binary>> = Bin} = gen_tcp:recv(Sock, 0, 5000),
             recv_until(Sock, Needle, <<Acc/binary, Bin/binary>>);
         _ ->
             Acc
@@ -182,7 +182,7 @@ read_all(Sock) ->
 
 read_all(Sock, Acc) ->
     case gen_tcp:recv(Sock, 0, 5000) of
-        {ok, Bin} -> read_all(Sock, <<Acc/binary, Bin/binary>>);
+        {ok, <<_/binary>> = Bin} -> read_all(Sock, <<Acc/binary, Bin/binary>>);
         {error, closed} -> Acc
     end.
 

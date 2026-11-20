@@ -853,8 +853,10 @@ recv_loop(Sock, Needle, Deadline, Acc) ->
                     Acc;
                 true ->
                     case gen_tcp:recv(Sock, 0, Left) of
-                        {ok, Bin} -> recv_loop(Sock, Needle, Deadline, <<Acc/binary, Bin/binary>>);
-                        {error, _} -> Acc
+                        {ok, <<_/binary>> = Bin} ->
+                            recv_loop(Sock, Needle, Deadline, <<Acc/binary, Bin/binary>>);
+                        {error, _} ->
+                            Acc
                     end
             end
     end.

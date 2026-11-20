@@ -540,7 +540,7 @@ recv(Sock) ->
 
 recv(Sock, Acc, Tries) when Tries < 20 ->
     case gen_tcp:recv(Sock, 0, 200) of
-        {ok, Bin} -> recv(Sock, <<Acc/binary, Bin/binary>>, Tries + 1);
+        {ok, <<_/binary>> = Bin} -> recv(Sock, <<Acc/binary, Bin/binary>>, Tries + 1);
         {error, timeout} when Acc =/= <<>> -> Acc;
         {error, timeout} -> recv(Sock, Acc, Tries + 1);
         {error, closed} -> Acc

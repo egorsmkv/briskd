@@ -319,7 +319,7 @@ just eqwalize
 just test
 ```
 
-`just lint` runs ELP's linter over `src/`, `test/`, and `include/` and fails on any diagnostic (configuration in `.elp_lint.toml`; see `docs/development.md`). Fix a finding rather than suppress it; a suppression (`% elp:ignore Wxxxx (reason)`) needs the reason. After applying an ELP auto-fix, build and run the tests: fixes are not always safe. `just eqwalize` type-checks `src/` with eqWAlizer and fails on any finding (test modules are excluded in `.elp.toml`). Give new code precise specs instead of `term()`, read configuration through `ircd_config:current/0`, and narrow untyped data with a guard where it enters; `docs/development.md` lists the conventions.
+`just lint` runs ELP's linter over `src/`, `test/`, and `include/` and fails on any diagnostic (configuration in `.elp_lint.toml`; see `docs/development.md`). Fix a finding rather than suppress it; a suppression (`% elp:ignore Wxxxx (reason)`) needs the reason. After applying an ELP auto-fix, build and run the tests: fixes are not always safe. `just eqwalize` type-checks `src/` and `test/` with eqWAlizer and fails on any finding. Give new code precise specs instead of `term()`, read configuration through `ircd_config:current/0`, and narrow untyped data with a guard where it enters; `docs/development.md` lists the conventions.
 
 GitHub Actions (`.github/workflows/ci.yml`) builds the development image and runs `just format-check`, `just lint`, `just eqwalize`, and `just test`. `just test` includes `ircd_interop_tests`, which starts two ircd OS processes linked over TCP; keep it green for link changes. Keep that workflow on the same OTP image as the Dockerfile.
 

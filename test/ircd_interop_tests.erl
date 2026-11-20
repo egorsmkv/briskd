@@ -131,7 +131,7 @@ start_node(Base, Name, Port, Links) ->
 
 stop_node(Port) ->
     case erlang:port_info(Port, os_pid) of
-        {os_pid, OsPid} ->
+        {os_pid, OsPid} when is_integer(OsPid) ->
             _ = os:cmd("kill " ++ integer_to_list(OsPid)),
             try
                 port_close(Port)
@@ -210,7 +210,7 @@ collect(Sock, Acc, N, Waits) when N < 80 ->
             _ -> 150
         end,
     case gen_tcp:recv(Sock, 0, Timeout) of
-        {ok, Bin} -> collect(Sock, <<Acc/binary, Bin/binary>>, N + 1, Waits);
+        {ok, <<_/binary>> = Bin} -> collect(Sock, <<Acc/binary, Bin/binary>>, N + 1, Waits);
         {error, timeout} when Acc =:= <<>>, N < Waits -> collect(Sock, Acc, N + 1, Waits);
         {error, _} -> Acc
     end;

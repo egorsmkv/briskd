@@ -188,7 +188,7 @@ register_creates_account(Port) ->
 
 ircd_deferred_in_flight() ->
     %% The counter lives in the ircd_state process dictionary.
-    {dictionary, Dict} = process_info(whereis(ircd_state), dictionary),
+    {dictionary, Dict} = process_info(state_pid(), dictionary),
     proplists:get_value(ircd_deferred_count, Dict, 0).
 
 wait_until(Fun, 0) ->
@@ -223,12 +223,12 @@ recv_until(S, Needle) ->
 recv_until(S, Needle, Acc) ->
     case binary:match(Acc, Needle) of
         nomatch ->
-            {ok, Data} = gen_tcp:recv(S, 0, 10000),
+            {ok, <<_/binary>> = Data} = gen_tcp:recv(S, 0, 10000),
             recv_until(S, Needle, <<Acc/binary, Data/binary>>);
         _ ->
             %% Collect the rest of the burst that arrived with the needle.
             case gen_tcp:recv(S, 0, 200) of
-                {ok, More} -> recv_until(S, Needle, <<Acc/binary, More/binary>>);
+                {ok, <<_/binary>> = More} -> recv_until(S, Needle, <<Acc/binary, More/binary>>);
                 {error, timeout} -> Acc
             end
     end.
@@ -243,3 +243,8 @@ listener_port() ->
     {_, Pid, _, _} = lists:keyfind(tcp, 1, supervisor:which_children(ircd_sup)),
     {ok, {_, Port}} = inet:sockname(sys:get_state(Pid)),
     Port.
+
+state_pid() ->
+    case whereis(ircd_state) of
+        Pid when is_pid(Pid) -> Pid
+    end.

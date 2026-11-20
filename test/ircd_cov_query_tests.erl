@@ -742,10 +742,10 @@ migration() ->
         ?assertEqual(
             record_info(fields, service) ++ [extra], mnesia:table_info(service, attributes)
         ),
-        [Channel] = mnesia:dirty_read(channel, Safe),
+        [#channel{} = Channel] = mnesia:dirty_read(channel, Safe),
         ?assertEqual(<<"kept">>, Channel#channel.topic),
         ?assertEqual(undefined, Channel#channel.topic_at),
-        [Account] = mnesia:dirty_read(account, <<"acc">>),
+        [#account{} = Account] = mnesia:dirty_read(account, <<"acc">>),
         ?assertEqual(<<"Acc">>, Account#account.name),
         ?assertEqual(undefined, Account#account.pending),
         %% Imported peer state is cleared on startup after migration.
@@ -1072,8 +1072,10 @@ recv_until(Sock, Needle, Acc, Deadline) ->
         false ->
             Left = Deadline - erlang:monotonic_time(millisecond),
             case Left > 0 andalso gen_tcp:recv(Sock, 0, Left) of
-                {ok, Bin} -> recv_until(Sock, Needle, <<Acc/binary, Bin/binary>>, Deadline);
-                _ -> Acc
+                {ok, <<_/binary>> = Bin} ->
+                    recv_until(Sock, Needle, <<Acc/binary, Bin/binary>>, Deadline);
+                _ ->
+                    Acc
             end
     end.
 

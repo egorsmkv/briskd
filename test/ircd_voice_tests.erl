@@ -90,7 +90,7 @@ config_load_voice_test() ->
         },
         ok = file:write_file(GoodPath, json:encode(GoodJson)),
         {ok, Cfg} = ircd_config:load(GoodPath),
-        #{voice := VoiceCfg} = Cfg,
+        #{voice := #{} = VoiceCfg} = Cfg,
         ?assertEqual(<<"http://rustfs:9000">>, maps:get(endpoint, VoiceCfg)),
         ?assertEqual(<<"ircd-voice">>, maps:get(bucket, VoiceCfg)),
         ?assertEqual(1048576, maps:get(max_bytes, VoiceCfg)),

@@ -70,7 +70,7 @@ json_odd_terms_test() ->
                 bytes => <<255, 0>>,
                 text => "plain",
                 list => [<<"a">>, 1],
-                improper => [a | b]
+                improper => improper(a, b)
             }}
     },
     Decoded = decode(Event),
@@ -120,3 +120,8 @@ decode(Event) ->
     {Module, Config} = ircd_log:formatter(<<"json">>),
     [Json, $\n] = Module:format(Event, Config),
     json:decode(iolist_to_binary(Json)).
+
+%% An improper list ([a | b]); the log formatter must render it. Built here
+%% because a typed literal cannot be improper.
+improper(Head, Tail) ->
+    [Head | Tail].

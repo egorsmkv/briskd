@@ -85,7 +85,7 @@ config_load_files_test() ->
         },
         ok = file:write_file(GoodPath, json:encode(GoodJson)),
         {ok, Cfg} = ircd_config:load(GoodPath),
-        #{files := FilesCfg} = Cfg,
+        #{files := #{} = FilesCfg} = Cfg,
         ?assertEqual(<<"http://rustfs:9000">>, maps:get(endpoint, FilesCfg)),
         ?assertEqual(<<"ircd-files">>, maps:get(bucket, FilesCfg)),
         ?assertEqual(5242880, maps:get(max_bytes, FilesCfg)),

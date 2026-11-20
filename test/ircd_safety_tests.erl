@@ -41,7 +41,7 @@ retain_fields_copies_sub_binaries_test() ->
     Packet = binary:copy(<<"x">>, 4096),
     Sub = binary:part(Packet, 10, 100),
     ?assertEqual(4096, binary:referenced_byte_size(Sub)),
-    {row, Copied, 7, [Sub]} = ircd_wire:retain_fields({row, Sub, 7, [Sub]}),
+    {row, <<_/binary>> = Copied, 7, [Sub]} = ircd_wire:retain_fields({row, Sub, 7, [Sub]}),
     ?assertEqual(100, binary:referenced_byte_size(Copied)),
     ?assertEqual(Sub, Copied).
 
@@ -139,7 +139,10 @@ live() ->
 
 %% Verify OTP GC and mailbox tuning on core processes.
 gc_process_options(Port) ->
-    StatePid = whereis(ircd_state),
+    StatePid =
+        case whereis(ircd_state) of
+            Found when is_pid(Found) -> Found
+        end,
     {message_queue_data, off_heap} = erlang:process_info(StatePid, message_queue_data),
     {garbage_collection, StateGc} = erlang:process_info(StatePid, garbage_collection),
     ?assertEqual(200, proplists:get_value(fullsweep_after, StateGc)),
@@ -332,8 +335,8 @@ roadmap_memory_bounds(Port) ->
     _ = sync(Host),
     send(Host, <<"INVITE invguest #invprune">>),
     _ = sync(Host),
-    [Chan1] = mnesia:dirty_read(channel, <<"#invprune">>),
-    ?assertEqual(1, length(element(8, Chan1))),
+    [#channel{invited = Invited1}] = mnesia:dirty_read(channel, <<"#invprune">>),
+    ?assertEqual(1, length(Invited1)),
     send(Guest, <<"QUIT">>),
     close(Guest),
     _ = sync(Host),
@@ -399,7 +402,7 @@ roadmap_memory_bounds(Port) ->
         ),
         Convos = [
             K
-         || K <- mnesia:dirty_all_keys(direct_history),
+         || K <- ircd_state:table_keys(direct_history),
             element(1, K) =:= {account, <<"capuser">>} orelse
                 element(2, K) =:= {account, <<"capuser">>}
         ],
@@ -507,14 +510,14 @@ sendq_limit(Port) ->
 
 read_all(S, Acc) ->
     case gen_tcp:recv(S, 0, 2000) of
-        {ok, Data} -> read_all(S, <<Acc/binary, Data/binary>>);
+        {ok, <<_/binary>> = Data} -> read_all(S, <<Acc/binary, Data/binary>>);
         {error, _} -> Acc
     end.
 
 %% The session's socket peer port is the client's local port.
 peer_port(Pid) ->
     case sys:get_state(Pid, 1000) of
-        {tcp, Socket, _, _, _} ->
+        {tcp, Socket, _, _, _} when is_port(Socket) ->
             case inet:peername(Socket) of
                 {ok, {_, Port}} -> {ok, Port};
                 Other -> Other
@@ -545,7 +548,7 @@ recv_until(S, Needle, Acc) ->
         {_, _} ->
             Acc;
         _ ->
-            {ok, Data} = gen_tcp:recv(S, 0, 5000),
+            {ok, <<_/binary>> = Data} = gen_tcp:recv(S, 0, 5000),
             recv_until(S, Needle, <<Acc/binary, Data/binary>>)
     end.
 
@@ -554,7 +557,7 @@ recv_until_needle(S, Needle, Acc) ->
         {_, _} ->
             Acc;
         nomatch ->
-            {ok, Data} = gen_tcp:recv(S, 0, 5000),
+            {ok, <<_/binary>> = Data} = gen_tcp:recv(S, 0, 5000),
             recv_until_needle(S, Needle, <<Acc/binary, Data/binary>>)
     end.
 

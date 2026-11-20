@@ -48,8 +48,7 @@ lint:
     elp lint --no-connect --path test
     elp lint --no-connect --path include
 
-# Type-check src/ with eqWAlizer (ELP); fails on any finding. Test modules
-# are excluded in .elp.toml (they pass ill-typed input on purpose).
+# Type-check src/ and test/ with eqWAlizer (ELP); fails on any finding.
 eqwalize:
     elp eqwalize-all --no-connect --bail-on-error
 

@@ -170,7 +170,7 @@ sasl_live(Port) ->
     ?assert(has(Ok, <<" 903 ">>)),
     ?assert(has(cmd(S, <<"CAP END">>), <<" 001 ">>)),
     %% Logging out (used when an account is removed) sends 901 once.
-    Client = ircd_state_client:find_nick(<<"sasl1">>),
+    #client{} = Client = ircd_state_client:find_nick(<<"sasl1">>),
     ok = ircd_state_v3:logout(Client, ?SERVER),
     ?assert(has(sync(S), <<" 901 sasl1 ">>)),
     ok = ircd_state_v3:logout(Client, ?SERVER),
@@ -1123,7 +1123,7 @@ recv_until(S, Pred) ->
 recv_until(S, Pred, Acc, Deadline) ->
     Left = max(0, Deadline - erlang:monotonic_time(millisecond)),
     case gen_tcp:recv(S, 0, Left) of
-        {ok, Line} ->
+        {ok, <<_/binary>> = Line} ->
             case Pred(Line) of
                 true -> iolist_to_binary(lists:reverse([Line | Acc]));
                 false -> recv_until(S, Pred, [Line | Acc], Deadline)

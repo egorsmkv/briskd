@@ -255,7 +255,7 @@ collect(Sock, Acc, N, Wait) when N < 60 ->
             _ -> 80
         end,
     case gen_tcp:recv(Sock, 0, Timeout) of
-        {ok, Bin} -> collect(Sock, <<Acc/binary, Bin/binary>>, N + 1, Wait);
+        {ok, <<_/binary>> = Bin} -> collect(Sock, <<Acc/binary, Bin/binary>>, N + 1, Wait);
         {error, timeout} when Wait, Acc =:= <<>>, N < 15 -> collect(Sock, Acc, N + 1, Wait);
         {error, _} -> Acc
     end;

@@ -133,7 +133,7 @@ error
 empty
 ```
 """.
--spec parse_client(binary()) ->
+-spec parse_client(term()) ->
     {ok, [{binary(), undefined | binary()}], binary(), [binary()]}
     | {error, input_too_long, [{binary(), undefined | binary()}]}
     | empty
@@ -568,7 +568,7 @@ false
 false
 ```
 """.
--spec nickname(binary()) -> boolean().
+-spec nickname(term()) -> boolean().
 nickname(Nick) ->
     nickname(Nick, 9).
 
@@ -586,7 +586,7 @@ length. Anything else, including an empty nickname, is `false`.
 true
 ```
 """.
--spec nickname(binary(), pos_integer()) -> boolean().
+-spec nickname(term(), pos_integer()) -> boolean().
 nickname(Nick, Max) when is_binary(Nick), byte_size(Nick) =< Max ->
     re:run(
         Nick,

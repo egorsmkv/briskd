@@ -537,7 +537,7 @@ recv_until(S, Needle) ->
 recv_until(S, Needle, Acc) ->
     case binary:match(Acc, Needle) of
         nomatch ->
-            {ok, Data} = gen_tcp:recv(S, 0, 10000),
+            {ok, <<_/binary>> = Data} = gen_tcp:recv(S, 0, 10000),
             recv_until(S, Needle, <<Acc/binary, Data/binary>>);
         {Pos, Len} ->
             %% Keep reading to the end of the line that holds the needle.
@@ -545,7 +545,7 @@ recv_until(S, Needle, Acc) ->
                 binary:match(Acc, <<"\r\n">>, [{scope, {Pos + Len, byte_size(Acc) - Pos - Len}}])
             of
                 nomatch ->
-                    {ok, Data} = gen_tcp:recv(S, 0, 10000),
+                    {ok, <<_/binary>> = Data} = gen_tcp:recv(S, 0, 10000),
                     recv_until(S, Needle, <<Acc/binary, Data/binary>>);
                 _ ->
                     Acc

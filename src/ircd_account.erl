@@ -84,7 +84,7 @@ True when `Name` is a valid account name: a valid nickname under
 `ircd_wire:nickname/2` with the configured `nicklen`, other than
 `anonymous` (in any case).
 """.
--spec valid_name(binary()) -> boolean().
+-spec valid_name(term()) -> boolean().
 valid_name(Name) when is_binary(Name) ->
     ircd_wire:nickname(Name, ircd_state:nicklen()) andalso ircd_wire:fold(Name) =/= <<"anonymous">>;
 valid_name(_) ->
