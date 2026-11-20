@@ -389,9 +389,12 @@ export class CallManager {
     }
     this.stream = stream;
     // rtpengine terminates ICE and DTLS on each leg; no STUN/TURN is needed.
+    // The bundle policy stays at the default ("balanced"): rtpengine 12 drops
+    // the `a=group:BUNDLE` line when it rewrites a description, and browsers
+    // refuse a remote offer without one under "max-bundle". With a single
+    // audio m-line, bundling changes nothing on the wire.
     const pc = new RTCPeerConnection({
       iceServers: [],
-      bundlePolicy: "max-bundle",
       rtcpMuxPolicy: "require",
     });
     for (const track of this.stream.getTracks()) {
