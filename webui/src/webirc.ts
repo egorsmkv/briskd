@@ -37,6 +37,12 @@ import {
 } from "./common/ircv3.ts";
 import { encryptAttachment } from "./e2ee/crypto.ts";
 import { E2EE_CAP, E2eeManager } from "./e2ee/manager.ts";
+import {
+  callDuration,
+  CallManager,
+  CALLS_CAP,
+  type CallView,
+} from "./calls.ts";
 
 interface WebircSettings {
   layout: "auto" | "mobile" | "desktop";
@@ -790,6 +796,7 @@ function scheduleUserRender(messages = false): void {
     renderMembers();
     renderBuffers();
     updateTopicButton();
+    updateCallButton();
     const buf = buffers.get(activeBuf);
     if (buf && !isChan(buf.name)) {
       $("active-topic").textContent = bufSubtitle(buf);
@@ -952,6 +959,176 @@ const e2ee = new E2eeManager({
     renderBuffers();
     if ($("settings-modal").classList.contains("open")) renderE2eeModal();
   },
+});
+
+// --- Voice calls (egorsmkv.github.io/calls, relayed through rtpengine) ---
+
+const calls = new CallManager({
+  send: (line) => sendRaw(line),
+  onChange: (view) => renderCall(view),
+  onEnded: (peer, summary) => {
+    addLine(peer, { text: `📞 ${summary}`, kind: "sys" });
+  },
+  remoteAudio: () => $<HTMLAudioElement>("call-audio"),
+});
+let callTicker: number | null = null;
+let callNotification: Notification | null = null;
+
+function callStatusText(view: CallView): string {
+  switch (view.phase) {
+    case "calling":
+      return t("call.calling");
+    case "ringing":
+      return t("call.ringing");
+    case "connecting":
+      return t("call.connecting");
+    case "active":
+      return callDuration(view) || t("call.connecting");
+    default:
+      return "";
+  }
+}
+
+function fillCallAvatar(el: HTMLElement, nick: string): void {
+  el.textContent = "";
+  el.style.backgroundColor = nickColor(nick);
+  const url = avatarOf(nick);
+  if (url) {
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = "";
+    img.referrerPolicy = "no-referrer";
+    img.onerror = () => {
+      img.remove();
+      el.textContent = nick.slice(0, 2).toUpperCase();
+    };
+    el.appendChild(img);
+  } else {
+    el.textContent = nick.slice(0, 2).toUpperCase();
+  }
+}
+
+function renderCall(view: CallView = calls.state): void {
+  const dock = $("call-dock");
+  const incoming = $("call-incoming");
+  const inDock = view.phase !== "idle" && view.phase !== "incoming";
+  dock.classList.toggle("hidden", !inDock);
+  dock.classList.toggle("active", view.phase === "active");
+  if (inDock) {
+    fillCallAvatar($("call-dock-avatar"), view.peer);
+    $("call-dock-peer").textContent = displayNameOf(view.peer);
+    $("call-dock-status").textContent = callStatusText(view);
+    const mute = $<HTMLButtonElement>("btn-call-mute");
+    mute.setAttribute("aria-pressed", String(view.muted));
+    mute.classList.toggle("on", view.muted);
+    mute.title = view.muted ? t("call.unmute") : t("call.mute");
+    mute.setAttribute("aria-label", mute.title);
+    mute.querySelector(".icon-mic")?.classList.toggle("hidden", view.muted);
+    mute.querySelector(".icon-mic-off")?.classList.toggle(
+      "hidden",
+      !view.muted,
+    );
+    $("btn-call-hangup").title = view.phase === "active" ||
+        view.phase === "connecting"
+      ? t("call.hangup")
+      : t("call.cancel");
+  }
+  const wasIncoming = incoming.classList.contains("open");
+  const isIncoming = view.phase === "incoming";
+  incoming.classList.toggle("open", isIncoming);
+  if (isIncoming && !wasIncoming) {
+    fillCallAvatar($("call-incoming-avatar"), view.peer);
+    $("call-incoming-name").textContent = displayNameOf(view.peer);
+    $<HTMLButtonElement>("btn-call-accept").focus();
+    if (
+      document.hidden && typeof Notification !== "undefined" &&
+      Notification.permission === "granted"
+    ) {
+      callNotification = new Notification(t("call.incoming"), {
+        body: displayNameOf(view.peer),
+        tag: "ircd-call",
+        requireInteraction: true,
+      });
+      callNotification.onclick = () => {
+        globalThis.focus();
+        callNotification?.close();
+      };
+    }
+  }
+  if (!isIncoming && callNotification) {
+    callNotification.close();
+    callNotification = null;
+  }
+  if (view.phase === "active" && callTicker === null) {
+    callTicker = setInterval(() => {
+      $("call-dock-status").textContent = callStatusText(calls.state);
+    }, 1000);
+  } else if (view.phase !== "active" && callTicker !== null) {
+    clearInterval(callTicker);
+    callTicker = null;
+  }
+  updateCallButton();
+}
+
+/** The header call button: shown in a private conversation when calls work. */
+function updateCallButton(): void {
+  const btn = $<HTMLButtonElement>("btn-call");
+  const buf = buffers.get(activeBuf);
+  const show = calls.enabled && isRegistered && !!buf &&
+    buf.name !== "*status" && !isChan(buf.name);
+  btn.classList.toggle("hidden", !show);
+  if (!show || !buf) return;
+  const offline = peekUser(buf.name)?.online === false;
+  btn.disabled = calls.busy || offline;
+  btn.title = offline
+    ? t("call.offline", { nick: buf.name })
+    : calls.busy
+    ? t("call.busy")
+    : t("call.start", { nick: buf.name });
+  btn.setAttribute("aria-label", btn.title);
+}
+
+function startCall(nick: string): void {
+  if (!calls.enabled) {
+    addLine(activeBuf, { text: t("call.unsupported"), kind: "err" });
+    return;
+  }
+  ensureBuf(nick);
+  calls.call(nick).catch(() => {
+    // The manager already reported the failure in the conversation.
+  });
+}
+
+$("btn-call").onclick = () => {
+  const buf = buffers.get(activeBuf);
+  if (buf && !isChan(buf.name) && buf.name !== "*status") startCall(buf.name);
+};
+$("btn-call-accept").onclick = () => {
+  const peer = calls.state.peer;
+  if (peer) {
+    ensureBuf(peer);
+    switchBuf(peer.toLowerCase());
+  }
+  void calls.accept();
+};
+$("btn-call-decline").onclick = () => calls.decline();
+$("btn-call-hangup").onclick = () => calls.hangup();
+$("btn-call-mute").onclick = () => calls.toggleMute();
+$("call-dock-peer").onclick = () => {
+  const peer = calls.state.peer;
+  if (peer) {
+    ensureBuf(peer);
+    switchBuf(peer.toLowerCase());
+  }
+};
+$("call-incoming").addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") {
+    ev.preventDefault();
+    calls.decline();
+  }
+});
+globalThis.addEventListener("pagehide", () => {
+  if (calls.busy) calls.hangup();
 });
 
 function updateE2eeUi(): void {
@@ -1731,6 +1908,7 @@ function switchBuf(key: string, updateUrl = true): void {
   updateScrollFab();
   renderTypingBar();
   updateE2eeUi();
+  updateCallButton();
   renderBuffers();
   renderMembers();
   updateTitle();
@@ -2020,6 +2198,7 @@ function wantedCaps(): string[] {
     FEATURES_CAP,
     FILES_CAP,
     VOICE_CAP,
+    CALLS_CAP,
   ];
   if (saslPass && !isRegistered) wanted.push("sasl");
   return wanted;
@@ -2109,6 +2288,11 @@ function handleMessage(raw: string): void {
         updateVoiceButton();
       }
       if (removed.includes(E2EE_CAP)) e2ee.setServerSupported(false);
+      if (removed.includes(CALLS_CAP)) {
+        calls.reset();
+        calls.enabled = false;
+        updateCallButton();
+      }
       if (removed.includes(REDACT_CAP)) {
         serverFeatures.redaction = false;
         applySettings();
@@ -2120,6 +2304,10 @@ function handleMessage(raw: string): void {
         else enabledCaps.add(c);
       }
       if (acked.includes(E2EE_CAP)) e2ee.setServerSupported(true);
+      if (acked.includes(CALLS_CAP)) {
+        calls.enabled = true;
+        updateCallButton();
+      }
       if (acked.includes(FILES_CAP)) {
         filesSupported = true;
         updateFileButton();
@@ -2616,6 +2804,23 @@ function handleMessage(raw: string): void {
     });
     return;
   }
+  if (command === "CALL") {
+    calls.handle(nick, params);
+    return;
+  }
+  if (command === "FAIL" && params[0] === "CALL") {
+    // FAIL CALL <code> [<token>] :<text>
+    const token = params.length >= 4 ? params[2] : "";
+    calls.handleFail(params[1] || "", token, params[params.length - 1] || "");
+    if (!calls.busy && !token) {
+      addLine("*status", {
+        time,
+        text: formatStandardReply(command, params),
+        kind: "err",
+      });
+    }
+    return;
+  }
   if (command === "FAIL" || command === "WARN" || command === "NOTE") {
     addLine("*status", {
       time,
@@ -2814,6 +3019,9 @@ function connectSocket(url: string): void {
   };
   ws.onclose = () => {
     stopHeartbeat();
+    calls.reset();
+    calls.enabled = false;
+    updateCallButton();
     isRegistered = false;
     hiddenUnread = 0;
     hiddenMentions = 0;
@@ -2842,6 +3050,7 @@ function showHelp(target: string): void {
     "/away [message] | /back | /setname <realname>",
     "/monitor +|- <nick> | /history [limit]",
     "/meta set <key> <value> | /meta clear <key> | /meta list [nick]",
+    "/call [nick] | /hangup  (voice calls)",
     "/e2ee [on|off|status|rotate|verify|reset]",
     "/oper <name> <pass> | /kill <nick> <reason> | /rehash",
     "/clear | /raw <line> | /quit [reason]",
@@ -2959,6 +3168,16 @@ function runSlashCommand(raw: string, buf: BufferState | undefined): void {
       return;
     case "setname":
       if (rest) sendRaw(`SETNAME :${rest}`);
+      return;
+    case "call": {
+      const who = rest.trim() ||
+        (buf && buf.name !== "*status" && !isChan(buf.name) ? buf.name : "");
+      if (who && !isChan(who) && isSafeIrcTarget(who)) startCall(who);
+      else addLine(target, { text: "Usage: /call <nick>", kind: "err" });
+      return;
+    }
+    case "hangup":
+      calls.hangup();
       return;
     case "monitor":
       if (rest) sendRaw(`MONITOR ${rest}`);
@@ -3245,6 +3464,8 @@ $("btn-conn").onclick = () => {
   }
   clearSession();
   stopHeartbeat();
+  if (calls.busy) calls.hangup();
+  calls.reset();
   isRegistered = false;
   hiddenUnread = 0;
   hiddenMentions = 0;

@@ -41,3 +41,14 @@ jobs:
 
       - name: Run test/e2ee/run
         run: test/e2ee/run
+
+  calls:
+    name: Voice calls end-to-end (ircd, rtpengine, WebRTC clients)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Run test/calls/run
+        run: test/calls/run

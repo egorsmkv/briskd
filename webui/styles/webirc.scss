@@ -926,6 +926,237 @@ body {
   white-space: nowrap;
 }
 
+/* ------------------------------------------------------------------
+   Voice calls: floating call dock and incoming-call dialog. */
+
+.call-dock {
+  position: absolute;
+  top: 62px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 8px 8px;
+  max-width: calc(100% - 32px);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+  animation: call-pop 0.16s ease-out;
+  &.hidden {
+    display: none;
+  }
+  &.active {
+    border-color: var(--ok);
+  }
+}
+
+#chat-view.members-open .call-dock {
+  left: calc(50% + 8px);
+}
+
+.call-dock-avatar,
+.call-avatar {
+  flex-shrink: 0;
+  border-radius: 50%;
+  color: #fff;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+}
+
+.call-dock-avatar {
+  width: 34px;
+  height: 34px;
+  font-size: 12px;
+}
+
+.call-dock-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+
+.call-dock-peer {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--text);
+  text-align: start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+  cursor: pointer;
+  &:hover {
+    text-decoration: underline;
+    background: transparent;
+  }
+}
+
+.call-dock-status {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.call-dock.active .call-dock-status {
+  color: var(--ok);
+}
+
+.call-btn {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  &.on {
+    background: var(--warn);
+    border-color: var(--warn);
+    color: #fff;
+  }
+  &.hangup {
+    background: var(--danger);
+    border-color: var(--danger);
+    color: #fff;
+    &:hover {
+      filter: brightness(1.08);
+    }
+  }
+  &:active {
+    transform: scale(0.94);
+  }
+}
+
+.btn-call:not(:disabled) .btn-icon {
+  color: var(--ok);
+}
+
+.call-card {
+  max-width: 320px;
+  padding: 26px 22px 22px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+}
+
+.call-avatar {
+  width: 76px;
+  height: 76px;
+  font-size: 24px;
+  margin-bottom: 8px;
+  animation: call-pulse 1.6s ease-out infinite;
+}
+
+.call-incoming-name {
+  font-size: 18px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.call-incoming-label {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.call-actions {
+  display: flex;
+  gap: 36px;
+  margin-top: 18px;
+}
+
+.call-round {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-size: 12.5px;
+  color: var(--text);
+  svg {
+    width: 56px;
+    height: 56px;
+    padding: 15px;
+    border-radius: 50%;
+    color: #fff;
+    box-sizing: border-box;
+    transition: transform 0.08s ease, filter 0.12s ease;
+  }
+  &.accept svg {
+    background: var(--ok);
+  }
+  &.decline svg {
+    background: var(--danger);
+  }
+  &:hover {
+    background: transparent;
+    svg {
+      filter: brightness(1.08);
+    }
+  }
+  &:active svg {
+    transform: scale(0.93);
+  }
+  &:focus-visible {
+    outline: none;
+    svg {
+      box-shadow: 0 0 0 3px var(--surface), 0 0 0 5px var(--accent);
+    }
+  }
+}
+
+@keyframes call-pop {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -6px);
+  }
+}
+
+@keyframes call-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(21, 128, 61, 0.45);
+  }
+  100% {
+    box-shadow: 0 0 0 18px rgba(21, 128, 61, 0);
+  }
+}
+
+@media (max-width: 720px) {
+  .call-dock {
+    top: auto;
+    bottom: 84px;
+  }
+  #chat-view.members-open .call-dock {
+    left: 50%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .call-dock,
+  .call-avatar {
+    animation: none;
+  }
+}
+
 .msg-bot {
   display: inline-block;
   font-size: 10px;

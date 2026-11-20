@@ -113,6 +113,10 @@
         <span class="btn-label" data-i18n="btn.mod">Moderate</span>
       </button>
       <button type="button" class="small btn-e2ee hidden" id="btn-e2ee" title="Toggle end-to-end encryption for this conversation">E2EE Off</button>
+      <button type="button" class="small icon-mobile btn-call hidden" id="btn-call" aria-label="Voice call" title="Voice call">
+        <svg class="btn-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+        <span class="btn-label" data-i18n="call.button">Call</span>
+      </button>
     </div>
     <div class="head-right">
       <span class="my-nick" id="my-nick"></span>
@@ -133,6 +137,21 @@
   </header>
 
   <div class="messages" id="messages"></div>
+  <div class="call-dock hidden" id="call-dock" role="region" aria-label="Voice call">
+    <div class="call-dock-avatar" id="call-dock-avatar" aria-hidden="true"></div>
+    <div class="call-dock-info">
+      <button type="button" class="call-dock-peer" id="call-dock-peer" dir="ltr"></button>
+      <span class="call-dock-status" id="call-dock-status" aria-live="polite"></span>
+    </div>
+    <button type="button" class="call-btn" id="btn-call-mute" aria-pressed="false" aria-label="Mute" title="Mute">
+      <svg class="icon-mic" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+      <svg class="icon-mic-off hidden" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+    </button>
+    <button type="button" class="call-btn hangup" id="btn-call-hangup" aria-label="Hang up" title="Hang up">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="transform: rotate(135deg)"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+    </button>
+  </div>
+  <audio id="call-audio" autoplay playsinline hidden></audio>
   <button type="button" class="scroll-bottom-fab hidden" id="btn-scroll-bottom" aria-label="Scroll to latest messages" title="Jump to bottom">
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
   </button>
@@ -439,6 +458,24 @@
         <button type="button" class="small" id="btn-discover-refresh" data-i18n="discover.refresh">Refresh</button>
       </div>
       <div class="discover-list" id="discover-list"></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop call-incoming" id="call-incoming" role="alertdialog" aria-modal="true" aria-labelledby="call-incoming-name" aria-describedby="call-incoming-label">
+  <div class="modal-card call-card">
+    <div class="call-avatar" id="call-incoming-avatar" aria-hidden="true"></div>
+    <div class="call-incoming-name" id="call-incoming-name" dir="auto"></div>
+    <div class="call-incoming-label" id="call-incoming-label" data-i18n="call.incoming">Incoming voice call</div>
+    <div class="call-actions">
+      <button type="button" class="call-round decline" id="btn-call-decline" aria-label="Decline" title="Decline">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="transform: rotate(135deg)"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+        <span data-i18n="call.decline">Decline</span>
+      </button>
+      <button type="button" class="call-round accept" id="btn-call-accept" aria-label="Accept" title="Accept">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+        <span data-i18n="call.accept">Accept</span>
+      </button>
     </div>
   </div>
 </div>

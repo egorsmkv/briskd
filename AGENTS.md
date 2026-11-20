@@ -110,6 +110,9 @@ src/ircd_links.erl           # link supervisor
 src/ircd_bots.erl            # AI assistant bot supervisor (transient, started last)
 src/ircd_bot.erl             # one configured AI assistant bot (socketless local client)
 src/ircd_bot_ai.erl          # bot addressing, chat/completions request/reply, line splitting (pure + HTTP)
+src/ircd_calls.erl           # voice calls: call table, CALL relay, rtpengine NG socket and timers
+src/ircd_call_proto.erl      # CALL parameter/SDP validation, SDP chunking, NG messages (pure)
+src/ircd_bencode.erl         # bounded bencode codec for the rtpengine NG protocol (pure)
 src/ircd_log.erl
 include/ircd_state.hrl       # includes the records below
 include/ircd_client.hrl

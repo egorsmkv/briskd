@@ -14,7 +14,9 @@ restart intensity (one restart in five seconds):
    listener is configured and `tls_reload_interval` is not 0. It restarts the
    `tls` and `wss` listeners after a certificate renewal.
 6. `m:ircd_dronebl`, `m:ircd_ctl`, and `m:ircd_webui` (when `webui` is set).
-7. `m:ircd_bots`, the AI assistant bot supervisor, when `bots` is not empty.
+7. `m:ircd_calls`, the voice-call server, when `calls` is set. A restart
+   ends every call in progress.
+8. `m:ircd_bots`, the AI assistant bot supervisor, when `bots` is not empty.
    It is `transient`: if it exhausts its own restart intensity it stays down
    instead of restarting the rest of the tree.
 
@@ -67,6 +69,11 @@ init(Config) ->
                 #{id => ircd_webui, start => {ircd_webui, start_link, [Config]}}
              || maps:get(webui, Config, null) =/= null
             ],
+    %% Voice calls: the call table and the rtpengine control socket.
+    Calls = [
+        #{id => ircd_calls, start => {ircd_calls, start_link, [Config]}}
+     || maps:get(calls, Config, null) =/= null
+    ],
     %% Bots last and transient: if the bot supervisor gives up, nothing else
     %% restarts and it stays down; a state restart still restarts it.
     Bots = [
@@ -78,4 +85,4 @@ init(Config) ->
         }
      || maps:get(bots, Config, []) =/= []
     ],
-    {ok, {#{strategy => rest_for_one}, Children ++ Listeners ++ Certs ++ Ctl ++ Bots}}.
+    {ok, {#{strategy => rest_for_one}, Children ++ Listeners ++ Certs ++ Ctl ++ Calls ++ Bots}}.

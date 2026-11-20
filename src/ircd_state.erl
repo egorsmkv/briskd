@@ -1464,6 +1464,13 @@ registered_command(<<"MARKREAD">>, Params, Client, Server) ->
     ircd_state_history:markread(Params, Client, Server);
 registered_command(<<"REDACT">>, Params, Client, Server) ->
     ircd_state_history:redact(Params, Client, Server);
+registered_command(<<"CALL">>, Params, Client, Server) ->
+    case ircd_calls:enabled() of
+        true ->
+            ircd_calls:command(Params, Client, Server);
+        false ->
+            ircd_state_send:numeric(Client, Server, <<"421">>, [<<"CALL">>], <<"Unknown command">>)
+    end;
 registered_command(<<"E2EE">>, Params, Client, Server) ->
     case ircd_e2ee:enabled() of
         true ->
@@ -1854,6 +1861,7 @@ supported_command(Command) ->
             <<"AUTHENTICATE">>,
             <<"AWAY">>,
             <<"BATCH">>,
+            <<"CALL">>,
             <<"CAP">>,
             <<"CHATHISTORY">>,
             <<"CHGHOST">>,

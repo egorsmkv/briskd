@@ -9,8 +9,9 @@ Implemented client commands include `PASS`, `NICK`, `USER`, `JOIN`, `PART`,
 `RESTART`, together with the IRCv3 commands `AUTHENTICATE`, `REGISTER`,
 `VERIFY`, `BATCH`, `CHATHISTORY`, `MARKREAD`, `REDACT`, `METADATA`, `MONITOR`,
 `SETNAME`, `CHGHOST`, `RENAME`, `WEBIRC`, `ISUPPORT`, `STARTTLS` (see
-[IRCv3](ircv3.md)), and `E2EE` when enabled (see
-[End-to-end encryption](e2ee.md)). `SUMMON` and `USERS` stay disabled and return numerics 445 and 446.
+[IRCv3](ircv3.md)), `E2EE` when enabled (see
+[End-to-end encryption](e2ee.md)), and `CALL` when enabled (see
+[Voice calls](calls.md)). `SUMMON` and `USERS` stay disabled and return numerics 445 and 446.
 Operator `DIE` stops the node and operator `RESTART` restarts the runtime.
 Other clients receive numeric 481.
 

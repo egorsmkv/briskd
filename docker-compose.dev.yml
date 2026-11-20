@@ -20,6 +20,18 @@ services:
     volumes:
       - rustfs-data:/data
 
+  # Media relay for WebIRC voice calls. Browsers on this machine reach it at
+  # 127.0.0.1 through the published UDP port range.
+  rtpengine:
+    build:
+      context: docker/rtpengine
+    environment:
+      RTPENGINE_ADVERTISE: 127.0.0.1
+      RTPENGINE_PORT_MIN: "30000"
+      RTPENGINE_PORT_MAX: "30100"
+    ports:
+      - "30000-30100:30000-30100/udp"
+
   ircd-dev:
     build:
       context: .
@@ -29,6 +41,7 @@ services:
     depends_on:
       - inbucket
       - rustfs
+      - rtpengine
     env_file:
       - .dev.env
     ports:

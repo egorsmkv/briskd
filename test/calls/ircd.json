@@ -1,0 +1,11 @@
+{
+  "name": "irc.calltest",
+  "bind": "0.0.0.0",
+  "tcp_port": 6667,
+  "tls_port": null,
+  "log_level": "info",
+  "log_format": "text",
+  "retention": "transient",
+  "mnesia_dir": "/tmp/mnesia",
+  "calls": { "rtpengine": "rtpengine:2223", "ring_timeout": 30 }
+}

@@ -293,6 +293,22 @@ always-on bouncer details, and Sable's PostgreSQL history server.
 - [x] End-to-end tests with Python clients doing X3DH, the Double Ratchet, and
   Sender Keys against two linked servers (`test/e2ee/run`, in CI).
 
+## Voice calls (server-specific extension)
+
+- [x] `calls` configuration and vendor capability `egorsmkv.github.io/calls`
+  ([guide](docs/calls.md)): one-to-one audio calls between local users.
+- [x] `CALL OFFER|ANSWER|RINGING|REJECT|HANGUP` signalling with chunked
+  base64 SDP (`ircd_call_proto`), relayed through rtpengine's NG protocol
+  (`ircd_calls`, `ircd_bencode`) so peers never see each other's address.
+- [x] Ring timeout, maximum duration, per-user and server limits, busy
+  handling, and cleanup on disconnect.
+- [x] WebIRC call button, incoming-call dialog, call dock with mute and
+  hang-up, `/call` and `/hangup`.
+- [x] rtpengine image (`docker/rtpengine`) in the development environment and
+  an end-to-end test with WebRTC clients (`test/calls/run`, in CI).
+- [ ] Calls to users on linked servers.
+- [ ] Group calls and video.
+
 ## AI assistant bots (server-specific extension)
 
 - [x] `ai_providers` and `bots` configuration (`ircd_config`,

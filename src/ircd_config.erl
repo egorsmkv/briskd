@@ -101,6 +101,7 @@ load(Path) ->
             e2ee => e2ee(maps:get(<<"e2ee">>, Json, null)),
             voice => voice(maps:get(<<"voice">>, Json, null)),
             files => files(maps:get(<<"files">>, Json, null)),
+            calls => calls(maps:get(<<"calls">>, Json, null)),
             features => features(maps:get(<<"features">>, Json, #{})),
             max_accounts => positive_limit(maps:get(<<"max_accounts">>, Json, 100000)),
             max_empty_channels => positive_limit(maps:get(<<"max_empty_channels">>, Json, 1000)),
@@ -1158,3 +1159,50 @@ bot_temperature(_Nick, Value) when is_number(Value), Value >= 0, Value =< 2 ->
     float(Value);
 bot_temperature(Nick, Value) ->
     erlang:error({invalid_bot, Nick, temperature, Value}).
+
+%%% Voice calls relayed through rtpengine (`calls`). Disabled when `null` or
+%%% `false`. Bounds are inclusive.
+
+calls(null) ->
+    null;
+calls(false) ->
+    null;
+calls(Map) when is_map(Map) ->
+    #{
+        rtpengine => rtpengine_address(maps:get(<<"rtpengine">>, Map, undefined)),
+        ring_timeout => calls_int(ring_timeout, maps:get(<<"ring_timeout">>, Map, 45), 5, 300),
+        max_duration => calls_int(max_duration, maps:get(<<"max_duration">>, Map, 7200), 0, 86400),
+        max_calls => calls_int(max_calls, maps:get(<<"max_calls">>, Map, 100), 1, 10000),
+        calls_per_minute => calls_int(
+            calls_per_minute, maps:get(<<"calls_per_minute">>, Map, 6), 1, 120
+        ),
+        require_account => boolean_setting(
+            require_account, maps:get(<<"require_account">>, Map, false)
+        )
+    };
+calls(Value) ->
+    erlang:error({invalid_calls, Value}).
+
+%% `host:port` of rtpengine's NG control socket (UDP); the host is a name or
+%% an IPv4 address.
+rtpengine_address(Value) when is_binary(Value) ->
+    case
+        re:run(Value, <<"^([A-Za-z0-9.-]{1,253}):([0-9]{1,5})$">>, [
+            {capture, all_but_first, binary}
+        ])
+    of
+        {match, [Host, PortBin]} ->
+            case binary_to_integer(PortBin) of
+                Port when is_integer(Port, 1, 65535) -> {ircd_wire:retain(Host), Port};
+                _ -> erlang:error({invalid_calls, rtpengine, Value})
+            end;
+        nomatch ->
+            erlang:error({invalid_calls, rtpengine, Value})
+    end;
+rtpengine_address(Value) ->
+    erlang:error({invalid_calls, rtpengine, Value}).
+
+calls_int(_Key, Value, Min, Max) when is_integer(Value, Min, Max) ->
+    Value;
+calls_int(Key, Value, _Min, _Max) ->
+    erlang:error({invalid_calls, Key, Value}).

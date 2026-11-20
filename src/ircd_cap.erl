@@ -68,6 +68,7 @@ cannot be removed.
     <<"draft/pre-away">>,
     <<"draft/read-marker">>,
     <<"echo-message">>,
+    <<"egorsmkv.github.io/calls">>,
     <<"egorsmkv.github.io/e2ee">>,
     <<"egorsmkv.github.io/features">>,
     <<"egorsmkv.github.io/files">>,
@@ -424,6 +425,12 @@ value(<<"draft/account-registration">>, _Info) ->
                     ",max-password-length=300">>};
         false ->
             error
+    end;
+%% Voice calls (ircd_calls): offered only when `calls` is configured.
+value(<<"egorsmkv.github.io/calls">>, _Info) ->
+    case ircd_calls:enabled() of
+        true -> {ok, ircd_calls:cap_value()};
+        false -> error
     end;
 %% End-to-end encryption broker (ircd_e2ee): offered only when configured.
 value(<<"egorsmkv.github.io/e2ee">>, _Info) ->

@@ -22,6 +22,8 @@ the [roadmap](ROADMAP.md), plus the IRCv3 specifications on
 - Server-to-server links, including bursts, multi-hop routing, invitations,
   and netsplit cleanup.
 - Mnesia disk-copy tables, with persistence for WHOWAS history and safe-channel state.
+- Optional one-to-one voice calls in WebIRC, relayed through rtpengine
+  ([guide](docs/calls.md)).
 - Optional AI assistant bots configured in the JSON file, answering in
   channels and private messages through any OpenAI-compatible API
   ([guide](docs/bots.md)).

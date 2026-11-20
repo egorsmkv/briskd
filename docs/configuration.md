@@ -15,6 +15,7 @@ to the process working directory unless they are absolute.
 | `log_format` | `json` | `json` (one object per line: `level`, `time` in microseconds, and the event's fields, or `message` for plain text) or `text` |
 | `max_clients` | `10000` | Maximum active client sessions |
 | `ai_providers` | `{}` | OpenAI-compatible endpoints for AI assistant bots: `base_url`, `api_key` or `api_key_env`, `model`, `timeout`. See [AI assistant bots](bots.md) |
+| `calls` | `null` | User-to-user voice calls relayed through rtpengine: `rtpengine` (NG `host:port`), `ring_timeout`, `max_duration`, `max_calls`, `calls_per_minute`, `require_account`. `null` disables. See [Voice calls](calls.md) |
 | `bots` | `[]` | AI assistant bots: `nick`, `provider`, `system_prompt` or `system_prompt_file`, `channels`, and response limits. See [AI assistant bots](bots.md) |
 | `max_sendq` | `10000` | Lines queued for one client before it is disconnected with `ERROR :Closing Link: <server> (Max SendQ exceeded)` (100..1000000) |
 | `flood` | See below | Client flood and spam token buckets (`lines_burst`, `lines_per_second`, `messages_burst`, `messages_per_second`, `join_burst`, `join_per_minute`, `nick_burst`, `nick_per_minute`, `register_per_minute`); `null` disables |

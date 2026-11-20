@@ -10,7 +10,9 @@ TCP when TLS is configured), and the drafts
 `draft/event-playback`, `draft/extended-isupport`, `draft/message-redaction`,
 `draft/metadata-2`,
 `draft/multiline`, `draft/oper-tag`, `draft/pre-away`, and
-`draft/read-marker` (plus the vendor capability `egorsmkv.github.io/e2ee` when
+`draft/read-marker` (plus the vendor capability `egorsmkv.github.io/calls`
+when `calls` is configured, see [Voice calls](calls.md), and
+`egorsmkv.github.io/e2ee` when
 `e2ee` is configured; see [End-to-end encryption](e2ee.md)). `CAP LS 302` shows values (`sasl` mechanisms, multiline
 and metadata limits, the STS policy) and uses `*` continuation lines. Version
 302 makes `cap-notify` implicit. `CAP REQ` is atomic; an unknown or

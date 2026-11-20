@@ -173,7 +173,7 @@ numeric `400`, logs `rehash_failed`, and keeps the running configuration.
 | Reload behavior | Settings |
 | --- | --- |
 | **Applied live by `REHASH`** | `log_level`, `log_format`, `max_clients`, `max_sendq`, `flood`, `e2ee`, `operators`, `administrators`, `channels` (creates newly added predefined channels), `motd_file`, `admin_name`, `admin_location1`, `admin_location2`, `admin_email`, `server_info`, `reop_delay`, `resource_delay`, `retention`, `history_limit`, `chathistory`, `utf8_only`, `monitor_limit`, `nicklen`, `network`, `network_icon`, `sts`, `ws_origins`, `webirc`, `multiclient`, `account_rejoin`, `account_registration*`, `account_password_min`, `account_verification`, `tls_reload_interval`, `max_accounts`, `max_empty_channels`, `empty_channel_ttl`, `max_read_markers`, `max_direct_conversations`, `max_peer_users`, `max_peer_servers`, `max_peer_services`, and **contents** of existing `certfile`/`keyfile`/`sni` PEM files |
-| **Requires a process restart** | `name`, `bind`, `tcp_port`, `tls_port`, `ws_port`, `wss_port`, `certfile`/`keyfile`/`sni` file **paths**, `mnesia_dir`, `client_password`, `server_links`, `ai_providers`, `bots` |
+| **Requires a process restart** | `name`, `bind`, `tcp_port`, `tls_port`, `ws_port`, `wss_port`, `certfile`/`keyfile`/`sni` file **paths**, `mnesia_dir`, `client_password`, `server_links`, `ai_providers`, `bots`, `calls` |
 
 When `REHASH` changes offered IRCv3 capabilities or `RPL_ISUPPORT` (`005`)
 tokens (for example enabling `e2ee`, `sts`, or `utf8_only`), connected clients
