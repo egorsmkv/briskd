@@ -62,6 +62,10 @@ lost link remove the users, services, and channels that were reachable only
 through the lost server and tell the remaining peers. Channel invitations are
 stored and forwarded after the burst.
 
+Voice-call signalling (`CALL`, a server extension) also crosses links,
+routed toward the other user's server; see
+[Calls across linked servers](calls.md#calls-across-linked-servers).
+
 IRCv3 support is described in [IRCv3](ircv3.md).
 
 `SUMMON` and `USERS` are not available as working features. Consult the

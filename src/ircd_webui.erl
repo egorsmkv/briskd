@@ -15,12 +15,17 @@ loads that page's code. The pages:
 - `GET /`, `/webirc`, `/status`, `/channel/...`, `/dm/...` — public
   (unauthenticated) browser IRC client over the configured `ws` / `wss`
   IRCv3 WebSocket listener.
-- `GET /admin` and `/admin/<tab>` — the administration dashboard (HTTP Basic
-  auth).
+- `GET /admin` and `/admin/<tab>` — the administration dashboard, for a
+  signed-in administrator (`m:ircd_webui_auth`); otherwise a redirect to the
+  sign-in page.
+- `GET /admin/login`, `POST /api/admin/login`, and `POST /api/admin/logout` —
+  the admin sign-in page and its session endpoints.
+- `POST /api/account/delete` — public "Delete my data": with the account's
+  password, deletes the account and what it wrote in stored history.
 - `GET /assets/<name>` — the app's scripts (`app.js` and content-hashed
   `chunk-*.js`) and page stylesheets.
 - `GET /api/overview` — returns combined server stats, clients, channels,
-  server links, accounts, and DroneBL status/bans as JSON (HTTP Basic auth).
+  server links, accounts, and DroneBL status/bans as JSON (signed in).
 - `POST /api/action` — executes an explicitly whitelisted `m:ircd_ctl`
   management action (`rehash`, `check-config`, `reload-certs`, `log-level`,
   `kick-client`, `notice-all`, `set-topic`, `connect`, `squit`,
@@ -41,9 +46,12 @@ loads that page's code. The pages:
 Security controls:
 
 - The admin routes (`/admin`, `/admin/*`, `/api/overview`, `/api/media`,
-  `/api/action`) require HTTP Basic authentication verified in constant time
-  with `ircd_config:secret_match/2`. Credentials are read from the active
-  configuration so `REHASH` updates them live.
+  `/api/action`) require a session from the sign-in page (an `HttpOnly`,
+  `SameSite=Strict` cookie) or HTTP Basic credentials, both checked in
+  constant time against the active configuration (`m:ircd_webui_auth`), so
+  `REHASH` updates them live. No `WWW-Authenticate` challenge is sent, so a
+  browser shows the sign-in page, never its own password dialog. Failed
+  sign-ins are limited per client address.
 - `POST /api/action` requires the `X-Requested-With: ircd-webui` header to
   prevent cross-origin CSRF.
 - Each connection handles a single HTTP/1.1 request (`Connection: close`) with
@@ -115,6 +123,10 @@ init(#{webui := #{ip := IP, port := Port}}) ->
         {ok, Listen} ->
             {ok, {_, ActualPort}} = inet:sockname(Listen),
             ok = ircd_altcha:init(),
+            %% Tables shared by the request handlers, owned by this
+            %% long-lived process (a handler's own table would die with it).
+            ok = ircd_webui_auth:init_tables(),
+            _ = ensure_upload_rate_table(),
             Assets = #{
                 app => load_asset("app.html", <<"ircd web UI asset missing">>),
                 favicon_ico => load_raw_asset("favicon.ico", <<>>),
@@ -281,21 +293,34 @@ handle_connection(
             handle_file_download(Socket, FileId);
         {ok, <<"GET">>, {<<"/api/link-preview">>, Query}, Headers, _Body} ->
             handle_link_preview(Socket, Query, Headers);
+        {ok, <<"GET">>, {<<"/admin/login">>, _Query}, Headers, _Body} ->
+            case ircd_webui_auth:check(Headers) of
+                ok -> redirect(Socket, <<"/admin">>);
+                unauthorized -> send_app(Socket, AppHtml, login, <<"/admin/login">>, Headers)
+            end;
+        {ok, <<"POST">>, {<<"/api/admin/login">>, _Query}, Headers, Body} ->
+            handle_admin_login(Socket, Headers, Body);
+        {ok, <<"POST">>, {<<"/api/admin/logout">>, _Query}, Headers, _Body} ->
+            handle_admin_logout(Socket, Headers);
+        {ok, <<"POST">>, {<<"/api/account/delete">>, _Query}, Headers, Body} ->
+            handle_account_delete(Socket, Headers, Body);
         {ok, Method, {Path, _Query}, Headers, Body} ->
             case admin_path(Path) of
                 true ->
-                    case check_auth(Headers) of
+                    case ircd_webui_auth:check(Headers) of
                         ok ->
                             route(Socket, Method, Path, Headers, Body, AppHtml);
+                        unauthorized when
+                            Method =:= <<"GET">>,
+                            Path =/= <<"/api/overview">>,
+                            Path =/= <<"/api/media">>
+                        ->
+                            %% A page: go to the sign-in page, then back here.
+                            redirect(Socket, login_url(Path));
                         unauthorized ->
-                            send_response(
-                                Socket,
-                                401,
-                                <<"Unauthorized">>,
-                                <<"application/json; charset=utf-8">>,
-                                [{<<"WWW-Authenticate">>, <<"Basic realm=\"ircd admin\"">>}],
-                                <<"{\"error\":\"unauthorized\"}">>
-                            )
+                            send_json(Socket, 401, <<"Unauthorized">>, #{
+                                error => <<"unauthorized">>
+                            })
                     end;
                 false ->
                     %% Not a page or API of this server. Answering with the
@@ -314,13 +339,191 @@ handle_connection(
     end.
 
 %% Paths of the admin panel and its JSON API (`route/6`), the only ones
-%% behind HTTP Basic auth.
+%% that need an administrator to be signed in.
 admin_path(<<"/admin">>) -> true;
 admin_path(<<"/admin/", _/binary>>) -> true;
 admin_path(<<"/api/overview">>) -> true;
 admin_path(<<"/api/media">>) -> true;
 admin_path(<<"/api/action">>) -> true;
 admin_path(_) -> false.
+
+%% The sign-in page, returning to `Path` (an admin page) afterwards. Only a
+%% plain `/admin/<letters>` path is carried; anything else returns to /admin.
+login_url(Path) ->
+    case re:run(Path, <<"^/admin(/[a-z]*)?$">>, [{capture, none}]) of
+        match -> <<"/admin/login?next=", Path/binary>>;
+        nomatch -> <<"/admin/login">>
+    end.
+
+redirect(Socket, Location) ->
+    send_response(
+        Socket,
+        302,
+        <<"Found">>,
+        <<"text/plain; charset=utf-8">>,
+        [{<<"Location">>, Location}],
+        <<>>
+    ).
+
+%% Whether the request reached us over HTTPS (through a TLS proxy).
+https_request(Headers) ->
+    ircd_wire:lower(maps:get(<<"x-forwarded-proto">>, Headers, <<"http">>)) =:= <<"https">>.
+
+handle_admin_login(Socket, Headers, Body) ->
+    case maps:get(<<"x-requested-with">>, Headers, undefined) of
+        <<"ircd-webui">> ->
+            IP = peer_ip(Socket),
+            Creds =
+                try json:decode(Body) of
+                    #{<<"username">> := U, <<"password">> := P} when
+                        is_binary(U), is_binary(P), byte_size(U) =< 256, byte_size(P) =< 1024
+                    ->
+                        {U, P};
+                    _ ->
+                        invalid
+                catch
+                    error:_ -> invalid
+                end,
+            case Creds of
+                invalid ->
+                    send_json(Socket, 400, <<"Bad Request">>, #{
+                        error => <<"invalid_request">>,
+                        message => <<"Enter the username and password.">>
+                    });
+                {User, Pass} ->
+                    case ircd_webui_auth:login(User, Pass, IP) of
+                        {ok, Token} ->
+                            logger:notice(#{event => webui_login, result => ok, ip => IP}),
+                            send_response(
+                                Socket,
+                                200,
+                                <<"OK">>,
+                                <<"application/json; charset=utf-8">>,
+                                [
+                                    {<<"Set-Cookie">>,
+                                        ircd_webui_auth:cookie(Token, https_request(Headers))}
+                                ],
+                                <<"{\"ok\":true}">>
+                            );
+                        {error, invalid} ->
+                            logger:warning(#{event => webui_login, result => failed, ip => IP}),
+                            send_json(Socket, 401, <<"Unauthorized">>, #{
+                                error => <<"invalid_credentials">>,
+                                message => <<"Wrong username or password.">>
+                            });
+                        {error, rate_limited} ->
+                            Retry = ircd_webui_auth:login_retry_after(IP),
+                            logger:warning(#{event => webui_login, result => rate_limited, ip => IP}),
+                            send_response(
+                                Socket,
+                                429,
+                                <<"Too Many Requests">>,
+                                <<"application/json; charset=utf-8">>,
+                                [{<<"Retry-After">>, integer_to_binary(Retry)}],
+                                json:encode(#{
+                                    error => <<"rate_limited">>,
+                                    retry_after => Retry,
+                                    message => <<"Too many failed sign-ins. Try again later.">>
+                                })
+                            )
+                    end
+            end;
+        _ ->
+            send_json(Socket, 403, <<"Forbidden">>, #{error => <<"missing_csrf_header">>})
+    end.
+
+%% "Delete my data" from WebIRC settings: the account and its password
+%% (checked again here, with the same timing for unknown accounts; failures
+%% limited per address like admin sign-in), then the account, its read
+%% markers, E2EE devices and queued messages, and the messages it wrote in
+%% stored history are deleted, and its sessions are logged out.
+handle_account_delete(Socket, Headers, Body) ->
+    case maps:get(<<"x-requested-with">>, Headers, undefined) of
+        <<"ircd-webui">> ->
+            IP = peer_ip(Socket),
+            Req =
+                try json:decode(Body) of
+                    #{<<"account">> := A, <<"password">> := P} when
+                        is_binary(A),
+                        is_binary(P),
+                        byte_size(A) > 0,
+                        byte_size(A) =< 64,
+                        byte_size(P) > 0,
+                        byte_size(P) =< 1024
+                    ->
+                        {A, P};
+                    _ ->
+                        invalid
+                catch
+                    error:_ -> invalid
+                end,
+            case {Req, ircd_webui_auth:retry_after(account_delete, IP)} of
+                {invalid, _} ->
+                    send_json(Socket, 400, <<"Bad Request">>, #{
+                        error => <<"invalid_request">>,
+                        message => <<"Enter your account name and password.">>
+                    });
+                {_, Retry} when Retry > 0 ->
+                    send_response(
+                        Socket,
+                        429,
+                        <<"Too Many Requests">>,
+                        <<"application/json; charset=utf-8">>,
+                        [{<<"Retry-After">>, integer_to_binary(Retry)}],
+                        json:encode(#{
+                            error => <<"rate_limited">>,
+                            retry_after => Retry,
+                            message => <<"Too many wrong passwords. Try again later.">>
+                        })
+                    );
+                {{Account, Password}, 0} ->
+                    case ircd_account:check_password(Account, Password) of
+                        {ok, _} ->
+                            ircd_webui_auth:clear_failures(account_delete, IP),
+                            account_erase(Socket, Account);
+                        error ->
+                            ircd_webui_auth:note_failure(account_delete, IP),
+                            send_json(Socket, 401, <<"Unauthorized">>, #{
+                                error => <<"invalid_credentials">>,
+                                message => <<"Wrong account name or password.">>
+                            })
+                    end
+            end;
+        _ ->
+            send_json(Socket, 403, <<"Forbidden">>, #{error => <<"missing_csrf_header">>})
+    end.
+
+account_erase(Socket, Account) ->
+    case ircd_state:ctl({erase_account, Account}) of
+        {ok, #{account := Actual} = Reply} ->
+            send_json(Socket, 200, <<"OK">>, #{
+                ok => true,
+                account => Actual,
+                channel_messages => maps:get(channel_messages, Reply, 0),
+                direct_messages => maps:get(direct_messages, Reply, 0)
+            });
+        {error, _} ->
+            send_json(Socket, 500, <<"Internal Server Error">>, #{
+                error => <<"delete_failed">>,
+                message => <<"The account could not be deleted. Please try again.">>
+            })
+    end.
+
+handle_admin_logout(Socket, Headers) ->
+    case maps:get(<<"x-requested-with">>, Headers, undefined) of
+        <<"ircd-webui">> ->
+            ok = ircd_webui_auth:logout(Headers),
+            send_response(
+                Socket,
+                200,
+                <<"OK">>,
+                <<"application/json; charset=utf-8">>,
+                [{<<"Set-Cookie">>, ircd_webui_auth:clear_cookie(https_request(Headers))}],
+                <<"{\"ok\":true}">>
+            );
+        _ ->
+            send_json(Socket, 403, <<"Forbidden">>, #{error => <<"missing_csrf_header">>})
+    end.
 
 send_public_asset(Socket, _ContentType, _Cache, <<>>) ->
     send_json(Socket, 404, <<"Not Found">>, #{error => <<"not_found">>});
@@ -419,6 +622,8 @@ page_meta(recover, Network, _) ->
         <<"Reset your IRC account password with your verified email address.">>,
         <<"noindex">>
     };
+page_meta(login, Network, _) ->
+    {<<"Admin Sign In - ", Network/binary>>, <<>>, <<"noindex, nofollow">>};
 page_meta(admin, Network, _) ->
     {<<"Admin - ", Network/binary>>, <<>>, <<"noindex, nofollow">>}.
 
@@ -1371,40 +1576,6 @@ decode_safe(Bin) ->
         json:decode(Bin)
     catch
         _:_ -> #{error => <<"decode_failed">>}
-    end.
-
-%%% Authentication
-
-check_auth(Headers) ->
-    Config = ircd_config:current_or_empty(),
-    case maps:get(webui, Config, null) of
-        #{username := ExpectedUser, password := ExpectedPass} ->
-            case maps:get(<<"authorization">>, Headers, undefined) of
-                <<"Basic ", Encoded/binary>> ->
-                    decode_basic(ircd_websocket:trim_ows(Encoded), ExpectedUser, ExpectedPass);
-                _ ->
-                    unauthorized
-            end;
-        _ ->
-            unauthorized
-    end.
-
-decode_basic(Encoded, ExpectedUser, ExpectedPass) ->
-    try base64:decode(Encoded) of
-        Decoded ->
-            case binary:split(Decoded, <<":">>) of
-                [User, Pass] ->
-                    UserOk = ircd_config:secret_match(User, ExpectedUser),
-                    PassOk = ircd_config:secret_match(Pass, ExpectedPass),
-                    case UserOk andalso PassOk of
-                        true -> ok;
-                        false -> unauthorized
-                    end;
-                _ ->
-                    unauthorized
-            end
-    catch
-        _:_ -> unauthorized
     end.
 
 %%% Minimal HTTP/1.1 request reader & response writer

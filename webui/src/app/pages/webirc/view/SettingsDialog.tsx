@@ -1,4 +1,4 @@
-// Settings dialog: General, Calls, and E2EE tabs.
+// Settings dialog: General, Calls, E2EE, and My Data tabs.
 // Markup only: the WebIRC controllers (webui/src/webirc/) find these
 // elements by id and wire them when the chat starts.
 import { Icon } from "../../../components/Icon.tsx";
@@ -58,6 +58,17 @@ export function SettingsDialog() {
               data-i18n="settings.tab.e2ee"
             >
               E2EE Keys
+            </button>
+            <button
+              type="button"
+              class="modal-tab"
+              id="tab-settings-data"
+              role="tab"
+              aria-selected="false"
+              aria-controls="pane-settings-data"
+              data-i18n="settings.tab.data"
+            >
+              My Data
             </button>
           </div>
           <div class="modal-body">
@@ -429,6 +440,142 @@ export function SettingsDialog() {
                 </div>
                 <div class="e2ee-peers" id="e2ee-peers"></div>
               </div>
+            </div>
+
+            <div
+              class="modal-pane"
+              id="pane-settings-data"
+              role="tabpanel"
+              aria-labelledby="tab-settings-data"
+            >
+              <section class="data-card" aria-labelledby="data-browser-title">
+                <h3 id="data-browser-title" data-i18n="data.browser.title">
+                  Data in this browser
+                </h3>
+                <p class="data-text" data-i18n="data.browser.text">
+                  Your settings, theme, language, saved session, cached direct
+                  messages, and end-to-end encryption keys are stored in this
+                  browser. Clearing them signs you out here; encrypted messages
+                  you cannot decrypt elsewhere stay unreadable.
+                </p>
+                <div class="data-actions">
+                  <button
+                    type="button"
+                    class="small danger"
+                    id="btn-clear-browser"
+                    data-i18n="data.browser.clear"
+                  >
+                    Clear this browser's data
+                  </button>
+                  <span
+                    class="data-confirm hidden"
+                    id="clear-browser-confirm"
+                    role="group"
+                  >
+                    <span data-i18n="data.browser.sure">Are you sure?</span>
+                    <button
+                      type="button"
+                      class="small danger"
+                      id="btn-clear-browser-yes"
+                      data-i18n="data.browser.yes"
+                    >
+                      Yes, clear it
+                    </button>
+                    <button
+                      type="button"
+                      class="small"
+                      id="btn-clear-browser-no"
+                      data-i18n="data.cancel"
+                    >
+                      Cancel
+                    </button>
+                  </span>
+                </div>
+              </section>
+
+              <section
+                class="data-card danger-zone"
+                aria-labelledby="data-account-title"
+              >
+                <h3 id="data-account-title" data-i18n="data.account.title">
+                  Delete my account
+                </h3>
+                <p class="data-text" data-i18n="data.account.text">
+                  Deletes your account on this server and signs out every
+                  connection using it.
+                </p>
+                <ul class="data-list">
+                  <li data-i18n="data.account.item.account">
+                    Your account, password, email address, and client
+                    certificates
+                  </li>
+                  <li data-i18n="data.account.item.messages">
+                    The messages you sent while logged in, from channel and
+                    direct message history
+                  </li>
+                  <li data-i18n="data.account.item.private">
+                    Direct conversations with people who were not logged in
+                  </li>
+                  <li data-i18n="data.account.item.state">
+                    Read markers, encryption devices, and messages waiting for
+                    them
+                  </li>
+                </ul>
+                <p class="data-text muted" data-i18n="data.account.kept">
+                  Not deleted: messages sent without being logged in, shared
+                  files and voice messages (they are not linked to an account),
+                  and copies on other servers of this network. Ask the server's
+                  administrator about those.
+                </p>
+                <form id="delete-account-form" class="data-form" novalidate>
+                  <div class="setting-row stacked">
+                    <label for="del-account" data-i18n="data.account.name">
+                      Account
+                    </label>
+                    <input
+                      type="text"
+                      id="del-account"
+                      autocomplete="username"
+                      autocapitalize="none"
+                      spellcheck={false}
+                      maxLength={64}
+                    />
+                  </div>
+                  <div class="setting-row stacked">
+                    <label for="del-password" data-i18n="data.account.password">
+                      Password
+                    </label>
+                    <input
+                      type="password"
+                      id="del-password"
+                      autocomplete="current-password"
+                      maxLength={1024}
+                    />
+                  </div>
+                  <label class="setting-check">
+                    <input type="checkbox" id="del-understood" />
+                    <span data-i18n="data.account.understood">
+                      I understand that this cannot be undone.
+                    </span>
+                  </label>
+                  <div
+                    class="data-notice hidden"
+                    id="del-notice"
+                    role="status"
+                    aria-live="polite"
+                  >
+                  </div>
+                  <button
+                    type="submit"
+                    class="danger"
+                    id="btn-delete-account"
+                    disabled
+                    data-i18n="data.account.submit"
+                  >
+                    Delete my account and data
+                  </button>
+                </form>
+              </section>
             </div>
           </div>
         </div>

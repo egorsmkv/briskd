@@ -399,7 +399,7 @@ export class CallManager {
     const friendly: Record<string, string> = {
       TARGET_BUSY: "is busy or unavailable",
       TARGET_UNSUPPORTED: "uses a client without voice calls",
-      TARGET_REMOTE: "is on another server; calls work only on this server",
+      TARGET_REMOTE: "is on a server that cannot take calls from other servers",
       NO_SUCH_NICK: "is not online",
       MEDIA_ERROR: "could not be reached: the media relay is unavailable",
       RATE_LIMITED: "could not be called: too many calls, try later",

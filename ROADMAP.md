@@ -310,7 +310,11 @@ always-on bouncer details, and Sable's PostgreSQL history server.
   hang-up, `/call` and `/hangup`.
 - [x] rtpengine image (`docker/rtpengine`) in the development environment and
   an end-to-end test with WebRTC clients (`test/calls/run`, in CI).
-- [ ] Calls to users on linked servers.
+- [x] Calls to users on linked servers: `CALL` over RFC 2813 links with the
+  user's prefix, routed hop by hop; the caller's server anchors the media
+  in its rtpengine and the callee's server relays; quits, kills, and
+  netsplits end the call and nick changes keep it (`ircd_call_link_tests`,
+  two linked server processes).
 - [ ] Group calls and video.
 
 ## AI assistant bots (server-specific extension)
@@ -337,6 +341,22 @@ always-on bouncer details, and Sable's PostgreSQL history server.
   DroneBL, UTF-8 only, and limits, changed live with `CAP NEW`/`DEL`, kept in
   Mnesia across `REHASH` and restarts, and reset to the configuration file's
   value.
+- [x] Admin sign-in page (`/admin/login`, `ircd_webui_auth`) instead of the
+  browser's HTTP Basic dialog: a 12-hour `HttpOnly`/`SameSite=Strict`
+  session cookie (only its SHA-256 is stored, in memory; sessions end on
+  restart, on sign-out, and when the `webui` credentials change), a return
+  to the requested tab, and a per-address limit of 5 failed sign-ins in 5
+  minutes. HTTP Basic is still accepted, unchallenged, for scripts. Behind a
+  reverse proxy every client shares the proxy's address for that limit.
+- [x] "Delete my data" in WebIRC settings (My Data tab): clear this app's
+  browser storage (settings, session, cached DMs, E2EE keys), or delete the
+  account with its password (`POST /api/account/delete`, failures limited
+  per address): the account, read markers, E2EE devices and queue, the
+  messages and events it wrote while logged in from channel and direct
+  history, and direct conversations with nickname-only users. Not covered:
+  messages sent while not logged in, uploaded files and voice messages (not
+  linked to an account), WHOWAS entries, and copies held by linked servers
+  (account deletion is not propagated).
 - [x] Channel management from the admin panel and `ircdctl`
   (`create-channel`, `set-channel-modes`, `delete-channel`): create an empty
   `#`, `&`, or `+` channel; change modes, key, limit, and the `b`/`e`/`I`

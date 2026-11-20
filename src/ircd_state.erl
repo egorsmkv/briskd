@@ -943,6 +943,11 @@ server_call({server_command, Peer, Prefix, <<"METADATA">>, Params, _Tags}, _, Se
     {reply, ircd_state_sync:receive_metadata(Peer, Prefix, Params), Server};
 server_call({server_command, Peer, Prefix, <<"E2EE">>, Params, Tags}, _, Server) ->
     {reply, ircd_e2ee:receive_link(Peer, link_source(Peer, Prefix), Params, Tags), Server};
+server_call({server_command, Peer, Prefix, <<"CALL">>, Params, _Tags}, _, Server) when
+    is_binary(Prefix)
+->
+    %% Voice-call signalling between users on different servers.
+    {reply, ircd_calls:receive_link(Peer, Prefix, Params), Server};
 server_call({server_command, Peer, Prefix, <<"MARKREAD">>, Params, _Tags}, _, Server) ->
     {reply, ircd_state_sync:receive_markread(Peer, link_source(Peer, Prefix), Params), Server};
 server_call(Request, From, Server) ->

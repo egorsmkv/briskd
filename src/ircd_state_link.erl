@@ -588,6 +588,7 @@ rename_remote_nick(Peer, Prefix, Nick) ->
                     rename_remote_memberships(Peer, OldKey, NewKey),
                     ircd_state_meta:rename_remote(OldKey, NewKey),
                     ok = ircd_e2ee:remote_renamed(OldKey, NewKey),
+                    ok = ircd_calls:remote_renamed(OldKey, NewKey),
                     ircd_state_monitor:offline(Remote#remote_client.nick),
                     ircd_state_monitor:online(
                         Nick,
@@ -639,6 +640,7 @@ remove_remote_nick(Peer, Prefix, Reason) ->
             ircd_state_monitor:offline(Nick),
             ircd_state_meta:forget_remote(Key),
             ok = ircd_e2ee:forget_remote(Key),
+            ok = ircd_calls:remote_gone(Key),
             remove_remote_memberships(Peer, Key),
             ok;
         error ->

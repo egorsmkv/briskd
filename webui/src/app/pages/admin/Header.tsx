@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { formatAgo } from "../../../common/admin_text.ts";
 import { initTheme } from "../../../common/theme.ts";
+import { signOut } from "./api.ts";
 import { fmtUptime } from "./format.ts";
 import {
   autoRefresh,
@@ -105,6 +106,13 @@ export function Header() {
         >
           Refresh
         </ActionButton>
+        <button
+          type="button"
+          id="btn-sign-out"
+          onClick={() => void signOut()}
+        >
+          Sign out
+        </button>
       </div>
     </header>
   );

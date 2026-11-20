@@ -7,8 +7,8 @@ WebRTC (ICE, DTLS-SRTP, Opus) to rtpengine, and rtpengine forwards the audio
 to the other side. Neither user learns the other's IP address.
 
 Calls are a server extension, not part of RFC 1459/2812 or IRCv3. They are
-user-to-user only (no group calls), audio only, and between users on the same
-server: a user on a linked server cannot be called.
+user-to-user only (no group calls) and audio only. Users on linked servers
+can call each other (see [Calls across linked servers](#calls-across-linked-servers)).
 
 ## Setup
 
@@ -133,7 +133,8 @@ Errors are standard replies, `FAIL CALL <code> [<token>] :<text>`:
 | `ACCOUNT_REQUIRED` | `require_account` is set and the client is not logged in |
 | `INVALID_PARAMS`, `UNKNOWN_SUBCOMMAND` | Malformed command, token, or chunk; chunks out of order |
 | `INVALID_TARGET` | Calling yourself |
-| `NO_SUCH_NICK`, `TARGET_REMOTE`, `TARGET_UNSUPPORTED` | The callee is offline, on another server, or lacks the capability |
+| `NO_SUCH_NICK`, `TARGET_UNSUPPORTED` | The callee is offline, or lacks the capability (also reported by the callee's server for a user on a linked server) |
+| `TARGET_REMOTE` | Sent only by older releases: the callee is on another server |
 | `TARGET_BUSY` | The callee is in another call |
 | `ALREADY_IN_CALL` | The caller is in another call |
 | `LIMIT_REACHED`, `RATE_LIMITED` | `max_calls` or `calls_per_minute` exceeded |
@@ -141,6 +142,41 @@ Errors are standard replies, `FAIL CALL <code> [<token>] :<text>`:
 | `TIMEOUT` | A chunked description was not completed within 10 seconds |
 | `INVALID_STATE`, `UNKNOWN_CALL` | The command does not fit the call's state (for example `HOLD` before the call is answered), or no such call |
 | `MEDIA_ERROR` | rtpengine refused the description or did not answer |
+
+## Calls across linked servers
+
+A user can call a user on another server of the network. The servers
+carry the same `CALL` lines over their RFC 2813 link, with the sending
+user's prefix, routed hop by hop toward the other user's server like a
+private message:
+
+```text
+:alice!u@h CALL OFFER bob <token> <part> <total> :<chunk>   any subcommand, user to user
+:alpha.example CALL HANGUP bob <token> :<reason>            timeout, disconnect, media failure
+:beta.example CALL FAIL alice <token> <code> :<text>        the callee's server refuses
+```
+
+- **The caller's server is the media anchor.** It passes the offer, and
+  later the callee's answer, through its own rtpengine, so each browser
+  still sees only that rtpengine's address. The callee's server never
+  contacts its rtpengine for the call; it checks its user (capability,
+  `require_account`, busy, `max_calls`, `calls_per_minute`) and relays.
+  rtpengine on the caller's server must therefore be reachable from the
+  callee's browser, as it is for local calls.
+- **Both servers need `calls`.** A callee whose server has no `calls`
+  configuration is refused with `TARGET_UNSUPPORTED`. With
+  `require_account`, the caller's server requires the callee to be logged
+  in, and the callee's server requires the caller to be.
+- **Leaving ends the call.** When either user quits, is killed, or is split
+  away, the other server ends the call with `HANGUP … :disconnected`. A nick
+  change keeps the call. Each server applies its own `ring_timeout` and
+  `max_duration`; whichever fires first ends the call on both.
+- **Older servers.** A server that does not know `CALL` on a link ignores
+  it, so the caller hears no answer and the call ends at `ring_timeout`.
+  Upgrade every server on the path.
+- Malformed `CALL` lines from a peer, or lines from a source the link may
+  not speak for, are logged (`call_link_dropped`) and dropped; the link
+  stays up.
 
 ## Server behavior
 

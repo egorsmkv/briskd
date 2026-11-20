@@ -110,6 +110,37 @@ const DICT: Record<Lang, Record<string, string>> = {
     "settings.title": "Workspace Settings",
     "settings.tab.general": "General",
     "settings.tab.e2ee": "E2EE Keys",
+    "settings.tab.data": "My Data",
+    "data.browser.title": "Data in this browser",
+    "data.browser.text":
+      "Your settings, theme, language, saved session, cached direct messages, and end-to-end encryption keys are stored in this browser. Clearing them signs you out here; encrypted messages you cannot decrypt elsewhere stay unreadable.",
+    "data.browser.clear": "Clear this browser's data",
+    "data.browser.sure": "Are you sure?",
+    "data.browser.yes": "Yes, clear it",
+    "data.cancel": "Cancel",
+    "data.account.title": "Delete my account",
+    "data.account.text":
+      "Deletes your account on this server and signs out every connection using it.",
+    "data.account.item.account":
+      "Your account, password, email address, and client certificates",
+    "data.account.item.messages":
+      "The messages you sent while logged in, from channel and direct message history",
+    "data.account.item.private":
+      "Direct conversations with people who were not logged in",
+    "data.account.item.state":
+      "Read markers, encryption devices, and messages waiting for them",
+    "data.account.kept":
+      "Not deleted: messages sent without being logged in, shared files and voice messages (they are not linked to an account), and copies on other servers of this network. Ask the server's administrator about those.",
+    "data.account.name": "Account",
+    "data.account.password": "Password",
+    "data.account.understood": "I understand that this cannot be undone.",
+    "data.account.submit": "Delete my account and data",
+    "data.account.done":
+      "Account {{account}} and what it sent were deleted. Signing out…",
+    "data.account.wrong": "Wrong account name or password.",
+    "data.account.limited":
+      "Too many wrong passwords. Try again in {{minutes}} min.",
+    "data.account.failed": "The account could not be deleted.",
     "settings.tab.calls": "Calls",
     "callset.permission": "Allow microphone access to see your device names.",
     "callset.allow": "Allow access",
@@ -390,6 +421,34 @@ const DICT: Record<Lang, Record<string, string>> = {
     "settings.title": "הגדרות סביבת העבודה",
     "settings.tab.general": "כללי",
     "settings.tab.e2ee": "מפתחות E2EE",
+    "settings.tab.data": "הנתונים שלי",
+    "data.browser.title": "נתונים בדפדפן זה",
+    "data.browser.text":
+      "ההגדרות, ערכת הנושא, השפה, החיבור השמור, ההודעות הפרטיות השמורות ומפתחות ההצפנה שלך שמורים בדפדפן זה. מחיקתם תנתק אותך כאן; הודעות מוצפנות שאינך יכול לפענח במקום אחר יישארו בלתי קריאות.",
+    "data.browser.clear": "מחק את נתוני הדפדפן",
+    "data.browser.sure": "בטוח?",
+    "data.browser.yes": "כן, למחוק",
+    "data.cancel": "ביטול",
+    "data.account.title": "מחיקת החשבון שלי",
+    "data.account.text": "מוחק את החשבון שלך בשרת זה ומנתק כל חיבור שמשתמש בו.",
+    "data.account.item.account":
+      "החשבון, הסיסמה, כתובת הדוא״ל ותעודות הלקוח שלך",
+    "data.account.item.messages":
+      "ההודעות ששלחת כשהיית מחובר, מהיסטוריית הערוצים וההודעות הפרטיות",
+    "data.account.item.private": "שיחות פרטיות עם אנשים שלא היו מחוברים לחשבון",
+    "data.account.item.state":
+      "סימוני קריאה, מכשירי הצפנה והודעות שממתינות להם",
+    "data.account.kept":
+      "לא נמחקים: הודעות שנשלחו ללא חיבור לחשבון, קבצים והודעות קוליות משותפים (אינם מקושרים לחשבון), ועותקים בשרתים אחרים של הרשת. פנה למנהל השרת לגביהם.",
+    "data.account.name": "חשבון",
+    "data.account.password": "סיסמה",
+    "data.account.understood": "אני מבין שלא ניתן לבטל פעולה זו.",
+    "data.account.submit": "מחק את החשבון והנתונים שלי",
+    "data.account.done": "החשבון {{account}} ומה שנשלח ממנו נמחקו. מתנתק…",
+    "data.account.wrong": "שם חשבון או סיסמה שגויים.",
+    "data.account.limited":
+      "יותר מדי סיסמאות שגויות. נסה שוב בעוד {{minutes}} דק׳.",
+    "data.account.failed": "לא ניתן היה למחוק את החשבון.",
     "settings.tab.calls": "שיחות",
     "callset.permission": "יש לאשר גישה למיקרופון כדי לראות את שמות ההתקנים.",
     "callset.allow": "אישור גישה",

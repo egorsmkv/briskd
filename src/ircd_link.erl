@@ -374,6 +374,7 @@ handle_server_line(
     Command =:= <<"METADATA">>;
     Command =:= <<"MARKREAD">>;
     Command =:= <<"E2EE">>;
+    Command =:= <<"CALL">>;
     Command =:= <<"BATCH">>
 ->
     case ircd_state:server_command(PeerName, Prefix, Command, Params, Tags) of

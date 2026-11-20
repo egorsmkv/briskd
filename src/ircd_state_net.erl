@@ -836,6 +836,7 @@ drop_remote_user(#remote_client{key = Key, nick = Nick, user = User, host = Host
     ircd_state_monitor:offline(Nick),
     ircd_state_meta:forget_remote(Key),
     ok = ircd_e2ee:forget_remote(Key),
+    ok = ircd_calls:remote_gone(Key),
     drop_memberships(Key).
 
 drop_memberships(NickKey) ->

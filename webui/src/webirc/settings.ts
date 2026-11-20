@@ -1,4 +1,5 @@
 // Workspace settings: persistence, theme, the settings dialog, and feature switches.
+import { renderMyData } from "./delete_data.ts";
 import { byId as $ } from "../common/dom.ts";
 import { currentLang, initLang, setLang, t } from "../common/i18n.ts";
 import { currentTheme, initTheme, setTheme, THEMES } from "../common/theme.ts";
@@ -174,16 +175,17 @@ export function renderThemeSwatches(): void {
   }
 }
 
-export type SettingsTab = "general" | "calls" | "e2ee";
+export type SettingsTab = "general" | "calls" | "e2ee" | "data";
 
 export function switchSettingsTab(tab: SettingsTab): void {
-  for (const name of ["general", "calls", "e2ee"] as const) {
+  for (const name of ["general", "calls", "e2ee", "data"] as const) {
     const on = name === tab;
     $(`tab-settings-${name}`).classList.toggle("active", on);
     $(`tab-settings-${name}`).setAttribute("aria-selected", String(on));
     $(`pane-settings-${name}`).classList.toggle("active", on);
   }
   if (tab === "e2ee") renderE2eeModal();
+  if (tab === "data") renderMyData();
   if (tab === "calls") renderCallSettings();
   else stopCallSettingsMedia();
 }
@@ -222,6 +224,8 @@ export function init(): void {
   $("tab-settings-e2ee").onclick = () => switchSettingsTab("e2ee");
 
   $("tab-settings-calls").onclick = () => switchSettingsTab("calls");
+
+  $("tab-settings-data").onclick = () => switchSettingsTab("data");
 
   $("settings-modal").addEventListener("click", (ev) => {
     if (ev.target === $("settings-modal")) closeSettings();

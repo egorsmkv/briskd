@@ -1,5 +1,7 @@
 -module(ircd_webui_tests).
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("ircd/include/ircd_state.hrl").
+-include_lib("ircd/include/ircd_account.hrl").
 
 config_validation_test() ->
     Load = fun(Extra) ->
@@ -65,12 +67,74 @@ live_webui() ->
         GoodAuth = basic_auth(<<"admin">>, <<"topsecret">>),
         BadAuth = basic_auth(<<"admin">>, <<"wrong">>),
 
-        %% Unauthenticated and wrong credentials on /admin and /api/overview are rejected.
-        {401, Headers401, _} = http_req(Port, <<"GET">>, <<"/admin">>, [], <<>>),
-        ?assert(maps:is_key(<<"www-authenticate">>, Headers401)),
-        {401, _, _} = http_req(
+        %% Signed out, an admin page goes to the sign-in page (and back to
+        %% the tab afterwards); the API answers 401. Neither sends a Basic
+        %% challenge, so a browser never shows its own password dialog.
+        {302, Headers302, _} = http_req(Port, <<"GET">>, <<"/admin/channels">>, [], <<>>),
+        ?assertEqual(
+            <<"/admin/login?next=/admin/channels">>, maps:get(<<"location">>, Headers302)
+        ),
+        ?assertNot(maps:is_key(<<"www-authenticate">>, Headers302)),
+        {302, OddHeaders, _} = http_req(Port, <<"GET">>, <<"/admin/x%2F%2Fevil">>, [], <<>>),
+        ?assertEqual(<<"/admin/login">>, maps:get(<<"location">>, OddHeaders)),
+        {401, Headers401, _} = http_req(
             Port, <<"GET">>, <<"/api/overview">>, [{<<"Authorization">>, BadAuth}], <<>>
         ),
+        ?assertNot(maps:is_key(<<"www-authenticate">>, Headers401)),
+        {200, LoginPageHeaders, LoginPage} = http_req(
+            Port, <<"GET">>, <<"/admin/login">>, [], <<>>
+        ),
+        ?assert(binary:match(LoginPage, <<"login.css">>) =/= nomatch),
+        ?assert(binary:match(LoginPage, <<"noindex">>) =/= nomatch),
+        ?assertEqual(<<"DENY">>, maps:get(<<"x-frame-options">>, LoginPageHeaders)),
+
+        %% Sign in: wrong password 401, no CSRF header 403, right one sets
+        %% an HttpOnly SameSite=Strict cookie that opens the panel and API.
+        Login = fun(User, Pass, Extra) ->
+            http_req(
+                Port,
+                <<"POST">>,
+                <<"/api/admin/login">>,
+                [{<<"Content-Type">>, <<"application/json">>} | Extra],
+                iolist_to_binary(json:encode(#{username => User, password => Pass}))
+            )
+        end,
+        Csrf = [{<<"X-Requested-With">>, <<"ircd-webui">>}],
+        {401, _, WrongBody} = Login(<<"admin">>, <<"wrong">>, Csrf),
+        ?assertMatch(#{<<"error">> := <<"invalid_credentials">>}, json:decode(WrongBody)),
+        {403, _, _} = Login(<<"admin">>, <<"topsecret">>, []),
+        {400, _, _} = http_req(
+            Port, <<"POST">>, <<"/api/admin/login">>, Csrf, <<"{\"username\":1}">>
+        ),
+        {200, OkHeaders, _} = Login(<<"admin">>, <<"topsecret">>, Csrf),
+        SetCookie = maps:get(<<"set-cookie">>, OkHeaders),
+        ?assert(binary:match(SetCookie, <<"HttpOnly">>) =/= nomatch),
+        ?assert(binary:match(SetCookie, <<"SameSite=Strict">>) =/= nomatch),
+        ?assertEqual(nomatch, binary:match(SetCookie, <<"Secure">>)),
+        [CookiePair | _] = binary:split(SetCookie, <<";">>),
+        Cookie = [{<<"Cookie">>, <<"theme=dark; ", CookiePair/binary>>}],
+        {200, _, _} = http_req(Port, <<"GET">>, <<"/admin/channels">>, Cookie, <<>>),
+        {200, _, _} = http_req(Port, <<"GET">>, <<"/api/overview">>, Cookie, <<>>),
+        {302, SignedInHeaders, _} = http_req(Port, <<"GET">>, <<"/admin/login">>, Cookie, <<>>),
+        ?assertEqual(<<"/admin">>, maps:get(<<"location">>, SignedInHeaders)),
+        %% Behind an HTTPS proxy the cookie is Secure.
+        {200, TlsHeaders, _} = Login(
+            <<"admin">>, <<"topsecret">>, [{<<"X-Forwarded-Proto">>, <<"https">>} | Csrf]
+        ),
+        ?assert(binary:match(maps:get(<<"set-cookie">>, TlsHeaders), <<"; Secure">>) =/= nomatch),
+        %% A forged token is refused; signing out ends the session.
+        {401, _, _} = http_req(
+            Port,
+            <<"GET">>,
+            <<"/api/overview">>,
+            [{<<"Cookie">>, <<"ircd_admin=forged">>}],
+            <<>>
+        ),
+        {200, OutHeaders, _} = http_req(
+            Port, <<"POST">>, <<"/api/admin/logout">>, Cookie ++ Csrf, <<>>
+        ),
+        ?assert(binary:match(maps:get(<<"set-cookie">>, OutHeaders), <<"Max-Age=0">>) =/= nomatch),
+        {401, _, _} = http_req(Port, <<"GET">>, <<"/api/overview">>, Cookie, <<>>),
 
         %% A connection that sends nothing (a browser's idle preconnect) is
         %% closed without a reply: a 400 written to it would be read as the
@@ -113,17 +177,18 @@ live_webui() ->
             <<>>
         ),
         ?assertNot(maps:is_key(<<"content-length">>, NoPreviewHeaders)),
-        %% Every admin path still asks for credentials.
+        %% Every admin path still needs a session: pages redirect, the API
+        %% is 401.
         lists:foreach(
-            fun({Method, Path}) ->
-                {401, AdminHeaders, _} = http_req(Port, Method, Path, [], <<>>),
-                ?assert(maps:is_key(<<"www-authenticate">>, AdminHeaders))
+            fun({Method, Path, Code}) ->
+                {Code, AdminHeaders, _} = http_req(Port, Method, Path, [], <<>>),
+                ?assertNot(maps:is_key(<<"www-authenticate">>, AdminHeaders))
             end,
             [
-                {<<"GET">>, <<"/admin/">>},
-                {<<"GET">>, <<"/admin/unknown">>},
-                {<<"GET">>, <<"/api/media">>},
-                {<<"POST">>, <<"/api/action">>}
+                {<<"GET">>, <<"/admin/">>, 302},
+                {<<"GET">>, <<"/admin/unknown">>, 302},
+                {<<"GET">>, <<"/api/media">>, 401},
+                {<<"POST">>, <<"/api/action">>, 401}
             ]
         ),
 
@@ -160,7 +225,7 @@ live_webui() ->
             Port, <<"GET">>, <<"/admin/accounts">>, [{<<"Authorization">>, GoodAuth}], <<>>
         ),
         ?assert(binary:match(SubAdminBody, <<"<title>Admin - ">>) =/= nomatch),
-        {401, _, _} = http_req(Port, <<"GET">>, <<"/admin/accounts">>, [], <<>>),
+        {302, _, _} = http_req(Port, <<"GET">>, <<"/admin/accounts">>, [], <<>>),
 
         %% Public favicon.ico, favicon.svg, and robots.txt are served without auth.
         {200, IcoHeaders, IcoBody} = http_req(Port, <<"GET">>, <<"/favicon.ico">>, [], <<>>),
@@ -582,6 +647,97 @@ live_webui() ->
         %% 404 for unknown path.
         {404, _, _} = http_req(
             Port, <<"GET">>, <<"/nope">>, [{<<"Authorization">>, GoodAuth}], <<>>
+        ),
+
+        %% "Delete my data": the password is checked again; the account and
+        %% what it wrote in stored history are deleted, other people's
+        %% messages are kept.
+        {ok, _} = ircd_ctl:run(["create-account", "eraseme", "erase-pass-1"]),
+        {ok, _} = ircd_ctl:run(["create-account", "keeper", "keeper-pass-1"]),
+        Entry = fun(Account, Text) ->
+            #{cmd => <<"PRIVMSG">>, prefix => <<"x!x@x">>, text => Text, account => Account}
+        end,
+        Me = {account, <<"eraseme">>},
+        Keeper = {account, <<"keeper">>},
+        Guest = {nick, <<"guest">>},
+        ok = mnesia:dirty_write(#channel_history{
+            channel = <<"#erase">>,
+            entries = [
+                Entry(<<"EraseMe">>, <<"mine">>),
+                Entry(<<"keeper">>, <<"theirs">>),
+                {<<"PRIVMSG">>, <<"old!x@x">>, <<"legacy">>}
+            ]
+        }),
+        %% Keys are the sorted pair ({account, _} sorts before {nick, _}).
+        WithKeeper = {Me, Keeper},
+        WithGuest = {Me, Guest},
+        ok = mnesia:dirty_write(#direct_history{
+            key = WithKeeper,
+            entries = [Entry(<<"eraseme">>, <<"hi">>), Entry(<<"keeper">>, <<"hello">>)]
+        }),
+        ok = mnesia:dirty_write(#direct_history{
+            key = WithGuest, entries = [Entry(undefined, <<"from guest">>)]
+        }),
+        DeleteReq = fun(Account, Pass, Extra) ->
+            http_req(
+                Port,
+                <<"POST">>,
+                <<"/api/account/delete">>,
+                Extra,
+                iolist_to_binary(json:encode(#{account => Account, password => Pass}))
+            )
+        end,
+        {403, _, _} = DeleteReq(<<"eraseme">>, <<"erase-pass-1">>, []),
+        {401, _, _} = DeleteReq(<<"eraseme">>, <<"wrong">>, Csrf),
+        {401, _, _} = DeleteReq(<<"nobody">>, <<"erase-pass-1">>, Csrf),
+        {400, _, _} = DeleteReq(<<>>, <<"x">>, Csrf),
+        {200, _, ErasedBody} = DeleteReq(<<"EraseMe">>, <<"erase-pass-1">>, Csrf),
+        ?assertMatch(
+            #{
+                <<"ok">> := true,
+                <<"account">> := <<"eraseme">>,
+                <<"channel_messages">> := 1,
+                <<"direct_messages">> := 1
+            },
+            json:decode(ErasedBody)
+        ),
+        ?assertEqual(error, ircd_account:find(<<"eraseme">>)),
+        [#channel_history{entries = ChanLeft}] = mnesia:dirty_read(channel_history, <<"#erase">>),
+        ?assertMatch(
+            [#{text := <<"theirs">>}, {<<"PRIVMSG">>, _, <<"legacy">>}], ChanLeft
+        ),
+        ?assertMatch(
+            [#direct_history{entries = [#{text := <<"hello">>}]}],
+            mnesia:dirty_read(direct_history, WithKeeper)
+        ),
+        ?assertEqual([], mnesia:dirty_read(direct_history, WithGuest)),
+        {401, _, _} = DeleteReq(<<"eraseme">>, <<"erase-pass-1">>, Csrf),
+        ?assertMatch({ok, _}, ircd_account:find(<<"keeper">>)),
+
+        %% Failed sign-ins from one address are limited: after 5 in 5
+        %% minutes even the right password waits (the successful sign-in
+        %% above cleared the earlier failure).
+        LoginReq = fun(Pass) ->
+            http_req(
+                Port,
+                <<"POST">>,
+                <<"/api/admin/login">>,
+                [{<<"X-Requested-With">>, <<"ircd-webui">>}],
+                iolist_to_binary(json:encode(#{username => <<"admin">>, password => Pass}))
+            )
+        end,
+        [{401, _, _} = LoginReq(<<"nope">>) || _ <- lists:seq(1, 5)],
+        {429, LimitedHeaders, LimitedBody} = LoginReq(<<"topsecret">>),
+        ?assert(binary_to_integer(maps:get(<<"retry-after">>, LimitedHeaders)) > 0),
+        ?assertMatch(#{<<"error">> := <<"rate_limited">>}, json:decode(LimitedBody)),
+        %% Password checks for deleting an account are limited separately:
+        %% one failure (after the deletion) plus four more reach the limit.
+        [{401, _, _} = DeleteReq(<<"keeper">>, <<"nope">>, Csrf) || _ <- lists:seq(1, 4)],
+        {429, _, _} = DeleteReq(<<"keeper">>, <<"keeper-pass-1">>, Csrf),
+        ?assertMatch({ok, _}, ircd_account:find(<<"keeper">>)),
+        %% Basic credentials (scripts) still work meanwhile.
+        {200, _, _} = http_req(
+            Port, <<"GET">>, <<"/api/overview">>, [{<<"Authorization">>, GoodAuth}], <<>>
         )
     after
         _ = application:stop(ircd),

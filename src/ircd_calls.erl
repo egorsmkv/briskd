@@ -31,9 +31,28 @@ call on hold (and plays hold audio in place of the microphone) or took it off
 hold; the media path through rtpengine is unchanged, so the call keeps
 running and `max_duration` still applies.
 
+Calls to users on other servers (RFC 2813 links) use the same command
+between servers, with the sending user's prefix, routed hop by hop to the
+target user's server like a private message (`receive_link/3`):
+
+```text
+:alice!u@h CALL OFFER bob <token> <part> <total> :<chunk>   any subcommand, user → user
+:server CALL HANGUP <nick> <token> [:<reason>]             timeout, disconnect, media
+:server CALL FAIL <nick> <token> <code> :<text>            refusal by the far server
+```
+
+The caller's server is the media anchor: it passes the offer and the
+callee's answer through its own rtpengine, so each user still sees only the
+relay's address. The callee's server checks the callee (capability,
+account, busy, limits) and relays lines between its user and the link
+without touching rtpengine (`relay` mode). Each side ends its record when
+the other user quits or is split away, re-keys it on a nick change, and
+keeps its own ring and duration timers. A peer that does not know `CALL`
+ignores it, so the caller hears no answer until the ring timeout.
+
 Process model: `command/3` runs inside `m:ircd_state`, validates syntax,
-resolves the callee among local users, checks both capabilities, and casts
-to this process. This process owns the call table, chunk reassembly, the UDP
+resolves the callee among local users or users behind a link, checks the
+capabilities it can see, and casts to this process. This process owns the call table, chunk reassembly, the UDP
 socket to rtpengine, the ring and duration timers, and a monitor on each
 party; it reads client rows from Mnesia and sends lines straight to session
 processes. It never calls `m:ircd_state`, so there is no call cycle.
@@ -47,11 +66,15 @@ Call state is in memory only; a restart ends every call.
 """.
 -behaviour(gen_server).
 -include("ircd_client.hrl").
+-include("ircd_remote.hrl").
 -export([
     start_link/1,
     enabled/0,
     cap_value/0,
     command/3,
+    receive_link/3,
+    remote_gone/1,
+    remote_renamed/2,
     init/1,
     handle_call/3,
     handle_cast/2,
@@ -207,10 +230,14 @@ callee(Nick, Pid) ->
                         <<"That user's client does not support calls">>}
             end;
         undefined ->
+            %% A user behind a link: the capability is checked by that
+            %% user's server, which answers FAIL if the call cannot ring.
             case mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) of
-                [_ | _] ->
-                    {error, <<"TARGET_REMOTE">>,
-                        <<"Calls to users on other servers are not supported">>};
+                [#remote_client{key = Key, account = Account}] ->
+                    case needs_account() andalso Account =:= undefined of
+                        true -> {error, <<"TARGET_UNSUPPORTED">>, <<"That user is not logged in">>};
+                        false -> {ok, {remote, Key}}
+                    end;
                 [] ->
                     {error, <<"NO_SUCH_NICK">>, <<"No such nick">>}
             end
@@ -223,8 +250,215 @@ needs_account() ->
 cast(Msg) ->
     gen_server:cast(?MODULE, Msg).
 
-fail(Pid, Code, Context, Text) ->
-    ircd_state_send:fail(Pid, <<"CALL">>, Code, Context, Text).
+fail(Pid, Code, Context, Text) when is_pid(Pid) ->
+    ircd_state_send:fail(Pid, <<"CALL">>, Code, Context, Text);
+fail({remote, Key}, Code, [Token | _], Text) ->
+    %% The far server turns this into FAIL CALL for its user.
+    case nick_of({remote, Key}) of
+        undefined -> ok;
+        Nick -> link_send(Key, server_name(), [<<"FAIL">>, Nick, Token, Code], Text)
+    end;
+fail({remote, _}, _Code, [], _Text) ->
+    ok.
+
+server_name() ->
+    maps:get(name, ircd_config:current()).
+
+%%% Server links
+
+-doc """
+Handle `CALL` from the server link `Peer` with source `Prefix`. Runs in
+`m:ircd_state`. A user source must be a remote user reached through `Peer`
+(`ircd_state_link:remote_source/2`); a server source (`HANGUP` and `FAIL`
+only) must be `Peer` or a server behind it. The line is delivered to a
+local target, forwarded to the link of a remote target (never back to
+`Peer`), or, for a target that is gone, answered with `FAIL NO_SUCH_NICK`.
+Malformed lines and untrusted sources are logged and dropped: the link
+stays up, as for a newer peer's subcommand this server does not know.
+Always returns `ok`.
+""".
+-spec receive_link(binary(), binary(), [binary()]) -> ok.
+receive_link(Peer, Prefix, [Sub0, Target, Token | Rest] = Params) ->
+    Sub = ircd_wire:upper(Sub0),
+    Source =
+        case ircd_state_link:remote_source(Peer, Prefix) of
+            {ok, Remote} ->
+                {user, Remote};
+            error ->
+                case ircd_state_link:trusted_server(Peer, Prefix) of
+                    true -> server;
+                    false -> untrusted
+                end
+        end,
+    case {Source, ircd_call_proto:valid_token(Token), link_sub(Sub, Source)} of
+        {untrusted, _, _} ->
+            drop_link_line(Peer, untrusted_source);
+        {_, false, _} ->
+            drop_link_line(Peer, invalid_token);
+        {_, true, false} ->
+            drop_link_line(Peer, invalid_subcommand);
+        {_, true, true} ->
+            case ircd_state_client:find_nick(Target) of
+                #client{pid = Pid} ->
+                    deliver_link(Source, Sub, Pid, Token, Rest, Peer);
+                undefined ->
+                    case mnesia:dirty_read(remote_client, ircd_wire:fold(Target)) of
+                        [#remote_client{peer = Next}] when Next =/= Peer ->
+                            {Middle, Trailing} = split_last(Params),
+                            _ = ircd_links:send(
+                                Next, ircd_wire:line(Prefix, <<"CALL">>, Middle, Trailing)
+                            ),
+                            ok;
+                        _ ->
+                            link_fail(Source, Peer, Token, <<"NO_SUCH_NICK">>, <<"No such nick">>)
+                    end
+            end
+    end;
+receive_link(Peer, _Prefix, _Params) ->
+    drop_link_line(Peer, missing_params).
+
+%% Subcommands a user may send across a link, and the two a server sends.
+link_sub(Sub, {user, _}) ->
+    lists:member(Sub, [
+        <<"OFFER">>,
+        <<"ANSWER">>,
+        <<"RINGING">>,
+        <<"REJECT">>,
+        <<"HANGUP">>,
+        <<"HOLD">>,
+        <<"RESUME">>
+    ]);
+link_sub(Sub, server) ->
+    Sub =:= <<"HANGUP">> orelse Sub =:= <<"FAIL">>;
+link_sub(_, untrusted) ->
+    false.
+
+drop_link_line(Peer, Reason) ->
+    logger:warning(#{event => call_link_dropped, peer => Peer, reason => Reason}),
+    ok.
+
+split_last(Params) ->
+    {lists:droplast(Params), lists:last(Params)}.
+
+%% Tell the user who sent a line that its call cannot continue.
+link_fail({user, #remote_client{nick = Nick}}, Peer, Token, Code, Text) ->
+    _ = ircd_links:send(
+        Peer, ircd_wire:line(server_name(), <<"CALL">>, [<<"FAIL">>, Nick, Token, Code], Text)
+    ),
+    ok;
+link_fail(_, _Peer, _Token, _Code, _Text) ->
+    ok.
+
+%% A line for the local user `Pid`, from a remote user or a server.
+deliver_link(Source, Sub, Pid, Token, Rest, Peer) when Source =/= server ->
+    case whereis(?MODULE) of
+        undefined ->
+            link_fail(
+                Source,
+                Peer,
+                Token,
+                <<"TARGET_UNSUPPORTED">>,
+                <<"Calls are not enabled on that user's server">>
+            );
+        _ ->
+            deliver_user(Source, Sub, Pid, Token, Rest, Peer)
+    end;
+deliver_link(server, <<"HANGUP">>, Pid, Token, Rest, _Peer) ->
+    cast({remote_hangup, Pid, Token, reason_of(Rest)});
+deliver_link(server, <<"FAIL">>, Pid, Token, [Code, Text | _], Peer) ->
+    case valid_code(Code) of
+        true -> cast({remote_fail, Pid, Token, Code, bounded_text(Text)});
+        false -> drop_link_line(Peer, invalid_fail_code)
+    end;
+deliver_link(server, _Sub, _Pid, _Token, _Rest, Peer) ->
+    drop_link_line(Peer, missing_params).
+
+deliver_user(
+    {user, #remote_client{key = Key, account = Account}} = Source, Sub, Pid, Token, Rest, Peer
+) ->
+    Party = {remote, Key},
+    case Sub of
+        _ when Sub =:= <<"OFFER">>; Sub =:= <<"ANSWER">> ->
+            case Rest of
+                [PartBin, TotalBin, Chunk | _] ->
+                    case
+                        {
+                            ircd_call_proto:parse_part(PartBin, TotalBin),
+                            ircd_call_proto:valid_chunk(Chunk)
+                        }
+                    of
+                        {{ok, Part, Total}, true} when Sub =:= <<"OFFER">> ->
+                            case local_callee(Pid, Account) of
+                                ok ->
+                                    cast({offer, Party, Pid, Token, Part, Total, Chunk});
+                                {error, Code, Text} ->
+                                    link_fail(Source, Peer, Token, Code, Text)
+                            end;
+                        {{ok, Part, Total}, true} ->
+                            cast({answer, Party, Token, Part, Total, Chunk});
+                        _ ->
+                            drop_link_line(Peer, invalid_params)
+                    end;
+                _ ->
+                    drop_link_line(Peer, missing_params)
+            end;
+        _ ->
+            cast({signal(Sub), Party, Token, reason_of(Rest)})
+    end.
+
+%% The local user a remote user calls: the same checks as for a local
+%% caller (`callee/2`), plus an account for the caller with `require_account`.
+local_callee(Pid, CallerAccount) ->
+    case
+        {
+            ircd_cap:enabled(Pid, ?CAP),
+            needs_account(),
+            CallerAccount,
+            ircd_state_v3:account(Pid)
+        }
+    of
+        {false, _, _, _} ->
+            {error, <<"TARGET_UNSUPPORTED">>, <<"That user's client does not support calls">>};
+        {true, true, undefined, _} ->
+            {error, <<"ACCOUNT_REQUIRED">>, <<"Log in to call users on that server">>};
+        {true, true, _, undefined} ->
+            {error, <<"TARGET_UNSUPPORTED">>, <<"That user is not logged in">>};
+        _ ->
+            ok
+    end.
+
+reason_of([R | _]) -> ircd_call_proto:reason(R);
+reason_of([]) -> <<"normal">>.
+
+%% A FAIL code: 1 to 32 of A-Z, 0-9, and _ (the IRCv3 standard-reply form).
+valid_code(Code) ->
+    byte_size(Code) >= 1 andalso byte_size(Code) =< 32 andalso
+        lists:all(
+            fun(C) ->
+                (C >= $A andalso C =< $Z) orelse (C >= $0 andalso C =< $9) orelse C =:= $_
+            end,
+            binary_to_list(Code)
+        ).
+
+bounded_text(Text) when byte_size(Text) =< 200 -> Text;
+bounded_text(_) -> <<"Call failed">>.
+
+-doc """
+The remote user with folded nick `Key` quit, was killed, or was split
+away: end their call. Called by `m:ircd_state_link` and
+`m:ircd_state_net`; a no-op when calls are not configured.
+""".
+-spec remote_gone(binary()) -> ok.
+remote_gone(Key) ->
+    cast({remote_gone, Key}).
+
+-doc """
+The remote user `OldKey` is now `NewKey` (a nick change): their call
+continues under the new name.
+""".
+-spec remote_renamed(binary(), binary()) -> ok.
+remote_renamed(OldKey, NewKey) ->
+    cast({remote_renamed, OldKey, NewKey}).
 
 %%% gen_server
 
@@ -265,6 +499,33 @@ handle_cast({reject, Pid, Token, Reason}, State) ->
     {noreply, reject(Pid, Token, Reason, State)};
 handle_cast({hangup, Pid, Token, Reason}, State) ->
     {noreply, hangup(Pid, Token, Reason, State)};
+handle_cast({remote_hangup, Pid, Token, Reason}, State) ->
+    %% The far server ended the call (timeout, disconnect, media failure).
+    case lookup(Pid, Token, State) of
+        {ok, Call} -> {noreply, end_call(Call, Reason, {except, other(Call, Pid)}, State)};
+        error -> {noreply, State}
+    end;
+handle_cast({remote_fail, Pid, Token, Code, Text}, State) ->
+    %% The far server refused the call (busy, unsupported client, limits).
+    case lookup(Pid, Token, State) of
+        {ok, Call} ->
+            fail(Pid, Code, [Token], Text),
+            {noreply, end_call(Call, <<"refused">>, none, State)};
+        error ->
+            {noreply, State}
+    end;
+handle_cast({remote_gone, Key}, #{busy := Busy, chunks := Chunks} = State) ->
+    Party = {remote, Key},
+    State1 = State#{chunks := maps:filter(fun({P, _, _}, _) -> P =/= Party end, Chunks)},
+    case Busy of
+        #{Party := Id} ->
+            Call = maps:get(Id, maps:get(calls, State1)),
+            {noreply, end_call(Call, <<"disconnected">>, {except, Party}, State1)};
+        #{} ->
+            {noreply, State1}
+    end;
+handle_cast({remote_renamed, OldKey, NewKey}, State) ->
+    {noreply, rekey({remote, OldKey}, {remote, NewKey}, State)};
 handle_cast(_, State) ->
     {noreply, State}.
 
@@ -450,30 +711,89 @@ start_call(Caller, Callee, Token, Sdp, #{busy := Busy, server := Server} = State
             State;
         false ->
             Id = <<Server/binary, "-", (hex(8))/binary>>,
+            %% The caller's server anchors the media; a call from a user
+            %% on another server is only relayed here.
+            Mode =
+                case Caller of
+                    {remote, _} -> relay;
+                    _ -> anchor
+                end,
             Call = #{
                 id => Id,
                 token => Token,
                 caller => Caller,
                 callee => Callee,
+                mode => Mode,
                 state => offering,
                 from_tag => <<"a", (hex(6))/binary>>,
                 to_tag => <<"b", (hex(6))/binary>>,
                 started => now_ms(),
                 timer => undefined,
                 timer_ref => undefined,
-                monitors => [monitor(process, Caller), monitor(process, Callee)]
+                monitors => [monitor(process, P) || P <- [Caller, Callee], is_pid(P)]
             },
-            logger:info(#{event => call_started, call => Id}),
+            logger:info(#{event => call_started, call => Id, mode => Mode, remote => remote(Call)}),
             State1 = put_call(Call, State),
-            ng_request(Id, offer, ircd_call_proto:offer(Id, maps:get(from_tag, Call), Sdp), State1)
+            case Mode of
+                anchor ->
+                    ng_request(
+                        Id, offer, ircd_call_proto:offer(Id, maps:get(from_tag, Call), Sdp), State1
+                    );
+                relay ->
+                    %% The offer was rewritten by the caller's rtpengine.
+                    media_result(offer, {ok, Sdp}, Call, State1)
+            end
+    end.
+
+%% Whether one party is a user on another server.
+remote(#{caller := Caller, callee := Callee}) ->
+    not (is_pid(Caller) andalso is_pid(Callee)).
+
+%% The other party of `Call`.
+other(#{caller := Caller, callee := Callee}, Party) ->
+    case Party of
+        Caller -> Callee;
+        _ -> Caller
+    end.
+
+%% A remote user's nick changed: their call, chunks, and rate bucket follow.
+rekey(Old, New, #{busy := Busy} = State) ->
+    #{chunks := Chunks, rate := Rate, parties := Parties, calls := Calls} = State,
+    Swap = fun
+        (P) when P =:= Old -> New;
+        (P) -> P
+    end,
+    State1 = State#{
+        chunks := maps:from_list([{{Swap(P), T, K}, V} || {{P, T, K}, V} <- maps:to_list(Chunks)]),
+        rate := maps:from_list([{Swap(P), V} || {P, V} <- maps:to_list(Rate)])
+    },
+    case Busy of
+        #{Old := Id} ->
+            #{caller := Caller, callee := Callee, token := Token} = Call = maps:get(Id, Calls),
+            Moved = Call#{caller := Swap(Caller), callee := Swap(Callee)},
+            State1#{
+                busy := (maps:remove(Old, Busy))#{New => Id},
+                parties := (maps:remove({Old, Token}, Parties))#{{New, Token} => Id},
+                calls := Calls#{Id := Moved}
+            };
+        #{} ->
+            State1
     end.
 
 answer_call(Callee, Token, Sdp, State) ->
     case lookup(Callee, Token, State) of
         {ok, #{id := Id, callee := Callee, state := ringing} = Call} ->
-            State1 = put_call(Call#{state := answering}, State),
-            #{from_tag := From, to_tag := To} = Call,
-            ng_request(Id, answer, ircd_call_proto:answer(Id, From, To, Sdp), State1);
+            Answering = Call#{state := answering},
+            State1 = put_call(Answering, State),
+            case maps:get(mode, Call, anchor) of
+                anchor ->
+                    #{from_tag := From, to_tag := To} = Call,
+                    ng_request(Id, answer, ircd_call_proto:answer(Id, From, To, Sdp), State1);
+                relay ->
+                    %% The caller's server passes the answer through its
+                    %% rtpengine before the caller sees it.
+                    media_result(answer, {ok, Sdp}, Answering, State1)
+            end;
         _ ->
             fail(Callee, <<"INVALID_STATE">>, [Token], <<"The call cannot be answered now">>),
             State
@@ -563,10 +883,12 @@ end_call(
         end,
     lists:foreach(
         fun(P) ->
-            case nick_of(P) of
-                undefined ->
+            case {nick_of(P), P} of
+                {undefined, _} ->
                     ok;
-                Nick ->
+                {Nick, {remote, Key}} ->
+                    link_send(Key, Server, [<<"HANGUP">>, Nick, Token], Reason);
+                {Nick, _} ->
                     ircd_state_send:send(P, Server, <<"CALL">>, [<<"HANGUP">>, Nick, Token], Reason)
             end
         end,
@@ -586,7 +908,10 @@ end_call(
         parties := maps:without([{Caller, Token}, {Callee, Token}], maps:get(parties, State)),
         busy := maps:without([Caller, Callee], maps:get(busy, State))
     },
-    send_ng(ircd_call_proto:frame(cookie(), ircd_call_proto:delete(Id)), State1),
+    case maps:get(mode, Call, anchor) of
+        anchor -> send_ng(ircd_call_proto:frame(cookie(), ircd_call_proto:delete(Id)), State1);
+        relay -> ok
+    end,
     State1.
 
 put_call(#{id := Id, caller := Caller, callee := Callee, token := Token} = Call, State) ->
@@ -726,25 +1051,56 @@ relay_sdp(From, To, Kind, Token, Sdp) ->
 %% One `CALL` line to `To` with `From`'s prefix. `Tail` is a reason, `none`,
 %% or `{Chunk, [Part, Total]}` for a description chunk.
 relay(From, To, [Kind], Token, Tail) ->
-    case {mnesia:dirty_read(client, From), nick_of(To)} of
-        {[#client{} = Source], Nick} when Nick =/= undefined ->
-            Prefix = ircd_state_send:prefix(Source),
-            case Tail of
-                {Chunk, PartTotal} ->
-                    ircd_state_send:send(
-                        To, Prefix, <<"CALL">>, [Kind, Nick, Token | PartTotal], Chunk
-                    );
-                _ ->
-                    ircd_state_send:send(To, Prefix, <<"CALL">>, [Kind, Nick, Token], Tail)
+    case {prefix_of(From), nick_of(To)} of
+        {Prefix, Nick} when Prefix =/= undefined, Nick =/= undefined ->
+            {Params, Trailing} =
+                case Tail of
+                    {Chunk, PartTotal} -> {[Kind, Nick, Token | PartTotal], Chunk};
+                    _ -> {[Kind, Nick, Token], Tail}
+                end,
+            case To of
+                {remote, Key} -> link_send(Key, Prefix, Params, Trailing);
+                _ -> ircd_state_send:send(To, Prefix, <<"CALL">>, Params, Trailing)
             end;
         _ ->
             ok
     end.
 
+%% The source prefix of a party: a local session's `nick!user@host`, or a
+%% remote user's as its server announced it.
+prefix_of({remote, Key}) ->
+    case mnesia:dirty_read(remote_client, Key) of
+        [#remote_client{nick = Nick, user = User, host = Host}] ->
+            <<Nick/binary, "!", User/binary, "@", Host/binary>>;
+        [] ->
+            undefined
+    end;
+prefix_of(Pid) ->
+    case mnesia:dirty_read(client, Pid) of
+        [#client{} = Source] -> ircd_state_send:prefix(Source);
+        [] -> undefined
+    end.
+
+nick_of({remote, Key}) ->
+    case mnesia:dirty_read(remote_client, Key) of
+        [#remote_client{nick = Nick}] -> Nick;
+        [] -> undefined
+    end;
 nick_of(Pid) ->
     case mnesia:dirty_read(client, Pid) of
         [#client{nick = Nick}] when Nick =/= <<"*">> -> Nick;
         _ -> undefined
+    end.
+
+%% Send a `CALL` line toward the remote user `Key` on the link they are
+%% reached through.
+link_send(Key, Prefix, Params, Trailing) ->
+    case mnesia:dirty_read(remote_client, Key) of
+        [#remote_client{peer = Peer}] ->
+            _ = ircd_links:send(Peer, ircd_wire:line(Prefix, <<"CALL">>, Params, Trailing)),
+            ok;
+        [] ->
+            ok
     end.
 
 alive(Pid) ->

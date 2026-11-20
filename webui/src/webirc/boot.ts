@@ -2,6 +2,7 @@
 // page (found by element id), in this order. Called once, after the chat
 // view's markup is in the DOM (app/pages/webirc/WebircPage.tsx).
 import { init as init_settings } from "./settings.ts";
+import { init as init_delete_data } from "./delete_data.ts";
 import { init as init_session } from "./session.ts";
 import { init as init_calls_ui } from "./calls_ui.ts";
 import { init as init_call_settings_ui } from "./call_settings_ui.ts";
@@ -29,6 +30,7 @@ export function boot(): void {
   if (started) return;
   started = true;
   init_settings();
+  init_delete_data();
   init_session();
   init_calls_ui();
   init_call_settings_ui();

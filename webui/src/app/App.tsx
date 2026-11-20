@@ -16,6 +16,7 @@ const LOADERS: Record<PageName, () => Promise<PageModule>> = {
   signup: () => import("./pages/auth/SignupPage.tsx"),
   verify: () => import("./pages/auth/VerifyPage.tsx"),
   recover: () => import("./pages/auth/RecoverPage.tsx"),
+  login: () => import("./pages/auth/AdminLoginPage.tsx"),
   admin: () => import("./pages/admin/AdminPage.tsx"),
 };
 
@@ -25,6 +26,7 @@ const STYLES: Record<PageName, string> = {
   signup: "signup.css",
   verify: "verify.css",
   recover: "recover.css",
+  login: "login.css",
   admin: "admin.css",
 };
 
@@ -33,6 +35,7 @@ const TITLES: Record<PageName, string> = {
   signup: "Sign Up",
   verify: "Verify Account",
   recover: "Recover Password",
+  login: "Admin Sign In",
   admin: "Admin",
 };
 
@@ -48,6 +51,7 @@ function available(page: PageName): boolean {
       return f.verification;
     case "recover":
       return f.recovery;
+    case "login":
     case "admin":
       return true;
   }

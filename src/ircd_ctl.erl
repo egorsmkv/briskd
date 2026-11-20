@@ -82,6 +82,7 @@ Subcommands:
     | {reset_password, binary(), binary()}
     | {verify_account, binary()}
     | {delete_account, binary()}
+    | {erase_account, binary()}
     | {create_channel, binary(), binary()}
     | {delete_channel, binary(), binary()}
     | {set_channel_modes, binary(), binary(), [binary()]}
@@ -545,6 +546,19 @@ handle_state_action({delete_account, Name}, Server) ->
             mnesia:dirty_delete(account, Key),
             logger:notice(#{event => ctl_account_deleted, account => Actual}),
             {ok, #{status => <<"deleted">>, account => Actual}}
+    end;
+handle_state_action({erase_account, Name}, Server) ->
+    %% "Delete my data" (WebIRC settings): the account as delete_account
+    %% removes it, then what it wrote from stored history.
+    case handle_state_action({delete_account, Name}, Server) of
+        {ok, #{account := Actual} = Reply} ->
+            #{channel := C, direct := D} = ircd_state_history:erase_account(
+                ircd_wire:fold(Actual)
+            ),
+            logger:notice(#{event => account_erased, channel_messages => C, direct_messages => D}),
+            {ok, Reply#{channel_messages => C, direct_messages => D}};
+        Other ->
+            Other
     end;
 handle_state_action({create_channel, Name, Topic}, Server) ->
     case ircd_state_channel:admin_create(Name, Topic, Server) of

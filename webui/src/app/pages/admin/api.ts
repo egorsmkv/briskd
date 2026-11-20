@@ -158,9 +158,19 @@ export interface OverviewPayload {
   };
 }
 
+/**
+ * The session ended (expired, signed out elsewhere, or the admin password
+ * changed): go to the sign-in page, then back to this tab.
+ */
+export function toLogin(): void {
+  const next = encodeURIComponent(location.pathname);
+  location.assign(`/admin/login?next=${next}`);
+}
+
 /** GET a JSON document as text (uncached); throws "HTTP <status>". */
 async function getText(url: string): Promise<string> {
   const res = await fetch(url, { cache: "no-store" });
+  if (res.status === 401) toLogin();
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return await res.text();
 }
@@ -178,9 +188,20 @@ export function fetchMediaText(): Promise<string> {
 export type ActionReply = Record<string, unknown>;
 
 /** POST /api/action with `{action, args}`. */
-export function postAction(
+export async function postAction(
   action: string,
   args: string[],
 ): Promise<JsonResult<ActionReply>> {
-  return postJson<ActionReply>("/api/action", { action, args });
+  const reply = await postJson<ActionReply>("/api/action", { action, args });
+  if (reply.status === 401) toLogin();
+  return reply;
+}
+
+/** End the session (POST /api/admin/logout) and show the sign-in page. */
+export async function signOut(): Promise<void> {
+  try {
+    await postJson("/api/admin/logout", {});
+  } finally {
+    location.assign("/admin/login");
+  }
 }

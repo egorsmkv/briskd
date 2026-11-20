@@ -1,5 +1,6 @@
 -module(ircd_state_history).
 -export([
+    erase_account/1,
     valid_marker_target/1,
     chathistory/3,
     entry/7,
@@ -324,6 +325,63 @@ note_direct({FromAccount, _} = From, {ToAccount, _} = To, Target, #{cmd := Comma
     end;
 note_direct(_, _, _, _) ->
     ok.
+
+-doc """
+Remove what the account `Folded` (its folded name) wrote from stored
+history, for "Delete my data": its messages in every channel history, its
+messages in its direct conversations, and every direct conversation whose
+other side is a nickname (only the account could read those). A
+conversation with another account keeps that account's own messages.
+Entries stored by older releases as tuples carry no account and are kept.
+Returns the number of channel and direct messages removed. Call from
+`m:ircd_state`.
+""".
+-spec erase_account(binary()) -> #{channel := non_neg_integer(), direct := non_neg_integer()}.
+erase_account(Folded) ->
+    Mine = fun
+        (#{account := A}) when is_binary(A) -> ircd_wire:fold(A) =:= Folded;
+        (_) -> false
+    end,
+    Channel = lists:sum([
+        begin
+            {Gone, Kept} = lists:partition(Mine, Entries),
+            case Gone of
+                [] -> ok;
+                _ -> mnesia:dirty_write(Row#channel_history{entries = Kept})
+            end,
+            length(Gone)
+        end
+     || Key <- ircd_state:table_keys(channel_history),
+        [#channel_history{entries = Entries} = Row] <- [mnesia:dirty_read(channel_history, Key)]
+    ]),
+    Me = {account, Folded},
+    Direct = lists:sum([
+        case {mnesia:dirty_read(direct_history, Key), Other} of
+            {[#direct_history{entries = Entries}], {nick, _}} ->
+                mnesia:dirty_delete(direct_history, Key),
+                length([E || E <- Entries, Mine(E)]);
+            {[#direct_history{entries = Entries} = Row], _} ->
+                {Gone, Kept} = lists:partition(Mine, Entries),
+                case {Gone, Kept} of
+                    {[], _} -> ok;
+                    {_, []} -> mnesia:dirty_delete(direct_history, Key);
+                    _ -> mnesia:dirty_write(Row#direct_history{entries = Kept})
+                end,
+                length(Gone);
+            {[], _} ->
+                0
+        end
+     || {A, B} = Key <- ircd_state:table_keys(direct_history),
+        Other <- [
+            if
+                A =:= Me -> B;
+                B =:= Me -> A;
+                true -> none
+            end
+        ],
+        Other =/= none
+    ]),
+    #{channel => Channel, direct => Direct}.
 
 %% A conversation participant: `{account, Folded}` or `{nick, Folded}`.
 party({undefined, Nick}) -> {nick, ircd_wire:fold(Nick)};

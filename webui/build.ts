@@ -7,7 +7,14 @@ await Deno.mkdir(outDir, { recursive: true });
 // One single-page app (src/app/main.tsx) serves every page. Each page is a
 // lazily loaded chunk (ESM code splitting), so the chat does not download
 // the admin code and the other way round.
-const scssEntries = ["admin", "signup", "verify", "recover", "webirc"];
+const scssEntries = [
+  "admin",
+  "signup",
+  "verify",
+  "recover",
+  "login",
+  "webirc",
+];
 
 // Minimum browsers the shipped code actually needs (not just syntax, which
 // esbuild lowers): regex lookbehind in common/format.ts (Safari 16.4),
