@@ -7,3 +7,9 @@
 /doc/
 /lego.env
 /webui/node_modules/
+# Generated: built from webui/ by `just build-webui` (dev container, CI) or
+# the webui stage of Dockerfile.prod. Never committed.
+/priv/webui/assets/
+# Python bytecode caches (bench/, test/).
+__pycache__/
+*.pyc

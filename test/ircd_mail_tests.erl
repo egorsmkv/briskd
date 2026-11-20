@@ -163,16 +163,18 @@ smtp_web_verify_integration() ->
                 byte_size(integer_to_binary(WebPort))
         ),
 
-        %% Visiting /verify without query parameters renders the email + code + ALTCHA form.
+        %% /verify serves the web app on its verify page; the form (email, code,
+        %% ALTCHA) is rendered in the browser, and enabled by the config block.
         {200, FormBody} = http_get(WebPort, <<"/verify">>),
-        ?assert(has(FormBody, <<"<title>Verify Account - ircd</title>">>)),
-        ?assert(has(FormBody, <<"name=\"email\"">>)),
-        ?assert(has(FormBody, <<"name=\"code\"">>)),
-        ?assert(has(FormBody, <<"altcha-check">>)),
+        ?assert(has(FormBody, <<"<title>Verify Account - ">>)),
+        ?assert(has(FormBody, <<"/assets/verify.css">>)),
+        ?assert(has(FormBody, <<"\"verification\":true">>)),
 
-        %% Visiting /verify with email link prefills the form (and still requires ALTCHA on submit).
-        {200, PrefillBody} = http_get(WebPort, PathAndQuery),
-        ?assert(has(PrefillBody, <<"value=\"alice\"">>)),
+        %% The email link opens the same page; the app reads the account and
+        %% code from the URL itself, so the server does not echo them back.
+        {200, LinkBody} = http_get(WebPort, PathAndQuery),
+        ?assert(has(LinkBody, <<"<title>Verify Account - ">>)),
+        ?assertNot(has(LinkBody, <<"value=\"alice\"">>)),
 
         %% Extract the code from the email link query string.
         [_, QueryPart] = binary:split(PathAndQuery, <<"?">>),

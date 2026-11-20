@@ -6,6 +6,11 @@
 !src/**
 !include/**
 !priv/**
+# Web UI assets are always built by the webui stage, never taken from a
+# checkout (stale chunks would otherwise end up in the image).
+priv/webui/assets
+!webui/**
+webui/node_modules
 !bin/**
 !config/**
 !bench/release.json

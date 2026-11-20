@@ -4,12 +4,21 @@ Simple HTTP administration WebUI and JSON API for `ircd`.
 
 Opt-in via the `"webui"` configuration object (`bind`, `port`, `username`,
 `password`). When enabled, `ircd_webui` opens a TCP listener (default
-`127.0.0.1`) serving a self-contained single-page dashboard from
-`priv/webui/index.html` and two JSON endpoints:
+`127.0.0.1`) serving the web UI and its JSON endpoints.
 
-- `GET /` (and `GET /webirc`) — public (unauthenticated) browser IRC client
-  over the configured `ws` / `wss` IRCv3 WebSocket listener.
-- `GET /admin` — serves the HTML administration dashboard (HTTP Basic auth).
+Every page is one single-page app (Preact, built from `webui/` into
+`priv/webui/assets`, which is generated and not committed). Each page route
+serves the same shell, `priv/webui/app.html`, with the page's meta tags, its
+stylesheet, and a JSON config block filled in by the server; the app then
+loads that page's code. The pages:
+
+- `GET /`, `/webirc`, `/status`, `/channel/...`, `/dm/...` — public
+  (unauthenticated) browser IRC client over the configured `ws` / `wss`
+  IRCv3 WebSocket listener.
+- `GET /admin` and `/admin/<tab>` — the administration dashboard (HTTP Basic
+  auth).
+- `GET /assets/<name>` — the app's scripts (`app.js` and content-hashed
+  `chunk-*.js`) and page stylesheets.
 - `GET /api/overview` — returns combined server stats, clients, channels,
   server links, accounts, and DroneBL status/bans as JSON (HTTP Basic auth).
 - `POST /api/action` — executes an explicitly whitelisted `m:ircd_ctl`
@@ -31,7 +40,8 @@ Opt-in via the `"webui"` configuration object (`bind`, `port`, `username`,
 
 Security controls:
 
-- Every route requires HTTP Basic authentication verified in constant time
+- The admin routes (`/admin`, `/admin/*`, `/api/overview`, `/api/media`,
+  `/api/action`) require HTTP Basic authentication verified in constant time
   with `ircd_config:secret_match/2`. Credentials are read from the active
   configuration so `REHASH` updates them live.
 - `POST /api/action` requires the `X-Requested-With: ircd-webui` header to

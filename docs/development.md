@@ -50,12 +50,26 @@ If `just` is installed, `just --list` shows the available commands:
 
 ## WebUI code layout
 
-The browser pages are TypeScript under `webui/src`, bundled by
-`webui/build.ts` (esbuild) into `priv/webui/assets`. `deno task check`,
-`deno task lint`, `deno task test`, and `deno task build` run in `webui/`.
+The browser pages are one Preact single-page app (TypeScript and TSX under
+`webui/src`), bundled by `webui/build.ts` (esbuild, with a lazily loaded
+chunk per page) into `priv/webui/assets`. Those assets are generated and
+not committed (`.gitignore`): `just build-webui` writes them, and runs on its
+own when the development container starts and before `just test`; the
+`webui` stage of `Dockerfile.prod` builds them for the production image.
+`deno task check`, `deno task lint`, `deno task test`, and `deno task build`
+run in `webui/` (inside the development container, which has Deno).
 
-WebIRC (`webirc.ts`) is only an entry point: it calls each module's `init()`
-under `webui/src/webirc/` in a fixed order.
+`webui/src/app/` is the app: `main.tsx` mounts `App.tsx`, which picks the
+page for the path (`routes.ts`), loads its chunk and stylesheet, and keeps
+the chat mounted while other pages are shown, so its connection survives.
+`router.ts` handles in-app links and back/forward; `config.ts` reads the
+settings the server puts in the HTML shell (`priv/webui/app.html`).
+
+| Path | Contents |
+| --- | --- |
+| `app/pages/auth/` | Sign-up, account verification, and password recovery pages; `app/components/auth.tsx` holds their card, notice, field, and ALTCHA components |
+| `app/pages/admin/` | The admin panel: tabs, tables, dialogs, toasts, and a typed store over `/api/overview`, `/api/media`, `/api/action` |
+| `app/pages/webirc/` | The chat page: typed markup in `view/`; `webirc/boot.ts` then starts the WebIRC controllers below in a fixed order |
 
 | Module | Contents |
 | --- | --- |

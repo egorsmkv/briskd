@@ -5,7 +5,6 @@ import { buffers, S } from "./state.ts";
 import { type SavedSession } from "./types.ts";
 import { isChan } from "./util.ts";
 
-
 export const WS_PORT = config().wsPort;
 
 export const WSS_PORT = config().wssPort;

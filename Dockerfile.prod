@@ -1,5 +1,13 @@
-# Production image: build the release (ERTS included) and run it on a slim
-# Debian base that matches erlang:29.1.2 (Debian 13 "trixie").
+# Production image: build the web UI assets and the release (ERTS included),
+# and run it on a slim Debian base that matches erlang:29.1.2 (Debian 13
+# "trixie").
+
+# Web UI: TypeScript/TSX bundle and stylesheets into priv/webui/assets. They
+# are generated here and never committed.
+FROM denoland/deno:2.9.8 AS webui
+WORKDIR /src/webui
+COPY webui ./
+RUN deno task build
 
 FROM erlang:29.1.2 AS build
 
@@ -19,6 +27,7 @@ RUN rebar3 as prod get-deps
 COPY src src
 COPY include include
 COPY priv priv
+COPY --from=webui /src/priv/webui/assets priv/webui/assets
 COPY config config
 COPY bin bin
 COPY bench/release.json bench/release.json

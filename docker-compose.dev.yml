@@ -37,7 +37,8 @@ services:
       context: .
       dockerfile: Dockerfile
     working_dir: /workspace
-    command: ["just", "run-config", "config/ircd.dev.json"]
+    # Web UI assets are generated (not committed): build them, then start.
+    command: ["sh", "-c", "just build-webui && just run-config config/ircd.dev.json"]
     depends_on:
       - inbucket
       - rustfs
@@ -51,11 +52,13 @@ services:
     volumes:
       - .:/workspace
       - rebar3-cache:/root/.cache/rebar3
+      - deno-cache:/root/.cache/deno
       - ircd-mnesia:/var/lib/ircd/mnesia
     stdin_open: true
     tty: true
 
 volumes:
   rebar3-cache:
+  deno-cache:
   ircd-mnesia:
   rustfs-data:

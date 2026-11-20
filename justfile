@@ -41,12 +41,12 @@ xref:
 dialyzer:
     rebar3 dialyzer
 
-# Run the Erlang unit test suite.
-test:
+# Run the Erlang unit test suite (the web UI tests fetch the built assets).
+test: build-webui
     rebar3 eunit
 
 # Run the unit tests with line coverage; fail below 90% total.
-cover:
+cover: build-webui
     rebar3 eunit --cover
     rebar3 cover --verbose --min_coverage 90
 
