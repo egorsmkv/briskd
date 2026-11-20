@@ -27,7 +27,7 @@ import {
 import { isChan } from "./util.ts";
 import { iconEl } from "../common/icons.ts";
 import { createAvatar } from "./chat/avatar.ts";
-import { scheduleDmSave } from "./dm_cache.ts";
+import { scheduleHistorySave } from "./history_cache.ts";
 
 export function closeDrawers(): void {
   $("sidebar-left").classList.remove("open");
@@ -199,7 +199,7 @@ export function buildBufRow(buf: BufferState, key: string): HTMLElement {
         sendRaw(`PART ${buf.name}`);
       } else {
         buffers.delete(key);
-        scheduleDmSave();
+        scheduleHistorySave();
         monitorRemove(buf.name);
         if (S.activeBuf === key) switchBuf("*status");
         else renderBuffers();

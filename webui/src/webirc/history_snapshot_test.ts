@@ -1,5 +1,5 @@
 /// <reference lib="deno.ns" />
-import { MAX_CONVERSATIONS, MAX_LINES, snapshot } from "./dm_snapshot.ts";
+import { MAX_CONVERSATIONS, MAX_LINES, snapshot } from "./history_snapshot.ts";
 import type { ChatLine } from "./types.ts";
 
 function assert(cond: boolean, msg: string): void {
@@ -10,7 +10,7 @@ function line(epochMs: number, text = "hi"): ChatLine {
   return { time: "12:00", epochMs, nick: "bot", text, kind: "" };
 }
 
-Deno.test("snapshot keeps private conversations only, trimmed", () => {
+Deno.test("snapshot keeps channels and private conversations, trimmed", () => {
   const many = Array.from(
     { length: MAX_LINES + 20 },
     (_, i) => line(i, `m${i}`),
@@ -22,7 +22,10 @@ Deno.test("snapshot keeps private conversations only, trimmed", () => {
     ["helper", { name: "helper", lines: many }],
     ["empty", { name: "empty", lines: [] }],
   ]);
-  assert(Object.keys(out).join() === "helper", Object.keys(out).join());
+  assert(
+    Object.keys(out).sort().join() === "#lobby,helper",
+    Object.keys(out).join(),
+  );
   const kept = out.helper.lines;
   assert(kept.length === MAX_LINES, `kept ${kept.length}`);
   assert(kept[0].text === "m20", "oldest lines dropped first");

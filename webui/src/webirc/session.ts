@@ -1,7 +1,7 @@
 // Saved session (sessionStorage), URL paths for conversations, and the WebSocket URL default.
 import { config } from "../app/config.ts";
 import { RECLAIM_SECRET, reclaimSecret } from "../common/reconnect.ts";
-import { clearDms } from "./dm_cache.ts";
+import { clearHistory } from "./history_cache.ts";
 import { byId as $ } from "../common/dom.ts";
 import { buffers, S } from "./state.ts";
 import { type SavedSession } from "./types.ts";
@@ -107,7 +107,7 @@ export function clearSession(): void {
     // ignore
   }
   memorySecret = null;
-  clearDms();
+  clearHistory();
 }
 
 const RECLAIM_KEY = "ircd-webirc-reclaim";

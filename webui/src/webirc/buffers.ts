@@ -1,6 +1,6 @@
 // Conversations: creation, adding lines, mentions, page title and unread counters.
 import { updateDynamicFavicon } from "../common/favicon.ts";
-import { scheduleDmSave } from "./dm_cache.ts";
+import { scheduleHistorySave } from "./history_cache.ts";
 import { ircFold } from "../common/ircv3.ts";
 import { SAFE_MSGID_RE } from "./constants.ts";
 import { appendLineDom } from "./chat/list.ts";
@@ -143,8 +143,8 @@ export function addLine(
   const prev = buf.lines[buf.lines.length - 1];
   buf.lines.push(entry);
   if (buf.lines.length > 600) buf.lines.shift();
-  // Private conversations are kept across a page reload (dm_cache.ts).
-  if (!isChan(bufName) && bufName !== "*status") scheduleDmSave();
+  // Conversations are kept across a page reload (history_cache.ts).
+  if (bufName !== "*status") scheduleHistorySave();
 
   const isFromOther = !!entry.nick &&
     ircFold(entry.nick) !== ircFold(S.myNick);

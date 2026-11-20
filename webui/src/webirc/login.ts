@@ -3,7 +3,7 @@ import { initAltcha } from "../common/altcha.ts";
 import { byId as $, errorMessage, postJson } from "../common/dom.ts";
 import { ircFold } from "../common/ircv3.ts";
 import { ensureBuf } from "./buffers.ts";
-import { restoreDms } from "./dm_cache.ts";
+import { restoreHistory } from "./history_cache.ts";
 import { connectSocket, stopReconnecting } from "./connection.ts";
 import { loadSession, pathToBuffer, saveSession } from "./session.ts";
 import { showMyNick, switchBuf } from "./sidebar.ts";
@@ -39,8 +39,9 @@ export function startSession(opts: {
   try {
     buffers.clear();
     ensureBuf("*status");
-    // This tab's private conversations from before a reload.
-    restoreDms();
+    // This tab's conversations from before a reload: only newer messages
+    // are fetched for them.
+    restoreHistory();
     if (S.desiredBuf && S.desiredBuf !== "*status" && !isChan(S.desiredBuf)) {
       ensureBuf(opts.targetBuf || S.desiredBuf);
     }

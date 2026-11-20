@@ -6,7 +6,7 @@
     "lint": "deno lint src build.ts",
     "fmt": "deno fmt src build.ts",
     "fmt-check": "deno fmt --check src build.ts",
-    "test": "deno test --allow-read=styles src/e2ee/crypto_test.ts src/common/format_test.ts src/common/voice_player_test.ts src/common/file_card_test.ts src/common/code_card_test.ts src/common/ircv3_test.ts src/common/multiline_test.ts src/common/reconnect_test.ts src/common/link_preview_test.ts src/webirc/chat/policy_test.ts src/webirc/mention_test.ts src/app/pages/admin/format_test.ts src/common/admin_text_test.ts src/calls_test.ts src/calls_lifecycle_test.ts src/call_settings_test.ts src/common/theme_tokens_test.ts src/webirc/dm_snapshot_test.ts src/webirc/slash_test.ts src/webirc/feature_flags_test.ts src/app/routes_test.ts src/webirc/my_data_test.ts"
+    "test": "deno test --allow-read=styles src/e2ee/crypto_test.ts src/common/format_test.ts src/common/voice_player_test.ts src/common/file_card_test.ts src/common/code_card_test.ts src/common/ircv3_test.ts src/common/multiline_test.ts src/common/reconnect_test.ts src/common/link_preview_test.ts src/webirc/chat/policy_test.ts src/webirc/mention_test.ts src/app/pages/admin/format_test.ts src/common/admin_text_test.ts src/calls_test.ts src/calls_lifecycle_test.ts src/call_settings_test.ts src/common/theme_tokens_test.ts src/webirc/history_snapshot_test.ts src/webirc/slash_test.ts src/webirc/feature_flags_test.ts src/app/routes_test.ts src/webirc/my_data_test.ts"
   },
   "compilerOptions": {
     "lib": [

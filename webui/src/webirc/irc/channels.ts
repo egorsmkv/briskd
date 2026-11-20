@@ -55,7 +55,11 @@ export function handleChannels(
       joiner.realname = params[2];
     }
     if (ircFold(nick) === ircFold(S.myNick)) {
-      const rejoin = catchUp.delete(ircFold(chan));
+      // A rejoin after a reconnect, or a channel restored after a page
+      // reload (history_cache.ts), already shows its messages: fetch only
+      // what came after them, and do not take over the open conversation.
+      const rejoin = catchUp.delete(ircFold(chan)) ||
+        historyAfter(buf) !== null;
       if (rejoin) {
         renderBuffers();
       } else if (!S.desiredBuf || S.desiredBuf === ircFold(chan)) {
@@ -65,7 +69,7 @@ export function handleChannels(
         renderBuffers();
       }
       saveSession();
-      const after = rejoin ? historyAfter(buf) : null;
+      const after = historyAfter(buf);
       sendRaw(
         after
           ? `CHATHISTORY AFTER ${chan} ${after} 100`

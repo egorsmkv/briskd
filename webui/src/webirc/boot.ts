@@ -8,7 +8,7 @@ import { init as init_calls_ui } from "./calls_ui.ts";
 import { init as init_call_settings_ui } from "./call_settings_ui.ts";
 import { init as init_e2ee_ui } from "./e2ee_ui.ts";
 import { init as init_buffers } from "./buffers.ts";
-import { init as init_dm_cache } from "./dm_cache.ts";
+import { init as init_history_cache } from "./history_cache.ts";
 import { init as init_sidebar } from "./sidebar.ts";
 import { init as init_connection } from "./connection.ts";
 import { init as init_login } from "./login.ts";
@@ -36,7 +36,7 @@ export function boot(): void {
   init_call_settings_ui();
   init_e2ee_ui();
   init_buffers();
-  init_dm_cache();
+  init_history_cache();
   init_sidebar();
   init_connection();
   init_login();
