@@ -87,36 +87,45 @@ export function computePeaks(
   return raw.map((v) => Math.min(1, Math.max(0.14, v / maxPeak)));
 }
 
-async function decodePeaksFromUrl(url: string): Promise<number[] | null> {
+// Waveforms only need BAR_COUNT peaks, so audio is decoded at a low rate:
+// decodeAudioData resamples to the context's rate, and 8 kHz keeps the
+// decoded PCM ~6x smaller than at 48 kHz. An OfflineAudioContext opens no
+// audio device or rendering thread, unlike a realtime AudioContext.
+const PEAK_SAMPLE_RATE = 8000;
+// One decode at a time: a conversation with many voice notes would otherwise
+// hold every recording's decoded PCM at once.
+let decodeQueue: Promise<unknown> = Promise.resolve();
+
+function decodePeaksFromUrl(url: string): Promise<number[] | null> {
+  const cached = peakCache.get(url);
+  if (cached) return Promise.resolve(cached);
+  const run = decodeQueue.then(() => decodePeaksNow(url));
+  decodeQueue = run.catch(() => {});
+  return run;
+}
+
+async function decodePeaksNow(url: string): Promise<number[] | null> {
   const cached = peakCache.get(url);
   if (cached) return cached;
-
-  const AudioCtx = globalThis.AudioContext ||
-    (globalThis as unknown as { webkitAudioContext?: typeof AudioContext })
-      .webkitAudioContext;
-  if (!AudioCtx) return null;
-
+  const Offline = globalThis.OfflineAudioContext ||
+    (globalThis as unknown as {
+      webkitOfflineAudioContext?: typeof OfflineAudioContext;
+    }).webkitOfflineAudioContext;
+  if (!Offline) return null;
   try {
     const resp = await fetch(url);
     if (!resp.ok) return null;
     const buf = await resp.arrayBuffer();
-    const ctx = new AudioCtx();
-    try {
-      const decoded = await ctx.decodeAudioData(buf);
-      const data = decoded.getChannelData(0);
-      const peaks = computePeaks(data, BAR_COUNT);
-      if (peaks.length === BAR_COUNT) {
-        if (peakCache.size > 120) {
-          const first = peakCache.keys().next().value;
-          if (first) peakCache.delete(first);
-        }
-        peakCache.set(url, peaks);
-        return peaks;
-      }
-      return null;
-    } finally {
-      void ctx.close().catch(() => {});
+    const ctx = new Offline(1, 1, PEAK_SAMPLE_RATE);
+    const decoded = await ctx.decodeAudioData(buf);
+    const peaks = computePeaks(decoded.getChannelData(0), BAR_COUNT);
+    if (peaks.length !== BAR_COUNT) return null;
+    if (peakCache.size > 120) {
+      const first = peakCache.keys().next().value;
+      if (first) peakCache.delete(first);
     }
+    peakCache.set(url, peaks);
+    return peaks;
   } catch {
     return null;
   }
@@ -290,9 +299,20 @@ export function createVoicePlayer(opts: VoicePlayerOptions): HTMLElement {
     });
   }
 
-  // Decode real waveform lazily in the background so visible voice notes show
-  // true amplitude bars right away.
-  ensureRealWaveform();
+  // Decode the real waveform once the player is on screen (cached peaks apply
+  // at once). Each player has its own observer, disconnected after the first
+  // sighting, so a row trimmed from the list leaves nothing registered.
+  if (peakCache.has(url) || typeof IntersectionObserver === "undefined") {
+    ensureRealWaveform();
+  } else {
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) {
+        io.disconnect();
+        ensureRealWaveform();
+      }
+    });
+    io.observe(root);
+  }
 
   function seekToRatio(ratio: number): void {
     const clamped = Math.min(1, Math.max(0, ratio));

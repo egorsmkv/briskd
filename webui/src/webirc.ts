@@ -1812,20 +1812,156 @@ function addLine(
   }
 }
 
-function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
+// --- Message list window ----------------------------------------------------
+//
+// Only the newest DOM_WINDOW lines of the open conversation are in the DOM
+// (each line is ~20 nodes and several listeners, plus any image, voice, or
+// link card). Live messages trim the oldest rows; "Show earlier messages"
+// widens the window by another DOM_WINDOW. The lines themselves stay in
+// `buf.lines` (capped at 600), so nothing is lost.
+
+const DOM_WINDOW = 200;
+/** Rows allowed in the DOM for the open conversation. */
+let renderWindow = DOM_WINDOW;
+/** `.msg` rows currently in #messages. */
+let domLines = 0;
+
+function dayDivider(epochMs: number): HTMLElement {
+  const sep = document.createElement("div");
+  sep.className = "day-divider";
+  const span = document.createElement("span");
+  span.textContent = formatDayLabel(epochMs);
+  sep.appendChild(span);
+  return sep;
+}
+
+function earlierButton(hidden: number): HTMLElement {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "load-earlier";
+  btn.textContent = t("msg.earlier", { n: hidden });
+  btn.onclick = () => {
+    const wrap = $("messages");
+    const before = wrap.scrollHeight;
+    const top = wrap.scrollTop;
+    renderWindow += DOM_WINDOW;
+    renderMessages(buffers.get(activeBuf), "none");
+    // Keep the lines that were on screen where they were.
+    wrap.scrollTop = wrap.scrollHeight - before + top;
+  };
+  return btn;
+}
+
+/**
+ * Rebuild #messages for `buf` from its newest `renderWindow` lines. `scroll`
+ * is "bottom" (jump to newest), "keep" (stay at the bottom if already there,
+ * else keep the offset), or "none" (the caller positions it).
+ */
+function renderMessages(
+  buf: BufferState | undefined,
+  scroll: "bottom" | "keep" | "none",
+): void {
   const wrap = $("messages");
+  const prevTop = wrap.scrollTop;
   const atBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 60;
+  wrap.textContent = "";
+  domLines = 0;
+  if (!buf) return;
+  const start = Math.max(0, buf.lines.length - renderWindow);
+  if (start > 0) wrap.appendChild(earlierButton(start));
+  let prev: ChatLine | undefined;
+  for (let i = start; i < buf.lines.length; i++) {
+    appendLineDom(buf.lines[i], prev, true);
+    prev = buf.lines[i];
+  }
+  if (scroll === "bottom" || (scroll === "keep" && atBottom)) {
+    wrap.scrollTop = wrap.scrollHeight;
+  } else if (scroll === "keep") {
+    wrap.scrollTop = prevTop;
+  }
+}
+
+/** Rows kept at most while the user reads older messages (= lines kept). */
+const DOM_HARD_MAX = 600;
+
+/**
+ * Drop the oldest rows beyond the window. Only at the bottom: while the user
+ * reads older messages nothing they may be looking at is removed, up to
+ * DOM_HARD_MAX; returning to the bottom trims (see the scroll handler).
+ */
+function trimMessages(atBottom: boolean): void {
+  const limit = Math.min(
+    DOM_HARD_MAX,
+    atBottom ? renderWindow : Math.max(renderWindow, DOM_HARD_MAX),
+  );
+  if (domLines <= limit) return;
+  const wrap = $("messages");
+  const before = wrap.scrollHeight;
+  let btn = wrap.firstElementChild?.classList.contains("load-earlier")
+    ? wrap.firstElementChild as HTMLElement
+    : null;
+  const head = () => btn ? btn.nextElementSibling : wrap.firstElementChild;
+  for (let el = head(); el && domLines > limit; el = head()) {
+    if (el.classList.contains("msg")) domLines--;
+    el.remove();
+  }
+  // Leading dividers left without their rows go too.
+  for (
+    let el = head();
+    el?.classList.contains("day-divider") &&
+    !el.nextElementSibling?.classList.contains("msg");
+    el = head()
+  ) {
+    el.remove();
+  }
+  // The rows are the newest `domLines` lines of the buffer. A first row that
+  // continues an author's run is rebuilt with its nick and avatar, and the
+  // list starts with that row's day.
+  const buf = buffers.get(activeBuf);
+  let first = head() as HTMLElement | null;
+  if (first?.classList.contains("msg") && buf) {
+    const line = buf.lines[buf.lines.length - domLines];
+    if (line && first.classList.contains("grouped")) {
+      const fresh = buildLineRow(line, undefined);
+      first.replaceWith(fresh);
+      first = fresh;
+    }
+    if (first.dataset.ts) {
+      wrap.insertBefore(dayDivider(Number(first.dataset.ts)), first);
+    }
+  }
+  const hidden = (buffers.get(activeBuf)?.lines.length ?? 0) - domLines;
+  if (hidden > 0) {
+    if (btn) btn.textContent = t("msg.earlier", { n: hidden });
+    else {
+      btn = earlierButton(hidden);
+      wrap.insertBefore(btn, wrap.firstChild);
+    }
+  }
+  // Reading older messages: keep them in place while the top is trimmed.
+  if (!atBottom) wrap.scrollTop -= before - wrap.scrollHeight;
+}
+
+function appendLineDom(entry: ChatLine, prev?: ChatLine, bulk = false): void {
+  const wrap = $("messages");
+  // A bulk render positions the scroll once at the end; reading layout here
+  // for every line would force a reflow per message.
+  const atBottom = bulk ||
+    wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 60;
 
   // Halloy-style day divider when date changes
   if (!prev || dayKey(entry.epochMs) !== dayKey(prev.epochMs)) {
-    const sep = document.createElement("div");
-    sep.className = "day-divider";
-    const span = document.createElement("span");
-    span.textContent = formatDayLabel(entry.epochMs);
-    sep.appendChild(span);
-    wrap.appendChild(sep);
+    wrap.appendChild(dayDivider(entry.epochMs));
   }
+  wrap.appendChild(buildLineRow(entry, prev));
+  domLines++;
+  if (bulk) return;
+  trimMessages(atBottom);
+  if (atBottom) wrap.scrollTop = wrap.scrollHeight;
+}
 
+/** The row for one line; `prev` decides grouping under the same author. */
+function buildLineRow(entry: ChatLine, prev?: ChatLine): HTMLElement {
   const sameDay = !!prev && dayKey(entry.epochMs) === dayKey(prev.epochMs);
   const grouped = sameDay &&
     !entry.kind &&
@@ -1851,6 +1987,7 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
     (entry.mention ? " mention" : "") +
     (entry.redacted ? " redacted" : "");
   if (entry.msgid) row.dataset.msgid = entry.msgid;
+  row.dataset.ts = String(entry.epochMs);
 
   const renderBodyContent = (): Node => {
     if (entry.redacted) {
@@ -2148,8 +2285,7 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
     });
   }
 
-  wrap.appendChild(row);
-  if (atBottom) wrap.scrollTop = wrap.scrollHeight;
+  return row;
 }
 
 function closeDrawers(): void {
@@ -2185,18 +2321,7 @@ $("btn-close-right").onclick = () => {
 $("drawer-backdrop").onclick = closeDrawers;
 
 function renderActiveMessages(): void {
-  const buf = buffers.get(activeBuf);
-  const wrap = $("messages");
-  const prevTop = wrap.scrollTop;
-  const atBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 60;
-  wrap.textContent = "";
-  if (!buf) return;
-  let prev: ChatLine | undefined;
-  for (const line of buf.lines) {
-    appendLineDom(line, prev);
-    prev = line;
-  }
-  wrap.scrollTop = atBottom ? wrap.scrollHeight : prevTop;
+  renderMessages(buffers.get(activeBuf), "keep");
 }
 
 function isOperatorInBuffer(buf: BufferState | undefined): boolean {
@@ -2234,14 +2359,8 @@ function switchBuf(key: string, updateUrl = true): void {
   topicEl.textContent = bufSubtitle(buf);
   updateTopicButton();
 
-  const wrap = $("messages");
-  wrap.textContent = "";
-  let prev: ChatLine | undefined;
-  for (const line of buf.lines) {
-    appendLineDom(line, prev);
-    prev = line;
-  }
-  wrap.scrollTop = wrap.scrollHeight;
+  renderWindow = DOM_WINDOW;
+  renderMessages(buf, "bottom");
   updateScrollFab();
   renderTypingBar();
   updateE2eeUi();
@@ -3866,6 +3985,7 @@ function runSlashCommand(raw: string, buf: BufferState | undefined): void {
       if (buf) {
         buf.lines = [];
         $("messages").textContent = "";
+        domLines = 0;
       }
       return;
     case "e2ee": {
@@ -5431,6 +5551,13 @@ const msgsEl = $("messages");
 function updateScrollFab(): void {
   const dist = msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight;
   scrollFab.classList.toggle("hidden", dist < 180);
+  // Back at the newest messages after reading older ones: shrink the DOM to
+  // the window again.
+  if (dist < 60 && domLines > DOM_WINDOW) {
+    renderWindow = DOM_WINDOW;
+    trimMessages(true);
+    msgsEl.scrollTop = msgsEl.scrollHeight;
+  }
 }
 msgsEl.addEventListener("scroll", updateScrollFab, { passive: true });
 scrollFab.addEventListener("click", () => {

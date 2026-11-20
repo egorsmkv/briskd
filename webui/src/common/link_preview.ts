@@ -16,6 +16,16 @@ export interface LinkPreviewData {
 }
 
 const previewCache = new Map<string, LinkPreviewData | null>();
+const PREVIEW_CACHE_MAX = 200;
+
+function cachePreview(url: string, data: LinkPreviewData | null): void {
+  previewCache.delete(url);
+  previewCache.set(url, data);
+  if (previewCache.size > PREVIEW_CACHE_MAX) {
+    const oldest = previewCache.keys().next().value;
+    if (oldest !== undefined) previewCache.delete(oldest);
+  }
+}
 const HTTP_URL_RE = /https?:\/\/[^\s<>"'`)\]]{4,1000}/i;
 
 /** Extract the first public http(s) URL from a chat message, if any. */
@@ -78,12 +88,12 @@ export function createLinkPreviewSlot(url: string): HTMLElement {
     headers: { "X-Requested-With": "ircd-webui" },
   }).then(async (resp) => {
     if (!resp.ok) {
-      previewCache.set(url, null);
+      cachePreview(url, null);
       return;
     }
     const data = (await resp.json()) as Partial<LinkPreviewData>;
     if (!data.title || !data.domain) {
-      previewCache.set(url, null);
+      cachePreview(url, null);
       return;
     }
     const clean: LinkPreviewData = {
@@ -97,10 +107,10 @@ export function createLinkPreviewSlot(url: string): HTMLElement {
       const first = previewCache.keys().next().value;
       if (first) previewCache.delete(first);
     }
-    previewCache.set(url, clean);
+    cachePreview(url, clean);
     slot.appendChild(buildCardDom(clean));
   }).catch(() => {
-    previewCache.set(url, null);
+    cachePreview(url, null);
   });
 
   return slot;

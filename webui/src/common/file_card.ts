@@ -81,7 +81,27 @@ export type E2eeAttachmentPayload =
     sha256: string;
   };
 
-const decryptedBlobCache = new Map<string, string>();
+// Decrypted E2EE attachments as object URLs, newest last. Bounded by total
+// size as well as count: each entry keeps its plaintext Blob alive.
+const decryptedBlobCache = new Map<string, { url: string; size: number }>();
+const BLOB_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+const BLOB_CACHE_MAX_ENTRIES = 40;
+let blobCacheBytes = 0;
+
+function cacheDecryptedBlob(id: string, url: string, size: number): void {
+  decryptedBlobCache.set(id, { url, size });
+  blobCacheBytes += size;
+  while (
+    decryptedBlobCache.size > 1 &&
+    (blobCacheBytes > BLOB_CACHE_MAX_BYTES ||
+      decryptedBlobCache.size > BLOB_CACHE_MAX_ENTRIES)
+  ) {
+    const [oldId, old] = decryptedBlobCache.entries().next().value!;
+    URL.revokeObjectURL(old.url);
+    blobCacheBytes -= old.size;
+    decryptedBlobCache.delete(oldId);
+  }
+}
 const SAFE_E2EE_ID_RE = /^[0-9a-f]{32}\.[a-z0-9]{1,8}$/;
 const SAFE_IMAGE_MIMES = new Set([
   "image/png",
@@ -371,7 +391,7 @@ async function fetchAndDecryptBlobUrl(
   iv: string,
   sha256: string,
 ): Promise<string> {
-  const cached = decryptedBlobCache.get(id);
+  const cached = decryptedBlobCache.get(id)?.url;
   if (cached) return cached;
   const resp = await fetch(`/api/files/${id}`);
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -384,14 +404,7 @@ async function fetchAndDecryptBlobUrl(
       : "application/octet-stream";
   const blob = new Blob([pt as BlobPart], { type: safeMime });
   const url = URL.createObjectURL(blob);
-  if (decryptedBlobCache.size > 80) {
-    const first = decryptedBlobCache.entries().next().value;
-    if (first) {
-      URL.revokeObjectURL(first[1]);
-      decryptedBlobCache.delete(first[0]);
-    }
-  }
-  decryptedBlobCache.set(id, url);
+  cacheDecryptedBlob(id, url, blob.size);
   return url;
 }
 

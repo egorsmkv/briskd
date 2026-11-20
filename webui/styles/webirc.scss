@@ -2598,6 +2598,17 @@ body.layout-mobile {
 }
 
 /* Typing indicator, compose banner, reactions, replies, editing, redaction */
+// Top of the message list when older lines are kept out of the DOM.
+.load-earlier {
+  display: block;
+  margin: 8px auto 12px;
+  padding: 5px 14px;
+  border-radius: 99px;
+  font-size: 12.5px;
+  color: var(--muted);
+  background: var(--surface-alt);
+}
+
 // Shown while the connection is down and being retried.
 .reconnect-bar {
   display: flex;
