@@ -1,6 +1,7 @@
 -module(ircd_safety_tests).
 -include_lib("eunit/include/eunit.hrl").
 -include("ircd_channel.hrl").
+-include("ircd_client.hrl").
 
 %% Memory-safety regressions: linear mask matching, copied peer fields,
 %% bounded WHOWAS and list modes, the client SendQ limit, MARKREAD targets,
@@ -325,7 +326,35 @@ holds_expire() ->
     true = ets:insert(ircd_holds, {{nick, <<"stale">>}, Past}),
     ?assertNot(ircd_state_net:nick_blocked(<<"stale">>)),
     ?assertEqual([], ets:lookup(ircd_holds, {nick, <<"stale">>})),
-    true = ets:delete(ircd_holds, {nick, <<"kept">>}).
+    true = ets:delete(ircd_holds, {nick, <<"kept">>}),
+    %% An owned hold (a local client's nickname) blocks other addresses and
+    %% accounts; its owner's address or account takes it back and clears it.
+    Owned = fun(Nick, Account) ->
+        true = ets:insert(
+            ircd_holds,
+            {{nick, Nick}, Future, #{host => <<"198.51.100.4">>, account => Account}}
+        )
+    end,
+    Other = #client{pid = self(), host = <<"203.0.113.9">>},
+    Owned(<<"owned">>, undefined),
+    ?assert(ircd_state_net:nick_blocked(<<"OWNED">>, Other)),
+    ?assertNot(ircd_state_net:nick_blocked(<<"owned">>, Other#client{host = <<"198.51.100.4">>})),
+    ?assertEqual([], ets:lookup(ircd_holds, {nick, <<"owned">>})),
+    Owned(<<"acct">>, <<"Carol">>),
+    ?assert(ircd_state_net:nick_blocked(<<"acct">>, Other)),
+    ok = ircd_conn:put(self(), account, <<"carol">>),
+    ?assertNot(ircd_state_net:nick_blocked(<<"acct">>, Other)),
+    ok = ircd_conn:remove(self(), account),
+    %% A hold with no owner (netsplit, KILL) blocks everyone.
+    true = ets:insert(ircd_holds, {{nick, <<"split">>}, Future}),
+    ?assert(ircd_state_net:nick_blocked(<<"split">>, Other)),
+    true = ets:delete(ircd_holds, {nick, <<"split">>}),
+    %% Owned holds expire like the others.
+    true = ets:insert(
+        ircd_holds, {{nick, <<"old">>}, Past, #{host => <<"h">>, account => undefined}}
+    ),
+    ok = ircd_state_net:expire_holds(),
+    ?assertEqual([], ets:lookup(ircd_holds, {nick, <<"old">>})).
 
 roadmap_memory_bounds(Port) ->
     %% 1. Disconnected pids are pruned from channel `invited` lists.

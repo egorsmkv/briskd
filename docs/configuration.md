@@ -35,7 +35,7 @@ to the process working directory unless they are absolute.
 | `tls_reload_interval` | `60` | Seconds between checks of the TLS certificate and key files (including `sni` pairs); a changed, valid pair is reloaded without a restart. `0` disables; otherwise 5..86400 |
 | `admin_name`, `admin_location1`, `admin_location2`, `admin_email` | See config | Values returned by `ADMIN` |
 | `reop_delay` | `30` | Base delay in seconds before re-opping an operatorless safe channel |
-| `resource_delay` | `60` | Seconds a nickname or channel released by a quit or netsplit stays unavailable (437); `0` disables |
+| `resource_delay` | `60` | Seconds a nickname or channel released by a quit or netsplit stays unavailable (437); `0` disables. A local client's own address or account may take its nickname back at once |
 | `account_password_min` | `8` | Shortest password `REGISTER` accepts, in bytes |
 | `server_info` | `Erlang/OTP IRC server` | Server description in LINKS |
 | `multiclient` | `false` | Let a connection logged into the same account as a nickname's holder attach to that nickname; it mirrors the holder's traffic and its QUIT closes only itself |

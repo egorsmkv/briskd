@@ -490,14 +490,26 @@ registration_errors(Port) ->
     sync(S),
     want(cmd(S, <<"PASS again">>, <<" 462 ">>), <<"You may not reregister">>),
     want(cmd(S, <<"USER u 0 * :R">>, <<" 462 ">>), <<"You may not reregister">>),
-    %% A nickname is held after QUIT for resource_delay seconds (437).
+    %% A nickname is held after QUIT for resource_delay seconds (437), but
+    %% the same address takes it back at once (a WebIRC page reload).
     T = client(Port, <<"re_quit">>),
     send(T, <<"QUIT :leaving">>),
     want(recv_until(T, <<"ERROR">>), <<"Quit: leaving">>),
     gen_tcp:close(T),
     U = connect(Port),
-    want(cmd(U, <<"NICK re_quit">>, <<" 437 ">>), <<"temporarily unavailable">>),
-    close_all([S, U]).
+    send(U, <<"NICK re_quit">>),
+    want(cmd(U, <<"USER u 0 * :Back">>, <<" 001 ">>), <<" 001 re_quit">>),
+    ?assertEqual([], ets:lookup(ircd_holds, {nick, <<"re_quit">>})),
+    %% Held for another address: 437 for this one.
+    V = client(Port, <<"re_held">>),
+    send(V, <<"QUIT :leaving">>),
+    want(recv_until(V, <<"ERROR">>), <<"Quit: leaving">>),
+    gen_tcp:close(V),
+    [{HoldKey, Until, Owner}] = ets:lookup(ircd_holds, {nick, <<"re_held">>}),
+    true = ets:insert(ircd_holds, {HoldKey, Until, Owner#{host := <<"192.0.2.7">>}}),
+    W = connect(Port),
+    want(cmd(W, <<"NICK re_held">>, <<" 437 ">>), <<"temporarily unavailable">>),
+    close_all([S, U, W]).
 
 %% --- Channel rename (draft/channel-rename) ---------------------------------
 

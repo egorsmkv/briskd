@@ -57,6 +57,13 @@ protocol() ->
         send(Alice, <<"QUIT :bye">>),
         gen_tcp:close(Alice),
         timer:sleep(200),
+        %% The hold is Alice's: her address could take it back at once. Make
+        %% it another address's, as for someone else connecting.
+        HoldKey = {nick, <<"alice">>},
+        [{HoldKey, Until, #{host := <<"127.0.0.1">>} = Owner}] = ets:lookup(
+            ircd_holds, HoldKey
+        ),
+        true = ets:insert(ircd_holds, {HoldKey, Until, Owner#{host := <<"192.0.2.1">>}}),
         Bob = connect(Port),
         send(Bob, <<"NICK alice">>),
         ?assert(has(recv(Bob), <<" 437 ">>)),

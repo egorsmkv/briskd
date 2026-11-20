@@ -24,11 +24,13 @@ them over immediately.
     channel_blocked/1,
     hold_channel/1,
     hold_nick/1,
+    hold_nick/2,
     import_service/3,
     introduce_server/6,
     burst_server_lines/1,
     links_entries/0,
     nick_blocked/1,
+    nick_blocked/2,
     oper_command/4,
     register_adjacent/4,
     servlist/4,
@@ -220,6 +222,23 @@ hold_nick(Nick) ->
     hold(nick, Nick).
 
 -doc """
+Hold the nickname a local client gave up (quit, lost connection, or nick
+change), like `hold_nick/1`, but owned by that client: a later connection
+from the same address, or logged in to the same account, may take it back
+at once (`nick_blocked/2`). Everyone else waits out the delay. This is what
+lets a WebIRC page reload keep its nickname.
+""".
+-spec hold_nick(binary(), #client{}) -> ok.
+hold_nick(Nick, Client) ->
+    hold(nick, Nick, hold_owner(Client)).
+
+%% Who may take back a nickname held for a local client: its address (the
+%% peer address, or the user's address a WEBIRC gateway reported) and its
+%% account, if logged in.
+hold_owner(#client{pid = Pid, host = Host}) ->
+    #{host => Host, account => ircd_state_v3:account(Pid)}.
+
+-doc """
 Hold a channel name whose last remote member was lost, under the same rules
 as `hold_nick/1` (the RFC 2811 channel delay).
 """.
@@ -235,6 +254,31 @@ An expired hold found here is deleted.
 -spec nick_blocked(binary()) -> boolean().
 nick_blocked(Nick) ->
     blocked(nick, Nick).
+
+-doc """
+True while `Nick` is held against `Client` (numeric 437). A hold owned by
+the same address or account (`hold_nick/2`) does not block `Client`; it is
+released instead, so the nickname is theirs again.
+""".
+-spec nick_blocked(binary(), #client{}) -> boolean().
+nick_blocked(Nick, #client{pid = Pid, host = Host}) ->
+    Key = {nick, ircd_wire:fold(Nick)},
+    case ets:lookup(?HOLDS, Key) of
+        [{_, _Until, #{host := OwnerHost, account := OwnerAccount}}] ->
+            Account = ircd_state_v3:account(Pid),
+            SameAccount =
+                is_binary(OwnerAccount) andalso is_binary(Account) andalso
+                    ircd_wire:fold(OwnerAccount) =:= ircd_wire:fold(Account),
+            case OwnerHost =:= Host orelse SameAccount of
+                true ->
+                    true = ets:delete(?HOLDS, Key),
+                    false;
+                false ->
+                    blocked(nick, Nick)
+            end;
+        _ ->
+            blocked(nick, Nick)
+    end.
 
 -doc """
 True while a hold set by `hold_channel/1` is still in force for `Name`.
@@ -841,7 +885,12 @@ services() ->
     ].
 
 %% `resource_delay` (seconds) overrides the default delay; 0 disables holds.
+%% A hold is {{Kind, Folded}, Until} in monotonic seconds, or
+%% {{Kind, Folded}, Until, Owner} when a local client owns it (hold/3).
 hold(Kind, Name) ->
+    hold(Kind, Name, undefined).
+
+hold(Kind, Name, Owner) ->
     Delay = maps:get(
         resource_delay,
         ircd_config:current_or_empty(),
@@ -852,7 +901,11 @@ hold(Kind, Name) ->
             ok;
         _ ->
             Until = erlang:monotonic_time(second) + Delay,
-            ets:insert(?HOLDS, {{Kind, ircd_wire:fold(Name)}, Until}),
+            Key = {Kind, ircd_wire:fold(Name)},
+            case Owner of
+                undefined -> ets:insert(?HOLDS, {Key, Until});
+                _ -> ets:insert(?HOLDS, {Key, Until, Owner})
+            end,
             ok
     end.
 
@@ -860,7 +913,8 @@ blocked(Kind, Name) ->
     Key = {Kind, ircd_wire:fold(Name)},
     Now = erlang:monotonic_time(second),
     case ets:lookup(?HOLDS, Key) of
-        [{_, Until}] ->
+        [Hold] ->
+            Until = element(2, Hold),
             case ircd_route:nick_delay_blocked(Key, Now, #{Key => Until}) of
                 true ->
                     true;
@@ -881,7 +935,10 @@ about again do not accumulate.
 -spec expire_holds() -> ok.
 expire_holds() ->
     Now = erlang:monotonic_time(second),
-    _ = ets:select_delete(?HOLDS, [{{'_', '$1'}, [{'=<', '$1', Now}], [true]}]),
+    _ = ets:select_delete(?HOLDS, [
+        {{'_', '$1'}, [{'=<', '$1', Now}], [true]},
+        {{'_', '$1', '_'}, [{'=<', '$1', Now}], [true]}
+    ]),
     ok.
 
 -doc """

@@ -83,10 +83,14 @@ export function handleRegistration(
     return true;
   }
 
-  if (command === "433" && !S.isRegistered) {
-    // The nickname is taken, typically by our own previous connection that
-    // the server has not dropped yet: register with a fallback and retake it
-    // later (see the heartbeat).
+  // 433: the nickname is taken, typically by our own previous connection the
+  // server has not dropped yet. 437: the server holds it for a while after
+  // that connection went away (a page reload). Either way, register with a
+  // fallback and retake the nickname later (see the heartbeat); without a
+  // fallback, registration would stall with no nickname.
+  const nickRefused = command === "433" ||
+    (command === "437" && !isChan(params[1] || ""));
+  if (nickRefused && !S.isRegistered) {
     S.nickAttempt++;
     if (S.nickAttempt > 20) return true;
     S.myNick = altNick(S.myNick, S.nickLen, S.nickAttempt);
@@ -94,7 +98,7 @@ export function handleRegistration(
     return true;
   }
 
-  if (command === "433" && S.regainPending) {
+  if (nickRefused && S.regainPending) {
     S.regainPending = false; // still held; try again on the next heartbeat
     return true;
   }

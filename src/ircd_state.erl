@@ -1327,7 +1327,7 @@ dispatch_command(<<"AWAY">>, Params, Client, Server, Tags) ->
 dispatch_command(<<"METADATA">>, [<<"*">> | _] = Params, Client, Server, _Tags) ->
     ircd_state_meta:metadata(Params, Client, Server);
 dispatch_command(<<"NICK">>, [Nick | _], Client, Server, _Tags) ->
-    case ircd_state_net:nick_blocked(Nick) of
+    case ircd_state_net:nick_blocked(Nick, Client) of
         true ->
             ircd_state_send:numeric(
                 Client, Server, <<"437">>, [Nick], <<"Nick/channel is temporarily unavailable">>
@@ -1841,7 +1841,7 @@ change_nick(Nick, Client, Server) ->
                     ok
             end,
             case ircd_state_client:ready(Client) andalso Client#client.nick =/= <<"*">> of
-                true -> ircd_state_net:hold_nick(Client#client.nick);
+                true -> ircd_state_net:hold_nick(Client#client.nick, Client);
                 false -> ok
             end,
             ircd_state_client:save_identity(Client, Client#client{nick = Nick}, Server),
