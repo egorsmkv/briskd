@@ -10,6 +10,7 @@ import {
 } from "../../../common/admin_text.ts";
 import {
   type ActionReply,
+  type Control,
   type Features,
   fetchMediaText,
   fetchOverviewText,
@@ -25,6 +26,8 @@ export const overview = signal<OverviewPayload | null>(null);
 export const media = signal<MediaPayload | null>(null);
 /** Feature toggles: the newest of the overview, media, or toggle replies. */
 export const features = signal<Features | null>(null);
+/** Server feature controls: the newest of the overview, media, or a change. */
+export const controls = signal<Control[] | null>(null);
 /** The last overview request failed. */
 export const unreachable = signal(false);
 /** Persistent banner text for connectivity problems; null hides it. */
@@ -259,6 +262,7 @@ function applyOverview(data: OverviewPayload): void {
       }
     }
     if (data.features) features.value = data.features;
+    if (data.controls) controls.value = data.controls;
   });
 }
 
@@ -308,6 +312,7 @@ export async function refreshMedia(): Promise<void> {
       batch(() => {
         media.value = data;
         if (data.features) features.value = data.features;
+        if (data.controls) controls.value = data.controls;
       });
     }
   } catch (e) {

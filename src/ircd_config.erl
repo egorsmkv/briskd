@@ -32,7 +32,9 @@ The module also provides `secret_match/2` for comparing configured passwords.
     load/1,
     parse_log_level/1,
     secret_match/2,
-    store/1
+    store/1,
+    base/0,
+    store_base/1
 ]).
 
 %% The configuration load/1 returns. Every key is always present; optional
@@ -337,6 +339,22 @@ feature switch.
 -spec store(config()) -> ok.
 store(Config) ->
     persistent_term:put({ircd_state, config}, Config).
+
+-doc """
+The configuration as the file says (the last `load/1` that startup or
+`REHASH` accepted), before admin overrides (`m:ircd_overrides`). Falls back
+to `current/0` before one is stored.
+""".
+-spec base() -> config().
+base() ->
+    stored(
+        persistent_term:get({ircd_state, base_config}, persistent_term:get({ircd_state, config}))
+    ).
+
+-doc "Store `Config` as the file's configuration (see `base/0`).".
+-spec store_base(config()) -> ok.
+store_base(Config) ->
+    persistent_term:put({ircd_state, base_config}, Config).
 
 %% Only store/1 writes the term, always with a config(); unit tests may store
 %% a partial map.

@@ -1,5 +1,6 @@
 // Slash commands and /help.
 import { byId as $ } from "../common/dom.ts";
+import { t } from "../common/i18n.ts";
 import { ircFold, METADATA_KEYS } from "../common/ircv3.ts";
 import { addLine, ensureBuf } from "./buffers.ts";
 import { calls, startCall } from "./calls_ui.ts";
@@ -9,32 +10,22 @@ import { clearSession, isSafeIrcTarget } from "./session.ts";
 import { openSettings } from "./settings.ts";
 import { switchBuf } from "./sidebar.ts";
 import { S } from "./state.ts";
+import { COMMANDS, usage } from "./slash.ts";
 import { type BufferState } from "./types.ts";
 import { isChan } from "./util.ts";
 
 export function showHelp(target: string): void {
-  const cmds = [
-    "/join #chan [key]  (/j)",
-    "/part [#chan] [reason]  (/leave)",
-    "/msg <target> <text>  (/query, /pm)",
-    "/notice <target> <text>",
-    "/me <action>",
-    "/nick <newnick>",
-    "/topic [new topic]",
-    "/mode <target> [modes...]",
-    "/kick <nick> [reason]",
-    "/invite <nick> [#chan]",
-    "/whois <nick> | /whowas <nick> | /who [mask]",
-    "/names [#chan] | /list [filter]",
-    "/away [message] | /back | /setname <realname>",
-    "/monitor +|- <nick> | /history [limit]",
-    "/meta set <key> <value> | /meta clear <key> | /meta list [nick]",
-    "/call [nick] | /hangup  (voice calls)",
-    "/e2ee [on|off|status|rotate|verify|reset]",
-    "/oper <name> <pass> | /kill <nick> <reason> | /rehash",
-    "/clear | /raw <line> | /quit [reason]",
-  ];
-  addLine(target, { text: `Commands:\n${cmds.join("\n")}`, kind: "sys" });
+  const lines = COMMANDS.map((c) => {
+    const aliases = c.aliases?.length
+      ? `  (${c.aliases.map((a) => `/${a}`).join(", ")})`
+      : "";
+    return `${usage(c)}${aliases} — ${t(c.desc)}`;
+  });
+  lines.push(t("cmd.help.slash"));
+  addLine(target, {
+    text: `${t("cmd.help.title")}\n${lines.join("\n")}`,
+    kind: "sys",
+  });
 }
 
 export function runSlashCommand(

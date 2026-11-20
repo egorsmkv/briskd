@@ -444,6 +444,13 @@ value(<<"egorsmkv.github.io/voice">>, _Info) ->
         true -> {ok, ircd_voice:cap_value()};
         false -> error
     end;
+%% History and its event playback: offered while history is recorded
+%% (`chathistory`), so a client is not told of history the server keeps none of.
+value(Cap, _Info) when Cap =:= <<"draft/chathistory">>; Cap =:= <<"draft/event-playback">> ->
+    case config(chathistory, true) of
+        true -> {ok, undefined};
+        false -> error
+    end;
 %% Message redaction: offered unless disabled in `features.redaction`.
 value(<<"draft/message-redaction">>, _Info) ->
     case maps:get(redaction, config(features, #{}), true) of

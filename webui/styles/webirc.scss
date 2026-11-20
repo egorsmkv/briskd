@@ -993,13 +993,72 @@ svg.icon {
   overflow-y: auto;
   margin-bottom: 6px;
   padding: 4px;
-  background: var(--panel, var(--surface));
+  background: var(--elevated);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
   &.hidden {
     display: none;
   }
+}
+
+// The slash-command list: wider rows of "/name args" and a description.
+// As a hint (typing a command's arguments) it is one quiet row.
+.command-picker {
+  width: min(460px, calc(100% - 32px));
+  max-height: 320px;
+  &.hint {
+    padding: 2px;
+    .cmd-opt {
+      cursor: default;
+      background: transparent;
+    }
+  }
+}
+
+.cmd-opt {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  &:hover,
+  &.active {
+    background: var(--accent-soft);
+  }
+  &.active .cmd-name {
+    color: var(--accent-text);
+  }
+}
+
+.cmd-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.cmd-name {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.cmd-args {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cmd-desc {
+  color: var(--muted);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mention-opt {

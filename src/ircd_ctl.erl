@@ -371,6 +371,9 @@ handle_state_action({set_log_level, LevelBin}, _Server) ->
         {ok, Level} ->
             Config = ircd_config:current(),
             ircd_config:store(Config#{level => Level}),
+            %% Kept by a later override change, which rebuilds the
+            %% effective configuration from the file's.
+            ircd_config:store_base((ircd_config:base())#{level => Level}),
             ok = ircd_log:apply_level(Level),
             logger:notice(#{event => ctl_log_level, level => Level}),
             {ok, #{status => <<"updated">>, log_level => LevelBin}};

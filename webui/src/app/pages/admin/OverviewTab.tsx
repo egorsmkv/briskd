@@ -51,7 +51,7 @@ export function OverviewTab({ onGoto }: { onGoto: (tab: Tab) => void }) {
       ["Network", "links"],
       ["Accounts", "accounts"],
       ["DroneBL", "dronebl"],
-      ["Media & Features", "media"],
+      ["Features & Media", "media"],
       ["Database", undefined],
       ["Erlang VM", undefined],
     ];
@@ -132,7 +132,7 @@ export function OverviewTab({ onGoto }: { onGoto: (tab: Tab) => void }) {
         onGoto={onGoto}
       />
       <Card
-        label="Media & Features"
+        label="Features & Media"
         value={`${enabledCount}/${totalFeats} features`}
         sub={mediaSub}
         goto="media"

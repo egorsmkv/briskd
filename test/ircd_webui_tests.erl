@@ -259,6 +259,56 @@ live_webui() ->
         {200, _, RehashBody} = post_action(Port, GoodAuth, <<"rehash">>, []),
         ?assertMatch(#{<<"status">> := <<"rehashed">>}, json:decode(RehashBody)),
 
+        %% Feature controls (ircd_overrides): switching chat history off
+        %% withdraws the capability from CAP LS, survives REHASH, and a reset
+        %% brings back the file's value.
+        Control = fun(Key) ->
+            {200, _, Ov} = http_req(
+                Port, <<"GET">>, <<"/api/overview">>, [{<<"Authorization">>, GoodAuth}], <<>>
+            ),
+            #{<<"controls">> := Controls} = json:decode(Ov),
+            hd([C || #{<<"key">> := K} = C <- Controls, K =:= Key])
+        end,
+        ?assertMatch(
+            #{<<"value">> := true, <<"overridden">> := false}, Control(<<"chathistory">>)
+        ),
+        ?assert(has_cap(<<"draft/chathistory">>)),
+        {200, _, SetBody} = post_action(
+            Port, GoodAuth, <<"set-control">>, [<<"chathistory">>, <<"false">>]
+        ),
+        ?assertMatch(#{<<"status">> := <<"updated">>}, json:decode(SetBody)),
+        ?assertNot(has_cap(<<"draft/chathistory">>)),
+        {200, _, _} = post_action(Port, GoodAuth, <<"rehash">>, []),
+        ?assertMatch(
+            #{<<"value">> := false, <<"default">> := true, <<"overridden">> := true},
+            Control(<<"chathistory">>)
+        ),
+        ?assertNot(has_cap(<<"draft/chathistory">>)),
+        {200, _, _} = post_action(Port, GoodAuth, <<"reset-control">>, [<<"chathistory">>]),
+        ?assertMatch(
+            #{<<"value">> := true, <<"overridden">> := false}, Control(<<"chathistory">>)
+        ),
+        ?assert(has_cap(<<"draft/chathistory">>)),
+        %% Limits are bounded; a subsystem the file does not configure, or an
+        %% unknown control, is refused.
+        {200, _, _} = post_action(Port, GoodAuth, <<"set-control">>, [<<"history_limit">>, <<"42">>]),
+        ?assertMatch(#{<<"value">> := 42}, Control(<<"history_limit">>)),
+        {400, _, Range} = post_action(
+            Port, GoodAuth, <<"set-control">>, [<<"history_limit">>, <<"0">>]
+        ),
+        ?assertMatch(#{<<"error">> := <<"invalid_value">>}, json:decode(Range)),
+        {400, _, NotCfg} = post_action(Port, GoodAuth, <<"set-control">>, [<<"calls">>, <<"true">>]),
+        ?assertMatch(#{<<"error">> := <<"not_configured">>}, json:decode(NotCfg)),
+        {400, _, Unknown} = post_action(Port, GoodAuth, <<"set-control">>, [<<"name">>, <<"x">>]),
+        ?assertMatch(#{<<"error">> := <<"unknown_control">>}, json:decode(Unknown)),
+        {200, _, _} = post_action(Port, GoodAuth, <<"reset-control">>, [<<"history_limit">>]),
+        %% The older chat feature switch goes through the same controls.
+        {200, _, _} = post_action(Port, GoodAuth, <<"toggle-feature">>, [<<"typing">>, <<"false">>]),
+        ?assertMatch(
+            #{<<"value">> := false, <<"overridden">> := true}, Control(<<"features.typing">>)
+        ),
+        {200, _, _} = post_action(Port, GoodAuth, <<"reset-control">>, [<<"features.typing">>]),
+
         {200, _, CheckCfgBody} = post_action(Port, GoodAuth, <<"check-config">>, []),
         ?assertMatch(#{<<"status">> := <<"valid">>}, json:decode(CheckCfgBody)),
 
@@ -633,3 +683,30 @@ no_inline_styles_test() ->
         end,
         Pages
     ).
+
+%% Whether a new IRC connection sees `Cap` in CAP LS.
+has_cap(Cap) ->
+    {tcp, Pid, _, _} = lists:keyfind(tcp, 1, supervisor:which_children(ircd_sup)),
+    true = is_pid(Pid),
+    {ok, IrcPort} = ircd_listener:port(Pid),
+    {ok, S} = gen_tcp:connect("127.0.0.1", IrcPort, [binary, {active, false}, {packet, raw}]),
+    ok = gen_tcp:send(S, <<"CAP LS 302\r\n">>),
+    Ls = cap_ls(S, <<>>),
+    ok = gen_tcp:close(S),
+    binary:match(Ls, <<" ", Cap/binary>>) =/= nomatch orelse
+        binary:match(Ls, <<":", Cap/binary>>) =/= nomatch.
+
+cap_ls(S, Acc) ->
+    %% CAP LS 302 may span lines: "CAP * LS * :..." continues, and the last
+    %% line is "CAP * LS :...".
+    Lines = binary:split(Acc, <<"\r\n">>, [global, trim]),
+    Done =
+        binary:last(<<0, Acc/binary>>) =:= $\n andalso Lines =/= [] andalso
+            binary:match(lists:last(Lines), <<" LS :">>) =/= nomatch,
+    case Done of
+        true ->
+            Acc;
+        false ->
+            {ok, <<_/binary>> = More} = gen_tcp:recv(S, 0, 5000),
+            cap_ls(S, <<Acc/binary, More/binary>>)
+    end.

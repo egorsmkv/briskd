@@ -1,10 +1,9 @@
-// Media & Features: live feature toggles, voice messages, and shared files
+// Features & Media: server feature controls, voice messages, and shared files
 // (from GET /api/media), with upload limit reset.
 import { fmtBytes, matchesFilter } from "./format.ts";
 import {
   busyKey,
   confirmDelete,
-  features,
   filterOf,
   media,
   MEDIA_REFRESH_KEY,
@@ -12,87 +11,8 @@ import {
   refreshMedia,
   runAction,
 } from "./store.ts";
+import { FeatureControls } from "./FeatureControls.tsx";
 import { ActionButton, FilterInput, mono, type Row, Table } from "./Table.tsx";
-
-const FEATURE_META: Array<{ key: string; title: string; desc: string }> = [
-  {
-    key: "reactions",
-    title: "Emoji Reactions",
-    desc: "+draft/react TAGMSG emoji pills",
-  },
-  {
-    key: "replies",
-    title: "Message Replies",
-    desc: "+draft/reply quoted message threads",
-  },
-  {
-    key: "typing",
-    title: "Typing Indicators",
-    desc: "+typing live typing notifications",
-  },
-  {
-    key: "editing",
-    title: "Message Editing",
-    desc: "+egorsmkv.github.io/edit in-place edits",
-  },
-  {
-    key: "redaction",
-    title: "Message Redaction",
-    desc: "draft/message-redaction REDACT deletions",
-  },
-  {
-    key: "link_previews",
-    title: "Link Previews",
-    desc: "SSRF-protected OpenGraph cards for URLs",
-  },
-];
-
-function toggleFeature(key: string, enable: boolean): void {
-  void runAction("toggle-feature", [key, enable ? "true" : "false"], {
-    after: async (data) => {
-      const next = data.features;
-      if (next && typeof next === "object") {
-        features.value = next as Record<string, boolean>;
-      }
-      await refreshAll();
-    },
-  });
-}
-
-function FeatureGrid() {
-  const feats = features.value;
-  return (
-    <div class="feature-grid" id="features-grid">
-      {feats && FEATURE_META.map((item) => {
-        const enabled = feats[item.key] !== false;
-        const verb = enabled ? "Disable" : "Enable";
-        return (
-          <div
-            key={item.key}
-            class={enabled ? "feature-card on" : "feature-card"}
-          >
-            <div class="feature-top">
-              <strong>{item.title}</strong>
-              <span class={`badge ${enabled ? "ok" : "off"}`}>
-                {enabled ? "enabled" : "disabled"}
-              </span>
-            </div>
-            <div class="muted feature-desc">{item.desc}</div>
-            <ActionButton
-              class={enabled ? "small" : "small primary"}
-              busyKey={busyKey("toggle-feature", item.key)}
-              aria-pressed={enabled ? "true" : "false"}
-              aria-label={`${verb} ${item.title}`}
-              onClick={() => toggleFeature(item.key, !enabled)}
-            >
-              {verb}
-            </ActionButton>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 function deleteVoice(id: string): void {
   confirmDelete(
@@ -246,7 +166,7 @@ export function MediaTab() {
   return (
     <>
       <div class="page-head">
-        <h2>Chat Features (Live Toggles)</h2>
+        <h2>Server Features</h2>
         <div class="ops-row">
           <ActionButton
             busyKey={MEDIA_REFRESH_KEY}
@@ -265,12 +185,7 @@ export function MediaTab() {
           </ActionButton>
         </div>
       </div>
-      <p class="muted">
-        Enable or disable messenger features server-wide without restarting.
-        Changes take effect immediately for new connections and redaction
-        checks.
-      </p>
-      <FeatureGrid />
+      <FeatureControls />
       <VoiceSection />
       <FilesSection />
     </>

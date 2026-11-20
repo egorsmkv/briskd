@@ -757,3 +757,159 @@ body.modal-open {
     animation-duration: 1.6s;
   }
 }
+
+/* ------------------------------------------------------------------------
+   Server feature controls (FeatureControls.tsx) */
+
+.control-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 14px;
+  margin: 14px 0 22px;
+  align-items: start;
+}
+
+.control-group {
+  padding: 4px 16px;
+  h3 {
+    margin: 12px 0 4px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+}
+
+.control-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+  h3 + & {
+    border-top: none;
+  }
+  &.unavailable .control-title strong {
+    color: var(--muted);
+  }
+}
+
+.control-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.control-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  strong {
+    font-size: 14px;
+    font-weight: 600;
+  }
+}
+
+.control-desc {
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.badge.changed {
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+  color: color-mix(in srgb, var(--warn) 75%, var(--text));
+}
+
+.link-button {
+  align-self: flex-start;
+  padding: 0;
+  min-height: 0;
+  border: none;
+  background: none;
+  color: var(--accent-text);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  &:hover {
+    background: none;
+    text-decoration: underline;
+  }
+}
+
+.control-input {
+  flex-shrink: 0;
+}
+
+.control-number {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  input {
+    width: 110px;
+    height: 32px;
+    text-align: end;
+    font-variant-numeric: tabular-nums;
+    &[aria-invalid="true"] {
+      border-color: var(--danger);
+    }
+  }
+}
+
+.control-hint.err {
+  color: var(--danger);
+  font-size: 12px;
+}
+
+// An on/off switch (role="switch").
+.switch {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+  cursor: pointer;
+  transition: background-color 0.15s var(--ease);
+  &:hover {
+    background: color-mix(in srgb, var(--border-strong) 80%, var(--text));
+  }
+  .switch-knob {
+    position: absolute;
+    top: 3px;
+    inset-inline-start: 3px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    transition: transform 0.15s var(--ease);
+  }
+  &.on {
+    background: var(--accent);
+    &:hover {
+      background: var(--accent-hover);
+    }
+    .switch-knob {
+      transform: translateX(18px);
+    }
+  }
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+}
+
+@media (max-width: 480px) {
+  .control-groups {
+    grid-template-columns: 1fr;
+  }
+  .control-group {
+    padding: 4px 12px;
+  }
+}

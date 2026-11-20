@@ -88,6 +88,7 @@ function render(): void {
     list.appendChild(opt);
   });
   list.classList.remove("hidden");
+  msgInp.setAttribute("aria-controls", "mention-picker");
   msgInp.setAttribute("aria-expanded", "true");
   msgInp.setAttribute("aria-activedescendant", `mention-opt-${active}`);
   list.querySelector(".mention-opt.active")?.scrollIntoView({

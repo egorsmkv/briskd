@@ -75,6 +75,12 @@ export function Composer() {
           </button>
         </div>
         <div
+          class="mention-picker command-picker hidden"
+          id="command-picker"
+          aria-label="Commands"
+        >
+        </div>
+        <div
           class="mention-picker hidden"
           id="mention-picker"
           role="listbox"

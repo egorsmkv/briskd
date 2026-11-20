@@ -881,7 +881,12 @@ operator_and_split() ->
         %% Closing the peer socket splits everything reached through it.
         gen_tcp:close(Peer),
         recv_until(Alice, <<"rem!ruser@rhost.test QUIT">>),
-        wait_until(fun() -> mnesia:dirty_all_keys(remote_client) =:= [] end),
+        %% The split removes users, then services, inside one state call that
+        %% this process can observe midway: wait for both.
+        wait_until(fun() ->
+            mnesia:dirty_all_keys(remote_client) =:= [] andalso
+                mnesia:dirty_read(service, <<"helper">>) =:= []
+        end),
         ?assertEqual([], mnesia:dirty_read(service, <<"helper">>)),
         send(Alice, <<"WHOIS rem">>),
         recv_until(Alice, <<" 401 ">>)

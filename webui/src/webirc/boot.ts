@@ -21,6 +21,7 @@ import { init as init_layout } from "./layout.ts";
 import { init as init_chat_scroll } from "./chat/scroll.ts";
 import { init as init_chat_actions } from "./chat/actions.ts";
 import { init as init_mention_picker } from "./mention_picker.ts";
+import { init as init_command_picker } from "./command_picker.ts";
 
 let started = false;
 
@@ -47,4 +48,5 @@ export function boot(): void {
   init_chat_scroll();
   init_chat_actions();
   init_mention_picker();
+  init_command_picker();
 }

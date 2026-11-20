@@ -70,6 +70,24 @@ SHA-256 fingerprint is only used by SASL `EXTERNAL`. Server certificate
 handling is unchanged. Port `0` requests an ephemeral port, which is reported
 in the startup log.
 
+## Changing features from the admin panel
+
+The WebUI admin panel's **Features & Media** tab changes a set of these
+settings live, without editing the file: the chat features (`features.*`),
+`chathistory` and `history_limit`, the account options
+(`account_registration`, `account_registration_before_connect`,
+`account_registration_email_required`, `multiclient`, `account_rejoin`,
+`max_accounts`), the `e2ee`, `calls`, `voice`, and `files` subsystems, DroneBL
+checks (`dronebl.enabled`), `utf8_only`, `monitor_limit`, and
+`resource_delay`. A change takes effect at once the way `REHASH` does
+(connected clients with `cap-notify` get `CAP NEW` or `CAP DEL`), is audited
+as `admin_feature_changed`, and is announced to IRC operators. It is stored
+in Mnesia (`setting`) and applied over the file at startup and on every
+`REHASH`, so it lasts until it is reset to the file's value in the panel. A
+subsystem can be turned on there only when the file configures it (an S3
+endpoint, an rtpengine address, and so on); turning one off keeps its file
+settings for when it is turned back on.
+
 `mnesia_dir` should point to writable storage. The default `retention` value
 `channels` persists WHOWAS history, safe-channel state, accounts, read markers,
 ordinary channel names, topics, modes, keys, limits, access masks, channel

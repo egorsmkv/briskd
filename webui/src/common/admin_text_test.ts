@@ -69,3 +69,30 @@ Deno.test("formatAgo buckets elapsed time", () => {
   assert(formatAgo(180_000) === "3m ago", "minutes");
   assert(formatAgo(7_200_000) === "2h ago", "hours");
 });
+
+Deno.test("feature control messages name the control", () => {
+  assert(
+    successMessage("set-control", ["chathistory", "false"], {}) ===
+      "Chathistory turned off",
+    "off",
+  );
+  assert(
+    successMessage("set-control", ["features.link_previews", "true"], {}) ===
+      "Link previews turned on",
+    "on, without the features. prefix",
+  );
+  assert(
+    successMessage("set-control", ["history_limit", "250"], {}) ===
+      "History limit set to 250",
+    "number",
+  );
+  assert(
+    successMessage("reset-control", ["multiclient"], {}) ===
+      "Multiclient follows the configuration file again",
+    "reset",
+  );
+  assert(
+    humanizeError({ error: "not_configured" }) === "Not configured",
+    "error",
+  );
+});

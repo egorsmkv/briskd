@@ -31,6 +31,7 @@ a successful `OPER`. Operator and administrator passwords are compared with
     query_local_server/2,
     rehash/2,
     rehash_server/1,
+    apply_effective/4,
     note_user_counts/0,
     stats/3,
     trace/3,
@@ -512,8 +513,21 @@ static_unchanged(NewConfig) ->
     maps:with(StaticKeys, ircd_config:current()) =:=
         maps:with(StaticKeys, NewConfig).
 
-%% Apply an accepted reload and tell clients what changed.
+%% Apply an accepted reload of the file and tell clients what changed. The
+%% admin panel's overrides (ircd_overrides) apply on top of the file.
 reload(NewConfig, Audit, Wallops, Server) ->
+    ircd_config:store_base(NewConfig),
+    apply_effective(
+        ircd_overrides:apply(NewConfig, ircd_overrides:all()), Audit, Wallops, Server
+    ).
+
+-doc """
+Apply the effective configuration `Config` (the file's, with overrides) as a
+reload does: store it, then tell clients about capabilities and ISUPPORT
+tokens that changed. Logs `Audit` and sends `Wallops` to operators.
+""".
+-spec apply_effective(ircd_config:config(), map(), iodata(), binary()) -> ok.
+apply_effective(NewConfig, Audit, Wallops, Server) ->
     Clients = [Pid || {Pid, _} <- ets:tab2list(ircd_caps)],
     Advertised = #{Pid => ircd_cap:advertised(Pid) || Pid <- Clients},
     Tokens = ircd_isupport:tokens(),

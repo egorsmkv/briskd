@@ -38,7 +38,6 @@ tokens() ->
         <<"CHANMODES=beI,k,l,aimnpqrstK">>,
         <<"CHANNELLEN=50">>,
         <<"CHANTYPES=#&+!">>,
-        <<"CHATHISTORY=", History/binary>>,
         <<"EXTBAN=$,a">>,
         <<"KICKLEN=390">>,
         <<"MAXLIST=beI:", (integer_to_binary(?MAX_LIST_ENTRIES))/binary>>,
@@ -65,7 +64,13 @@ tokens() ->
             null -> [];
             Url -> [<<"draft/ICON=", Url/binary>>]
         end,
-    lists:sort(Base ++ Utf8 ++ Icon).
+    %% Only while history is recorded (`chathistory`).
+    ChatHistory =
+        case maps:get(chathistory, Config, true) of
+            true -> [<<"CHATHISTORY=", History/binary>>];
+            false -> []
+        end,
+    lists:sort(Base ++ ChatHistory ++ Utf8 ++ Icon).
 
 -doc """
 Send `Tokens` as 005 lines (13 tokens per line) from `Server` to one client.

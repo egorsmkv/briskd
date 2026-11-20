@@ -22,6 +22,8 @@ const TITLES: Record<string, string> = {
   "drain": "Drain",
   "stop": "Stop",
   "toggle-feature": "Feature toggle",
+  "set-control": "Feature change",
+  "reset-control": "Feature reset",
   "delete-voice": "Voice message deletion",
   "delete-file": "File deletion",
   "clear-upload-limits": "Upload limit reset",
@@ -61,6 +63,11 @@ export function humanizeError(data: unknown, status?: number): string {
     return /^[a-z_]+$/.test(error) ? words(error) : error;
   }
   return status ? `HTTP ${status}` : "Unknown error";
+}
+
+/** "features.link_previews" → "Link previews". */
+export function controlName(key: string): string {
+  return words(key.replace(/^features\./, ""));
 }
 
 /** Confirmation text for a successful action. */
@@ -120,6 +127,16 @@ export function successMessage(
       return "Server is stopping";
     case "toggle-feature":
       return `${words(target)} ${args[1] === "true" ? "enabled" : "disabled"}`;
+    case "set-control": {
+      const name = controlName(target);
+      return args[1] === "true"
+        ? `${name} turned on`
+        : args[1] === "false"
+        ? `${name} turned off`
+        : `${name} set to ${args[1]}`;
+    }
+    case "reset-control":
+      return `${controlName(target)} follows the configuration file again`;
     case "delete-voice":
       return "Voice message deleted";
     case "delete-file":

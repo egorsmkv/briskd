@@ -12,7 +12,7 @@ const LABELS: Record<Tab, string> = {
   links: "Links",
   accounts: "Accounts",
   dronebl: "DroneBL",
-  media: "Media & Features",
+  media: "Features & Media",
   operations: "Operations",
 };
 

@@ -63,6 +63,9 @@ cutting lines longer than about 400 bytes into `draft/multiline-concat`
 continuations, and shows received batches as one message.
 `CHATHISTORY` (`BEFORE`, `AFTER`, `LATEST`, `AROUND`, `BETWEEN`, `TARGETS`,
 by `timestamp=` or `msgid=`) returns history in a `chathistory` batch.
+`draft/chathistory`, `draft/event-playback`, and the `CHATHISTORY` token are
+advertised only while history is recorded (`chathistory`, or the admin
+panel's Message history switch).
 Channel history is available to current members. Direct-message history is
 kept when at least one side is logged in. Clients with `draft/event-playback`
 also get JOIN, PART, KICK, TOPIC, MODE, QUIT, NICK, and TAGMSG events. `MARKREAD` stores read

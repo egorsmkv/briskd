@@ -89,8 +89,25 @@ export interface MediaObject {
 
 export type Features = Record<string, boolean>;
 
+/** One server feature control (GET /api/overview `controls`). */
+export interface Control {
+  key: string;
+  group: string;
+  type: "boolean" | "integer";
+  value: boolean | number;
+  /** The configuration file's value. */
+  default: boolean | number;
+  /** Set in the admin panel, differing from (or pinning) the file's value. */
+  overridden: boolean;
+  /** False for a subsystem the configuration file does not set up. */
+  available: boolean;
+  min?: number;
+  max?: number;
+}
+
 export interface MediaPayload {
   features?: Features;
+  controls?: Control[];
   voice?: {
     enabled: boolean;
     bucket?: string;
@@ -124,6 +141,7 @@ export interface OverviewPayload {
     bans?: DroneblBan[];
   };
   features?: Features;
+  controls?: Control[];
   media_summary?: {
     voice_enabled?: boolean;
     voice_max_bytes?: number;

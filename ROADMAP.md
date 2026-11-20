@@ -330,6 +330,14 @@ always-on bouncer details, and Sable's PostgreSQL history server.
 - [ ] Bots on remote servers do not exist; a bot answers only from the
   server that configures it (remote users can still address it).
 
+## Administration
+
+- [x] WebUI admin panel feature controls (`ircd_overrides`): chat features,
+  history, account options, the E2EE, calls, voice, and files subsystems,
+  DroneBL, UTF-8 only, and limits, changed live with `CAP NEW`/`DEL`, kept in
+  Mnesia across `REHASH` and restarts, and reset to the configuration file's
+  value.
+
 ## Documentation and verification
 
 - [x] README documents run instructions and links the guides in `docs/`:

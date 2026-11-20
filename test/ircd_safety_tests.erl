@@ -224,7 +224,7 @@ whowas_is_bounded(Port) ->
     ),
     Rows = [
         K
-     || {whowas, {F, _, _} = K, _, _, _, _, _, _} <- ets:tab2list(whowas), F =:= <<"wwa">>
+     || #whowas{key = {F, _, _} = K} <- ets:tab2list(whowas), F =:= <<"wwa">>
     ],
     ?assertEqual(10, length(Rows)),
     send(S, <<"WHOWAS wwa">>),

@@ -30,6 +30,7 @@ decided by the setting loaded at that start.
 | Channel metadata (`channel_meta`, synced with `ircd_chan_meta`) | Kept for safe `!` channels; deleted for ordinary channels | Kept |
 | IRCv3 connection state: capabilities, MONITOR lists, user metadata, SASL progress | Deleted | Deleted |
 | Direct-message history between accounts (`direct_history`) | Deleted | Kept, newest `history_limit` entries per pair |
+| Admin feature overrides (`setting`: control key and value, set in the admin panel) | Kept | Kept |
 
 A restart therefore drops live nick occupancy, operator status, and peer state
 even when the table files are still on disk. Kept channel rows come back with
@@ -52,7 +53,15 @@ Channel events (JOIN, PART, KICK, TOPIC, MODE without the channel key, QUIT,
 NICK, TAGMSG) are recorded for `draft/event-playback`; messages and events
 each keep `history_limit` entries. Direct messages are kept when at least one
 side is logged in, keyed by account (or by nickname for a side without an
-account), in the `direct_history` table under the same retention rules. Set `"chathistory": false` to record nothing.
+account), in the `direct_history` table under the same retention rules. Set `"chathistory": false` to record nothing; the server then also stops
+advertising `draft/chathistory`, `draft/event-playback`, and the
+`CHATHISTORY` ISUPPORT token.
+
+The `setting` table holds the admin panel's feature overrides
+(`ircd_overrides`): one row per changed control, `{setting, Key, Value}`
+with a boolean or an integer. It is created on first start and survives both
+retention policies; deleting a row (or the table) returns those settings to
+the configuration file's values.
 
 Channel rows gained `created` (RPL_CREATIONTIME), `topic_by`, and
 `topic_at` (RPL_TOPICWHOTIME). Older rows are migrated by appending

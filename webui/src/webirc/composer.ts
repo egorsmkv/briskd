@@ -1,5 +1,6 @@
 // The message box: keys, history, multi-line sending.
 import { scrollToNewest } from "./chat/scroll.ts";
+import { handleCommandKey } from "./command_picker.ts";
 import { handleMentionKey } from "./mention_picker.ts";
 import { byId as $ } from "../common/dom.ts";
 import { t } from "../common/i18n.ts";
@@ -99,6 +100,8 @@ export function init(): void {
   msgInp.addEventListener("keydown", (ev) => {
     // An open @-mention list takes Up/Down, Enter, Tab, and Escape first.
     if (handleMentionKey(ev)) return;
+    // So does the slash-command list.
+    if (handleCommandKey(ev)) return;
     // Enter sends; Shift+Enter inserts a line break. Keys pressed while an
     // input method is composing (e.g. CJK) belong to the IME.
     if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
@@ -161,21 +164,24 @@ export function init(): void {
   $<HTMLFormElement>("send-form").addEventListener("submit", (ev) => {
     ev.preventDefault();
     // Line breaks at the end are not part of the message.
-    const raw = msgInp.value.replace(/\r\n?/g, "\n").replace(/\s+$/, "");
-    if (!raw.trim()) return;
+    const typed = msgInp.value.replace(/\r\n?/g, "\n").replace(/\s+$/, "");
+    if (!typed.trim()) return;
+    // "/command" runs a command; "//text" sends "/text" as a message.
+    const isCommand = typed.startsWith("/") && !typed.startsWith("//");
+    const raw = typed.startsWith("//") ? typed.slice(1) : typed;
     const buf = buffers.get(S.activeBuf);
     const multi = raw.includes("\n");
-    if (raw.startsWith("/") && multi) {
+    if (isCommand && multi) {
       addLine(S.activeBuf, { text: t("ml.command"), kind: "err" });
       return;
     }
     // Refuse before clearing the composer, so nothing typed is lost.
-    if (!raw.startsWith("/") && (!S.ws || S.ws.readyState !== WebSocket.OPEN)) {
+    if (!isCommand && (!S.ws || S.ws.readyState !== WebSocket.OPEN)) {
       addLine(S.activeBuf, { text: t("rc.notsent"), kind: "err" });
       return;
     }
     if (
-      multi && buf && buf.name !== "*status" && !raw.startsWith("/") &&
+      multi && buf && buf.name !== "*status" && !isCommand &&
       !e2ee.isBufferEncrypted(buf.name)
     ) {
       const problem = multilineProblem(buf.name, raw);
@@ -186,11 +192,11 @@ export function init(): void {
     }
     msgInp.value = "";
     autosizeComposer();
-    sentHistory.push(raw);
+    sentHistory.push(typed);
     if (sentHistory.length > 100) sentHistory.shift();
     S.histPos = -1;
 
-    if (raw.startsWith("/")) {
+    if (isCommand) {
       runSlashCommand(raw, buf);
       return;
     }

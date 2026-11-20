@@ -1131,6 +1131,7 @@ route(Socket, <<"GET">>, <<"/api/overview">>, _Headers, _Body, _Html) ->
             bans => ircd_dronebl:list_bans()
         },
         features => current_features(Config),
+        controls => ircd_state:controls(),
         media_summary => #{
             voice_enabled => ircd_voice:enabled(),
             voice_max_bytes => ircd_voice:max_bytes(),
@@ -1144,6 +1145,7 @@ route(Socket, <<"GET">>, <<"/api/media">>, _Headers, _Body, _Html) ->
     Config = ircd_config:current_or_empty(),
     send_json(Socket, 200, <<"OK">>, #{
         features => current_features(Config),
+        controls => ircd_state:controls(),
         voice => ircd_voice:list(),
         files => ircd_files:list()
     });
@@ -1195,16 +1197,40 @@ dispatch_action(Socket, <<"dronebl-ban">>, [IP | Rest]) ->
                 error => <<"invalid_ip">>, ip => IP
             })
     end;
+%% A chat feature switch (the older form of set-control).
 dispatch_action(Socket, <<"toggle-feature">>, [KeyBin, ValBin]) ->
     case parse_feature_toggle(KeyBin, ValBin) of
         {ok, Key, Bool} ->
-            Config = ircd_config:current(),
-            Updated = (current_features(Config))#{Key => Bool},
-            ircd_config:store(Config#{features => Updated}),
-            logger:notice(#{event => admin_feature_toggled, feature => Key, enabled => Bool}),
-            send_json(Socket, 200, <<"OK">>, #{status => <<"updated">>, features => Updated});
+            Control = <<"features.", (atom_to_binary(Key))/binary>>,
+            Text = atom_to_binary(Bool),
+            case ircd_state:set_control(Control, Text) of
+                {ok, _} ->
+                    send_json(Socket, 200, <<"OK">>, #{
+                        status => <<"updated">>,
+                        features => current_features(ircd_config:current())
+                    });
+                {error, Reason} ->
+                    control_error(Socket, Reason)
+            end;
         error ->
             send_json(Socket, 400, <<"Bad Request">>, #{error => <<"invalid_feature">>})
+    end;
+%% Admin overrides of server features (ircd_overrides): set one, or go back
+%% to the configuration file's value. Applied live, kept across REHASH and
+%% restarts.
+dispatch_action(Socket, <<"set-control">>, [Key, Value]) ->
+    case ircd_state:set_control(Key, Value) of
+        {ok, Controls} ->
+            send_json(Socket, 200, <<"OK">>, #{status => <<"updated">>, controls => Controls});
+        {error, Reason} ->
+            control_error(Socket, Reason)
+    end;
+dispatch_action(Socket, <<"reset-control">>, [Key]) ->
+    case ircd_state:reset_control(Key) of
+        {ok, Controls} ->
+            send_json(Socket, 200, <<"OK">>, #{status => <<"reset">>, controls => Controls});
+        {error, Reason} ->
+            control_error(Socket, Reason)
     end;
 dispatch_action(Socket, <<"delete-voice">>, [VoiceId]) ->
     case ircd_voice:delete(VoiceId) of
@@ -1278,6 +1304,11 @@ allowed_action(<<"backup">>) -> true;
 allowed_action(<<"drain">>) -> true;
 allowed_action(<<"stop">>) -> true;
 allowed_action(_) -> false.
+
+control_error(Socket, Reason) when
+    Reason =:= unknown_control; Reason =:= invalid_value; Reason =:= not_configured
+->
+    send_json(Socket, 400, <<"Bad Request">>, #{error => atom_to_binary(Reason)}).
 
 current_features(Config) ->
     F = maps:get(features, Config, #{}),

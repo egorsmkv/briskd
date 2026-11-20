@@ -34,6 +34,9 @@
     retention/0,
     administrator/1,
     predefined_channel/1,
+    set_control/2,
+    reset_control/1,
+    controls/0,
     table_keys/1,
     store_accounts/1,
     seed_channels/0,
@@ -197,6 +200,27 @@ process so state writes stay serialized.
 -spec ctl(ircd_ctl:state_action()) -> {ok, map()} | {error, term()}.
 ctl(Action) ->
     gen_server:call(?MODULE, {ctl, Action}, 15000).
+
+-doc """
+Set the admin override of the feature control `Key` (`m:ircd_overrides`) to
+the value `Text` names, and apply it as `REHASH` would. Returns the
+controls as they are now, or `{error, Reason}`: `unknown_control`,
+`invalid_value`, or `not_configured` (a subsystem the configuration file
+does not set up).
+""".
+-spec set_control(binary(), binary()) -> {ok, [map()]} | {error, atom()}.
+set_control(Key, Text) ->
+    gen_server:call(?MODULE, {set_control, Key, Text}, 15000).
+
+-doc "Remove the admin override of `Key`, so the file's value applies again.".
+-spec reset_control(binary()) -> {ok, [map()]} | {error, unknown_control}.
+reset_control(Key) ->
+    gen_server:call(?MODULE, {reset_control, Key}, 15000).
+
+-doc "The feature controls for the admin panel (`ircd_overrides:describe/3`).".
+-spec controls() -> [map()].
+controls() ->
+    ircd_overrides:describe(ircd_config:current(), ircd_config:base(), ircd_overrides:all()).
 
 -doc """
 Answer an over-long tagged line from the calling session with
@@ -390,8 +414,11 @@ init(#{name := Name} = Config) ->
     table(e2ee_device, record_info(fields, e2ee_device), []),
     table(e2ee_queue, record_info(fields, e2ee_queue), [{type, ordered_set}]),
     table(direct_history, record_info(fields, direct_history), []),
+    %% Admin overrides of features (ircd_overrides), durable.
+    table(setting, record_info(fields, setting), []),
     ok = mnesia:wait_for_tables(
         [
+            setting,
             account,
             read_marker,
             e2ee_device,
@@ -411,6 +438,9 @@ init(#{name := Name} = Config) ->
         ],
         5000
     ),
+    %% The file's settings with the admin panel's overrides applied.
+    ircd_config:store_base(Config),
+    ircd_config:store(ircd_overrides:apply(Config, ircd_overrides:all())),
     {atomic, ok} = mnesia:clear_table(client),
     reset_channels(),
     seed_channels(),
@@ -704,6 +734,7 @@ Every key of the Mnesia table `Table`, typed by the table's record key.
         | known_server
         | service
         | account
+        | setting
     ) -> [binary()];
     (read_marker) -> [{binary(), binary()}];
     (direct_history) -> [{dm_party(), dm_party()}].
@@ -782,6 +813,33 @@ handle_call({register_adjacent, Name, Token, Kind}, {Pid, _}, Server) ->
     {reply, Result, Server};
 handle_call({ctl, Action}, _From, Server) ->
     {reply, ircd_ctl:handle_state_action(Action, Server), Server};
+handle_call({set_control, Key, Text}, _From, Server) ->
+    Reply =
+        case ircd_overrides:validate(Key, Text) of
+            {ok, Value} ->
+                case ircd_overrides:available(Key, ircd_config:base()) of
+                    false ->
+                        {error, not_configured};
+                    true ->
+                        ok = ircd_overrides:put(Key, Value),
+                        apply_overrides(Key, Value, Server),
+                        {ok, controls()}
+                end;
+            {error, Reason} ->
+                {error, Reason}
+        end,
+    {reply, Reply, Server};
+handle_call({reset_control, Key}, _From, Server) ->
+    Reply =
+        case ircd_overrides:find(Key) of
+            {ok, _} ->
+                ok = ircd_overrides:delete(Key),
+                apply_overrides(Key, default, Server),
+                {ok, controls()};
+            error ->
+                {error, unknown_control}
+        end,
+    {reply, Reply, Server};
 handle_call({server_command, Peer, Prefix0, Command, Params, Tags}, From, Server) ->
     case burst_command(Command) of
         true -> ok;
@@ -805,6 +863,27 @@ handle_call({server_command, Peer, Prefix0, Command, Params, Tags}, From, Server
     end;
 handle_call(Request, From, Server) ->
     other_call(Request, From, Server).
+
+%% Rebuild the effective configuration from the file's and the stored
+%% overrides after one changed, and apply it as REHASH does (clients learn
+%% of added or withdrawn capabilities). Audited; operators get a WALLOPS.
+apply_overrides(Key, Value, Server) ->
+    Effective = ircd_overrides:effective(
+        ircd_config:current(), ircd_config:base(), ircd_overrides:all()
+    ),
+    Shown =
+        case Value of
+            default -> <<"the configuration file's value">>;
+            true -> <<"on">>;
+            false -> <<"off">>;
+            N when is_integer(N) -> integer_to_binary(N)
+        end,
+    ircd_state_info:apply_effective(
+        Effective,
+        #{event => admin_feature_changed, control => Key, value => Value},
+        [<<"Admin panel set ">>, Key, <<" to ">>, Shown],
+        Server
+    ).
 
 %% Commands that may appear inside a peer's burst between NJOIN lines.
 burst_command(Command) ->
