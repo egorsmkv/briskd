@@ -475,3 +475,285 @@ td.mono {
     color: var(--accent);
   }
 }
+
+/* ------------------------------------------------------------------------
+   Interaction feedback: press, keyboard focus, disabled, and busy states. */
+
+button,
+.btn-link,
+.tab,
+.card.clickable {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button {
+  transition: background-color 0.12s ease, border-color 0.12s ease,
+    box-shadow 0.12s ease, transform 0.08s ease, opacity 0.12s ease;
+  &:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+  &:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+  &.danger:disabled:hover {
+    background: var(--danger);
+    border-color: var(--danger);
+  }
+}
+
+button:focus-visible,
+select:focus-visible,
+.btn-link:focus-visible,
+.card.clickable:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent);
+}
+
+.tab:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* A spinner replaces the label while the request runs; the width is kept so
+   the row does not shift. */
+button.busy {
+  position: relative;
+  color: transparent !important;
+  cursor: progress;
+  &:disabled {
+    opacity: 0.85;
+  }
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 2px solid var(--muted);
+    border-right-color: transparent;
+    animation: admin-spin 0.7s linear infinite;
+  }
+  &.primary::after,
+  &.danger::after {
+    border-color: #fff;
+    border-right-color: transparent;
+  }
+}
+
+@keyframes admin-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+input.invalid {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 2px var(--notice-err-bg);
+}
+
+.card.clickable {
+  &:active {
+    transform: translateY(0) scale(0.99);
+  }
+  &::after {
+    content: "→";
+    float: right;
+    margin-top: -1.4em;
+    color: var(--muted);
+    opacity: 0;
+    transition: opacity 0.14s ease, transform 0.14s ease;
+  }
+  &:hover::after,
+  &:focus-visible::after {
+    opacity: 1;
+    transform: translateX(2px);
+  }
+}
+
+tbody tr {
+  transition: background-color 0.1s ease;
+  &:hover td {
+    background: var(--surface-alt);
+  }
+}
+
+td.state-ok {
+  color: var(--ok);
+  font-weight: 500;
+}
+
+td.state-warn {
+  color: var(--warn);
+  font-weight: 500;
+}
+
+.empty {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.last-updated {
+  font-variant-numeric: tabular-nums;
+  min-width: 96px;
+  text-align: right;
+}
+
+.feature-card {
+  transition: border-color 0.14s ease;
+  &.on {
+    border-color: var(--accent-soft);
+  }
+}
+
+/* ------------------------------------------------------------------------
+   Modal */
+
+body.modal-open {
+  overflow: hidden;
+}
+
+.modal-backdrop.open .modal-card {
+  animation: admin-pop 0.14s ease-out;
+}
+
+@keyframes admin-pop {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+}
+
+.modal-message {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* ------------------------------------------------------------------------
+   Toasts */
+
+.toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+  max-width: min(420px, calc(100vw - 32px));
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 10px 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  line-height: 1.45;
+  animation: admin-toast-in 0.18s ease-out;
+  &.ok {
+    border-color: var(--notice-ok-border);
+    .toast-icon {
+      background: var(--ok);
+    }
+  }
+  &.err {
+    border-color: var(--notice-err-border);
+    background: var(--notice-err-bg);
+    .toast-icon {
+      background: var(--danger);
+    }
+  }
+  &.leaving {
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 0.18s ease, transform 0.18s ease;
+  }
+}
+
+.toast-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+}
+
+.toast-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.toast-close {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  padding: 0 4px;
+  min-height: 0;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--muted);
+  &:hover {
+    background: transparent;
+    color: var(--text);
+  }
+}
+
+@keyframes admin-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@media (max-width: 720px) {
+  .toasts {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    max-width: none;
+    align-items: stretch;
+  }
+  .last-updated {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button,
+  .card.clickable,
+  .toast,
+  .modal-backdrop.open .modal-card {
+    transition: none;
+    animation: none;
+  }
+  button:active:not(:disabled),
+  .card.clickable:hover,
+  .card.clickable:active {
+    transform: none;
+  }
+  button.busy::after {
+    animation-duration: 1.6s;
+  }
+}

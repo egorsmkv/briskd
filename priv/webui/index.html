@@ -18,6 +18,7 @@
     <span id="srv-meta" class="muted"></span>
   </div>
   <div class="header-controls">
+    <span class="muted last-updated" id="last-updated" aria-live="off"></span>
     <label class="muted"><input type="checkbox" id="auto-refresh" checked> Auto-refresh (5s)</label>
     <button type="button" id="btn-theme" aria-label="Toggle dark mode">Dark</button>
     <button type="button" id="btn-refresh">Refresh</button>
@@ -42,32 +43,32 @@
 
   <section class="page active" id="panel-overview" role="tabpanel">
     <div class="grid" id="stats-grid">
-      <div class="card clickable" data-goto="clients">
+      <div class="card clickable" data-goto="clients" role="link" tabindex="0">
         <div class="label">Sessions</div>
         <div class="value" id="st-sessions">-</div>
         <div class="sub" id="st-sessions-sub"></div>
       </div>
-      <div class="card clickable" data-goto="channels">
+      <div class="card clickable" data-goto="channels" role="link" tabindex="0">
         <div class="label">Channels</div>
         <div class="value" id="st-channels">-</div>
         <div class="sub" id="st-channels-sub"></div>
       </div>
-      <div class="card clickable" data-goto="links">
+      <div class="card clickable" data-goto="links" role="link" tabindex="0">
         <div class="label">Network</div>
         <div class="value" id="st-network">-</div>
         <div class="sub" id="st-network-sub"></div>
       </div>
-      <div class="card clickable" data-goto="accounts">
+      <div class="card clickable" data-goto="accounts" role="link" tabindex="0">
         <div class="label">Accounts</div>
         <div class="value" id="st-accounts">-</div>
         <div class="sub" id="st-retention"></div>
       </div>
-      <div class="card clickable" data-goto="dronebl">
+      <div class="card clickable" data-goto="dronebl" role="link" tabindex="0">
         <div class="label">DroneBL</div>
         <div class="value" id="st-dronebl">-</div>
         <div class="sub" id="st-dronebl-sub"></div>
       </div>
-      <div class="card clickable" data-goto="media">
+      <div class="card clickable" data-goto="media" role="link" tabindex="0">
         <div class="label">Media &amp; Features</div>
         <div class="value" id="st-media">-</div>
         <div class="sub" id="st-media-sub"></div>
@@ -185,6 +186,7 @@
         <p class="muted">Adjust runtime logger verbosity or send a server-wide NOTICE.</p>
         <div class="ops-row">
           <select id="sel-log-level" aria-label="Log level">
+            <option value="trace">trace</option>
             <option value="debug">debug</option>
             <option value="info">info</option>
             <option value="notice">notice</option>
@@ -227,9 +229,14 @@
       <button type="button" class="small" id="btn-close-modal" aria-label="Close dialog">×</button>
     </div>
     <form class="modal-body" id="admin-modal-form">
-      <div class="modal-field">
+      <p class="modal-message" id="admin-modal-message" hidden></p>
+      <div class="modal-field" id="admin-modal-field">
         <label for="admin-modal-input" id="admin-modal-label">Value</label>
         <input type="text" id="admin-modal-input" maxlength="400">
+      </div>
+      <div class="modal-field" id="admin-modal-confirm-field" hidden>
+        <label for="admin-modal-confirm-input" id="admin-modal-confirm-label"></label>
+        <input type="text" id="admin-modal-confirm-input" maxlength="200" autocomplete="off" spellcheck="false">
       </div>
       <div class="modal-actions">
         <button type="submit" class="primary" id="admin-modal-submit">Confirm</button>
@@ -238,6 +245,8 @@
     </form>
   </div>
 </div>
+
+<div class="toasts" id="toasts"></div>
 
 <script src="/assets/admin.js" defer></script>
 </body>
