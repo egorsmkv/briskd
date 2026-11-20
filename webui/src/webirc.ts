@@ -55,6 +55,7 @@ import {
   splitMultiline,
   utf8Bytes,
 } from "./common/multiline.ts";
+import { altNick, backoffDelay, rejoinList } from "./common/reconnect.ts";
 import {
   audioConstraints,
   type CallAudioSettings,
@@ -592,7 +593,7 @@ function saveSession(): void {
     if (isChan(b.name)) chans.push(b.name);
   });
   const payload: SavedSession = {
-    nick: myNick,
+    nick: preferredNick || myNick,
     acct: saslUser,
     pass: saslPass,
     channels: chans.length > 0 ? chans : autoChannels,
@@ -1772,6 +1773,8 @@ function addLine(
     pasteTitle: opts.pasteTitle,
     bot: opts.bot,
   };
+  // History fetched after a reconnect can overlap what is already shown.
+  if (entry.msgid && buf.lines.some((l) => l.msgid === entry.msgid)) return;
   const prev = buf.lines[buf.lines.length - 1];
   buf.lines.push(entry);
   if (buf.lines.length > 600) buf.lines.shift();
@@ -2486,13 +2489,22 @@ function startHeartbeat(): void {
     if (heartbeatPending >= HEARTBEAT_MAX_MISSED) {
       addLine("*status", { text: "Server stopped responding.", kind: "err" });
       stopHeartbeat();
-      ws.close();
+      abandonSocket();
       return;
     }
     heartbeatPending++;
     sendRaw(
       capOn("labeled-response") ? `@label=hb ISON ${myNick}` : `ISON ${myNick}`,
     );
+    // Registered with a fallback nickname: retake the preferred one once the
+    // old connection is gone.
+    if (
+      preferredNick && !regainPending &&
+      ircFold(myNick) !== ircFold(preferredNick)
+    ) {
+      regainPending = true;
+      sendRaw(`NICK ${preferredNick}`);
+    }
   }, HEARTBEAT_MS);
 }
 
@@ -2722,14 +2734,67 @@ function handleMessage(raw: string): void {
     e2ee.onRegistered();
     updateTitle();
     addLine("*status", { time, text: params[1] || "Connected", kind: "sys" });
+    catchUp.clear();
+    if (reconnecting) {
+      addLine("*status", { time, text: t("rc.reconnected"), kind: "sys" });
+      // Rejoined channels fetch what was missed instead of the latest page,
+      // and do not take over the conversation the user is looking at.
+      buffers.forEach((b) => {
+        if (isChan(b.name)) catchUp.add(ircFold(b.name));
+      });
+      if (capOn("draft/chathistory")) {
+        for (const dm of dmNames()) {
+          const after = historyAfter(buffers.get(ircFold(dm)));
+          if (after) sendRaw(`CHATHISTORY AFTER ${dm} ${after} 100`);
+        }
+      }
+    }
+    reconnecting = false;
+    hideReconnectBar();
+    // Only a connection that lasts counts as recovered for the backoff.
+    stableTimer = clearTimer(stableTimer);
+    stableTimer = setTimeout(() => {
+      reconnectAttempt = 0;
+    }, STABLE_MS);
+    if (preferredNick && ircFold(myNick) !== ircFold(preferredNick)) {
+      addLine("*status", {
+        time,
+        text: t("rc.altnick", { nick: preferredNick, alt: myNick }),
+        kind: "sys",
+      });
+    }
     // Subscribe before joining so the joins carry members' metadata.
     if (capOn("draft/metadata-2")) metadataSubscribe();
-    for (const ch of autoChannels) sendRaw(`JOIN ${ch}`);
+    // After a reconnect, the channels still open here are rejoined too.
+    const open: string[] = [];
+    buffers.forEach((b) => {
+      if (isChan(b.name)) open.push(b.name);
+    });
+    for (const ch of rejoinList(open, autoChannels, ircFold)) {
+      sendRaw(`JOIN ${ch}`);
+    }
     for (const dm of dmNames()) requestMarker(dm);
     startHeartbeat();
     return;
   }
+  if (command === "433" && !isRegistered) {
+    // The nickname is taken, typically by our own previous connection that
+    // the server has not dropped yet: register with a fallback and retake it
+    // later (see the heartbeat).
+    nickAttempt++;
+    if (nickAttempt > 20) return;
+    myNick = altNick(myNick, nickLen, nickAttempt);
+    sendRaw(`NICK ${myNick}`);
+    return;
+  }
+  if (command === "433" && regainPending) {
+    regainPending = false; // still held; try again on the next heartbeat
+    return;
+  }
   if (command === "005") {
+    const nl = params.slice(1, -1).find((tok) => tok.startsWith("NICKLEN="));
+    const n = nl ? parseInt(nl.slice(8), 10) : NaN;
+    if (Number.isFinite(n) && n > 0) nickLen = n;
     for (const tok of params.slice(1, -1)) {
       if (tok.startsWith("-")) {
         isupport.delete(tok.slice(1).toUpperCase());
@@ -2770,14 +2835,22 @@ function handleMessage(raw: string): void {
       joiner.realname = params[2];
     }
     if (ircFold(nick) === ircFold(myNick)) {
-      if (!desiredBuf || desiredBuf === ircFold(chan)) {
+      const rejoin = catchUp.delete(ircFold(chan));
+      if (rejoin) {
+        renderBuffers();
+      } else if (!desiredBuf || desiredBuf === ircFold(chan)) {
         switchBuf(ircFold(chan));
         desiredBuf = "";
       } else {
         renderBuffers();
       }
       saveSession();
-      sendRaw(`CHATHISTORY LATEST ${chan} * 50`);
+      const after = rejoin ? historyAfter(buf) : null;
+      sendRaw(
+        after
+          ? `CHATHISTORY AFTER ${chan} ${after} 100`
+          : `CHATHISTORY LATEST ${chan} * 50`,
+      );
       if (isupport.has("WHOX")) {
         // One WHOX reply gives prefixes, away, bot, and account per member.
         pendingWho.add(ircFold(chan));
@@ -2844,8 +2917,13 @@ function handleMessage(raw: string): void {
     }
     if (ircFold(nick) === ircFold(myNick)) {
       myNick = next;
+      // A nick change of ours (from /nick, or retaking the preferred nick)
+      // is what a reconnect registers with next time.
+      preferredNick = next;
+      regainPending = false;
       $("my-nick").textContent = myNick;
       e2ee.setMyNick(myNick);
+      saveSession();
     }
     buffers.forEach((buf) => {
       if (buf.members.has(nick)) {
@@ -3341,39 +3419,235 @@ function setConnButtonState(offline: boolean): void {
   btn.setAttribute("aria-label", text);
 }
 
+// --- Automatic reconnection ------------------------------------------------
+//
+// A connection that closes without the user asking (network loss, server
+// restart, missed heartbeats, KILL) is retried with exponential backoff
+// (common/reconnect.ts: 1 s doubling to 60 s, with jitter). The attempt count
+// resets only after a connection has stayed registered for STABLE_MS, so a
+// server that accepts and then drops us at once is not hammered. Going
+// online, or the tab becoming visible, retries at once. The Disconnect
+// button, /quit, and Cancel stop it.
+
+const CONNECT_TIMEOUT_MS = 15_000;
+const STABLE_MS = 30_000;
+let reconnectTimer: number | null = null;
+let reconnectTicker: number | null = null;
+let reconnectAt = 0;
+let reconnectAttempt = 0;
+/** Between an unexpected close and the next successful registration. */
+let reconnecting = false;
+/** The user ended the session; do not reconnect. */
+let userClosed = false;
+let connectTimer: number | null = null;
+let stableTimer: number | null = null;
+/** The nickname the user chose; a fallback is used while it is held. */
+let preferredNick = "";
+let nickAttempt = 0;
+/** NICKLEN from the last 005 (RFC 1459 default 9); survives reconnects. */
+let nickLen = 9;
+/** Our NICK to retake the preferred nickname is in flight. */
+let regainPending = false;
+/** Channels being rejoined after a reconnect, by folded name. */
+const catchUp = new Set<string>();
+
+/**
+ * The CHATHISTORY selector for what was missed in `buf` while disconnected:
+ * after the server time of its newest server-stamped message, or null when
+ * there is none (then the latest messages are fetched).
+ */
+function historyAfter(buf: BufferState | undefined): string | null {
+  if (!buf) return null;
+  for (let i = buf.lines.length - 1; i >= 0; i--) {
+    const l = buf.lines[i];
+    if (l.msgid && l.epochMs) {
+      return `timestamp=${new Date(l.epochMs).toISOString()}`;
+    }
+  }
+  return null;
+}
+
+function clearTimer(id: number | null): null {
+  if (id !== null) clearTimeout(id);
+  return null;
+}
+
+function showReconnectBar(text: string, canRetryNow: boolean): void {
+  $("reconnect-text").textContent = text;
+  $("btn-reconnect-now").classList.toggle("hidden", !canRetryNow);
+  $("reconnect-bar").classList.remove("hidden");
+}
+
+function hideReconnectBar(): void {
+  $("reconnect-bar").classList.add("hidden");
+}
+
+/** Stop a pending retry (the bar stays if a reconnect is still under way). */
+function cancelReconnectTimer(): void {
+  reconnectTimer = clearTimer(reconnectTimer);
+  if (reconnectTicker !== null) clearInterval(reconnectTicker);
+  reconnectTicker = null;
+}
+
+function updateReconnectCountdown(): void {
+  const s = Math.max(1, Math.ceil((reconnectAt - Date.now()) / 1000));
+  showReconnectBar(t("rc.waiting", { s }), true);
+}
+
+function scheduleReconnect(): void {
+  cancelReconnectTimer();
+  if (!lastWsUrl || userClosed) return;
+  reconnecting = true;
+  if (navigator.onLine === false) {
+    // The "online" event retries; no timer while there is no network.
+    showReconnectBar(t("rc.offline"), true);
+    return;
+  }
+  const delay = backoffDelay(reconnectAttempt);
+  reconnectAttempt++;
+  reconnectAt = Date.now() + delay;
+  updateReconnectCountdown();
+  reconnectTicker = setInterval(updateReconnectCountdown, 1000);
+  reconnectTimer = setTimeout(reconnectNow, delay);
+}
+
+function reconnectNow(): void {
+  cancelReconnectTimer();
+  if (!lastWsUrl || userClosed) return;
+  reconnecting = true;
+  showReconnectBar(t("rc.connecting"), false);
+  try {
+    connectSocket(lastWsUrl);
+  } catch (e) {
+    addLine("*status", { text: errorMessage(e), kind: "err" });
+    scheduleReconnect();
+  }
+}
+
+/** Stop reconnecting; the user ended the session or cancelled. */
+function stopReconnecting(): void {
+  cancelReconnectTimer();
+  reconnecting = false;
+  hideReconnectBar();
+}
+
+$("btn-reconnect-now").onclick = () => {
+  userClosed = false;
+  reconnectNow();
+};
+$("btn-reconnect-cancel").onclick = () => {
+  userClosed = true;
+  stopReconnecting();
+  if (ws && ws.readyState !== WebSocket.CLOSED) ws.close();
+  addLine("*status", { text: t("rc.cancelled"), kind: "sys" });
+};
+
+globalThis.addEventListener("online", () => {
+  if (reconnecting && (!ws || ws.readyState === WebSocket.CLOSED)) {
+    reconnectNow();
+  }
+});
+document.addEventListener("visibilitychange", () => {
+  // Phones throttle background timers; retry as soon as the tab is back.
+  if (document.visibilityState === "visible" && reconnectTimer !== null) {
+    reconnectNow();
+  }
+});
+globalThis.addEventListener("pageshow", (ev) => {
+  // Restored from the back/forward cache with a closed socket.
+  if (
+    (ev as PageTransitionEvent).persisted && lastWsUrl && !userClosed &&
+    (!ws || ws.readyState === WebSocket.CLOSED)
+  ) {
+    reconnectNow();
+  }
+});
+
+/**
+ * Treat the current socket as closed now. On a dead network a browser may
+ * take minutes to report the close; the handlers are detached and the close
+ * handling (which schedules the reconnect) runs at once.
+ */
+function abandonSocket(): void {
+  const sock = ws;
+  if (!sock) return;
+  const onclose = sock.onclose;
+  sock.onopen =
+    sock.onmessage =
+    sock.onerror =
+    sock.onclose =
+      null;
+  try {
+    sock.close();
+  } catch {
+    // ignore
+  }
+  onclose?.call(sock, new CloseEvent("close"));
+}
+
 function connectSocket(url: string): void {
   const parsed = new URL(url);
   if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") {
     throw new Error("WebSocket URL must start with ws:// or wss://");
   }
   lastWsUrl = parsed.href;
+  cancelReconnectTimer();
   if (ws) {
+    // Detach first: a late close event from the old socket must not reset
+    // the state of the new connection or schedule another reconnect.
+    const old = ws;
+    old.onopen =
+      old.onmessage =
+      old.onerror =
+      old.onclose =
+        null;
     try {
-      ws.close();
+      old.close();
     } catch {
       // ignore
     }
   }
-  ws = new WebSocket(parsed.href, ["text.ircv3.net"]);
+  const sock = new WebSocket(parsed.href, ["text.ircv3.net"]);
+  ws = sock;
   $("status-dot").classList.remove("off");
   setConnButtonState(false);
   addLine("*status", { text: `Connecting to ${url}...`, kind: "sys" });
+  // A connection that never opens (black-holed network) is abandoned.
+  connectTimer = clearTimer(connectTimer);
+  connectTimer = setTimeout(() => {
+    if (ws === sock && sock.readyState === WebSocket.CONNECTING) {
+      abandonSocket();
+    }
+  }, CONNECT_TIMEOUT_MS);
 
-  ws.onopen = () => {
+  sock.onopen = () => {
+    if (ws !== sock) return;
+    connectTimer = clearTimer(connectTimer);
     advertisedCaps = [];
     resetIrcv3State();
     e2ee.resetConnection();
+    nickAttempt = 0;
+    regainPending = false;
+    myNick = preferredNick || myNick;
     sendRaw("CAP LS 302");
     sendRaw(`NICK ${myNick}`);
     sendRaw(`USER ${myNick} 0 * :${myNick}`);
   };
-  ws.onmessage = (e) => {
+  sock.onmessage = (e) => {
+    if (ws !== sock) return;
     if (typeof e.data === "string") handleMessage(e.data);
   };
-  ws.onerror = () => {
+  sock.onerror = () => {
+    if (ws !== sock) return;
     addLine("*status", { text: "WebSocket connection error.", kind: "err" });
   };
-  ws.onclose = () => {
+  sock.onclose = () => {
+    // The Disconnect button clears `ws` before this fires; a replaced socket
+    // has no handlers left (see above).
+    if (ws && ws !== sock) return;
+    connectTimer = clearTimer(connectTimer);
+    stableTimer = clearTimer(stableTimer);
+    const wasRegistered = isRegistered;
     stopHeartbeat();
     calls.reset();
     calls.enabled = false;
@@ -3382,10 +3656,21 @@ function connectSocket(url: string): void {
     hiddenUnread = 0;
     hiddenMentions = 0;
     e2ee.resetConnection();
+    multiline.clear();
+    // Member lists are refilled by NAMES after rejoining.
+    buffers.forEach((b) => b.members.clear());
+    renderMembers();
     updateTitle();
     $("status-dot").classList.add("off");
     setConnButtonState(true);
-    addLine("*status", { text: "Disconnected from server.", kind: "err" });
+    if (wasRegistered || !reconnecting) {
+      addLine("*status", { text: "Disconnected from server.", kind: "err" });
+    }
+    if (userClosed) {
+      stopReconnecting();
+    } else {
+      scheduleReconnect();
+    }
   };
 }
 
@@ -3658,6 +3943,8 @@ function runSlashCommand(raw: string, buf: BufferState | undefined): void {
       if (rest) sendRaw(rest);
       return;
     case "quit":
+      userClosed = true;
+      stopReconnecting();
       clearSession();
       sendRaw(`QUIT :${rest || "Leaving WebIRC"}`);
       return;
@@ -3682,6 +3969,10 @@ function startSession(opts: {
   const err = $("connect-err");
   err.style.display = "none";
   myNick = opts.nick;
+  preferredNick = opts.nick;
+  userClosed = false;
+  reconnectAttempt = 0;
+  stopReconnecting();
   isIrcOp = false;
   saslUser = opts.acct;
   saslPass = opts.pass;
@@ -3815,9 +4106,12 @@ $<HTMLFormElement>("topic-form").addEventListener("submit", (ev) => {
 
 $("btn-conn").onclick = () => {
   if (connOffline) {
-    if (lastWsUrl) connectSocket(lastWsUrl);
+    userClosed = false;
+    if (lastWsUrl) reconnectNow();
     return;
   }
+  userClosed = true;
+  stopReconnecting();
   clearSession();
   stopHeartbeat();
   if (calls.busy) calls.hangup();
@@ -3933,6 +4227,10 @@ $<HTMLFormElement>("send-form").addEventListener("submit", (ev) => {
     return;
   }
   // Refuse before clearing the composer, so nothing typed is lost.
+  if (!raw.startsWith("/") && (!ws || ws.readyState !== WebSocket.OPEN)) {
+    addLine(activeBuf, { text: t("rc.notsent"), kind: "err" });
+    return;
+  }
   if (
     multi && buf && buf.name !== "*status" && !raw.startsWith("/") &&
     !e2ee.isBufferEncrypted(buf.name)

@@ -2592,6 +2592,55 @@ body.layout-mobile {
 }
 
 /* Typing indicator, compose banner, reactions, replies, editing, redaction */
+// Shown while the connection is down and being retried.
+.reconnect-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 16px 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  background: var(--surface-alt);
+  font-size: 13px;
+  &.hidden {
+    display: none;
+  }
+  .reconnect-icon {
+    color: var(--warn);
+    flex-shrink: 0;
+    animation: reconnect-spin 1.6s linear infinite;
+  }
+  .reconnect-text {
+    flex: 1;
+    min-width: 0;
+    font-variant-numeric: tabular-nums;
+  }
+  button {
+    margin-left: 0;
+    flex-shrink: 0;
+  }
+}
+
+@keyframes reconnect-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reconnect-bar .reconnect-icon {
+    animation: none;
+  }
+}
+
+@media (max-width: 430px) {
+  .reconnect-bar {
+    margin: 0 10px 6px;
+    flex-wrap: wrap;
+  }
+}
+
 .typing-bar {
   display: flex;
   align-items: center;
