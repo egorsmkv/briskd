@@ -1,5 +1,6 @@
 // The message box: keys, history, multi-line sending.
 import { scrollToNewest } from "./chat/scroll.ts";
+import { handleMentionKey } from "./mention_picker.ts";
 import { byId as $ } from "../common/dom.ts";
 import { t } from "../common/i18n.ts";
 import {
@@ -96,6 +97,8 @@ export function init(): void {
   msgInp.addEventListener("input", autosizeComposer);
 
   msgInp.addEventListener("keydown", (ev) => {
+    // An open @-mention list takes Up/Down, Enter, Tab, and Escape first.
+    if (handleMentionKey(ev)) return;
     // Enter sends; Shift+Enter inserts a line break. Keys pressed while an
     // input method is composing (e.g. CJK) belong to the IME.
     if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {

@@ -19,6 +19,7 @@ import { init as init_files } from "./webirc/files.ts";
 import { init as init_layout } from "./webirc/layout.ts";
 import { init as init_chat_scroll } from "./webirc/chat/scroll.ts";
 import { init as init_chat_actions } from "./webirc/chat/actions.ts";
+import { init as init_mention_picker } from "./webirc/mention_picker.ts";
 
 init_settings();
 init_session();
@@ -38,3 +39,4 @@ init_files();
 init_layout();
 init_chat_scroll();
 init_chat_actions();
+init_mention_picker();

@@ -607,6 +607,62 @@ body {
   border-top: 1px solid var(--border);
 }
 
+// @-mention list, above the message box.
+.mention-picker {
+  position: absolute;
+  bottom: 100%;
+  inset-inline-start: 16px;
+  z-index: 20;
+  width: min(320px, calc(100% - 32px));
+  max-height: 264px;
+  overflow-y: auto;
+  margin-bottom: 6px;
+  padding: 4px;
+  background: var(--panel, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  &.hidden {
+    display: none;
+  }
+}
+
+.mention-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13.5px;
+  .avatar {
+    width: 24px;
+    height: 24px;
+    margin-top: 0;
+    border-radius: 6px;
+    font-size: 10px;
+  }
+  &:hover,
+  &.active {
+    background: var(--accent-soft);
+  }
+}
+
+.mention-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mention-handle {
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .input-bar .btn-plus {
   display: inline-flex;
   align-items: center;
