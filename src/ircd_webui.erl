@@ -899,7 +899,10 @@ handle_link_preview(Socket, Query, Headers) ->
                                 error => <<"disallowed_port">>
                             });
                         {error, _} ->
-                            send_json(Socket, 404, <<"Not Found">>, #{error => <<"no_preview">>})
+                            %% The page exists but has no usable preview (or
+                            %% could not be fetched): a normal outcome, so no
+                            %% error status for the browser console to report.
+                            send_response(Socket, 204, <<"No Content">>, <<>>, [], <<>>)
                     end
             end;
         _ ->
@@ -1429,10 +1432,20 @@ send_response(Socket, Code, Reason, ContentType, ExtraHeaders, Body) ->
             true -> [];
             false -> [<<"Content-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\n">>]
         end,
+    %% RFC 9110 section 8.6: no Content-Length (and no content) on a 204.
+    BodyHeaders =
+        case Code of
+            204 ->
+                [];
+            _ ->
+                [
+                    [<<"Content-Type: ">>, ContentType, <<"\r\n">>],
+                    [<<"Content-Length: ">>, integer_to_binary(byte_size(Bin)), <<"\r\n">>]
+                ]
+        end,
     Headers = [
         [<<"HTTP/1.1 ">>, integer_to_binary(Code), <<" ">>, Reason, <<"\r\n">>],
-        [<<"Content-Type: ">>, ContentType, <<"\r\n">>],
-        [<<"Content-Length: ">>, integer_to_binary(byte_size(Bin)), <<"\r\n">>],
+        BodyHeaders,
         <<"Connection: close\r\n">>,
         CacheHeader,
         <<"X-Content-Type-Options: nosniff\r\n">>,

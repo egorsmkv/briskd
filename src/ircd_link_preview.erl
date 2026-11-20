@@ -2,17 +2,21 @@
 -moduledoc """
 SSRF-protected OpenGraph link preview fetcher (`GET /api/link-preview?url=...`).
 
-Fetches up to 64 KiB of HTML from public `http://` or `https://` URLs (ports
-80/443 only), extracts OpenGraph / HTML metadata (`title`, `description`,
-`site_name`), and caches results in a bounded ETS table (10-minute TTL, max 500
-entries).
+Reads the first 64 KiB of HTML from public `http://` or `https://` URLs
+(ports 80/443 only), where the `<head>` metadata is, and stops there: pages
+are often far larger (a GitHub repository page is several hundred KiB).
+Extracts OpenGraph / HTML metadata (`title`, `description`, `site_name`) and
+caches results in a bounded ETS table (10-minute TTL, max 500 entries); a page
+with no preview is remembered for one minute so it is not fetched again on
+every request.
 
 SSRF defenses:
 - Rejects non-HTTP(S) schemes, credentials in URLs, and non-80/443 ports.
 - Resolves DNS before connecting and blocks loopback, RFC 1918 private,
   link-local / cloud metadata (`169.254.0.0/16`), CGNAT (`100.64.0.0/10`),
   multicast, IPv6 ULA/link-local, and IPv4-mapped private addresses.
-- Disables automatic redirects and caps response size and timeout (5s).
+- Disables automatic redirects, reads at most 64 KiB, and bounds the whole
+  download (connect, headers, and body) to 5 seconds.
 """.
 
 -export([
@@ -20,13 +24,15 @@ SSRF defenses:
     fetch/1,
     validate_url/1,
     is_private_ip/1,
-    extract_metadata/2
+    extract_metadata/2,
+    read_capped/4
 ]).
 
 -define(MAX_URL_BYTES, 1024).
 -define(MAX_HTML_BYTES, 65536).
 -define(TIMEOUT_MS, 5000).
 -define(CACHE_TTL_SEC, 600).
+-define(NEGATIVE_TTL_SEC, 60).
 -define(MAX_CACHE_ENTRIES, 500).
 -define(CACHE_TABLE, ircd_link_preview_cache).
 
@@ -52,12 +58,15 @@ fetch(Url) when is_binary(Url) ->
                     case cache_get(Url) of
                         {ok, Meta} ->
                             {ok, Meta};
+                        {error, Reason} ->
+                            {error, Reason};
                         miss ->
                             case fetch_uncached(Url, Parsed) of
                                 {ok, Meta} ->
-                                    cache_put(Url, Meta),
+                                    cache_put(Url, {ok, Meta}, ?CACHE_TTL_SEC),
                                     {ok, Meta};
                                 {error, Reason} ->
+                                    cache_put(Url, {error, Reason}, ?NEGATIVE_TTL_SEC),
                                     {error, Reason}
                             end
                     end;
@@ -180,10 +189,10 @@ extract_metadata(Html, Host) when is_binary(Html), is_binary(Host) ->
 default_port(<<"https">>) -> 443;
 default_port(_) -> 80.
 
-fetch_uncached(Url, #{host := Host}) ->
+fetch_uncached(Url, #{host := Host} = Parsed) ->
     case check_public_host(Host) of
         ok ->
-            do_http_get(Url, Host);
+            do_http_get(Url, Parsed);
         {error, Reason} ->
             {error, Reason}
     end.
@@ -218,47 +227,140 @@ check_public_host(Host) ->
             end
     end.
 
-do_http_get(Url, Host) ->
+%% hackney 4 has no "read at most N bytes" option: `max_body_size` fails the
+%% whole request with `body_too_large` when the page is bigger. So the body is
+%% streamed on a dedicated connection and the read stops at ?MAX_HTML_BYTES.
+do_http_get(Url, #{host := Host} = Parsed) ->
+    Deadline = erlang:monotonic_time(millisecond) + ?TIMEOUT_MS,
     Headers = [
         {<<"user-agent">>, <<"ircd-link-preview/1.0">>},
         {<<"accept">>, <<"text/html,application/xhtml+xml;q=0.9,*/*;q=0.1">>}
     ],
     Opts = [
-        {recv_timeout, ?TIMEOUT_MS},
         {connect_timeout, ?TIMEOUT_MS},
-        {follow_redirect, false},
-        {max_body, ?MAX_HTML_BYTES},
-        with_body
+        {recv_timeout, ?TIMEOUT_MS},
+        {pool, false}
     ],
-    case hackney:request(get, Url, Headers, <<>>, Opts) of
-        {ok, Status, RespHeaders, Body} when Status >= 200, Status < 300, is_binary(Body) ->
+    case hackney:connect(Url, Opts) of
+        {ok, Conn} ->
+            try
+                get_head(Conn, request_path(Parsed), Headers, Host, Deadline)
+            after
+                hackney:close(Conn)
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+get_head(Conn, Path, Headers, Host, Deadline) ->
+    case hackney:send_request(Conn, {get, Path, Headers, <<>>}) of
+        {ok, Status, RespHeaders, Conn} when Status >= 200, Status < 300 ->
             case is_html_content_type(RespHeaders) of
                 true ->
-                    Slice =
-                        case byte_size(Body) > ?MAX_HTML_BYTES of
-                            true -> binary:part(Body, 0, ?MAX_HTML_BYTES);
-                            false -> Body
-                        end,
-                    Meta = extract_metadata(Slice, Host),
-                    case maps:get(title, Meta) of
-                        <<>> -> {error, no_metadata};
-                        _ -> {ok, Meta#{url => Url}}
+                    Next = fun() -> hackney:stream_body(Conn) end,
+                    %% The metadata is in <head>; pages often stream the rest
+                    %% of the document slowly, so stop at its end.
+                    case read_capped(Next, ?MAX_HTML_BYTES, Deadline, <<"</head">>) of
+                        {ok, Html} -> metadata(Html, Host);
+                        {error, Reason} -> {error, Reason}
                     end;
                 false ->
                     {error, not_html}
             end;
-        {ok, _Status, _RespHeaders, _Body} ->
+        {ok, _Status, _RespHeaders, _Conn} ->
+            {error, upstream_status};
+        {ok, _Status, _RespHeaders} ->
             {error, upstream_status};
         {error, Reason} ->
             {error, Reason}
     end.
 
+metadata(Html, Host) ->
+    Meta = extract_metadata(Html, Host),
+    case maps:get(title, Meta) of
+        <<>> -> {error, no_metadata};
+        _ -> {ok, Meta}
+    end.
+
+%% Path and query of the URL, as sent in the request line.
+request_path(Parsed) ->
+    Path =
+        case maps:get(path, Parsed, <<>>) of
+            <<>> -> <<"/">>;
+            P -> P
+        end,
+    case maps:get(query, Parsed, undefined) of
+        undefined -> Path;
+        Q -> <<Path/binary, "?", Q/binary>>
+    end.
+
+-doc """
+Read a response body through `Next` (returning `{ok, Chunk}`, `done`, or
+`{error, Reason}`) until `Max` bytes, the end of the body, `Marker` (matched
+without regard to ASCII case, and kept in the result; `none` disables it), or
+`Deadline` (monotonic milliseconds). Returns at most `Max` bytes; a body cut
+at `Max` is not an error. A body that has not ended by `Deadline`, or fails
+after some data, returns what was read; with nothing read it is an error.
+""".
+-spec read_capped(
+    fun(() -> {ok, binary()} | done | {error, term()}),
+    pos_integer(),
+    integer(),
+    binary() | none
+) -> {ok, binary()} | {error, term()}.
+read_capped(Next, Max, Deadline, Marker) ->
+    read_capped(Next, Max, Deadline, Marker, [], 0, <<>>).
+
+read_capped(_Next, Max, _Deadline, _Marker, Acc, Size, _Tail) when Size >= Max ->
+    {ok, binary:part(joined(Acc), 0, Max)};
+read_capped(Next, Max, Deadline, Marker, Acc, Size, Tail) ->
+    case erlang:monotonic_time(millisecond) >= Deadline of
+        true when Size > 0 ->
+            {ok, joined(Acc)};
+        true ->
+            {error, timeout};
+        false ->
+            case Next() of
+                {ok, Chunk} ->
+                    Acc1 = [Chunk | Acc],
+                    Size1 = Size + byte_size(Chunk),
+                    %% Search the new chunk plus the end of the previous one,
+                    %% so a marker split across chunks is still found.
+                    Window = ircd_wire:lower(<<Tail/binary, Chunk/binary>>),
+                    case Marker =/= none andalso binary:match(Window, Marker) =/= nomatch of
+                        true ->
+                            Body = joined(Acc1),
+                            {ok, binary:part(Body, 0, min(Max, byte_size(Body)))};
+                        false ->
+                            read_capped(
+                                Next, Max, Deadline, Marker, Acc1, Size1, tail(Window, Marker)
+                            )
+                    end;
+                done ->
+                    {ok, joined(Acc)};
+                {error, _} when Size > 0 ->
+                    {ok, joined(Acc)};
+                {error, Reason} ->
+                    {error, Reason}
+            end
+    end.
+
+joined(Acc) -> iolist_to_binary(lists:reverse(Acc)).
+
+tail(_Window, none) ->
+    <<>>;
+tail(Window, Marker) ->
+    Keep = min(byte_size(Window), byte_size(Marker) - 1),
+    binary:part(Window, byte_size(Window) - Keep, Keep).
+
 is_html_content_type([]) ->
     false;
 is_html_content_type([{K, V} | Rest]) ->
-    case string:lowercase(K) of
+    %% Header bytes come from the network: ASCII lowercasing, which does not
+    %% raise on invalid UTF-8 the way string:lowercase/1 does.
+    case ircd_wire:lower(iolist_to_binary(K)) of
         <<"content-type">> ->
-            Lower = string:lowercase(V),
+            Lower = ircd_wire:lower(iolist_to_binary(V)),
             binary:match(Lower, <<"text/html">>) =/= nomatch orelse
                 binary:match(Lower, <<"application/xhtml+xml">>) =/= nomatch;
         _ ->
@@ -294,13 +396,17 @@ first_non_empty([]) -> <<>>;
 first_non_empty([<<>> | Rest]) -> first_non_empty(Rest);
 first_non_empty([V | _]) -> V.
 
+%% Page text is untrusted bytes in any encoding. It is made valid UTF-8
+%% (invalid bytes become U+FFFD) before anything Unicode-aware touches it, and
+%% cut at `MaxLen` characters, not bytes, so the JSON reply never carries a
+%% split character (json:encode/1 raises on invalid UTF-8).
 clean_text(Bin, MaxLen) ->
-    Unesc = unescape_html(Bin),
+    Unesc = ircd_websocket:utf8_safe(unescape_html(Bin)),
     NoCtrl = <<<<C>> || <<C>> <= Unesc, C >= 32, C =/= 127>>,
-    Collapsed = re:replace(NoCtrl, <<"\\s+">>, <<" ">>, [global, {return, binary}]),
+    Collapsed = re:replace(NoCtrl, <<"\\s+">>, <<" ">>, [global, unicode, {return, binary}]),
     Trimmed = string:trim(Collapsed),
-    case byte_size(Trimmed) > MaxLen of
-        true -> binary:part(Trimmed, 0, MaxLen);
+    case string:length(Trimmed) > MaxLen of
+        true -> string:trim(string:slice(Trimmed, 0, MaxLen), trailing);
         false -> Trimmed
     end.
 
@@ -316,18 +422,18 @@ cache_get(Url) ->
     Tab = ensure_cache_table(),
     Now = erlang:monotonic_time(second),
     case ets:lookup(Tab, Url) of
-        [{Url, Exp, Meta}] when Exp > Now -> {ok, Meta};
+        [{Url, Exp, Result}] when Exp > Now -> Result;
         _ -> miss
     end.
 
-cache_put(Url, Meta) ->
+cache_put(Url, Result, Ttl) ->
     Tab = ensure_cache_table(),
     case ets:info(Tab, size) >= ?MAX_CACHE_ENTRIES of
         true -> ets:delete_all_objects(Tab);
         false -> ok
     end,
-    Exp = erlang:monotonic_time(second) + ?CACHE_TTL_SEC,
-    ets:insert(Tab, {Url, Exp, Meta}),
+    Exp = erlang:monotonic_time(second) + Ttl,
+    ets:insert(Tab, {Url, Exp, Result}),
     ok.
 
 ensure_cache_table() ->

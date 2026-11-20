@@ -89,6 +89,16 @@ live_webui() ->
                 {<<"GET">>, <<"/administrator">>}
             ]
         ),
+        %% A link with no preview (here a host that does not resolve) is
+        %% 204 No Content, without body headers, not an error status.
+        {204, NoPreviewHeaders, <<>>} = http_req(
+            Port,
+            <<"GET">>,
+            <<"/api/link-preview?url=https%3A%2F%2Fno-preview.invalid%2F">>,
+            [{<<"X-Requested-With">>, <<"ircd-webui">>}],
+            <<>>
+        ),
+        ?assertNot(maps:is_key(<<"content-length">>, NoPreviewHeaders)),
         %% Every admin path still asks for credentials.
         lists:foreach(
             fun({Method, Path}) ->

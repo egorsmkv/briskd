@@ -48,6 +48,36 @@ If `just` is installed, `just --list` shows the available commands:
 | `just deps` | Fetch Rebar3 dependencies |
 | `just clean` | Remove compiled build artifacts |
 
+## WebUI code layout
+
+The browser pages are TypeScript under `webui/src`, bundled by
+`webui/build.ts` (esbuild) into `priv/webui/assets`. `deno task check`,
+`deno task lint`, `deno task test`, and `deno task build` run in `webui/`.
+
+WebIRC (`webirc.ts`) is only an entry point: it calls each module's `init()`
+under `webui/src/webirc/` in a fixed order.
+
+| Module | Contents |
+| --- | --- |
+| `state.ts` | Mutable session state as one object `S` (`S.ws`, `S.myNick`, `S.activeBuf`, ...) and the conversations map |
+| `types.ts`, `constants.ts`, `util.ts`, `parse.ts` | Shared types, IRCv3 tags and limits, small helpers, IRC line parsing |
+| `caps.ts`, `users.ts` | Negotiated capabilities and ISUPPORT; known users, presence, MONITOR, read markers, metadata |
+| `connection.ts` | WebSocket, heartbeat, automatic reconnection |
+| `handler.ts`, `irc/*.ts` | Incoming lines: preprocessing, then one handler per area (`cap`, `registration`, `channels`, `chat`, `replies`, `presence`, `numerics`) |
+| `buffers.ts`, `sidebar.ts` | Conversations and adding lines; switching, conversation and member lists |
+| `chat/list.ts`, `chat/scroll.ts`, `chat/policy.ts` | The open conversation: the windowed message list; scrolling (follow the newest line, keep the reader's place, unseen count, load earlier lines, per-conversation position, jump to a line); pure grouping and window rules |
+| `chat/row.ts` and its parts | One message row built from `avatar.ts`, `meta.ts`, `body.ts`, `reply_ref.ts`, `reactions.ts`, `actions.ts` |
+| `composer.ts`, `commands.ts`, `message_actions.ts`, `typing.ts` | The message box and multi-line sending; slash commands; replies, edits, reactions, redactions; typing indicators |
+| `files.ts`, `voice.ts` | Uploads, attachments, code snippets; voice messages |
+| `calls_ui.ts`, `call_settings_ui.ts`, `e2ee_ui.ts` | Call bar and dialogs; Settings → Calls; E2EE wiring and its tab |
+| `settings.ts`, `session.ts`, `login.ts`, `modals.ts`, `layout.ts` | Settings dialog; saved session and URL paths; login and session start; topic, moderation and discovery dialogs; scroll button and touch gestures |
+
+Modules export functions and read or assign shared state through `S`. A
+module whose code runs on load puts it in `init()` rather than at the top
+level, so the order in `webirc.ts` decides when listeners are attached. Pure
+logic with unit tests lives in `webui/src/common/` and the call modules
+(`calls.ts`, `call_settings.ts`, `hold_music.ts`).
+
 ## End-to-end encryption tests
 
 `test/e2ee/run` builds the server image, starts two linked servers, and runs

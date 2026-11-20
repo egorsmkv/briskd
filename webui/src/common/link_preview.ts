@@ -74,44 +74,56 @@ function buildCardDom(data: LinkPreviewData): HTMLElement {
   return a;
 }
 
-export function createLinkPreviewSlot(url: string): HTMLElement {
-  const slot = document.createElement("div");
-  slot.className = "og-slot";
+/** Requests in flight, by URL: every slot for one URL shares a request. */
+const inFlight = new Map<string, Promise<LinkPreviewData | null>>();
 
+/**
+ * The preview for `url`, fetched once: cached results (including "no
+ * preview") are reused, and concurrent callers share the request. The list
+ * re-renders many times while a conversation fills (history, member lists),
+ * which used to send the same request each time.
+ */
+export function loadLinkPreview(
+  url: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<LinkPreviewData | null> {
   const cached = previewCache.get(url);
-  if (cached !== undefined) {
-    if (cached) slot.appendChild(buildCardDom(cached));
-    return slot;
-  }
-
-  void fetch(`/api/link-preview?url=${encodeURIComponent(url)}`, {
+  if (cached !== undefined) return Promise.resolve(cached);
+  const pending = inFlight.get(url);
+  if (pending) return pending;
+  const request = fetchFn(`/api/link-preview?url=${encodeURIComponent(url)}`, {
     headers: { "X-Requested-With": "ircd-webui" },
-  }).then(async (resp) => {
-    if (!resp.ok) {
-      cachePreview(url, null);
-      return;
-    }
+  }).then(async (resp): Promise<LinkPreviewData | null> => {
+    // 204: the page has no usable preview.
+    if (resp.status === 204 || !resp.ok) return null;
     const data = (await resp.json()) as Partial<LinkPreviewData>;
-    if (!data.title || !data.domain) {
-      cachePreview(url, null);
-      return;
-    }
-    const clean: LinkPreviewData = {
+    if (!data.title || !data.domain) return null;
+    return {
       url,
       domain: data.domain,
       site_name: data.site_name,
       title: data.title,
       description: data.description,
     };
-    if (previewCache.size > 120) {
-      const first = previewCache.keys().next().value;
-      if (first) previewCache.delete(first);
-    }
-    cachePreview(url, clean);
-    slot.appendChild(buildCardDom(clean));
-  }).catch(() => {
-    cachePreview(url, null);
+  }).catch(() => null).then((result) => {
+    cachePreview(url, result);
+    inFlight.delete(url);
+    return result;
   });
+  inFlight.set(url, request);
+  return request;
+}
 
+export function createLinkPreviewSlot(url: string): HTMLElement {
+  const slot = document.createElement("div");
+  slot.className = "og-slot";
+  const cached = previewCache.get(url);
+  if (cached !== undefined) {
+    if (cached) slot.appendChild(buildCardDom(cached));
+    return slot;
+  }
+  void loadLinkPreview(url).then((data) => {
+    if (data) slot.appendChild(buildCardDom(data));
+  });
   return slot;
 }
