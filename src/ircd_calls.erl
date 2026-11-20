@@ -677,15 +677,12 @@ cancel_and_clear(#{timer := Timer}) ->
 relay_sdp(From, To, Kind, Token, Sdp) ->
     Chunks = ircd_call_proto:chunks(Sdp),
     Total = integer_to_binary(length(Chunks)),
-    lists:foldl(
-        fun(Chunk, N) ->
-            relay(From, To, [Kind], Token, {Chunk, [integer_to_binary(N), Total]}),
-            N + 1
+    lists:foreach(
+        fun({N, Chunk}) ->
+            relay(From, To, [Kind], Token, {Chunk, [integer_to_binary(N), Total]})
         end,
-        1,
-        Chunks
-    ),
-    ok.
+        lists:enumerate(Chunks)
+    ).
 
 %% One `CALL` line to `To` with `From`'s prefix. `Tail` is a reason, `none`,
 %% or `{Chunk, [Part, Total]}` for a description chunk.

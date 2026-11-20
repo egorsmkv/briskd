@@ -26,7 +26,24 @@ table in the [Configuration guide](configuration.html). Notable checks:
 
 The module also provides `secret_match/2` for comparing configured passwords.
 """.
--export([load/1, secret_match/2]).
+-export([load/1, parse_log_level/1, secret_match/2]).
+
+-doc """
+Parse a `log_level` name (`trace`, `debug`, `info`, `notice`, `warning`,
+`error`, `critical`, `alert`, or `emergency`) into its atom from a fixed list;
+any other value returns `error`. `trace` is more verbose than `debug`.
+""".
+-spec parse_log_level(term()) -> {ok, logger:level() | trace} | error.
+parse_log_level(<<"trace">>) -> {ok, trace};
+parse_log_level(<<"debug">>) -> {ok, debug};
+parse_log_level(<<"info">>) -> {ok, info};
+parse_log_level(<<"notice">>) -> {ok, notice};
+parse_log_level(<<"warning">>) -> {ok, warning};
+parse_log_level(<<"error">>) -> {ok, error};
+parse_log_level(<<"critical">>) -> {ok, critical};
+parse_log_level(<<"alert">>) -> {ok, alert};
+parse_log_level(<<"emergency">>) -> {ok, emergency};
+parse_log_level(_) -> error.
 
 -doc """
 Compare two secrets without leaking their contents through early exit.
@@ -178,16 +195,11 @@ port(Port) when is_integer(Port), Port >= 0, Port =< 65535 -> Port.
 
 %% Logger severity. `trace` is more verbose than `debug`. The other atoms are
 %% OTP logger levels. An unknown value is rejected before the server starts.
-log_level(<<"trace">>) -> trace;
-log_level(<<"debug">>) -> debug;
-log_level(<<"info">>) -> info;
-log_level(<<"notice">>) -> notice;
-log_level(<<"warning">>) -> warning;
-log_level(<<"error">>) -> error;
-log_level(<<"critical">>) -> critical;
-log_level(<<"alert">>) -> alert;
-log_level(<<"emergency">>) -> emergency;
-log_level(Value) -> erlang:error({invalid_log_level, Value}).
+log_level(Value) ->
+    case parse_log_level(Value) of
+        {ok, Level} -> Level;
+        error -> erlang:error({invalid_log_level, Value})
+    end.
 
 first_port(Ports) ->
     case [Port || Port <- Ports, Port =/= null] of

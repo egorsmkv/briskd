@@ -266,9 +266,9 @@ request(Pid, Params) ->
     case apply_tokens(Tokens, effective(State), maps:get(version, State), Offered) of
         {ok, Enabled} ->
             store(Pid, State#{enabled => without_implicit(Enabled, State)}),
-            {ack, join(Tokens)};
+            {ack, binary:join(Tokens, <<" ">>)};
         error ->
-            {nak, join(Tokens)}
+            {nak, binary:join(Tokens, <<" ">>)}
     end.
 
 -doc """
@@ -373,7 +373,7 @@ without_implicit(Enabled, _) ->
 
 %% Capability values. `error` means the capability is not offered.
 value(<<"sasl">>, _Info) ->
-    {ok, iolist_to_binary(lists:join(<<",">>, sasl_mechanisms()))};
+    {ok, binary:join(sasl_mechanisms(), <<",">>)};
 value(<<"sts">>, Info) ->
     sts_value(config(sts, null), maps:get(secure, Info, false));
 value(<<"tls">>, Info) ->
@@ -467,7 +467,7 @@ value(<<"egorsmkv.github.io/features">>, _Info) ->
     ],
     case Enabled of
         [] -> {ok, <<"none">>};
-        _ -> {ok, iolist_to_binary(lists:join(<<",">>, Enabled))}
+        _ -> {ok, binary:join(Enabled, <<",">>)}
     end;
 %% File sharing (ircd_files): offered only when S3 storage is configured.
 value(<<"egorsmkv.github.io/files">>, _Info) ->
@@ -506,11 +506,6 @@ requested_version(_) ->
 
 tokens(Params) ->
     [Token || Param <- Params, Token <- binary:split(Param, <<" ">>, [global, trim_all])].
-
-join([]) ->
-    <<>>;
-join(Tokens) ->
-    iolist_to_binary(lists:join(<<" ">>, Tokens)).
 
 apply_tokens([], Enabled, _Version, _Offered) ->
     {ok, Enabled};

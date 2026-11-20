@@ -215,10 +215,10 @@ deliver_multiline(Pid, Prefix, Command, Target, Lines, Tags, Mode) ->
             Send(Pid, Prefix, <<"BATCH">>, [<<"-", Ref/binary>>], none, []);
         false ->
             NonBlank = [Text || {_, Text} <- Lines, Text =/= <<>>],
-            lists:foldl(
-                fun(Text, First) ->
+            lists:foreach(
+                fun({Index, Text}) ->
                     LineTags =
-                        case First of
+                        case Index =:= 1 of
                             true ->
                                 Tags;
                             %% Later lines keep `time` and client-only tags;
@@ -230,13 +230,10 @@ deliver_multiline(Pid, Prefix, Command, Target, Lines, Tags, Mode) ->
                                     K =:= <<"time">> orelse binary:first(K) =:= $+
                                 ]
                         end,
-                    Send(Pid, Prefix, Command, [Target], Text, LineTags),
-                    false
+                    Send(Pid, Prefix, Command, [Target], Text, LineTags)
                 end,
-                true,
-                NonBlank
-            ),
-            ok
+                lists:enumerate(NonBlank)
+            )
     end.
 
 -doc """

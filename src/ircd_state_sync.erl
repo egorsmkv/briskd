@@ -101,7 +101,7 @@ account_line(#account{
             base64:encode(ServerKey),
             integer_to_binary(Created)
         ],
-        iolist_to_binary(lists:join(<<",">>, Fps))
+        binary:join(Fps, <<",">>)
     ).
 
 -doc """

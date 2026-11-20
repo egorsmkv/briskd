@@ -421,7 +421,7 @@ maybe_reop_opless(#channel{opless_since = ReopAt, members = Members} = Channel, 
         false ->
             ok;
         true ->
-            case pick_member(maps:iterator(Members)) of
+            case pick_member(Members) of
                 none ->
                     ok;
                 {Pid, Pids} ->
@@ -449,25 +449,12 @@ maybe_reop_opless(#channel{opless_since = ReopAt, members = Members} = Channel, 
             end
     end.
 
-%% One pass over the member map: a uniformly chosen pid and every pid, in map order.
-%% An empty map is not reop'd. `rand:uniform(0)` is not a valid way to observe that.
-pick_member(Iterator) ->
-    pick_member(Iterator, 0, undefined, []).
-
-pick_member(Iterator, Seen, Chosen, Pids) ->
-    case maps:next(Iterator) of
-        none when Seen =:= 0 ->
-            none;
-        none ->
-            {Chosen, lists:reverse(Pids)};
-        {Pid, _Roles, Next} ->
-            Seen1 = Seen + 1,
-            Chosen1 =
-                case rand:uniform(Seen1) =:= 1 of
-                    true -> Pid;
-                    false -> Chosen
-                end,
-            pick_member(Next, Seen1, Chosen1, [Pid | Pids])
+%% A uniformly chosen member pid and every member pid, in map order. An empty
+%% map is not reop'd (and `rand:uniform(0)` would raise).
+pick_member(Members) ->
+    case maps:keys(Members) of
+        [] -> none;
+        Pids -> {lists:nth(rand:uniform(length(Pids)), Pids), Pids}
     end.
 
 -doc """

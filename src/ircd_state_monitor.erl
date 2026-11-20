@@ -84,7 +84,7 @@ monitor([<<"+">>, Targets | _], #client{pid = Pid} = Client, Server) ->
                 Client,
                 Server,
                 <<"734">>,
-                [integer_to_binary(Limit), iolist_to_binary(lists:join(<<",">>, Rejected))],
+                [integer_to_binary(Limit), binary:join(Rejected, <<",">>)],
                 <<"Monitor list is full.">>
             )
     end;

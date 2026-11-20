@@ -174,10 +174,7 @@ remote_channel_lines(#remote_channel{name = Name, members = Members, flags = Fla
      || {NickKey, {_Peer, Roles}} <- maps:to_list(Members),
         [Remote] <- [mnesia:dirty_read(remote_client, NickKey)]
     ],
-    ModeFlags = maps:from_list([
-        {Key, true}
-     || Key <- maps:keys(Flags), is_integer(Key)
-    ]),
+    ModeFlags = maps:from_keys([Key || Key <- maps:keys(Flags), is_integer(Key)], true),
     TopicLines =
         case maps:get(topic, Flags, <<>>) of
             <<>> -> [];
@@ -388,7 +385,7 @@ import_remote_nick(Peer, Home, Distance, Nick, _Hop, User, Host, Token, ModeStri
         {
             ircd_wire:nickname(Nick, ircd_state:nicklen()),
             Key =/= <<"anonymous">>,
-            valid_decimal(Token),
+            ircd_route:valid_decimal(Token),
             re:run(User, <<"^[A-Za-z0-9_.-]{1,32}$">>, [{capture, none}, dollar_endonly]),
             valid_server_host(Host),
             server_user_modes(ModeString),
@@ -442,7 +439,7 @@ import_remote_nick(Peer, Home, Distance, Nick, _Hop, User, Host, Token, ModeStri
     end.
 
 home_server(Peer, Prefix, Hop) ->
-    case valid_decimal(Hop) of
+    case ircd_route:valid_decimal(Hop) of
         false ->
             {error, invalid_hopcount};
         true ->
@@ -1600,20 +1597,13 @@ apply_remote_user_modes([Mode | Rest], Action, Modes) when
 apply_remote_user_modes([_ | Rest], Action, Modes) ->
     apply_remote_user_modes(Rest, Action, Modes).
 
-valid_decimal(Value) ->
-    try binary_to_integer(Value) of
-        Number -> Number >= 0
-    catch
-        error:badarg -> false
-    end.
-
 valid_server_host(Host) ->
     byte_size(Host) > 0 andalso byte_size(Host) =< 253 andalso
         binary:match(Host, [<<0>>, <<" ">>, <<"\r">>, <<"\n">>]) =:= nomatch.
 
 server_user_modes(<<$+, Modes/binary>>) ->
     case lists:all(fun(Mode) -> lists:member(Mode, "aiowB") end, binary_to_list(Modes)) of
-        true -> {ok, maps:from_list([{Mode, true} || Mode <- binary_to_list(Modes)])};
+        true -> {ok, maps:from_keys(binary_to_list(Modes), true)};
         false -> error
     end;
 server_user_modes(_) ->

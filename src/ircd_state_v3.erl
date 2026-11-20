@@ -351,7 +351,7 @@ authenticate([Param | _], #client{pid = Pid} = Client, Server) ->
                         Client,
                         Server,
                         <<"908">>,
-                        [iolist_to_binary(lists:join(<<",">>, ircd_cap:sasl_mechanisms()))],
+                        [binary:join(ircd_cap:sasl_mechanisms(), <<",">>)],
                         <<"are available SASL mechanisms">>
                     ),
                     sasl_numeric(Client, Server, <<"904">>, [], <<"SASL authentication failed">>)
@@ -662,7 +662,10 @@ reg_fail(Pid, Code, Name, Text) ->
 valid_email(<<"*">>) ->
     true;
 valid_email(Email) ->
-    byte_size(Email) =< 254 andalso
+    %% UTF-8 is required: emails are later trimmed and lower-cased with
+    %% `string` functions, which raise on invalid UTF-8 (REGISTER is exempt
+    %% from the UTF8ONLY check).
+    byte_size(Email) =< 254 andalso valid_utf8(Email) andalso
         case binary:split(Email, <<"@">>) of
             [Local, Domain] -> Local =/= <<>> andalso binary:match(Domain, <<".">>) =/= nomatch;
             _ -> false
@@ -854,7 +857,7 @@ maybe_send_reset(Verification, Ttl, Email, RecoveryUrl) ->
             Code = verification_code(),
             Hash = crypto:hash(sha256, Code),
             Expires = erlang:system_time(millisecond) + Ttl * 1000,
-            EmailKey = string:lowercase(StoredEmail),
+            EmailKey = ircd_account:email_key(StoredEmail),
             ets:insert(ircd_password_reset, {EmailKey, Folded, AccountName, Hash, Expires}),
             logger:info(#{event => password_reset_requested, account => AccountName}),
             ircd_mail:send_password_reset(
@@ -881,7 +884,7 @@ complete_password_reset_web(Email0, Code0, NewPassword, PeerIP) when
                 false ->
                     {error, rate_limited};
                 true ->
-                    EmailKey = string:lowercase(string:trim(Email0)),
+                    EmailKey = ircd_account:email_key(Email0),
                     CodeHash = crypto:hash(sha256, string:trim(Code0)),
                     Now = erlang:system_time(millisecond),
                     _ = ensure_reset_table(),
@@ -1220,7 +1223,7 @@ match a user behind `Peer`.
 """.
 -spec receive_remote_account(binary(), binary(), [binary()]) -> ok | {error, term()}.
 receive_remote_account(Peer, Prefix, [Value | _]) ->
-    case remote_user(Peer, Prefix) of
+    case ircd_state_link:remote_source(Peer, Prefix) of
         {ok, #remote_client{key = Key, account = Previous} = Remote} ->
             Account =
                 case Value of
@@ -1256,7 +1259,7 @@ match a user behind `Peer`.
 """.
 -spec receive_remote_setname(binary(), binary(), [binary()]) -> ok | {error, term()}.
 receive_remote_setname(Peer, Prefix, [Real | _]) ->
-    case remote_user(Peer, Prefix) of
+    case ircd_state_link:remote_source(Peer, Prefix) of
         {ok, Remote} ->
             mnesia:dirty_write(Remote#remote_client{real = ircd_wire:retain(Real)}),
             notify_remote(Remote, Prefix, <<"setname">>, <<"SETNAME">>, [], Real),
@@ -1278,7 +1281,7 @@ and `{error, invalid_chghost_message}` for a bad user or host.
 """.
 -spec receive_remote_chghost(binary(), binary(), [binary()]) -> ok | {error, term()}.
 receive_remote_chghost(Peer, Prefix, [User, Host | _]) ->
-    case {remote_user(Peer, Prefix), valid_user(User), valid_host(Host)} of
+    case {ircd_state_link:remote_source(Peer, Prefix), valid_user(User), valid_host(Host)} of
         {{ok, #remote_client{key = Key, nick = Nick} = Remote}, true, true} ->
             mnesia:dirty_write(Remote#remote_client{
                 user = ircd_wire:retain(User), host = ircd_wire:retain(Host)
@@ -1329,22 +1332,6 @@ receive_remote_chghost(Peer, Prefix, [User, Host | _]) ->
 receive_remote_chghost(_, _, _) ->
     {error, invalid_chghost_message}.
 
-remote_user(Peer, Prefix) ->
-    case binary:split(Prefix, <<"!">>) of
-        [Nick, _] ->
-            case mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) of
-                [#remote_client{peer = Peer, nick = Nick, user = U, host = H} = Remote] ->
-                    case Prefix =:= <<Nick/binary, "!", U/binary, "@", H/binary>> of
-                        true -> {ok, Remote};
-                        false -> error
-                    end;
-                _ ->
-                    error
-            end;
-        _ ->
-            error
-    end.
-
 %%% WEBIRC and ISUPPORT
 
 -doc """
@@ -1382,7 +1369,9 @@ webirc(
             _ ->
                 false
         end,
-    case {Fresh, Trusted, inet:parse_address(binary_to_list(Ip))} of
+    %% Strict parsing: legacy short forms such as `127.1` are not addresses a
+    %% gateway should send.
+    case {Fresh, Trusted, inet:parse_strict_address(binary_to_list(Ip))} of
         {true, true, {ok, _}} ->
             %% A leading ':' would turn a WHO field into the trailing parameter.
             SafeIp =
@@ -1426,8 +1415,17 @@ webirc_certfp(_Options, false) ->
     undefined;
 webirc_certfp(Options, true) ->
     case [V || <<"certfp-sha-256=", V/binary>> <- Options] of
-        [Fp | _] when byte_size(Fp) =:= 64 -> string:lowercase(Fp);
-        _ -> undefined
+        [Fp | _] when byte_size(Fp) =:= 64 ->
+            %% Normalize the hex digits to lowercase; anything that is not hex
+            %% (which `string:lowercase/1` would raise on if it was invalid
+            %% UTF-8) cannot match a certificate fingerprint.
+            try
+                binary:encode_hex(binary:decode_hex(Fp), lowercase)
+            catch
+                error:badarg -> undefined
+            end;
+        _ ->
+            undefined
     end.
 
 -doc """

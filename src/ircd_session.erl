@@ -370,12 +370,7 @@ handshake(Kind, Socket) ->
 outgoing(Line) ->
     case get(ircd_ws) of
         #{phase := open, mode := Mode} ->
-            Bin = iolist_to_binary(Line),
-            Body =
-                case binary:longest_common_suffix([Bin, <<"\r\n">>]) of
-                    2 -> binary:part(Bin, 0, byte_size(Bin) - 2);
-                    _ -> Bin
-                end,
+            Body = strip_crlf(iolist_to_binary(Line)),
             case Mode of
                 text -> ircd_websocket:encode(text, ircd_websocket:utf8_safe(Body));
                 binary -> ircd_websocket:encode(binary, Body)
@@ -660,7 +655,7 @@ process_server_intro(Name, Hop, Token, State) ->
         {Kind, Socket, _Peer, _Buffer, {server_pass, Password}} ->
             case
                 ircd_state:authenticate_server_link(Name, Password) andalso
-                    valid_server_number(Hop) andalso valid_server_number(Token)
+                    ircd_route:valid_decimal(Hop) andalso ircd_route:valid_decimal(Token)
             of
                 true ->
                     Config = persistent_term:get({ircd_state, config}),
@@ -791,13 +786,6 @@ valid_server_version(<<A, B, C, D, _/binary>> = Version) ->
 valid_server_version(_) ->
     false.
 
-valid_server_number(Value) ->
-    try binary_to_integer(Value) of
-        Number -> Number >= 0
-    catch
-        error:badarg -> false
-    end.
-
 raw_line(Command, Params, none) ->
     iolist_to_binary([Command, [[<<" ">>, Param] || Param <- Params], <<"\r\n">>]);
 raw_line(Command, Params, Trailing) ->
@@ -827,12 +815,12 @@ receive_data(Packet, Kind, Socket, Peer, Buffer, Role) ->
 discard(Packet) ->
     case get(ircd_discard) of
         true ->
-            case binary:match(Packet, <<"\n">>) of
-                nomatch ->
+            case binary:split(Packet, <<"\n">>) of
+                [_] ->
                     more;
-                {Offset, 1} ->
+                [_, Rest] ->
                     erase(ircd_discard),
-                    {ok, binary:part(Packet, Offset + 1, byte_size(Packet) - Offset - 1)}
+                    {ok, Rest}
             end;
         _ ->
             {ok, Packet}

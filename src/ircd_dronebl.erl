@@ -223,39 +223,26 @@ query_name({A, B, C, D}, Zone) ->
         ".",
         to_list(Zone)
     ]);
-query_name({W1, W2, W3, W4, W5, W6, W7, W8}, Zone) ->
-    Hex = lists:flatten([io_lib:format("~4.16.0b", [W]) || W <- [W1, W2, W3, W4, W5, W6, W7, W8]]),
+query_name({_, _, _, _, _, _, _, _} = IP, Zone) ->
+    Hex = binary_to_list(binary:encode_hex(<<<<W:16>> || W <- tuple_to_list(IP)>>, lowercase)),
     Reversed = lists:join($., lists:reverse(Hex)),
     lists:flatten([Reversed, ".", to_list(Zone)]).
 
 -doc """
 Parse a peer address (binary, string, or IP tuple) into an `inet:ip_address()`.
 
-Handles the `0`-prefixed IPv6 form emitted by `m:ircd_listener` (for example
-`<<"0::1">>` -> `{0, 0, 0, 0, 0, 0, 0, 1}`).
+The `0`-prefixed IPv6 form emitted by `m:ircd_listener` (for example
+`<<"0::1">>` -> `{0, 0, 0, 0, 0, 0, 0, 1}`) is ordinary IPv6 text that
+`inet:parse_address/1` accepts.
 """.
 -spec parse_peer(binary() | string() | inet:ip_address()) -> {ok, inet:ip_address()} | error.
-parse_peer({A, B, C, D} = IP) when
-    is_integer(A, 0, 255), is_integer(B, 0, 255), is_integer(C, 0, 255), is_integer(D, 0, 255)
-->
-    {ok, IP};
-parse_peer({W1, W2, W3, W4, W5, W6, W7, W8} = IP) when
-    is_integer(W1, 0, 65535),
-    is_integer(W2, 0, 65535),
-    is_integer(W3, 0, 65535),
-    is_integer(W4, 0, 65535),
-    is_integer(W5, 0, 65535),
-    is_integer(W6, 0, 65535),
-    is_integer(W7, 0, 65535),
-    is_integer(W8, 0, 65535)
-->
-    {ok, IP};
-parse_peer(<<"0:", Rest/binary>>) ->
-    parse_peer(<<":", Rest/binary>>);
+parse_peer(IP) when is_tuple(IP) ->
+    case inet:is_ip_address(IP) of
+        true -> {ok, IP};
+        false -> error
+    end;
 parse_peer(Bin) when is_binary(Bin) ->
     parse_peer(binary_to_list(Bin));
-parse_peer("0:" ++ Rest) ->
-    parse_peer(":" ++ Rest);
 parse_peer(Str) when is_list(Str) ->
     case inet:parse_address(Str) of
         {ok, IP} -> {ok, IP};
@@ -392,15 +379,8 @@ handle_call({set_resolver, Resolver}, _From, State) ->
     {reply, ok, State#{resolver := Resolver}};
 handle_call(stats, _From, #{table := Table, in_flight := InFlight} = State) ->
     Now = erlang:monotonic_time(second),
-    {Bans, Clean} = ets:foldl(
-        fun
-            ({_, banned, Exp, _, _}, {B, C}) when Exp > Now -> {B + 1, C};
-            ({_, clean, Exp}, {B, C}) when Exp > Now -> {B, C + 1};
-            (_, Acc) -> Acc
-        end,
-        {0, 0},
-        Table
-    ),
+    Bans = ets:select_count(Table, [{{'_', banned, '$1', '_', '_'}, [{'>', '$1', Now}], [true]}]),
+    Clean = ets:select_count(Table, [{{'_', clean, '$1'}, [{'>', '$1', Now}], [true]}]),
     {reply,
         #{
             enabled => is_enabled(),
@@ -603,16 +583,11 @@ store_entry(Table, IP, Entry, MaxEntries) ->
 
 sweep_expired(Table) ->
     Now = erlang:monotonic_time(second),
-    Expired = ets:foldl(
-        fun
-            ({IP, banned, Exp, _, _}, Acc) when Exp =< Now -> [IP | Acc];
-            ({IP, clean, Exp}, Acc) when Exp =< Now -> [IP | Acc];
-            (_, Acc) -> Acc
-        end,
-        [],
-        Table
-    ),
-    lists:foreach(fun(IP) -> ets:delete(Table, IP) end, Expired).
+    _ = ets:select_delete(Table, [
+        {{'_', banned, '$1', '_', '_'}, [{'=<', '$1', Now}], [true]},
+        {{'_', clean, '$1'}, [{'=<', '$1', Now}], [true]}
+    ]),
+    ok.
 
 to_list(B) when is_binary(B) -> binary_to_list(B);
 to_list(L) when is_list(L) -> L.

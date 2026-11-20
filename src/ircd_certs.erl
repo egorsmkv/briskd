@@ -288,7 +288,7 @@ describe(Cert) ->
     Names =
         case dns_names(Tbs) of
             [] -> subject(Tbs#'OTPTBSCertificate'.subject);
-            Dns -> iolist_to_binary(lists:join(<<",">>, Dns))
+            Dns -> binary:join(Dns, <<",">>)
         end,
     #{names => Names, not_after => time_text(NotAfter)}.
 
@@ -307,7 +307,7 @@ subject({rdnSequence, Rdns}) ->
         #'AttributeTypeAndValue'{type = ?'id-at-commonName', value = Raw} <- Set,
         Value <- [attribute_text(Raw)]
     ],
-    iolist_to_binary(lists:join(<<",">>, Parts)).
+    binary:join(Parts, <<",">>).
 
 attribute_text({_, Text}) when is_list(Text) -> unicode:characters_to_binary(Text);
 attribute_text({_, Text}) when is_binary(Text) -> Text;

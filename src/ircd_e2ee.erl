@@ -270,7 +270,7 @@ devices(Target, #client{pid = Pid}, Server) ->
              || #e2ee_device{key = {_, Dev}} <- account_devices(Account)
             ],
             reply(
-                Pid, Server, [<<"DEVICES">>, Account], iolist_to_binary(lists:join(<<" ">>, Ids))
+                Pid, Server, [<<"DEVICES">>, Account], binary:join(Ids, <<" ">>)
             );
         {error, Code} ->
             fail(Pid, Code, [Target], <<"No such user or account">>)
@@ -976,7 +976,7 @@ ack_line(Account, Dev, Seqs) ->
             <<"ACK">>,
             Account,
             integer_to_binary(Dev),
-            iolist_to_binary(lists:join(<<",">>, [integer_to_binary(S) || S <- Seqs]))
+            binary:join([integer_to_binary(S) || S <- Seqs], <<",">>)
         ],
         none
     ).

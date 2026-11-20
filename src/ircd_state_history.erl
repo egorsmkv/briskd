@@ -686,7 +686,7 @@ parse_limit(Raw, Max) ->
 
 %% Entries are oldest first. Each list element is tagged with its index.
 indexed(Entries) ->
-    lists:zip(lists:seq(1, length(Entries)), Entries).
+    lists:enumerate(Entries).
 
 before_pos({index, I}, {J, _}) -> J < I;
 before_pos({time, T}, {_, #{time := Time}}) -> Time < T.

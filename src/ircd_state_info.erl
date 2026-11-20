@@ -180,25 +180,13 @@ stats(Params, Client, Server) ->
 
 report_stats(<<"u">>, Client, Server) ->
     Uptime = erlang:monotonic_time(second) - persistent_term:get({ircd_state, started_at}),
-    Days = Uptime div 86400,
-    Hours = (Uptime rem 86400) div 3600,
-    Minutes = (Uptime rem 3600) div 60,
-    Seconds = Uptime rem 60,
+    {Days, {Hours, Minutes, Seconds}} = calendar:seconds_to_daystime(Uptime),
     ircd_state_send:numeric(
         Client,
         Server,
         <<"242">>,
         [],
-        [
-            <<"Server Up ">>,
-            integer_to_binary(Days),
-            <<" days ">>,
-            two_digits(Hours),
-            <<":">>,
-            two_digits(Minutes),
-            <<":">>,
-            two_digits(Seconds)
-        ]
+        io_lib:format("Server Up ~B days ~2..0B:~2..0B:~2..0B", [Days, Hours, Minutes, Seconds])
     ),
     ircd_state_send:numeric(Client, Server, <<"219">>, [<<"u">>], <<"End of STATS report">>);
 report_stats(<<"m">>, Client, Server) ->
@@ -279,9 +267,6 @@ report_stats(Query, Client, Server) ->
 
 is_operator(Pid) ->
     maps:is_key($o, ircd_state_client:user_modes(Pid)).
-
-two_digits(Value) when Value < 10 -> <<$0, ($0 + Value)>>;
-two_digits(Value) -> integer_to_binary(Value).
 
 -doc """
 Handle `OPER <name> <password>` (RFC 2812 section 3.1.4).
@@ -455,13 +440,7 @@ rehash(#client{pid = Pid} = Client, Server) ->
     end.
 
 rehash_config(NewConfig, Path, Client, Server) ->
-    OldConfig = persistent_term:get({ircd_state, config}),
-    StaticKeys = [
-        name, ip, tcp, tls, ws, wss, tls_options, mnesia_dir, client_password, server_links
-    ],
-    case
-        lists:all(fun(Key) -> maps:get(Key, OldConfig) =:= maps:get(Key, NewConfig) end, StaticKeys)
-    of
+    case static_unchanged(NewConfig) of
         false ->
             ircd_state_send:numeric(
                 Client,
@@ -474,22 +453,12 @@ rehash_config(NewConfig, Path, Client, Server) ->
                 event => oper_rehash, nick => Client#client.nick, result => restart_required
             });
         true ->
-            Clients = [Pid || {Pid, _} <- ets:tab2list(ircd_caps)],
-            Advertised = maps:from_list([{Pid, ircd_cap:advertised(Pid)} || Pid <- Clients]),
-            Tokens = ircd_isupport:tokens(),
-            %% Logged before the new log level takes effect, so the audit
-            %% event is not lost when the reload lowers the level.
-            logger:notice(#{event => oper_rehash, nick => Client#client.nick, result => accepted}),
-            apply_rehash(NewConfig),
-            %% Certificate paths are static, their contents are not: reload
-            %% renewed certificates now instead of at the next interval.
-            ok = ircd_certs:check_async(),
-            ircd_state_net:notify_cap_changes(Advertised, Server),
-            notify_isupport_changes(Tokens, ircd_isupport:tokens(), Clients, Server),
-            server_wallops(
-                [<<"Oper ">>, Client#client.nick, <<" rehashed the configuration">>], Server
+            reload(
+                NewConfig,
+                #{event => oper_rehash, nick => Client#client.nick, result => accepted},
+                [<<"Oper ">>, Client#client.nick, <<" rehashed the configuration">>],
+                Server
             ),
-
             ircd_state_send:numeric(
                 Client, Server, <<"382">>, [unicode:characters_to_binary(Path)], <<"Rehashing">>
             )
@@ -510,32 +479,46 @@ rehash_server(Server) ->
             logger:warning(#{event => rehash_failed, actor => <<"ircdctl">>, reason => Reason}),
             {error, Reason};
         {ok, NewConfig} ->
-            OldConfig = persistent_term:get({ircd_state, config}),
-            StaticKeys = [
-                name, ip, tcp, tls, ws, wss, tls_options, mnesia_dir, client_password, server_links
-            ],
-            SameStatic = lists:all(
-                fun(Key) -> maps:get(Key, OldConfig) =:= maps:get(Key, NewConfig) end, StaticKeys
-            ),
-            case SameStatic of
+            case static_unchanged(NewConfig) of
                 false ->
                     logger:warning(#{
                         event => ctl_rehash, result => restart_required
                     }),
                     {error, restart_required};
                 true ->
-                    Clients = [Pid || {Pid, _} <- ets:tab2list(ircd_caps)],
-                    Advertised = maps:from_list([{Pid, ircd_cap:advertised(Pid)} || Pid <- Clients]),
-                    Tokens = ircd_isupport:tokens(),
-                    logger:notice(#{event => ctl_rehash, result => accepted}),
-                    apply_rehash(NewConfig),
-                    ok = ircd_certs:check_async(),
-                    ircd_state_net:notify_cap_changes(Advertised, Server),
-                    notify_isupport_changes(Tokens, ircd_isupport:tokens(), Clients, Server),
-                    server_wallops([<<"ircdctl rehashed the configuration">>], Server),
+                    reload(
+                        NewConfig,
+                        #{event => ctl_rehash, result => accepted},
+                        [<<"ircdctl rehashed the configuration">>],
+                        Server
+                    ),
                     {ok, unicode:characters_to_binary(Path)}
             end
     end.
+
+%% Settings that need a restart: listeners, the database, and links.
+static_unchanged(NewConfig) ->
+    StaticKeys = [
+        name, ip, tcp, tls, ws, wss, tls_options, mnesia_dir, client_password, server_links
+    ],
+    maps:with(StaticKeys, persistent_term:get({ircd_state, config})) =:=
+        maps:with(StaticKeys, NewConfig).
+
+%% Apply an accepted reload and tell clients what changed.
+reload(NewConfig, Audit, Wallops, Server) ->
+    Clients = [Pid || {Pid, _} <- ets:tab2list(ircd_caps)],
+    Advertised = maps:from_list([{Pid, ircd_cap:advertised(Pid)} || Pid <- Clients]),
+    Tokens = ircd_isupport:tokens(),
+    %% Logged before the new log level takes effect, so the audit event is not
+    %% lost when the reload lowers the level.
+    logger:notice(Audit),
+    apply_rehash(NewConfig),
+    %% Certificate paths are static, their contents are not: reload renewed
+    %% certificates now instead of at the next interval.
+    ok = ircd_certs:check_async(),
+    ircd_state_net:notify_cap_changes(Advertised, Server),
+    notify_isupport_changes(Tokens, ircd_isupport:tokens(), Clients, Server),
+    server_wallops(Wallops, Server).
 
 %% draft/extended-isupport: registered clients with the capability get the
 %% changed and removed (`-TOKEN`) ISUPPORT entries in a new batch.
@@ -883,10 +866,10 @@ lusers(Params, Client, Server) ->
                             LocalOperatorCount + RemoteOperatorCount,
                             UnknownCount,
                             map_size(
-                                lists:foldl(
-                                    fun(Key, Acc) -> Acc#{Key => true} end,
-                                    maps:from_keys(mnesia:dirty_all_keys(channel), true),
-                                    mnesia:dirty_all_keys(remote_channel)
+                                maps:from_keys(
+                                    mnesia:dirty_all_keys(channel) ++
+                                        mnesia:dirty_all_keys(remote_channel),
+                                    true
                                 )
                             ),
                             LocalCount + RemoteCount,

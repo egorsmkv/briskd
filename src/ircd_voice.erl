@@ -317,7 +317,7 @@ ensure_bucket_and_put(Client, Bucket, Id, Bytes, Opts) ->
     end.
 
 new_id(Ext) ->
-    Hex = string:lowercase(binary:encode_hex(crypto:strong_rand_bytes(16))),
+    Hex = binary:encode_hex(crypto:strong_rand_bytes(16), lowercase),
     <<Hex/binary, ".", Ext/binary>>.
 
 is_lower_hex(<<>>) ->

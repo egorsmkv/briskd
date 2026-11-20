@@ -2,6 +2,7 @@
 import {
   cleanMetaText,
   formatStandardReply,
+  ircFold,
   markerToMs,
   msToMarker,
   parseMonitorTargets,
@@ -10,6 +11,7 @@ import {
   prefixCharsFromIsupport,
   safeAvatarUrl,
   safeHomepageUrl,
+  saslAuthenticateChunks,
 } from "./ircv3.ts";
 
 function assert(cond: boolean, msg: string): void {
@@ -100,5 +102,29 @@ Deno.test("formatStandardReply names command, code, and description", () => {
     formatStandardReply("NOTE", ["*", "OPER_MESSAGE", "hello"]) ===
       "NOTE: hello (OPER_MESSAGE)",
     "note without command",
+  );
+});
+
+Deno.test("ircFold applies the RFC 1459 case mapping only", () => {
+  assert(ircFold("") === "", "empty");
+  assert(ircFold("NiCk[A]\\^") === "nick{a}|~", "ascii and specials");
+  assert(ircFold("nick{a}|~") === "nick{a}|~", "already folded");
+  assert(ircFold("#ÄÖ") === "#ÄÖ", "non-ASCII unchanged");
+  assert(ircFold("\u0130I") === "\u0130i", "dotted capital I unchanged");
+  assert(ircFold("A\ud800B") === "a\ud800b", "lone surrogate kept");
+  assert(ircFold("_-`@Z") === "_-`@z", "other punctuation unchanged");
+});
+
+Deno.test("saslAuthenticateChunks splits at 400 bytes", () => {
+  const eq = (a: string[], b: string[]) =>
+    JSON.stringify(a) === JSON.stringify(b);
+  assert(eq(saslAuthenticateChunks(""), ["+"]), "empty");
+  assert(eq(saslAuthenticateChunks("abcd"), ["abcd"]), "short");
+  const a400 = "a".repeat(400);
+  assert(eq(saslAuthenticateChunks(a400), [a400, "+"]), "exactly 400");
+  assert(eq(saslAuthenticateChunks(a400 + "b"), [a400, "b"]), "401");
+  assert(
+    eq(saslAuthenticateChunks(a400 + a400), [a400, a400, "+"]),
+    "exactly 800",
   );
 });

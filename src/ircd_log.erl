@@ -143,7 +143,7 @@ command_detail(_, _) ->
     <<>>.
 
 join_params(Params) ->
-    iolist_to_binary(lists:join(<<" ">>, [Param || Param <- Params, is_binary(Param)])).
+    binary:join([Param || Param <- Params, is_binary(Param)], <<" ">>).
 
 -doc """
 Return the `logger` handler formatter for a configured `log_format`.

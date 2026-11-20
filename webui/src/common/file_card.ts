@@ -102,19 +102,11 @@ const SAFE_AUDIO_MIMES = new Set([
  */
 export function sanitizeDisplayName(raw: string): string {
   const base = (raw || "").split(/[/\\]/).pop() || "";
-  let out = "";
-  for (let i = 0; i < base.length; i++) {
-    const code = base.charCodeAt(i);
-    if (
-      code < 0x20 || code === 0x7f ||
-      (code >= 0x202a && code <= 0x202e) ||
-      (code >= 0x2066 && code <= 0x2069) ||
-      code === 0x200e || code === 0x200f
-    ) {
-      continue;
-    }
-    out += base[i];
-  }
+  const out = base.replace(
+    // deno-lint-ignore no-control-regex
+    /[\x00-\x1f\x7f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,
+    "",
+  );
   const trimmed = out.trim().slice(0, 120);
   return trimmed || "file.bin";
 }

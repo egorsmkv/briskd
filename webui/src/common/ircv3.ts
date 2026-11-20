@@ -172,3 +172,35 @@ export function formatStandardReply(kind: string, params: string[]): string {
     ? `${label}: ${description}${code ? ` (${code})` : ""}`
     : `${label} ${code}`.trim();
 }
+
+/**
+ * Fold an IRC identity (nickname, channel name, or account name) with the
+ * RFC 1459 case mapping the server advertises as `CASEMAPPING=rfc1459` and
+ * applies in `ircd_wire:fold/1`: ASCII `A`-`Z` become `a`-`z`, and `[`, `]`,
+ * `\`, `^` become `{`, `}`, `|`, `~`. Every other code unit (including
+ * non-ASCII) is left unchanged. Use it for identity keys and comparisons,
+ * not for display text or substring search.
+ */
+export function ircFold(s: string): string {
+  return s.replace(
+    /[A-Z[\]\\^]/g,
+    (c) => String.fromCharCode(c.charCodeAt(0) + 0x20),
+  );
+}
+
+/** Largest base64 payload carried by one AUTHENTICATE line (IRCv3 SASL 3.1). */
+export const SASL_CHUNK = 400;
+
+/**
+ * Split a base64 SASL response into AUTHENTICATE parameters (IRCv3 SASL 3.1):
+ * 400-byte chunks, followed by `+` when the last chunk is exactly 400 bytes
+ * long or the response is empty.
+ */
+export function saslAuthenticateChunks(b64: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < b64.length; i += SASL_CHUNK) {
+    out.push(b64.slice(i, i + SASL_CHUNK));
+  }
+  if (b64.length % SASL_CHUNK === 0) out.push("+");
+  return out;
+}

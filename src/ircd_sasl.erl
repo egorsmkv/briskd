@@ -161,7 +161,7 @@ authz_ok(Authz, Authc) -> ircd_wire:fold(Authz) =:= ircd_wire:fold(Authc).
 scram_first(ClientFirst) ->
     case binary:split(ClientFirst, <<",">>, [global]) of
         [Flag, AuthzPart | BareParts] when (Flag =:= <<"n">> orelse Flag =:= <<"y">>) ->
-            Bare = iolist_to_binary(lists:join(<<",">>, BareParts)),
+            Bare = binary:join(BareParts, <<",">>),
             Attrs = attributes(BareParts),
             case
                 {
@@ -207,7 +207,7 @@ scram_final(Session, ClientFinal) ->
     Parts = binary:split(ClientFinal, <<",">>, [global]),
     case lists:reverse(Parts) of
         [<<"p=", Proof64/binary>> | RevWithout] ->
-            Without = iolist_to_binary(lists:join(<<",">>, lists:reverse(RevWithout))),
+            Without = binary:join(lists:reverse(RevWithout), <<",">>),
             Attrs = attributes(lists:reverse(RevWithout)),
             #{
                 nonce := Nonce,

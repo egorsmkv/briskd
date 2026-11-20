@@ -138,8 +138,11 @@ verify_fields(Key, Challenge, Number, Salt, Signature) ->
                     ExpectedChallenge = sha256_hex(
                         <<Salt/binary, (integer_to_binary(Number))/binary>>
                     ),
-                    SigOk = crypto:hash_equals(ExpectedSig, string:lowercase(Signature)),
-                    DigestOk = crypto:hash_equals(ExpectedChallenge, string:lowercase(Challenge)),
+                    %% ASCII-only lowercasing keeps the 64-byte length that
+                    %% crypto:hash_equals/2 requires; Unicode case mapping can
+                    %% change it (and raise outside the caller's try).
+                    SigOk = crypto:hash_equals(ExpectedSig, ircd_wire:lower(Signature)),
+                    DigestOk = crypto:hash_equals(ExpectedChallenge, ircd_wire:lower(Challenge)),
                     case SigOk andalso DigestOk of
                         true -> claim_once(Challenge, Expires);
                         false -> {error, invalid}
@@ -185,15 +188,8 @@ maybe_prune() ->
     case ets:info(?TABLE, size) >= ?MAX_USED of
         true ->
             Now = erlang:system_time(second),
-            Expired = ets:foldl(
-                fun
-                    ({Key, Exp}, Acc) when Exp < Now -> [Key | Acc];
-                    (_, Acc) -> Acc
-                end,
-                [],
-                ?TABLE
-            ),
-            lists:foreach(fun(K) -> ets:delete(?TABLE, K) end, Expired);
+            _ = ets:select_delete(?TABLE, [{{'_', '$1'}, [{'<', '$1', Now}], [true]}]),
+            ok;
         false ->
             ok
     end.
@@ -214,4 +210,4 @@ hmac_hex(Key, Data) ->
     hex_lower(crypto:mac(hmac, sha256, Key, Data)).
 
 hex_lower(Bin) ->
-    string:lowercase(binary:encode_hex(Bin)).
+    binary:encode_hex(Bin, lowercase).

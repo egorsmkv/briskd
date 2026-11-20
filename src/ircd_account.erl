@@ -1,5 +1,6 @@
 -module(ircd_account).
 -export([
+    email_key/1,
     max_accounts/0,
     min_password/0,
     import/1,
@@ -101,11 +102,31 @@ find(Name) ->
     end.
 
 -doc """
+The comparison key for an email address: trimmed and lower-cased.
+
+`string:trim/1` and `string:lowercase/1` raise on invalid UTF-8, and these
+lookups run inside `m:ircd_state`, so an address that is not valid UTF-8
+(stored before `REGISTER` checked it) is returned unchanged. Such a key never
+equals one built from web input, which `json:decode/1` guarantees is UTF-8.
+""".
+-spec email_key(binary()) -> binary().
+email_key(Email) when is_binary(Email) ->
+    case unicode:characters_to_binary(Email, utf8, utf8) of
+        Valid when is_binary(Valid) ->
+            case string:lowercase(string:trim(Valid)) of
+                Key when is_binary(Key) -> Key;
+                _ -> Email
+            end;
+        _ ->
+            Email
+    end.
+
+-doc """
 Look up a usable (verified) account by email address (case-insensitive).
 """.
 -spec find_by_email(binary()) -> {ok, #account{}} | error.
 find_by_email(Email) when is_binary(Email) ->
-    Target = string:lowercase(string:trim(Email)),
+    Target = email_key(Email),
     find_verified_email(mnesia:dirty_all_keys(account), Target).
 
 find_verified_email([], _Target) ->
@@ -113,7 +134,7 @@ find_verified_email([], _Target) ->
 find_verified_email([Key | Rest], Target) ->
     case mnesia:dirty_read(account, Key) of
         [#account{pending = undefined, email = Stored} = Account] when is_binary(Stored) ->
-            case string:lowercase(Stored) =:= Target of
+            case email_key(Stored) =:= Target of
                 true -> {ok, Account};
                 false -> find_verified_email(Rest, Target)
             end;
@@ -270,7 +291,7 @@ Complete account verification by matching a pending account's email address
 """.
 -spec verify_by_email(binary(), binary()) -> {ok, #account{}} | error.
 verify_by_email(Email, Code) when is_binary(Email), is_binary(Code) ->
-    Target = string:lowercase(string:trim(Email)),
+    Target = email_key(Email),
     CodeHash = crypto:hash(sha256, string:trim(Code)),
     Now = erlang:system_time(millisecond),
     find_and_verify_email(mnesia:dirty_all_keys(account), Target, CodeHash, Now).
@@ -283,7 +304,7 @@ find_and_verify_email([Key | Rest], Target, CodeHash, Now) ->
             is_binary(StoredEmail), Now =< Expires
         ->
             case
-                string:lowercase(StoredEmail) =:= Target andalso
+                email_key(StoredEmail) =:= Target andalso
                     crypto:hash_equals(CodeHash, Hash)
             of
                 true ->

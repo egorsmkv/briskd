@@ -353,7 +353,7 @@ handle_webirc_page(Socket, WebircHtml, Path, Headers) ->
 
 public_origin(Headers, Config) ->
     Proto =
-        case string:lowercase(maps:get(<<"x-forwarded-proto">>, Headers, <<"http">>)) of
+        case ircd_wire:lower(maps:get(<<"x-forwarded-proto">>, Headers, <<"http">>)) of
             <<"https">> -> <<"https">>;
             _ -> <<"http">>
         end,
@@ -362,19 +362,10 @@ public_origin(Headers, Config) ->
     <<Proto/binary, "://", Host/binary>>.
 
 sanitize_host(Bin, Fallback) when is_binary(Bin), byte_size(Bin) > 0, byte_size(Bin) =< 255 ->
-    case
-        lists:all(
-            fun(C) ->
-                (C >= $a andalso C =< $z) orelse
-                    (C >= $A andalso C =< $Z) orelse
-                    (C >= $0 andalso C =< $9) orelse
-                    C =:= $. orelse C =:= $- orelse C =:= $: orelse C =:= $[ orelse C =:= $]
-            end,
-            binary_to_list(Bin)
-        )
-    of
-        true -> Bin;
-        false -> Fallback
+    %% Letters, digits, and `.-:[]` only (host names, IPv4, bracketed IPv6).
+    case re:run(Bin, <<"^[A-Za-z0-9.:\\[\\]-]+$">>, [{capture, none}, dollar_endonly]) of
+        match -> Bin;
+        nomatch -> Fallback
     end;
 sanitize_host(_, Fallback) ->
     Fallback.
@@ -390,7 +381,7 @@ default_channels(Config) ->
             Names = [maps:get(name, C) || C <- lists:sublist(Chans, 5), is_map_key(name, C)],
             case Names of
                 [] -> <<"#lobby">>;
-                _ -> iolist_to_binary(lists:join(<<",">>, Names))
+                _ -> binary:join(Names, <<",">>)
             end
     end.
 
@@ -1287,7 +1278,7 @@ check_auth(Headers) ->
         #{username := ExpectedUser, password := ExpectedPass} ->
             case maps:get(<<"authorization">>, Headers, undefined) of
                 <<"Basic ", Encoded/binary>> ->
-                    decode_basic(string:trim(Encoded), ExpectedUser, ExpectedPass);
+                    decode_basic(ircd_websocket:trim_ows(Encoded), ExpectedUser, ExpectedPass);
                 _ ->
                     unauthorized
             end;
@@ -1319,14 +1310,12 @@ read_request(Socket) ->
     read_headers(Socket, <<>>).
 
 read_headers(Socket, Buf) ->
-    case binary:match(Buf, <<"\r\n\r\n">>) of
-        {Pos, 4} ->
-            HeaderBlock = binary:part(Buf, 0, Pos),
-            Rest = binary:part(Buf, Pos + 4, byte_size(Buf) - Pos - 4),
+    case binary:split(Buf, <<"\r\n\r\n">>) of
+        [HeaderBlock, Rest] ->
             parse_headers(Socket, HeaderBlock, Rest);
-        nomatch when byte_size(Buf) >= ?MAX_REQUEST_BYTES ->
+        [_] when byte_size(Buf) >= ?MAX_REQUEST_BYTES ->
             {error, payload_too_large};
-        nomatch ->
+        [_] ->
             case gen_tcp:recv(Socket, 0, ?IO_TIMEOUT_MS) of
                 {ok, Chunk} when byte_size(Buf) + byte_size(Chunk) =< ?MAX_REQUEST_BYTES ->
                     read_headers(Socket, <<Buf/binary, Chunk/binary>>);
@@ -1357,8 +1346,8 @@ parse_header_lines([], Acc) ->
 parse_header_lines([Line | Rest], Acc) ->
     case binary:split(Line, <<":">>) of
         [Key, Val] ->
-            Lower = string:lowercase(string:trim(Key)),
-            parse_header_lines(Rest, Acc#{Lower => string:trim(Val)});
+            Lower = ircd_wire:lower(ircd_websocket:trim_ows(Key)),
+            parse_header_lines(Rest, Acc#{Lower => ircd_websocket:trim_ows(Val)});
         _ ->
             parse_header_lines(Rest, Acc)
     end.

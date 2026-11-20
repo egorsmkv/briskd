@@ -537,9 +537,8 @@ Move a channel's metadata from folded name `OldKey` to `NewKey` after
 """.
 -spec rename_channel(binary(), binary()) -> ok.
 rename_channel(OldKey, NewKey) ->
-    case ets:lookup(ircd_chan_meta, OldKey) of
+    case ets:take(ircd_chan_meta, OldKey) of
         [{_, Map}] ->
-            ets:delete(ircd_chan_meta, OldKey),
             ets:insert(ircd_chan_meta, {NewKey, Map}),
             mnesia:dirty_delete(channel_meta, OldKey),
             mnesia:dirty_write(#channel_meta{channel = NewKey, entries = Map});
@@ -748,9 +747,8 @@ nickname change.
 """.
 -spec rename_remote(binary(), binary()) -> ok.
 rename_remote(OldKey, NewKey) ->
-    case ets:lookup(ircd_remote_meta, OldKey) of
+    case ets:take(ircd_remote_meta, OldKey) of
         [{_, Map}] ->
-            ets:delete(ircd_remote_meta, OldKey),
             ets:insert(ircd_remote_meta, {NewKey, Map});
         [] ->
             ok

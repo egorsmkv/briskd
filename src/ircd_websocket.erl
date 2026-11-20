@@ -18,7 +18,7 @@ never fragmented (section 5.5), reserved opcodes are refused, and a frame or
 reassembled message larger than the caller's `MaxMessage` is an error (the
 session passes `MAX_WIRE_LINE`, 8703 bytes).
 """.
--export([decode/2, encode/2, handshake/2, utf8_safe/1]).
+-export([decode/2, encode/2, handshake/2, trim_ows/1, utf8_safe/1]).
 
 -define(GUID, <<"258EAFA5-E914-47DA-95CA-C5AB0DC85B11">>).
 -define(MAX_REQUEST, 8192).
@@ -69,8 +69,8 @@ handshake(Data, Origins) ->
     end.
 
 check(RequestLine, Headers, Origins, Rest) ->
-    Upgrade = string:lowercase(maps:get(<<"upgrade">>, Headers, <<>>)),
-    Connection = string:lowercase(maps:get(<<"connection">>, Headers, <<>>)),
+    Upgrade = ircd_wire:lower(maps:get(<<"upgrade">>, Headers, <<>>)),
+    Connection = ircd_wire:lower(maps:get(<<"connection">>, Headers, <<>>)),
     Key = maps:get(<<"sec-websocket-key">>, Headers, undefined),
     Version = maps:get(<<"sec-websocket-version">>, Headers, undefined),
     Origin = maps:get(<<"origin">>, Headers, undefined),
@@ -114,7 +114,7 @@ origin_allowed(Origin, Origins) -> lists:member(Origin, Origins).
 %% The first offered subprotocol this server supports wins. With none offered,
 %% the connection uses text frames and no Sec-WebSocket-Protocol header.
 subprotocol(Offered) ->
-    Names = [string:trim(Name) || Name <- binary:split(Offered, <<",">>, [global])],
+    Names = [trim_ows(Name) || Name <- binary:split(Offered, <<",">>, [global])],
     case
         [
             Name
@@ -138,7 +138,7 @@ headers(Lines) ->
         end,
         #{},
         [
-            {string:lowercase(string:trim(Name)), string:trim(Value)}
+            {ircd_wire:lower(trim_ows(Name)), trim_ows(Value)}
          || Line <- Lines,
             [Name, Value] <- [binary:split(Line, <<":">>)]
         ]
@@ -274,16 +274,10 @@ payload(Fin, Opcode, Len, Bytes, _Max) ->
             more
     end.
 
-unmask(Data, <<M:32>>) ->
-    unmask(Data, M, <<>>).
-
-unmask(<<Word:32, Rest/binary>>, M, Acc) ->
-    unmask(Rest, M, <<Acc/binary, (Word bxor M):32>>);
-unmask(<<Tail/binary>>, M, Acc) ->
-    Bits = bit_size(Tail),
-    <<Key:Bits, _/bitstring>> = <<M:32>>,
-    <<T:Bits>> = Tail,
-    <<Acc/binary, (T bxor Key):Bits>>.
+%% RFC 6455 section 5.3: XOR with the 4-byte mask repeated over the payload.
+unmask(Data, Mask) ->
+    N = byte_size(Data),
+    crypto:exor(Data, binary:part(binary:copy(Mask, N div 4 + 1), 0, N)).
 
 -doc """
 Encode one unfragmented, unmasked server-to-client frame (RFC 6455 section 5.2).
@@ -331,3 +325,26 @@ replace_bad(<<>>) ->
     <<>>;
 replace_bad(<<_, Rest/binary>>) ->
     <<16#EF, 16#BF, 16#BD, (utf8_safe(Rest))/binary>>.
+
+-doc """
+Remove leading and trailing spaces and horizontal tabs, the optional
+whitespace around HTTP field values (RFC 9110 section 5.6.3). Accepts any
+bytes: `string:trim/1` raises on some invalid UTF-8.
+""".
+-spec trim_ows(binary()) -> binary().
+trim_ows(Bin) ->
+    trim_ows_trailing(trim_ows_leading(Bin)).
+
+trim_ows_leading(<<C, Rest/binary>>) when C =:= $\s; C =:= $\t -> trim_ows_leading(Rest);
+trim_ows_leading(Bin) -> Bin.
+
+trim_ows_trailing(Bin) ->
+    case byte_size(Bin) of
+        0 ->
+            Bin;
+        N ->
+            case binary:last(Bin) of
+                C when C =:= $\s; C =:= $\t -> trim_ows_trailing(binary:part(Bin, 0, N - 1));
+                _ -> Bin
+            end
+    end.

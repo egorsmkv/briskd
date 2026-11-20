@@ -966,9 +966,7 @@ export function decryptAttachment(
     throw new CryptoError("Invalid encrypted attachment parameters");
   }
   const actualHash = sha256(ciphertext);
-  let diff = 0;
-  for (let i = 0; i < 32; i++) diff |= actualHash[i] ^ expectedHash[i];
-  if (diff !== 0) {
+  if (!bytesEqual(actualHash, expectedHash)) {
     throw new CryptoError("Encrypted attachment integrity check failed");
   }
   try {

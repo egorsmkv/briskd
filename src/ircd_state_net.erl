@@ -17,6 +17,7 @@ behind it. Names lost in a split or collision are held for the
 them over immediately.
 """.
 -export([
+    configured_peer/1,
     expire_holds/0,
     cap/3,
     notify_cap_changes/2,
@@ -85,7 +86,7 @@ other peer with its hop count increased by one.
 -spec introduce_server(binary(), undefined | binary(), binary(), binary(), binary(), binary()) ->
     ok | {error, atom()}.
 introduce_server(Ingress, Prefix, Name, HopBin, Token, Info) ->
-    case {valid_decimal(HopBin), valid_token(Token)} of
+    case {ircd_route:valid_decimal(HopBin), valid_token(Token)} of
         {false, _} ->
             {error, invalid_server};
         {_, false} ->
@@ -370,20 +371,17 @@ send_cap_list(Pid, Nick, Server, Sub, Names) ->
                 [hd(ircd_cap:pack(Names, Budget))]
         end,
     Last = length(Bodies),
-    lists:foldl(
-        fun(Body, Index) ->
+    lists:foreach(
+        fun({Index, Body}) ->
             Middle =
                 case Multiline andalso Index < Last of
                     true -> [Nick, Sub, <<"*">>];
                     false -> [Nick, Sub]
                 end,
-            ircd_state_send:send(Pid, Server, <<"CAP">>, Middle, Body),
-            Index + 1
+            ircd_state_send:send(Pid, Server, <<"CAP">>, Middle, Body)
         end,
-        1,
-        Bodies
-    ),
-    ok.
+        lists:enumerate(Bodies)
+    ).
 
 %% Bytes left for the capability list after `:server CAP nick SUB [* ] :`.
 cap_budget(Server, Nick, Sub, Multiline) ->
@@ -883,16 +881,18 @@ expire_holds() ->
     _ = ets:select_delete(?HOLDS, [{{'_', '$1'}, [{'=<', '$1', Now}], [true]}]),
     ok.
 
+-doc """
+The configured `server_links` entry whose name equals `Target` under the
+RFC 1459 case fold, as `{ok, Name}` with the configured spelling, or `error`.
+Reads only configuration, so any process may call it.
+""".
+-spec configured_peer(binary()) -> {ok, binary()} | error.
 configured_peer(Target) ->
+    Fold = ircd_wire:fold(Target),
     Links = persistent_term:get({ircd_state, server_links}, []),
-    case
-        [
-            maps:get(name, Link)
-         || Link <- Links, ircd_wire:fold(maps:get(name, Link)) =:= ircd_wire:fold(Target)
-        ]
-    of
-        [Name | _] -> {ok, Name};
-        [] -> error
+    case lists:search(fun(#{name := Name}) -> ircd_wire:fold(Name) =:= Fold end, Links) of
+        {value, #{name := Name}} -> {ok, Name};
+        false -> error
     end.
 
 remote_nick(Name) ->
@@ -940,15 +940,6 @@ peer_service_room(Peer, Name) ->
 
 local_name() ->
     maps:get(name, persistent_term:get({ircd_state, config})).
-
-valid_decimal(Value) when is_binary(Value) ->
-    try binary_to_integer(Value) of
-        Number -> Number >= 0
-    catch
-        error:badarg -> false
-    end;
-valid_decimal(_) ->
-    false.
 
 valid_token(Token) when is_binary(Token), byte_size(Token) > 0, byte_size(Token) =< 16 ->
     lists:all(fun(C) -> C >= $0 andalso C =< $9 end, binary_to_list(Token));

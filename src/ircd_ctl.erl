@@ -191,7 +191,9 @@ send_remote(Path, Args) ->
 init(Config) ->
     process_flag(trap_exit, true),
     Path = socket_path(Config),
-    case byte_size(list_to_binary(Path)) =< 100 of
+    %% A Unix socket path is at most 100 bytes here (sun_path is 104 or 108);
+    %% the path may hold any Unicode characters, so count its UTF-8 bytes.
+    case byte_size(unicode:characters_to_binary(Path)) =< 100 of
         false ->
             {ok, #{socket => undefined, path => undefined}};
         true ->
@@ -336,7 +338,7 @@ handle_state_action(rehash, Server) ->
         {error, Reason} -> {error, Reason}
     end;
 handle_state_action({set_log_level, LevelBin}, _Server) ->
-    case parse_log_level(LevelBin) of
+    case ircd_config:parse_log_level(LevelBin) of
         {ok, Level} ->
             Config = persistent_term:get({ircd_state, config}, #{}),
             persistent_term:put({ircd_state, config}, Config#{level => Level}),
@@ -914,7 +916,7 @@ cmd_clients(Format) ->
     Text =
         case Lines of
             [] -> <<"No local clients connected">>;
-            _ -> iolist_to_binary(lists:join(<<"\n">>, Lines))
+            _ -> binary:join(Lines, <<"\n">>)
         end,
     reply_ok(Format, #{count => length(Entries), clients => Entries}, Text).
 
@@ -961,7 +963,7 @@ cmd_channels(Format) ->
     Text =
         case Lines of
             [] -> <<"No channels">>;
-            _ -> iolist_to_binary(lists:join(<<"\n">>, Lines))
+            _ -> binary:join(Lines, <<"\n">>)
         end,
     reply_ok(Format, #{count => length(Entries), channels => Entries}, Text).
 
@@ -1006,7 +1008,7 @@ cmd_links(Format) ->
                     <<")">>
                 ]);
             _ ->
-                iolist_to_binary(lists:join(<<"\n">>, Lines))
+                binary:join(Lines, <<"\n">>)
         end,
     reply_ok(
         Format,
@@ -1015,21 +1017,15 @@ cmd_links(Format) ->
     ).
 
 cmd_connect(Peer, Format) ->
-    Links = persistent_term:get({ircd_state, server_links}, []),
-    case
-        [
-            maps:get(name, L)
-         || L <- Links, ircd_wire:fold(maps:get(name, L)) =:= ircd_wire:fold(Peer)
-        ]
-    of
-        [Name | _] ->
+    case ircd_state_net:configured_peer(Peer) of
+        {ok, Name} ->
             _ = ircd_links:connect_peer(Name),
             reply_ok(
                 Format,
                 #{status => <<"connecting">>, peer => Name},
                 <<"Triggered connection attempt for ", Name/binary>>
             );
-        [] ->
+        error ->
             reply_error(
                 Format,
                 #{error => <<"no_such_peer">>, peer => Peer},
@@ -1070,7 +1066,7 @@ cmd_accounts(Format) ->
     Text =
         case Lines of
             [] -> <<"No registered accounts">>;
-            _ -> iolist_to_binary(lists:join(<<"\n">>, Lines))
+            _ -> binary:join(Lines, <<"\n">>)
         end,
     reply_ok(Format, #{count => length(Entries), accounts => Entries}, Text).
 
@@ -1207,17 +1203,6 @@ format_listeners_text(List) ->
             ]
         )
     ).
-
-parse_log_level(<<"trace">>) -> {ok, trace};
-parse_log_level(<<"debug">>) -> {ok, debug};
-parse_log_level(<<"info">>) -> {ok, info};
-parse_log_level(<<"notice">>) -> {ok, notice};
-parse_log_level(<<"warning">>) -> {ok, warning};
-parse_log_level(<<"error">>) -> {ok, error};
-parse_log_level(<<"critical">>) -> {ok, critical};
-parse_log_level(<<"alert">>) -> {ok, alert};
-parse_log_level(<<"emergency">>) -> {ok, emergency};
-parse_log_level(_) -> error.
 
 null_star(null) -> <<"*">>;
 null_star(Bin) -> Bin.

@@ -22,7 +22,8 @@ comparison uses the RFC 1459 case mapping of `ircd_wire:fold/1`.
     nick_delay_blocked/3,
     resource_delay_seconds/0,
     servers_behind/2,
-    should_forward/2
+    should_forward/2,
+    valid_decimal/1
 ]).
 
 -define(MAX_CHANNELS, 10).
@@ -231,9 +232,9 @@ reaches(Name, Lost, Servers, Seen) when is_binary(Name), is_binary(Lost) ->
 
 lookup(Name, Servers) ->
     Fold = ircd_wire:fold(Name),
-    case [Server || Server <- Servers, ircd_wire:fold(maps:get(name, Server)) =:= Fold] of
-        [Server | _] -> {ok, Server};
-        [] -> error
+    case lists:search(fun(#{name := N}) -> ircd_wire:fold(N) =:= Fold end, Servers) of
+        {value, Server} -> {ok, Server};
+        false -> error
     end.
 
 server_map(Name, Hop, Token, Adjacent, Parent, Info) ->
@@ -252,4 +253,19 @@ valid_server_name(Name) when is_binary(Name) ->
         nomatch -> false
     end;
 valid_server_name(_) ->
+    false.
+
+-doc """
+Whether `Value` is a non-negative decimal integer, as hop counts and server
+tokens are in RFC 2813 `SERVER` and `NICK` (for example `<<"1">>`).
+`binary_to_integer/1` rules apply, so a leading `+` is accepted.
+""".
+-spec valid_decimal(term()) -> boolean().
+valid_decimal(Value) when is_binary(Value) ->
+    try binary_to_integer(Value) of
+        Number -> Number >= 0
+    catch
+        error:badarg -> false
+    end;
+valid_decimal(_) ->
     false.

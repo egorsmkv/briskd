@@ -48,6 +48,7 @@ the RFC 1459 case mapping.
     partial/1,
     retain/1,
     retain_fields/1,
+    lower/1,
     safe_channel/1,
     upper/1
 ]).
@@ -484,13 +485,13 @@ spelling.
 ```
 """.
 -spec fold(binary()) -> binary().
-fold(Value) -> <<<<(lower(C))>> || <<C>> <= Value>>.
-lower(C) when C >= $A, C =< $Z -> C + 32;
-lower($[) -> ${;
-lower($]) -> $};
-lower(92) -> $|;
-lower($^) -> $~;
-lower(C) -> C.
+fold(Value) -> <<<<(fold_byte(C))>> || <<C>> <= Value>>.
+fold_byte(C) when C >= $A, C =< $Z -> C + 32;
+fold_byte($[) -> ${;
+fold_byte($]) -> $};
+fold_byte(92) -> $|;
+fold_byte($^) -> $~;
+fold_byte(C) -> C.
 
 -doc """
 Upper-case ASCII letters `a`-`z`; every other byte is unchanged.
@@ -509,6 +510,23 @@ process.
 upper(Value) -> <<<<(upper_byte(C))>> || <<C>> <= Value>>.
 upper_byte(C) when C >= $a, C =< $z -> C - 32;
 upper_byte(C) -> C.
+
+-doc """
+Lower-case ASCII letters `A`-`Z`; every other byte is unchanged.
+
+The counterpart of `upper/1` for case-insensitive ASCII tokens from the
+network, such as HTTP header names (RFC 9110 section 5.1). It is not the IRC
+identity fold: use `fold/1` for nicknames and channels.
+
+```erlang
+1> ircd_wire:lower(<<"Content-Type", 255>>).
+<<"content-type", 255>>
+```
+""".
+-spec lower(binary()) -> binary().
+lower(Value) -> <<<<(lower_byte(C))>> || <<C>> <= Value>>.
+lower_byte(C) when C >= $A, C =< $Z -> C + 32;
+lower_byte(C) -> C.
 
 -doc """
 Check a nickname with the RFC 1459 length limit of 9 octets.

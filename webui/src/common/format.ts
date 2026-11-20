@@ -147,13 +147,8 @@ const TOKEN_RE =
   /(https?:\/\/[^\s<>()]+(?:\([^\s<>()]*\)[^\s<>()]*)*)|(`[^`\n]{1,120}`)|((?:^|(?<=[\s(\[{,]))#[a-zA-Z0-9_\-.+]{1,50})/g;
 
 function trimUrlTrailing(raw: string): { url: string; tail: string } {
-  let url = raw;
-  let tail = "";
-  while (url.length > 0 && /[.,!?;:'"]$/.test(url)) {
-    tail = url[url.length - 1] + tail;
-    url = url.slice(0, -1);
-  }
-  return { url, tail };
+  const tail = /[.,!?;:'"]*$/.exec(raw)![0];
+  return { url: raw.slice(0, raw.length - tail.length), tail };
 }
 
 function appendTextWithMentions(
@@ -287,15 +282,12 @@ export function renderIrcMessage(
 
 export function formatDayLabel(epochMs: number): string {
   const d = new Date(epochMs);
+  const day = d.toDateString();
   const now = new Date();
-  const sameDay = (a: Date, b: Date) =>
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate();
-  if (sameDay(d, now)) return "Today";
+  if (day === now.toDateString()) return "Today";
   const yesterday = new Date(now);
   yesterday.setDate(now.getDate() - 1);
-  if (sameDay(d, yesterday)) return "Yesterday";
+  if (day === yesterday.toDateString()) return "Yesterday";
   return d.toLocaleDateString(undefined, {
     month: "short",
     day: "numeric",
@@ -303,7 +295,7 @@ export function formatDayLabel(epochMs: number): string {
   });
 }
 
+/** Local calendar-day key for grouping lines; compared in memory only. */
 export function dayKey(epochMs: number): string {
-  const d = new Date(epochMs);
-  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  return new Date(epochMs).toDateString();
 }

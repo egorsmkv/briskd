@@ -7,7 +7,11 @@ await Deno.mkdir(outDir, { recursive: true });
 const tsEntries = ["admin", "signup", "verify", "recover", "webirc"];
 const scssEntries = ["admin", "signup", "verify", "recover", "webirc"];
 
-const browserTargets = ["chrome80", "firefox78", "safari13", "edge80"];
+// Minimum browsers the shipped code actually needs (not just syntax, which
+// esbuild lowers): regex lookbehind in common/format.ts (Safari 16.4),
+// Element.replaceChildren (Chrome/Edge 86, Firefox 78), String.replaceAll and
+// Blob.text. ES2020 is the newest edition Firefox 78 implements in full.
+const browserTargets = ["chrome86", "firefox78", "safari16.4", "edge86"];
 
 await esbuild.build({
   entryPoints: tsEntries.map((name) => ({
@@ -18,7 +22,7 @@ await esbuild.build({
   bundle: true,
   minify: true,
   format: "iife",
-  target: ["es2019", ...browserTargets],
+  target: ["es2020", ...browserTargets],
   sourcemap: false,
 });
 

@@ -1593,15 +1593,10 @@ registered_command(<<"NAMES">>, Params, Client, Server) ->
                 fun({_, Key}) -> ircd_state_channel:names_listing(Key, Client, Server) end,
                 Ordered
             ),
-            LocalKeys = mnesia:dirty_all_keys(channel),
+            %% Remote-only channels; keys are unique, so `--` keeps each once.
             lists:foreach(
-                fun(Key) ->
-                    case lists:member(Key, LocalKeys) of
-                        true -> ok;
-                        false -> ircd_state_link:remote_names_listing(Key, Client, Server)
-                    end
-                end,
-                mnesia:dirty_all_keys(remote_channel)
+                fun(Key) -> ircd_state_link:remote_names_listing(Key, Client, Server) end,
+                mnesia:dirty_all_keys(remote_channel) -- mnesia:dirty_all_keys(channel)
             ),
             ircd_state_channel:names_unattached(Client, Server),
             ircd_state_send:numeric(Client, Server, <<"366">>, [<<"*">>], <<"End of NAMES list">>)

@@ -19,10 +19,11 @@ import {
   createLinkPreviewSlot,
   extractFirstHttpUrl,
 } from "./common/link_preview.ts";
-import { createVoicePlayer } from "./common/voice_player.ts";
+import { createVoicePlayer, formatVoiceTime } from "./common/voice_player.ts";
 import {
   cleanMetaText,
   formatStandardReply,
+  ircFold,
   markerToMs,
   MAX_META_VALUE,
   METADATA_KEYS,
@@ -33,9 +34,10 @@ import {
   prefixCharsFromIsupport,
   safeAvatarUrl,
   safeHomepageUrl,
+  saslAuthenticateChunks,
   WHOX_FIELDS,
 } from "./common/ircv3.ts";
-import { encryptAttachment } from "./e2ee/crypto.ts";
+import { encryptAttachment, toB64 } from "./e2ee/crypto.ts";
 import { E2EE_CAP, E2eeManager } from "./e2ee/manager.ts";
 import {
   callDuration,
@@ -198,13 +200,6 @@ const FILE_NAME_TAG = "+egorsmkv.github.io/file-name";
 const FILE_SIZE_TAG = "+egorsmkv.github.io/file-size";
 const ALBUM_TAG = "+egorsmkv.github.io/album";
 const FILE_ID_RE = /^[0-9a-f]{32}\.[a-z0-9]{1,8}$/;
-
-function fmtDuration(sec?: number): string {
-  const s = Math.max(0, Math.floor(sec || 0));
-  const m = Math.floor(s / 60);
-  const r = s % 60;
-  return `${m}:${r < 10 ? "0" : ""}${r}`;
-}
 
 interface BufferState {
   name: string;
@@ -529,13 +524,12 @@ function bufferToPath(name: string): string {
 
 const MAX_BUFFERS = 100;
 
+// 1-50 UTF-16 code units, none of them a control, space, comma, or DEL.
+// deno-lint-ignore no-control-regex
+const SAFE_IRC_TARGET_RE = /^[^\x00-\x20,\x7f]{1,50}$/;
+
 function isSafeIrcTarget(s: string): boolean {
-  if (s.length < 1 || s.length > 50) return false;
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c <= 0x20 || c === 0x2c || c === 0x7f) return false;
-  }
-  return true;
+  return SAFE_IRC_TARGET_RE.test(s);
 }
 
 function pathToBuffer(pathname: string): string | null {
@@ -690,11 +684,11 @@ function resetIrcv3State(): void {
 }
 
 function peekUser(nick: string): UserInfo | undefined {
-  return users.get(nick.toLowerCase());
+  return users.get(ircFold(nick));
 }
 
 function userInfo(nick: string): UserInfo {
-  const key = nick.toLowerCase();
+  const key = ircFold(nick);
   let u = users.get(key);
   if (!u) {
     if (users.size >= MAX_USERS) {
@@ -829,7 +823,7 @@ function monitorAdd(nicks: string[]): void {
   if (!isRegistered || limit === 0) return;
   const fresh: string[] = [];
   for (const nick of nicks) {
-    const key = nick.toLowerCase();
+    const key = ircFold(nick);
     if (
       isChan(nick) || nick === "*status" || !isSafeIrcTarget(nick) ||
       monitored.has(key) || monitored.size >= limit
@@ -845,7 +839,7 @@ function monitorAdd(nicks: string[]): void {
 }
 
 function monitorRemove(nick: string): void {
-  const key = nick.toLowerCase();
+  const key = ircFold(nick);
   if (!monitored.delete(key)) return;
   sendRaw(`MONITOR - ${nick}`);
   const u = users.get(key);
@@ -853,7 +847,7 @@ function monitorRemove(nick: string): void {
 }
 
 function markerOf(name: string): number {
-  return readMarkers.get(name.toLowerCase()) ?? 0;
+  return readMarkers.get(ircFold(name)) ?? 0;
 }
 
 /** Ask for a DM's read marker; channels get theirs after JOIN. */
@@ -889,25 +883,25 @@ function markActiveRead(): void {
     }
   }
   if (last <= markerOf(buf.name)) return;
-  readMarkers.set(buf.name.toLowerCase(), last);
+  readMarkers.set(ircFold(buf.name), last);
   sendRaw(`MARKREAD ${buf.name} ${msToMarker(last)}`);
 }
 
 /** A MARKREAD from the server (ours, or another session of the account). */
 function applyMarker(target: string, ms: number | null): void {
   if (ms === null) return;
-  const key = target.toLowerCase();
+  const key = ircFold(target);
   readMarkers.set(key, Math.max(ms, markerOf(target)));
   const buf = buffers.get(key);
   if (!buf || key === activeBuf) return;
   const marker = markerOf(target);
-  const me = myNick.toLowerCase();
+  const me = ircFold(myNick);
   const isDm = !isChan(buf.name);
   let unread = 0;
   let mentions = 0;
   for (const line of buf.lines) {
     if (
-      line.epochMs <= marker || !line.nick || line.nick.toLowerCase() === me
+      line.epochMs <= marker || !line.nick || ircFold(line.nick) === me
     ) {
       continue;
     }
@@ -932,10 +926,10 @@ function applyMetadata(
   const u = userInfo(target);
   if (value === undefined || value === "") u.meta.delete(key);
   else u.meta.set(key, value.slice(0, MAX_META_VALUE));
-  const folded = target.toLowerCase();
+  const folded = ircFold(target);
   const buf = buffers.get(activeBuf);
   const visible = (key === "avatar" || key === "display-name") && !!buf &&
-    buf.lines.some((l) => l.nick.toLowerCase() === folded);
+    buf.lines.some((l) => ircFold(l.nick) === folded);
   scheduleUserRender(visible);
 }
 const sentHistory: string[] = [];
@@ -1107,7 +1101,7 @@ $("btn-call-accept").onclick = () => {
   const peer = calls.state.peer;
   if (peer) {
     ensureBuf(peer);
-    switchBuf(peer.toLowerCase());
+    switchBuf(ircFold(peer));
   }
   void calls.accept();
 };
@@ -1118,7 +1112,7 @@ $("call-dock-peer").onclick = () => {
   const peer = calls.state.peer;
   if (peer) {
     ensureBuf(peer);
-    switchBuf(peer.toLowerCase());
+    switchBuf(ircFold(peer));
   }
 };
 $("call-incoming").addEventListener("keydown", (ev) => {
@@ -1345,7 +1339,7 @@ document.addEventListener("visibilitychange", () => {
 globalThis.addEventListener("focus", clearHiddenCounters);
 
 function ensureBuf(name: string): BufferState {
-  const key = name.toLowerCase();
+  const key = ircFold(name);
   let buf = buffers.get(key);
   if (!buf) {
     if (buffers.size >= MAX_BUFFERS) {
@@ -1379,7 +1373,7 @@ function ensureBuf(name: string): BufferState {
 }
 
 function isMention(text: string, sender: string): boolean {
-  if (!myNick || !sender || sender.toLowerCase() === myNick.toLowerCase()) {
+  if (!myNick || !sender || ircFold(sender) === ircFold(myNick)) {
     return false;
   }
   const escaped = myNick.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -1443,13 +1437,13 @@ function addLine(
   if (buf.lines.length > 600) buf.lines.shift();
 
   const isFromOther = !!entry.nick &&
-    entry.nick.toLowerCase() !== myNick.toLowerCase();
+    ircFold(entry.nick) !== ircFold(myNick);
   const isDm = !isChan(bufName) && bufName !== "*status";
   const isAlert = mention || (isDm && isFromOther && !opts.kind);
 
   // draft/read-marker: history older than the marker is already read.
   const isNew = t.ms > markerOf(bufName);
-  if (bufName.toLowerCase() === activeBuf) {
+  if (ircFold(bufName) === activeBuf) {
     appendLineDom(entry, prev);
     if (document.hidden && isFromOther && !opts.kind && isNew) {
       hiddenUnread += 1;
@@ -1501,7 +1495,7 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
   const fmtOpts = {
     myNick: entry.kind ? undefined : myNick,
     onChannelClick: (chan: string) => {
-      const k = chan.toLowerCase();
+      const k = ircFold(chan);
       if (buffers.has(k)) switchBuf(k);
       else sendRaw(`JOIN ${chan}`);
     },
@@ -1611,7 +1605,7 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
       const pill = document.createElement("button");
       pill.type = "button";
       const mine = Array.from(nicks).some((n) =>
-        n.toLowerCase() === myNick.toLowerCase()
+        ircFold(n) === ircFold(myNick)
       );
       pill.className = "react-pill" + (mine ? " mine" : "");
       pill.title = Array.from(nicks).join(", ");
@@ -1632,7 +1626,7 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
 
   const renderActionsEl = (): HTMLElement | null => {
     if (!entry.msgid || entry.redacted || entry.kind) return null;
-    const isMine = entry.nick.toLowerCase() === myNick.toLowerCase();
+    const isMine = ircFold(entry.nick) === ircFold(myNick);
     const canReact = featureOn("reactions");
     const canReply = featureOn("replies");
     const canEdit = featureOn("editing") && isMine && !entry.voiceId &&
@@ -1754,9 +1748,9 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
     n.style.color = nickColor(entry.nick);
     n.title = userTooltip(entry.nick);
     n.onclick = () => {
-      if (entry.nick.toLowerCase() !== myNick.toLowerCase()) {
+      if (ircFold(entry.nick) !== ircFold(myNick)) {
         ensureBuf(entry.nick);
-        switchBuf(entry.nick.toLowerCase());
+        switchBuf(ircFold(entry.nick));
       }
     };
     const t = document.createElement("span");
@@ -1865,9 +1859,9 @@ function renderActiveMessages(): void {
 function isOperatorInBuffer(buf: BufferState | undefined): boolean {
   if (!buf || !isChan(buf.name)) return false;
   if (isIrcOp) return true;
-  const me = myNick.toLowerCase();
+  const me = ircFold(myNick);
   for (const [memberNick, prefix] of buf.members.entries()) {
-    if (memberNick.toLowerCase() === me) {
+    if (ircFold(memberNick) === me) {
       return /[@&~]/.test(prefix || "");
     }
   }
@@ -2063,7 +2057,7 @@ function renderMembers(): void {
       row.appendChild(bot);
     }
 
-    const isSelf = nick.toLowerCase() === myNick.toLowerCase();
+    const isSelf = ircFold(nick) === ircFold(myNick);
     if (amOp && !isSelf) {
       const acts = document.createElement("div");
       acts.className = "member-mod-actions";
@@ -2122,7 +2116,7 @@ function renderMembers(): void {
     row.onclick = () => {
       if (!isSelf) {
         ensureBuf(nick);
-        switchBuf(nick.toLowerCase());
+        switchBuf(ircFold(nick));
       }
     };
     list.appendChild(row);
@@ -2331,8 +2325,14 @@ function handleMessage(raw: string): void {
     return;
   }
   if (command === "AUTHENTICATE" && params[0] === "+") {
-    const auth = btoa(`\0${saslUser || myNick}\0${saslPass}`);
-    sendRaw(`AUTHENTICATE ${auth}`);
+    // RFC 4616: authzid NUL authcid NUL passwd, UTF-8 encoded, then base64
+    // split into 400-byte AUTHENTICATE chunks (IRCv3 SASL 3.1).
+    const auth = toB64(
+      new TextEncoder().encode(`\0${saslUser || myNick}\0${saslPass}`),
+    );
+    for (const chunk of saslAuthenticateChunks(auth)) {
+      sendRaw(`AUTHENTICATE ${chunk}`);
+    }
     return;
   }
   if (command === "900") {
@@ -2413,9 +2413,9 @@ function handleMessage(raw: string): void {
       joiner.account = params[1] !== "*" ? params[1] : undefined;
       joiner.realname = params[2];
     }
-    if (nick.toLowerCase() === myNick.toLowerCase()) {
-      if (!desiredBuf || desiredBuf === chan.toLowerCase()) {
-        switchBuf(chan.toLowerCase());
+    if (ircFold(nick) === ircFold(myNick)) {
+      if (!desiredBuf || desiredBuf === ircFold(chan)) {
+        switchBuf(ircFold(chan));
         desiredBuf = "";
       } else {
         renderBuffers();
@@ -2424,7 +2424,7 @@ function handleMessage(raw: string): void {
       sendRaw(`CHATHISTORY LATEST ${chan} * 50`);
       if (isupport.has("WHOX")) {
         // One WHOX reply gives prefixes, away, bot, and account per member.
-        pendingWho.add(chan.toLowerCase());
+        pendingWho.add(ircFold(chan));
         sendRaw(`WHO ${chan} ${WHOX_FIELDS}`);
       } else if (capOn("no-implicit-names")) {
         sendRaw(`NAMES ${chan}`);
@@ -2438,12 +2438,12 @@ function handleMessage(raw: string): void {
   }
   if (command === "PART") {
     const chan = params[0];
-    const buf = buffers.get(chan.toLowerCase());
+    const buf = buffers.get(ircFold(chan));
     if (buf) {
       buf.members.delete(nick);
-      if (nick.toLowerCase() === myNick.toLowerCase()) {
-        buffers.delete(chan.toLowerCase());
-        if (activeBuf === chan.toLowerCase()) switchBuf("*status");
+      if (ircFold(nick) === ircFold(myNick)) {
+        buffers.delete(ircFold(chan));
+        if (activeBuf === ircFold(chan)) switchBuf("*status");
         else renderBuffers();
       } else {
         e2ee.onMemberLeft(chan);
@@ -2473,20 +2473,20 @@ function handleMessage(raw: string): void {
         }
       }
     });
-    if (nick && !monitored.has(nick.toLowerCase())) {
-      users.delete(nick.toLowerCase());
+    if (nick && !monitored.has(ircFold(nick))) {
+      users.delete(ircFold(nick));
     }
     renderMembers();
     return;
   }
   if (command === "NICK") {
     const next = params[0];
-    const moved = users.get(nick.toLowerCase());
-    if (moved && next && !monitored.has(nick.toLowerCase())) {
-      users.delete(nick.toLowerCase());
-      users.set(next.toLowerCase(), moved);
+    const moved = users.get(ircFold(nick));
+    if (moved && next && !monitored.has(ircFold(nick))) {
+      users.delete(ircFold(nick));
+      users.set(ircFold(next), moved);
     }
-    if (nick.toLowerCase() === myNick.toLowerCase()) {
+    if (ircFold(nick) === ircFold(myNick)) {
       myNick = next;
       $("my-nick").textContent = myNick;
       e2ee.setMyNick(myNick);
@@ -2510,7 +2510,7 @@ function handleMessage(raw: string): void {
     const chan = params[1];
     const buf = ensureBuf(chan);
     buf.topic = params[2] || "";
-    if (activeBuf === chan.toLowerCase()) {
+    if (activeBuf === ircFold(chan)) {
       $("active-topic").textContent = buf.topic;
     }
     addLine(chan, { time, text: `Topic: ${buf.topic}`, kind: "sys" });
@@ -2520,7 +2520,7 @@ function handleMessage(raw: string): void {
     const chan = params[0];
     const buf = ensureBuf(chan);
     buf.topic = params[1] || "";
-    if (activeBuf === chan.toLowerCase()) {
+    if (activeBuf === ircFold(chan)) {
       $("active-topic").textContent = buf.topic;
     }
     addLine(chan, {
@@ -2563,7 +2563,7 @@ function handleMessage(raw: string): void {
       if (/[a-zA-Z]/.test(ch)) buf.modes.add(ch);
     }
     if (
-      activeBuf === chan.toLowerCase() &&
+      activeBuf === ircFold(chan) &&
       $("mod-modal").classList.contains("open")
     ) {
       renderModModal();
@@ -2577,7 +2577,7 @@ function handleMessage(raw: string): void {
       const buf = ensureBuf(chan);
       if (!buf.bans.includes(mask)) buf.bans.push(mask);
       if (
-        activeBuf === chan.toLowerCase() &&
+        activeBuf === ircFold(chan) &&
         $("mod-modal").classList.contains("open")
       ) {
         renderModModal();
@@ -2609,14 +2609,14 @@ function handleMessage(raw: string): void {
       });
       sendRaw(`NAMES ${target}`);
       if (
-        activeBuf === target.toLowerCase() &&
+        activeBuf === ircFold(target) &&
         $("mod-modal").classList.contains("open")
       ) {
         renderModModal();
       }
     } else {
       const modes = params[1] || "";
-      if (target.toLowerCase() === myNick.toLowerCase()) {
+      if (ircFold(target) === ircFold(myNick)) {
         if (modes.includes("+") && modes.includes("o")) isIrcOp = true;
         if (modes.includes("-") && modes.includes("o")) isIrcOp = false;
         updateTopicButton();
@@ -2631,10 +2631,10 @@ function handleMessage(raw: string): void {
   }
   if (command === "INVITE") {
     const invitee = params[0] || "";
-    if (invitee && invitee.toLowerCase() !== myNick.toLowerCase()) {
+    if (invitee && ircFold(invitee) !== ircFold(myNick)) {
       // invite-notify: someone else in a shared channel was invited.
       const chan = params[1] || "";
-      if (buffers.has(chan.toLowerCase())) {
+      if (buffers.has(ircFold(chan))) {
         addLine(chan, {
           time,
           text: `${nick} invited ${invitee} to ${chan}`,
@@ -2654,7 +2654,7 @@ function handleMessage(raw: string): void {
     const target = params[0] || "";
     const dest = isChan(target)
       ? target
-      : nick.toLowerCase() === myNick.toLowerCase()
+      : ircFold(nick) === ircFold(myNick)
       ? target
       : nick;
     if (!dest) return;
@@ -2667,7 +2667,7 @@ function handleMessage(raw: string): void {
     const typingState = msg.tags[TYPING_TAG];
     if (
       typingState && featureOn("typing") &&
-      nick.toLowerCase() !== myNick.toLowerCase()
+      ircFold(nick) !== ircFold(myNick)
     ) {
       updateRemoteTyping(dest, nick, typingState);
     }
@@ -2678,7 +2678,7 @@ function handleMessage(raw: string): void {
     const targetMsgId = params[1] || "";
     const dest = isChan(target)
       ? target
-      : nick.toLowerCase() === myNick.toLowerCase()
+      : ircFold(nick) === ircFold(myNick)
       ? target
       : nick;
     if (dest && targetMsgId) {
@@ -2691,10 +2691,10 @@ function handleMessage(raw: string): void {
     const text = params[1] || "";
     const dest = isChan(target)
       ? target
-      : nick.toLowerCase() === myNick.toLowerCase()
+      : ircFold(nick) === ircFold(myNick)
       ? target
       : nick || "*status";
-    if (nick && nick.toLowerCase() !== myNick.toLowerCase()) {
+    if (nick && ircFold(nick) !== ircFold(myNick)) {
       updateRemoteTyping(dest, nick, "done");
     }
     const editTargetId = msg.tags[EDIT_TAG];
@@ -2785,9 +2785,9 @@ function handleMessage(raw: string): void {
   if (command === "KICK") {
     const chan = params[0];
     const victim = params[1];
-    const buf = buffers.get(chan.toLowerCase());
+    const buf = buffers.get(ircFold(chan));
     if (buf) buf.members.delete(victim);
-    if (victim.toLowerCase() !== myNick.toLowerCase()) e2ee.onMemberLeft(chan);
+    if (ircFold(victim) !== ircFold(myNick)) e2ee.onMemberLeft(chan);
     addLine(chan, {
       time,
       text: `${victim} was kicked by ${nick} (${params[2] || ""})`,
@@ -2881,7 +2881,7 @@ function handleMessage(raw: string): void {
   if (command === "SETNAME") {
     if (nick) {
       userInfo(nick).realname = params[0] || "";
-      if (nick.toLowerCase() === myNick.toLowerCase()) {
+      if (ircFold(nick) === ircFold(myNick)) {
         addLine("*status", {
           time,
           text: `Real name set to: ${params[0] || ""}`,
@@ -2922,7 +2922,7 @@ function handleMessage(raw: string): void {
       u.online = online;
       if (!online) u.away = undefined;
       if (target.userhost) u.userhost = target.userhost;
-      if (!monitored.has(target.nick.toLowerCase())) {
+      if (!monitored.has(ircFold(target.nick))) {
         addLine("*status", {
           time,
           text: `${target.nick} is ${online ? "online" : "offline"}`,
@@ -2940,7 +2940,7 @@ function handleMessage(raw: string): void {
       u.away = entry.away ? (u.away ?? "") : undefined;
       u.bot = entry.bot;
       if (entry.account) u.account = entry.account;
-      const chanKey = entry.channel.toLowerCase();
+      const chanKey = ircFold(entry.channel);
       const buf = buffers.get(chanKey);
       if (buf && pendingWho.has(chanKey)) {
         const prefixChars = prefixCharsFromIsupport(isupport.get("PREFIX"));
@@ -2953,7 +2953,7 @@ function handleMessage(raw: string): void {
       scheduleUserRender();
     }
   }
-  if (command === "315" && pendingWho.delete((params[1] || "").toLowerCase())) {
+  if (command === "315" && pendingWho.delete(ircFold(params[1] || ""))) {
     scheduleUserRender();
     return;
   }
@@ -3091,11 +3091,11 @@ function runSlashCommand(raw: string, buf: BufferState | undefined): void {
         const dest = rest.slice(0, s2);
         const text = rest.slice(s2 + 1);
         ensureBuf(dest);
-        switchBuf(dest.toLowerCase());
+        switchBuf(ircFold(dest));
         sendRaw(`PRIVMSG ${dest} :${text}`);
       } else if (rest) {
         ensureBuf(rest);
-        switchBuf(rest.toLowerCase());
+        switchBuf(ircFold(rest));
       }
       return;
     }
@@ -3255,9 +3255,9 @@ function runSlashCommand(raw: string, buf: BufferState | undefined): void {
             kind: "err",
           });}
       } else if (sub === "verify") {
-        const who =
-          (parts[1] || (!isChan(target) && target !== "*status" ? target : ""))
-            .toLowerCase();
+        const who = ircFold(
+          parts[1] || (!isChan(target) && target !== "*status" ? target : ""),
+        );
         const st = e2ee.getStatus();
         const matches = who
           ? st.trustedPeers.filter((p) => p.account === who)
@@ -3330,10 +3330,10 @@ function startSession(opts: {
   saslUser = opts.acct;
   saslPass = opts.pass;
   autoChannels = opts.channels;
-  desiredBuf = (opts.targetBuf || "").toLowerCase();
+  desiredBuf = ircFold(opts.targetBuf || "");
 
   if (desiredBuf && desiredBuf !== "*status" && isChan(desiredBuf)) {
-    if (!autoChannels.some((c) => c.toLowerCase() === desiredBuf)) {
+    if (!autoChannels.some((c) => ircFold(c) === desiredBuf)) {
       autoChannels = [...autoChannels, desiredBuf];
     }
   }
@@ -3419,8 +3419,8 @@ $<HTMLFormElement>("connect-form").addEventListener("submit", async (ev) => {
 
 globalThis.addEventListener("popstate", () => {
   const target = pathToBuffer(location.pathname);
-  if (target && buffers.has(target.toLowerCase())) {
-    switchBuf(target.toLowerCase(), false);
+  if (target && buffers.has(ircFold(target))) {
+    switchBuf(ircFold(target), false);
   }
 });
 
@@ -3696,7 +3696,7 @@ function applyReaction(
     if (cleanEmoji.length >= 8) break;
   }
   if (!cleanEmoji) return;
-  const key = bufName.toLowerCase();
+  const key = ircFold(bufName);
   const buf = buffers.get(key);
   if (!buf) return;
   const line = buf.lines.find((l) => l.msgid === msgid);
@@ -3708,9 +3708,7 @@ function applyReaction(
     set = new Set();
     line.reactions.set(cleanEmoji, set);
   }
-  const existing = Array.from(set).find((n) =>
-    n.toLowerCase() === sender.toLowerCase()
-  );
+  const existing = Array.from(set).find((n) => ircFold(n) === ircFold(sender));
   if (existing) {
     set.delete(existing);
     if (set.size === 0) line.reactions.delete(cleanEmoji);
@@ -3727,7 +3725,7 @@ function applyEdit(
   senderAccount: string | undefined,
   newText: string,
 ): boolean {
-  const key = bufName.toLowerCase();
+  const key = ircFold(bufName);
   const buf = buffers.get(key);
   if (!buf) return false;
   const line = buf.lines.find((l) => l.msgid === msgid);
@@ -3738,11 +3736,11 @@ function applyEdit(
     return false;
   }
   // Prevent spoofing: require matching nick, and matching SASL account if known
-  if (line.nick.toLowerCase() !== sender.toLowerCase()) return false;
+  if (ircFold(line.nick) !== ircFold(sender)) return false;
   if (
     line.account && line.account !== "*" &&
     (!senderAccount ||
-      senderAccount.toLowerCase() !== line.account.toLowerCase())
+      ircFold(senderAccount) !== ircFold(line.account))
   ) {
     return false;
   }
@@ -3753,7 +3751,7 @@ function applyEdit(
 }
 
 function applyRedaction(bufName: string, msgid: string): void {
-  const key = bufName.toLowerCase();
+  const key = ircFold(bufName);
   const buf = buffers.get(key);
   if (!buf) return;
   const line = buf.lines.find((l) => l.msgid === msgid);
@@ -3798,7 +3796,7 @@ function updateRemoteTyping(
   sender: string,
   state: string,
 ): void {
-  const key = bufName.toLowerCase();
+  const key = ircFold(bufName);
   let map = typingTimers.get(key);
   if (!map) {
     map = new Map();
@@ -3971,7 +3969,7 @@ async function uploadAndSendVoice(
       : durSec;
     sendRaw(
       `@${VOICE_TAG}=${data.id};${VOICE_DUR_TAG}=${finalDur} PRIVMSG ${target} :[Voice message ${
-        fmtDuration(finalDur)
+        formatVoiceTime(finalDur)
       }] /api/voice/${data.id}`,
     );
   } catch (e) {
@@ -4036,7 +4034,7 @@ $("btn-voice").addEventListener("click", () => {
     $("voice-timer").textContent = "0:00";
     voiceTimerId = globalThis.setInterval(() => {
       const elapsed = Math.floor((Date.now() - voiceStartMs) / 1000);
-      $("voice-timer").textContent = fmtDuration(elapsed);
+      $("voice-timer").textContent = formatVoiceTime(elapsed);
       if (elapsed >= VOICE_MAX_SEC && voiceRecorder) {
         voiceCancelled = false;
         voiceRecorder.stop();
@@ -4607,7 +4605,7 @@ function renderDiscoverList(): void {
       info.appendChild(topicEl);
     }
 
-    const joined = buffers.has(ch.name.toLowerCase());
+    const joined = buffers.has(ircFold(ch.name));
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = joined ? "small" : "small primary";
@@ -4615,7 +4613,7 @@ function renderDiscoverList(): void {
     btn.onclick = () => {
       closeDiscoverModal();
       if (joined) {
-        switchBuf(ch.name.toLowerCase());
+        switchBuf(ircFold(ch.name));
       } else {
         sendRaw(`JOIN ${ch.name}`);
       }

@@ -1,4 +1,5 @@
 import { errorMessage } from "../common/dom.ts";
+import { ircFold } from "../common/ircv3.ts";
 import {
   bytesEqual,
   CryptoError,
@@ -37,6 +38,37 @@ export const TAG_QID = `${E2EE_VENDOR}/e2ee-qid`;
 const CHUNK = 400;
 const INITIAL_PREKEYS = 20;
 const STORAGE_PREFIX = "ircd-e2ee-v1:";
+
+// localStorage key for an account's state. Keys (account, channel, and
+// buffer names) are folded with ircFold (RFC 1459, as the server does).
+function storageKey(account: string): string {
+  return STORAGE_PREFIX + ircFold(account);
+}
+
+// Older builds keyed state with String.prototype.toLowerCase. Account names
+// are nickname-charset ASCII, so ircFold(legacy) equals ircFold(original);
+// this key is read as a fallback and removed once the folded key is written.
+function legacyStorageKey(account: string): string {
+  return STORAGE_PREFIX + account.toLowerCase();
+}
+
+// Re-key persisted map entries with ircFold. Entries written by older builds
+// carry toLowerCase keys; folding them again maps ASCII names to the same key
+// the current code uses. The first entry wins if two keys collide.
+function refold<V>(
+  entries: Array<[string, V]> | undefined,
+): Array<[string, V]> {
+  const seen = new Set<string>();
+  const out: Array<[string, V]> = [];
+  for (const [k, v] of entries || []) {
+    const fk = ircFold(k);
+    if (seen.has(fk)) continue;
+    seen.add(fk);
+    out.push([fk, v]);
+  }
+  return out;
+}
+
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
@@ -205,7 +237,7 @@ export class E2eeManager {
   setAccount(account: string): void {
     const clean = account.trim();
     if (!clean || clean === "*") return;
-    if (this.account.toLowerCase() !== clean.toLowerCase()) {
+    if (ircFold(this.account) !== ircFold(clean)) {
       this.account = clean;
       this.loadOrCreateState(clean);
     }
@@ -232,11 +264,11 @@ export class E2eeManager {
   }
 
   isBufferEncrypted(bufKey: string): boolean {
-    return this.enabledBuffers.has(bufKey.toLowerCase());
+    return this.enabledBuffers.has(ircFold(bufKey));
   }
 
   setBufferEncrypted(bufKey: string, enabled: boolean): boolean {
-    const k = bufKey.toLowerCase();
+    const k = ircFold(bufKey);
     if (k === "*status") return false;
     if (enabled) {
       if (!this.serverSupported) {
@@ -277,7 +309,7 @@ export class E2eeManager {
   }
 
   onMemberLeft(channel: string): void {
-    const k = channel.toLowerCase();
+    const k = ircFold(channel);
     if (this.senderKeys.has(k)) {
       this.needsRotation.add(k);
     }
@@ -332,7 +364,7 @@ export class E2eeManager {
 
   async rotateChannelKey(channel: string): Promise<void> {
     if (!this.isReady() || !isChan(channel)) return;
-    const k = channel.toLowerCase();
+    const k = ircFold(channel);
     this.senderKeys.set(k, SenderKey.create());
     this.sharedWith.set(k, new Set());
     this.needsRotation.delete(k);
@@ -351,7 +383,8 @@ export class E2eeManager {
     }
     if (this.account) {
       try {
-        localStorage.removeItem(STORAGE_PREFIX + this.account.toLowerCase());
+        localStorage.removeItem(storageKey(this.account));
+        localStorage.removeItem(legacyStorageKey(this.account));
       } catch {
         // ignore
       }
@@ -392,30 +425,33 @@ export class E2eeManager {
     this.enabledBuffers.clear();
 
     try {
-      const raw = localStorage.getItem(STORAGE_PREFIX + account.toLowerCase());
+      const raw = localStorage.getItem(storageKey(account)) ??
+        localStorage.getItem(legacyStorageKey(account));
       if (raw) {
         const d = JSON.parse(raw) as PersistedState;
         this.deviceId = d.deviceId;
         this.identity = Identity.fromJSON(d.identity);
         this.prekeys = PreKeys.fromJSON(d.prekeys);
         this.prekeysUploaded = !!d.prekeysUploaded;
-        for (const [k, v] of d.sessions || []) {
+        for (const [k, v] of refold(d.sessions)) {
           this.sessions.set(k, DoubleRatchet.fromJSON(v));
         }
-        for (const [k, v] of d.awaitingReply || []) {
+        for (const [k, v] of refold(d.awaitingReply)) {
           this.awaitingReply.set(k, fromB64(v));
         }
-        for (const [k, v] of d.trusted || []) this.trusted.set(k, fromB64(v));
-        for (const [k, v] of d.senderKeys || []) {
+        for (const [k, v] of refold(d.trusted)) this.trusted.set(k, fromB64(v));
+        for (const [k, v] of refold(d.senderKeys)) {
           this.senderKeys.set(k, SenderKey.fromJSON(v));
         }
-        for (const [k, v] of d.receivedKeys || []) {
+        for (const [k, v] of refold(d.receivedKeys)) {
           this.receivedKeys.set(k, SenderKey.fromJSON(v));
         }
-        for (const [k, list] of d.sharedWith || []) {
-          this.sharedWith.set(k, new Set(list));
+        for (const [k, list] of refold(d.sharedWith)) {
+          this.sharedWith.set(k, new Set(list.map(ircFold)));
         }
-        for (const b of d.enabledBuffers || []) this.enabledBuffers.add(b);
+        for (const b of d.enabledBuffers || []) {
+          this.enabledBuffers.add(ircFold(b));
+        }
         return;
       }
     } catch {
@@ -462,7 +498,7 @@ export class E2eeManager {
     }
     if (
       this.account &&
-      parsed.account.toLowerCase() !== this.account.toLowerCase()
+      ircFold(parsed.account) !== ircFold(this.account)
     ) {
       throw new CryptoError(
         `Backup belongs to account "${parsed.account}", but you are logged in as "${this.account}"`,
@@ -483,28 +519,30 @@ export class E2eeManager {
     const identity = Identity.fromJSON(d.identity);
     const prekeys = PreKeys.fromJSON(d.prekeys);
     const sessions = new Map<string, DoubleRatchet>();
-    for (const [k, v] of d.sessions || []) {
+    for (const [k, v] of refold(d.sessions)) {
       sessions.set(k, DoubleRatchet.fromJSON(v));
     }
     const awaitingReply = new Map<string, Uint8Array>();
-    for (const [k, v] of d.awaitingReply || []) {
+    for (const [k, v] of refold(d.awaitingReply)) {
       awaitingReply.set(k, fromB64(v));
     }
     const trusted = new Map<string, Uint8Array>();
-    for (const [k, v] of d.trusted || []) trusted.set(k, fromB64(v));
+    for (const [k, v] of refold(d.trusted)) trusted.set(k, fromB64(v));
     const senderKeys = new Map<string, SenderKey>();
-    for (const [k, v] of d.senderKeys || []) {
+    for (const [k, v] of refold(d.senderKeys)) {
       senderKeys.set(k, SenderKey.fromJSON(v));
     }
     const receivedKeys = new Map<string, SenderKey>();
-    for (const [k, v] of d.receivedKeys || []) {
+    for (const [k, v] of refold(d.receivedKeys)) {
       receivedKeys.set(k, SenderKey.fromJSON(v));
     }
     const sharedWith = new Map<string, Set<string>>();
-    for (const [k, list] of d.sharedWith || []) {
-      sharedWith.set(k, new Set(list));
+    for (const [k, list] of refold(d.sharedWith)) {
+      sharedWith.set(k, new Set(list.map(ircFold)));
     }
-    const enabledBuffers = new Set<string>(d.enabledBuffers || []);
+    const enabledBuffers = new Set<string>(
+      (d.enabledBuffers || []).map(ircFold),
+    );
 
     if (!this.account) this.account = parsed.account;
     this.deviceId = d.deviceId;
@@ -560,10 +598,9 @@ export class E2eeManager {
     if (!this.account || !this.identity || !this.prekeys) return;
     const data = this.serializeState();
     try {
-      localStorage.setItem(
-        STORAGE_PREFIX + this.account.toLowerCase(),
-        JSON.stringify(data),
-      );
+      localStorage.setItem(storageKey(this.account), JSON.stringify(data));
+      const legacy = legacyStorageKey(this.account);
+      if (legacy !== storageKey(this.account)) localStorage.removeItem(legacy);
     } catch {
       // ignore quota errors
     }
@@ -621,14 +658,14 @@ export class E2eeManager {
         const nick = params[2];
         const acct = params[3];
         if (acct && acct !== "0") {
-          this.nickToAccount.set(nick.toLowerCase(), acct.toLowerCase());
-          req.found.push({ nick, account: acct.toLowerCase() });
+          this.nickToAccount.set(ircFold(nick), ircFold(acct));
+          req.found.push({ nick, account: ircFold(acct) });
         }
         return true;
       }
     }
     if (command === "315" && params.length >= 2) {
-      const ch = params[1].toLowerCase();
+      const ch = ircFold(params[1]);
       for (const [tok, req] of this.activeWho.entries()) {
         if (req.channel === ch) {
           clearTimeout(req.timer);
@@ -730,7 +767,7 @@ export class E2eeManager {
       const spkColon = spkStr.indexOf(":");
       if (spkColon === -1) return;
       const bundle: PreKeyBundle = {
-        account: account.toLowerCase(),
+        account: ircFold(account),
         device: parseInt(devStr, 10),
         identity: fromB64(ikStr),
         spkId: parseInt(spkStr.slice(0, spkColon), 10),
@@ -781,13 +818,13 @@ export class E2eeManager {
     const colon = src.lastIndexOf(":");
     if (colon <= 0) return;
 
-    const srcAccount = src.slice(0, colon).toLowerCase();
+    const srcAccount = ircFold(src.slice(0, colon));
     const srcDevice = parseInt(src.slice(colon + 1), 10);
     if (Number.isNaN(srcDevice) || srcDevice < 1) return;
 
     // Verify client-only e2ee-src account against the server-authenticated account tag
     // to prevent TOFU poisoning / sender spoofing.
-    const serverAcct = (tags.account || "").toLowerCase();
+    const serverAcct = ircFold(tags.account || "");
     if (serverAcct) {
       if (serverAcct !== srcAccount) {
         const dest = isChan(target) ? target : senderNick || serverAcct;
@@ -810,12 +847,12 @@ export class E2eeManager {
 
     // Suppress echo-message of our own outbound encrypted envelopes
     if (
-      srcAccount === this.account.toLowerCase() && srcDevice === this.deviceId
+      srcAccount === ircFold(this.account) && srcDevice === this.deviceId
     ) {
       return;
     }
     if (senderNick) {
-      this.nickToAccount.set(senderNick.toLowerCase(), srcAccount);
+      this.nickToAccount.set(ircFold(senderNick), srcAccount);
     }
 
     try {
@@ -921,7 +958,7 @@ export class E2eeManager {
       skd?: SenderKeyDistribution;
     };
     if (payload.skd && payload.skd.channel && isChan(payload.skd.channel)) {
-      const chanKey = payload.skd.channel.toLowerCase();
+      const chanKey = ircFold(payload.skd.channel);
       this.receivedKeys.set(
         `${chanKey}|${key}`,
         SenderKey.fromDistribution(payload.skd),
@@ -956,7 +993,7 @@ export class E2eeManager {
     time: string | undefined,
     queued: boolean,
   ): void {
-    const key = `${channel.toLowerCase()}|${account}:${device}`;
+    const key = `${ircFold(channel)}|${account}:${device}`;
     const sk = this.receivedKeys.get(key);
     if (!sk) throw new CryptoError("missing sender key");
     const pt = sk.decrypt(fromB64(b64Text), channel);
@@ -1005,7 +1042,7 @@ export class E2eeManager {
   }
 
   private async sendChannel(channel: string, text: string): Promise<void> {
-    const chanKey = channel.toLowerCase();
+    const chanKey = ircFold(channel);
     if (!this.senderKeys.has(chanKey) || this.needsRotation.has(chanKey)) {
       this.senderKeys.set(chanKey, SenderKey.create());
       this.sharedWith.set(chanKey, new Set());
@@ -1019,7 +1056,7 @@ export class E2eeManager {
   }
 
   private async distributeSenderKey(channel: string): Promise<void> {
-    const chanKey = channel.toLowerCase();
+    const chanKey = ircFold(channel);
     const sk = this.senderKeys.get(chanKey);
     if (!sk) return;
     let shared = this.sharedWith.get(chanKey);
@@ -1031,8 +1068,8 @@ export class E2eeManager {
     const handover = { skd: sk.distribution(channel) };
     const seenAccounts = new Set<string>();
     for (const m of members) {
-      if (m.nick.toLowerCase() === this.myNick.toLowerCase()) continue;
-      if (m.account === this.account.toLowerCase()) continue;
+      if (ircFold(m.nick) === ircFold(this.myNick)) continue;
+      if (m.account === ircFold(this.account)) continue;
       if (seenAccounts.has(m.account)) continue;
       seenAccounts.add(m.account);
       if (shared.has(m.account)) continue;
@@ -1052,8 +1089,8 @@ export class E2eeManager {
     knownAccount?: string,
   ): Promise<void> {
     if (!this.identity) throw new CryptoError("device not initialized");
-    let account = knownAccount?.toLowerCase() ||
-      this.nickToAccount.get(targetNick.toLowerCase());
+    let account = (knownAccount && ircFold(knownAccount)) ||
+      this.nickToAccount.get(ircFold(targetNick));
     let devices = account ? this.sessionDevicesFor(account) : [];
 
     if (!account || devices.length === 0) {
@@ -1062,7 +1099,7 @@ export class E2eeManager {
         throw new Error(`No E2EE devices published for ${targetNick}`);
       }
       account = bundles[0].account;
-      this.nickToAccount.set(targetNick.toLowerCase(), account);
+      this.nickToAccount.set(ircFold(targetNick), account);
       for (const b of bundles) {
         this.pinIdentity(b.account, b.device, b.identity);
         const key = `${b.account}:${b.device}`;
@@ -1097,7 +1134,7 @@ export class E2eeManager {
   }
 
   private sessionDevicesFor(account: string): number[] {
-    const prefix = `${account.toLowerCase()}:`;
+    const prefix = `${ircFold(account)}:`;
     const devs: number[] = [];
     this.sessions.forEach((_, key) => {
       if (key.startsWith(prefix)) {
@@ -1187,7 +1224,7 @@ export class E2eeManager {
       }, 6000);
 
       this.activeWho.set(token, {
-        channel: channel.toLowerCase(),
+        channel: ircFold(channel),
         token,
         found: [],
         resolve,
