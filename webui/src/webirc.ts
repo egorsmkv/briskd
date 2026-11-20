@@ -20,6 +20,21 @@ import {
   extractFirstHttpUrl,
 } from "./common/link_preview.ts";
 import { createVoicePlayer } from "./common/voice_player.ts";
+import {
+  cleanMetaText,
+  formatStandardReply,
+  markerToMs,
+  MAX_META_VALUE,
+  METADATA_KEYS,
+  msToMarker,
+  parseMonitorTargets,
+  parseNamesEntry,
+  parseWhoxReply,
+  prefixCharsFromIsupport,
+  safeAvatarUrl,
+  safeHomepageUrl,
+  WHOX_FIELDS,
+} from "./common/ircv3.ts";
 import { encryptAttachment } from "./e2ee/crypto.ts";
 import { E2EE_CAP, E2eeManager } from "./e2ee/manager.ts";
 
@@ -36,6 +51,7 @@ interface WebircSettings {
   editing: boolean;
   redaction: boolean;
   linkPreviews: boolean;
+  remoteAvatars: boolean;
 }
 
 type FeatureKey =
@@ -62,6 +78,7 @@ function loadSettings(): WebircSettings {
     editing: true,
     redaction: true,
     linkPreviews: true,
+    remoteAvatars: false,
   };
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
@@ -84,6 +101,7 @@ function loadSettings(): WebircSettings {
       editing: parsed.editing !== false,
       redaction: parsed.redaction !== false,
       linkPreviews: parsed.linkPreviews !== false,
+      remoteAvatars: parsed.remoteAvatars === true,
     };
   } catch {
     return defaults;
@@ -129,6 +147,7 @@ interface ChatLine {
   pasteId?: string;
   pasteLang?: string;
   pasteTitle?: string;
+  bot?: boolean;
 }
 
 const FEATURES_CAP = "egorsmkv.github.io/features";
@@ -300,6 +319,7 @@ function applySettings(): void {
   $<HTMLInputElement>("opt-link-previews").checked = settings.linkPreviews;
   $<HTMLInputElement>("opt-link-previews").disabled = !serverFeatures
     .link_previews;
+  $<HTMLInputElement>("opt-remote-avatars").checked = settings.remoteAvatars;
   for (
     const key of [
       "reactions",
@@ -470,6 +490,11 @@ $<HTMLInputElement>("opt-link-previews").onchange = (ev) => {
   saveSettings(settings);
   renderActiveMessages();
 };
+$<HTMLInputElement>("opt-remote-avatars").onchange = (ev) => {
+  settings.remoteAvatars = (ev.target as HTMLInputElement).checked;
+  saveSettings(settings);
+  renderActiveMessages();
+};
 
 const bodyData = document.body.dataset;
 const WS_PORT = bodyData.wsPort || "";
@@ -616,6 +641,296 @@ let isIrcOp = false;
 let hiddenUnread = 0;
 let hiddenMentions = 0;
 const buffers = new Map<string, BufferState>();
+
+// IRCv3 state for the current connection: negotiated capabilities, RPL_ISUPPORT
+// tokens, and what extended-join, away-notify, account-notify, chghost,
+// setname, WHOX, MONITOR, and draft/metadata-2 tell us about other users.
+interface UserInfo {
+  account?: string;
+  realname?: string;
+  userhost?: string;
+  /** Away message ("" when away without one); undefined when present. */
+  away?: string;
+  bot?: boolean;
+  /** MONITOR presence; undefined when the nick is not monitored. */
+  online?: boolean;
+  meta: Map<string, string>;
+}
+const MAX_USERS = 5000;
+const MONITOR_CHUNK = 20;
+const enabledCaps = new Set<string>();
+const isupport = new Map<string, string>();
+const users = new Map<string, UserInfo>();
+/** Nicks we monitor automatically because a DM buffer is open. */
+const monitored = new Set<string>();
+/** draft/read-marker positions (ms since epoch) by lowercased target. */
+const readMarkers = new Map<string, number>();
+/** Channels with an outstanding WHOX request of ours. */
+const pendingWho = new Set<string>();
+/** /meta replies (761/766) are echoed to *status until this time. */
+let metaEchoUntil = 0;
+
+function capOn(cap: string): boolean {
+  return enabledCaps.has(cap);
+}
+
+function resetIrcv3State(): void {
+  enabledCaps.clear();
+  isupport.clear();
+  users.clear();
+  monitored.clear();
+  readMarkers.clear();
+  pendingWho.clear();
+}
+
+function peekUser(nick: string): UserInfo | undefined {
+  return users.get(nick.toLowerCase());
+}
+
+function userInfo(nick: string): UserInfo {
+  const key = nick.toLowerCase();
+  let u = users.get(key);
+  if (!u) {
+    if (users.size >= MAX_USERS) {
+      const oldest = users.keys().next().value;
+      if (oldest !== undefined) users.delete(oldest);
+    }
+    u = { meta: new Map() };
+    users.set(key, u);
+  }
+  return u;
+}
+
+function userhostOf(prefix: string): string | undefined {
+  const bang = prefix.indexOf("!");
+  return bang > 0 ? prefix.slice(bang + 1) : undefined;
+}
+
+// appendLineDom shadows `t` with a DOM node, so the badge text comes from here.
+function botLabel(): string {
+  return t("badge.bot");
+}
+
+function displayNameOf(nick: string): string {
+  const dn = peekUser(nick)?.meta.get("display-name");
+  return (dn && cleanMetaText(dn)) || nick;
+}
+
+function avatarOf(nick: string): string | null {
+  const url = safeAvatarUrl(peekUser(nick)?.meta.get("avatar"));
+  if (!url) return null;
+  return url.startsWith("/") || settings.remoteAvatars ? url : null;
+}
+
+function presenceText(nick: string): string {
+  const u = peekUser(nick);
+  if (!u) return "";
+  if (u.online === false) return t("presence.offline");
+  if (u.away !== undefined) {
+    return u.away
+      ? t("presence.awayMsg", { msg: cleanMetaText(u.away, 100) })
+      : t("presence.away");
+  }
+  return u.online ? t("presence.online") : "";
+}
+
+function presenceClass(nick: string): string {
+  const u = peekUser(nick);
+  if (!u || u.online === undefined) return "";
+  if (!u.online) return "offline";
+  return u.away !== undefined ? "away" : "online";
+}
+
+function userTooltip(nick: string): string {
+  const u = peekUser(nick);
+  if (!u) return nick;
+  const dn = u.meta.get("display-name");
+  const lines = [dn ? `${cleanMetaText(dn)} (${nick})` : nick];
+  const pronouns = u.meta.get("pronouns");
+  if (pronouns) lines.push(cleanMetaText(pronouns, 32));
+  if (u.realname) lines.push(cleanMetaText(u.realname, 100));
+  if (u.account) lines.push(`${t("user.account")}: ${u.account}`);
+  if (u.userhost) lines.push(u.userhost);
+  const status = u.meta.get("status");
+  if (status) lines.push(cleanMetaText(status, 100));
+  const homepage = safeHomepageUrl(u.meta.get("homepage"));
+  if (homepage) lines.push(homepage);
+  const presence = presenceText(nick);
+  if (presence) lines.push(presence);
+  if (u.bot) lines.push(t("badge.bot"));
+  return lines.join("\n");
+}
+
+/** Subtitle under the buffer name: topic, or a DM peer's profile/presence. */
+function bufSubtitle(buf: BufferState): string {
+  if (buf.name === "*status") return "";
+  if (isChan(buf.name)) return buf.topic || t("topic.none");
+  const u = peekUser(buf.name);
+  const parts: string[] = [];
+  const dn = u?.meta.get("display-name");
+  if (dn) parts.push(cleanMetaText(dn));
+  const pronouns = u?.meta.get("pronouns");
+  if (pronouns) parts.push(cleanMetaText(pronouns, 32));
+  const presence = presenceText(buf.name);
+  if (presence) parts.push(presence);
+  const status = u?.meta.get("status");
+  if (status) parts.push(cleanMetaText(status, 100));
+  return parts.join(" · ");
+}
+
+let userRenderTimer: number | null = null;
+let userRenderMessages = false;
+
+/** Coalesce member list, buffer list, and header updates after user changes. */
+function scheduleUserRender(messages = false): void {
+  if (messages) userRenderMessages = true;
+  if (userRenderTimer !== null) return;
+  userRenderTimer = setTimeout(() => {
+    userRenderTimer = null;
+    renderMembers();
+    renderBuffers();
+    updateTopicButton();
+    const buf = buffers.get(activeBuf);
+    if (buf && !isChan(buf.name)) {
+      $("active-topic").textContent = bufSubtitle(buf);
+    }
+    if (userRenderMessages) {
+      userRenderMessages = false;
+      renderActiveMessages();
+    }
+  }, 150);
+}
+
+function dmNames(): string[] {
+  const names: string[] = [];
+  buffers.forEach((b) => {
+    if (b.name !== "*status" && !isChan(b.name)) names.push(b.name);
+  });
+  return names;
+}
+
+function monitorLimit(): number {
+  const v = isupport.get("MONITOR");
+  if (v === undefined) return 0;
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) && n > 0 ? n : 100;
+}
+
+/** MONITOR the peers of open DM buffers for presence (730/731). */
+function monitorAdd(nicks: string[]): void {
+  const limit = monitorLimit();
+  if (!isRegistered || limit === 0) return;
+  const fresh: string[] = [];
+  for (const nick of nicks) {
+    const key = nick.toLowerCase();
+    if (
+      isChan(nick) || nick === "*status" || !isSafeIrcTarget(nick) ||
+      monitored.has(key) || monitored.size >= limit
+    ) {
+      continue;
+    }
+    monitored.add(key);
+    fresh.push(nick);
+  }
+  for (let i = 0; i < fresh.length; i += MONITOR_CHUNK) {
+    sendRaw(`MONITOR + ${fresh.slice(i, i + MONITOR_CHUNK).join(",")}`);
+  }
+}
+
+function monitorRemove(nick: string): void {
+  const key = nick.toLowerCase();
+  if (!monitored.delete(key)) return;
+  sendRaw(`MONITOR - ${nick}`);
+  const u = users.get(key);
+  if (u) u.online = undefined;
+}
+
+function markerOf(name: string): number {
+  return readMarkers.get(name.toLowerCase()) ?? 0;
+}
+
+/** Ask for a DM's read marker; channels get theirs after JOIN. */
+function requestMarker(name: string): void {
+  if (
+    isRegistered && capOn("draft/read-marker") && name !== "*status" &&
+    !isChan(name) && isSafeIrcTarget(name)
+  ) {
+    sendRaw(`MARKREAD ${name}`);
+  }
+}
+
+let markReadTimer: number | null = null;
+
+function scheduleMarkRead(): void {
+  if (markReadTimer !== null) return;
+  markReadTimer = setTimeout(() => {
+    markReadTimer = null;
+    markActiveRead();
+  }, 1000);
+}
+
+/** Move the active buffer's read marker to its newest server message. */
+function markActiveRead(): void {
+  if (!isRegistered || !capOn("draft/read-marker") || document.hidden) return;
+  const buf = buffers.get(activeBuf);
+  if (!buf || buf.name === "*status" || !isSafeIrcTarget(buf.name)) return;
+  let last = 0;
+  for (let i = buf.lines.length - 1; i >= 0; i--) {
+    if (buf.lines[i].msgid) {
+      last = buf.lines[i].epochMs;
+      break;
+    }
+  }
+  if (last <= markerOf(buf.name)) return;
+  readMarkers.set(buf.name.toLowerCase(), last);
+  sendRaw(`MARKREAD ${buf.name} ${msToMarker(last)}`);
+}
+
+/** A MARKREAD from the server (ours, or another session of the account). */
+function applyMarker(target: string, ms: number | null): void {
+  if (ms === null) return;
+  const key = target.toLowerCase();
+  readMarkers.set(key, Math.max(ms, markerOf(target)));
+  const buf = buffers.get(key);
+  if (!buf || key === activeBuf) return;
+  const marker = markerOf(target);
+  const me = myNick.toLowerCase();
+  const isDm = !isChan(buf.name);
+  let unread = 0;
+  let mentions = 0;
+  for (const line of buf.lines) {
+    if (
+      line.epochMs <= marker || !line.nick || line.nick.toLowerCase() === me
+    ) {
+      continue;
+    }
+    unread += 1;
+    if (line.mention || (isDm && !line.kind)) mentions += 1;
+  }
+  if (unread !== buf.unread || mentions !== buf.mentions) {
+    buf.unread = unread;
+    buf.mentions = mentions;
+    renderBuffers();
+    updateTitle();
+  }
+}
+
+function applyMetadata(
+  target: string | undefined,
+  key: string | undefined,
+  value: string | undefined,
+): void {
+  if (!target || !key || target === "*" || isChan(target)) return;
+  if (!(METADATA_KEYS as readonly string[]).includes(key)) return;
+  const u = userInfo(target);
+  if (value === undefined || value === "") u.meta.delete(key);
+  else u.meta.set(key, value.slice(0, MAX_META_VALUE));
+  const folded = target.toLowerCase();
+  const buf = buffers.get(activeBuf);
+  const visible = (key === "avatar" || key === "display-name") && !!buf &&
+    buf.lines.some((l) => l.nick.toLowerCase() === folded);
+  scheduleUserRender(visible);
+}
 const sentHistory: string[] = [];
 let histPos = -1;
 
@@ -845,7 +1160,10 @@ function clearHiddenCounters(): void {
 }
 
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) clearHiddenCounters();
+  if (!document.hidden) {
+    clearHiddenCounters();
+    markActiveRead();
+  }
 });
 globalThis.addEventListener("focus", clearHiddenCounters);
 
@@ -858,6 +1176,7 @@ function ensureBuf(name: string): BufferState {
       for (const [k, existing] of buffers.entries()) {
         if (k !== "*status" && k !== activeBuf && !isChan(existing.name)) {
           buffers.delete(k);
+          monitorRemove(existing.name);
           break;
         }
       }
@@ -874,6 +1193,10 @@ function ensureBuf(name: string): BufferState {
     };
     buffers.set(key, buf);
     renderBuffers();
+    if (name !== "*status" && !isChan(name)) {
+      monitorAdd([name]);
+      requestMarker(name);
+    }
   }
   return buf;
 }
@@ -906,6 +1229,7 @@ function addLine(
     pasteId?: string;
     pasteLang?: string;
     pasteTitle?: string;
+    bot?: boolean;
   },
 ): void {
   const buf = ensureBuf(bufName);
@@ -935,6 +1259,7 @@ function addLine(
     pasteId: opts.pasteId,
     pasteLang: opts.pasteLang,
     pasteTitle: opts.pasteTitle,
+    bot: opts.bot,
   };
   const prev = buf.lines[buf.lines.length - 1];
   buf.lines.push(entry);
@@ -945,20 +1270,24 @@ function addLine(
   const isDm = !isChan(bufName) && bufName !== "*status";
   const isAlert = mention || (isDm && isFromOther && !opts.kind);
 
+  // draft/read-marker: history older than the marker is already read.
+  const isNew = t.ms > markerOf(bufName);
   if (bufName.toLowerCase() === activeBuf) {
     appendLineDom(entry, prev);
-    if (document.hidden && isFromOther && !opts.kind) {
+    if (document.hidden && isFromOther && !opts.kind && isNew) {
       hiddenUnread += 1;
       if (isAlert) hiddenMentions += 1;
       updateTitle();
     }
-  } else {
+    if (entry.msgid) scheduleMarkRead();
+  } else if (isNew) {
     buf.unread += 1;
     if (isAlert) buf.mentions += 1;
     renderBuffers();
     updateTitle();
   }
   if (
+    isNew &&
     mention &&
     settings.notifyMentions &&
     typeof Notification !== "undefined" &&
@@ -1212,7 +1541,25 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
     const av = document.createElement("div");
     av.className = "avatar";
     av.style.backgroundColor = nickColor(entry.nick);
-    av.textContent = entry.nick.slice(0, 2).toUpperCase();
+    const initials = entry.nick.slice(0, 2).toUpperCase();
+    const avatarUrl = avatarOf(entry.nick);
+    if (avatarUrl) {
+      const img = document.createElement("img");
+      img.src = avatarUrl;
+      img.alt = "";
+      img.loading = "lazy";
+      img.decoding = "async";
+      img.referrerPolicy = "no-referrer";
+      img.onerror = () => {
+        img.remove();
+        av.classList.remove("has-img");
+        av.textContent = initials;
+      };
+      av.classList.add("has-img");
+      av.appendChild(img);
+    } else {
+      av.textContent = initials;
+    }
     row.appendChild(av);
 
     const col = document.createElement("div");
@@ -1225,9 +1572,10 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
     meta.className = "msg-meta";
     const n = document.createElement("span");
     n.className = "msg-nick";
-    n.textContent = entry.nick;
+    n.dir = "auto";
+    n.textContent = displayNameOf(entry.nick);
     n.style.color = nickColor(entry.nick);
-    n.title = "Click to message";
+    n.title = userTooltip(entry.nick);
     n.onclick = () => {
       if (entry.nick.toLowerCase() !== myNick.toLowerCase()) {
         ensureBuf(entry.nick);
@@ -1238,6 +1586,19 @@ function appendLineDom(entry: ChatLine, prev?: ChatLine): void {
     t.className = "msg-time";
     t.textContent = entry.time;
     meta.appendChild(n);
+    if (displayNameOf(entry.nick) !== entry.nick) {
+      const handle = document.createElement("span");
+      handle.className = "msg-handle";
+      handle.dir = "ltr";
+      handle.textContent = entry.nick;
+      meta.appendChild(handle);
+    }
+    if (entry.bot || peekUser(entry.nick)?.bot) {
+      const bot = document.createElement("span");
+      bot.className = "msg-bot";
+      bot.textContent = botLabel();
+      meta.appendChild(bot);
+    }
     meta.appendChild(t);
     if (entry.encrypted) {
       const badge = document.createElement("span");
@@ -1356,7 +1717,7 @@ function switchBuf(key: string, updateUrl = true): void {
   titleEl.textContent = buf.name === "*status" ? t("status.title") : buf.name;
   const topicEl = $("active-topic");
   topicEl.dir = "auto";
-  topicEl.textContent = buf.topic || (isChan(buf.name) ? t("topic.none") : "");
+  topicEl.textContent = bufSubtitle(buf);
   updateTopicButton();
 
   const wrap = $("messages");
@@ -1373,6 +1734,7 @@ function switchBuf(key: string, updateUrl = true): void {
   renderBuffers();
   renderMembers();
   updateTitle();
+  markActiveRead();
   if (updateUrl && $("chat-view").classList.contains("active")) {
     const nextPath = bufferToPath(buf.name);
     if (location.pathname !== nextPath) {
@@ -1394,6 +1756,15 @@ function buildBufRow(buf: BufferState, key: string): HTMLElement {
     lock.className = "buf-lock";
     lock.textContent = "🔒";
     label.appendChild(lock);
+  }
+  const presence = key !== "*status" && !isChan(buf.name)
+    ? presenceClass(buf.name)
+    : "";
+  if (presence) {
+    const dot = document.createElement("span");
+    dot.className = `buf-presence ${presence}`;
+    dot.title = presenceText(buf.name);
+    label.appendChild(dot);
   }
   const nameSpan = document.createElement("span");
   nameSpan.dir = buf.name === "*status" ? "auto" : "ltr";
@@ -1421,6 +1792,7 @@ function buildBufRow(buf: BufferState, key: string): HTMLElement {
         sendRaw(`PART ${buf.name}`);
       } else {
         buffers.delete(key);
+        monitorRemove(buf.name);
         if (activeBuf === key) switchBuf("*status");
         else renderBuffers();
       }
@@ -1486,8 +1858,10 @@ function renderMembers(): void {
   });
   const amOp = isOperatorInBuffer(buf);
   for (const [nick, prefix] of sorted) {
+    const info = peekUser(nick);
     const row = document.createElement("div");
-    row.className = "member-item";
+    row.className = "member-item" + (info?.away !== undefined ? " away" : "");
+    row.title = userTooltip(nick);
     const dot = document.createElement("span");
     dot.className = "member-dot";
     dot.style.backgroundColor = nickColor(nick);
@@ -1501,8 +1875,15 @@ function renderMembers(): void {
     }
     const name = document.createElement("span");
     name.className = "member-name";
-    name.textContent = nick;
+    name.dir = "auto";
+    name.textContent = displayNameOf(nick);
     row.appendChild(name);
+    if (info?.bot) {
+      const bot = document.createElement("span");
+      bot.className = "msg-bot";
+      bot.textContent = t("badge.bot");
+      row.appendChild(bot);
+    }
 
     const isSelf = nick.toLowerCase() === myNick.toLowerCase();
     if (amOp && !isSelf) {
@@ -1597,7 +1978,9 @@ function startHeartbeat(): void {
       return;
     }
     heartbeatPending++;
-    sendRaw(`ISON ${myNick}`);
+    sendRaw(
+      capOn("labeled-response") ? `@label=hb ISON ${myNick}` : `ISON ${myNick}`,
+    );
   }, HEARTBEAT_MS);
 }
 
@@ -1605,6 +1988,45 @@ function stopHeartbeat(): void {
   if (heartbeatTimer !== null) clearInterval(heartbeatTimer);
   heartbeatTimer = null;
   heartbeatPending = 0;
+}
+
+/** Capabilities the client requests when the server offers them. */
+function wantedCaps(): string[] {
+  const wanted = [
+    "message-tags",
+    "server-time",
+    "echo-message",
+    "batch",
+    "draft/chathistory",
+    "draft/multiline",
+    REDACT_CAP,
+    "away-notify",
+    "account-notify",
+    "account-tag",
+    "extended-join",
+    "multi-prefix",
+    "userhost-in-names",
+    "no-implicit-names",
+    "chghost",
+    "setname",
+    "invite-notify",
+    "cap-notify",
+    "labeled-response",
+    "standard-replies",
+    "extended-monitor",
+    "draft/read-marker",
+    "draft/metadata-2",
+    E2EE_CAP,
+    FEATURES_CAP,
+    FILES_CAP,
+    VOICE_CAP,
+  ];
+  if (saslPass && !isRegistered) wanted.push("sasl");
+  return wanted;
+}
+
+function metadataSubscribe(): void {
+  sendRaw(`METADATA * SUB ${METADATA_KEYS.join(" ")}`);
 }
 
 function handleMessage(raw: string): void {
@@ -1622,13 +2044,15 @@ function handleMessage(raw: string): void {
   }
   if (command === "CAP") {
     const sub = (params[1] || "").toUpperCase();
-    if (sub === "LS") {
+    if (sub === "LS" || sub === "NEW") {
       const more = params[2] === "*";
       const listStr = more ? params[3] || "" : params[2] || "";
+      const offered: string[] = [];
       for (const tok of listStr.split(" ").filter(Boolean)) {
         const eq = tok.indexOf("=");
         const capName = eq === -1 ? tok : tok.slice(0, eq);
-        advertisedCaps.push(capName);
+        offered.push(capName);
+        if (!advertisedCaps.includes(capName)) advertisedCaps.push(capName);
         if (capName === FILES_CAP && eq !== -1) {
           const m = /max-bytes=(\d+)/.exec(tok.slice(eq + 1));
           if (m) {
@@ -1656,34 +2080,45 @@ function handleMessage(raw: string): void {
           applySettings();
         }
       }
+      if (sub === "NEW") {
+        // cap-notify: request newly offered capabilities we want.
+        const toReq = wantedCaps().filter((c) =>
+          offered.includes(c) && !enabledCaps.has(c)
+        );
+        if (toReq.length > 0) sendRaw(`CAP REQ :${toReq.join(" ")}`);
+        return;
+      }
       if (more) return;
       if (!advertisedCaps.includes(REDACT_CAP)) {
         serverFeatures.redaction = false;
         applySettings();
       }
-      const wanted = [
-        "message-tags",
-        "server-time",
-        "echo-message",
-        "batch",
-        "draft/chathistory",
-        "draft/multiline",
-        REDACT_CAP,
-        "away-notify",
-        "account-notify",
-        "account-tag",
-        "extended-join",
-        E2EE_CAP,
-        FEATURES_CAP,
-        FILES_CAP,
-        VOICE_CAP,
-      ];
-      if (saslPass) wanted.push("sasl");
-      const toReq = wanted.filter((c) => advertisedCaps.includes(c));
+      const toReq = wantedCaps().filter((c) => advertisedCaps.includes(c));
       if (toReq.length > 0) sendRaw(`CAP REQ :${toReq.join(" ")}`);
       else sendRaw("CAP END");
+    } else if (sub === "DEL") {
+      const removed = (params[2] || "").split(" ").filter(Boolean);
+      advertisedCaps = advertisedCaps.filter((c) => !removed.includes(c));
+      for (const c of removed) enabledCaps.delete(c);
+      if (removed.includes(FILES_CAP)) {
+        filesSupported = false;
+        updateFileButton();
+      }
+      if (removed.includes(VOICE_CAP)) {
+        voiceSupported = false;
+        updateVoiceButton();
+      }
+      if (removed.includes(E2EE_CAP)) e2ee.setServerSupported(false);
+      if (removed.includes(REDACT_CAP)) {
+        serverFeatures.redaction = false;
+        applySettings();
+      }
     } else if (sub === "ACK") {
       const acked = (params[2] || "").split(" ").filter(Boolean);
+      for (const c of acked) {
+        if (c.startsWith("-")) enabledCaps.delete(c.slice(1));
+        else enabledCaps.add(c);
+      }
       if (acked.includes(E2EE_CAP)) e2ee.setServerSupported(true);
       if (acked.includes(FILES_CAP)) {
         filesSupported = true;
@@ -1694,13 +2129,16 @@ function handleMessage(raw: string): void {
         updateVoiceButton();
       }
       if (acked.includes("account-tag")) e2ee.setAccountTagEnabled(true);
-      if (saslPass && acked.includes("sasl")) {
+      if (isRegistered) {
+        // A later ACK (cap-notify): never re-run SASL or send CAP END again.
+        if (acked.includes("draft/metadata-2")) metadataSubscribe();
+      } else if (saslPass && acked.includes("sasl")) {
         sendRaw("AUTHENTICATE PLAIN");
       } else {
         sendRaw("CAP END");
       }
     } else if (sub === "NAK") {
-      sendRaw("CAP END");
+      if (!isRegistered) sendRaw("CAP END");
     }
     return;
   }
@@ -1740,18 +2178,53 @@ function handleMessage(raw: string): void {
     e2ee.onRegistered();
     updateTitle();
     addLine("*status", { time, text: params[1] || "Connected", kind: "sys" });
+    // Subscribe before joining so the joins carry members' metadata.
+    if (capOn("draft/metadata-2")) metadataSubscribe();
     for (const ch of autoChannels) sendRaw(`JOIN ${ch}`);
+    for (const dm of dmNames()) requestMarker(dm);
     startHeartbeat();
     return;
   }
-  if (command === "303" && heartbeatPending > 0) {
-    heartbeatPending--;
+  if (command === "005") {
+    for (const tok of params.slice(1, -1)) {
+      if (tok.startsWith("-")) {
+        isupport.delete(tok.slice(1).toUpperCase());
+        continue;
+      }
+      const eq = tok.indexOf("=");
+      isupport.set(
+        (eq === -1 ? tok : tok.slice(0, eq)).toUpperCase(),
+        eq === -1 ? "" : tok.slice(eq + 1),
+      );
+    }
+    monitorAdd(dmNames());
     return;
   }
+  if (command === "303") {
+    // With labeled-response our probe's reply carries `label=hb`; otherwise
+    // the oldest unanswered probe claims the next 303.
+    if (msg.tags.label === "hb") {
+      heartbeatPending = 0;
+      return;
+    }
+    if (!capOn("labeled-response") && heartbeatPending > 0) {
+      heartbeatPending--;
+      return;
+    }
+  }
+  if (command === "ACK") return;
   if (command === "JOIN") {
     const chan = params[0];
     const buf = ensureBuf(chan);
     buf.members.set(nick, "");
+    const joiner = userInfo(nick);
+    const joinHost = userhostOf(msg.prefix);
+    if (joinHost) joiner.userhost = joinHost;
+    if (params.length >= 3) {
+      // extended-join: JOIN <channel> <account|*> :<realname>
+      joiner.account = params[1] !== "*" ? params[1] : undefined;
+      joiner.realname = params[2];
+    }
     if (nick.toLowerCase() === myNick.toLowerCase()) {
       if (!desiredBuf || desiredBuf === chan.toLowerCase()) {
         switchBuf(chan.toLowerCase());
@@ -1761,6 +2234,13 @@ function handleMessage(raw: string): void {
       }
       saveSession();
       sendRaw(`CHATHISTORY LATEST ${chan} * 50`);
+      if (isupport.has("WHOX")) {
+        // One WHOX reply gives prefixes, away, bot, and account per member.
+        pendingWho.add(chan.toLowerCase());
+        sendRaw(`WHO ${chan} ${WHOX_FIELDS}`);
+      } else if (capOn("no-implicit-names")) {
+        sendRaw(`NAMES ${chan}`);
+      }
     }
     if (settings.joinPart) {
       addLine(chan, { time, text: `${nick} joined ${chan}`, kind: "sys" });
@@ -1805,11 +2285,19 @@ function handleMessage(raw: string): void {
         }
       }
     });
+    if (nick && !monitored.has(nick.toLowerCase())) {
+      users.delete(nick.toLowerCase());
+    }
     renderMembers();
     return;
   }
   if (command === "NICK") {
     const next = params[0];
+    const moved = users.get(nick.toLowerCase());
+    if (moved && next && !monitored.has(nick.toLowerCase())) {
+      users.delete(nick.toLowerCase());
+      users.set(next.toLowerCase(), moved);
+    }
     if (nick.toLowerCase() === myNick.toLowerCase()) {
       myNick = next;
       $("my-nick").textContent = myNick;
@@ -1857,9 +2345,12 @@ function handleMessage(raw: string): void {
   if (command === "353") {
     const chan = params[2];
     const buf = ensureBuf(chan);
-    for (const entry of (params[3] || "").split(" ").filter(Boolean)) {
-      const m = entry.match(/^([@+%~&]*)(.+)$/);
-      if (m) buf.members.set(m[2], m[1]);
+    const prefixChars = prefixCharsFromIsupport(isupport.get("PREFIX"));
+    for (const raw of (params[3] || "").split(" ").filter(Boolean)) {
+      const entry = parseNamesEntry(raw, prefixChars);
+      if (!entry) continue;
+      buf.members.set(entry.nick, entry.prefix);
+      if (entry.userhost) userInfo(entry.nick).userhost = entry.userhost;
     }
     renderMembers();
     updateTopicButton();
@@ -1951,6 +2442,19 @@ function handleMessage(raw: string): void {
     return;
   }
   if (command === "INVITE") {
+    const invitee = params[0] || "";
+    if (invitee && invitee.toLowerCase() !== myNick.toLowerCase()) {
+      // invite-notify: someone else in a shared channel was invited.
+      const chan = params[1] || "";
+      if (buffers.has(chan.toLowerCase())) {
+        addLine(chan, {
+          time,
+          text: `${nick} invited ${invitee} to ${chan}`,
+          kind: "sys",
+        });
+      }
+      return;
+    }
     addLine("*status", {
       time,
       text: `${nick} invited you to ${params[1]}`,
@@ -2085,6 +2589,7 @@ function handleMessage(raw: string): void {
         pasteId,
         pasteLang,
         pasteTitle,
+        bot: "bot" in msg.tags,
       });
     }
     return;
@@ -2103,11 +2608,19 @@ function handleMessage(raw: string): void {
     renderMembers();
     return;
   }
-  if (command === "ERROR" || command === "FAIL") {
+  if (command === "ERROR") {
     addLine("*status", {
       time,
       text: `${command}: ${params.join(" ")}`,
       kind: "err",
+    });
+    return;
+  }
+  if (command === "FAIL" || command === "WARN" || command === "NOTE") {
+    addLine("*status", {
+      time,
+      text: formatStandardReply(command, params),
+      kind: command === "FAIL" ? "err" : "sys",
     });
     return;
   }
@@ -2135,6 +2648,108 @@ function handleMessage(raw: string): void {
       renderDiscoverList();
       return;
     }
+    return;
+  }
+  if (command === "AWAY") {
+    // away-notify (and extended-monitor for monitored nicks).
+    if (nick) {
+      userInfo(nick).away = params.length > 0 ? params[0] : undefined;
+      scheduleUserRender();
+    }
+    return;
+  }
+  if (command === "ACCOUNT") {
+    if (nick) {
+      userInfo(nick).account = params[0] && params[0] !== "*"
+        ? params[0]
+        : undefined;
+      scheduleUserRender();
+    }
+    return;
+  }
+  if (command === "CHGHOST") {
+    if (nick && params[0] && params[1]) {
+      userInfo(nick).userhost = `${params[0]}@${params[1]}`;
+    }
+    return;
+  }
+  if (command === "SETNAME") {
+    if (nick) {
+      userInfo(nick).realname = params[0] || "";
+      if (nick.toLowerCase() === myNick.toLowerCase()) {
+        addLine("*status", {
+          time,
+          text: `Real name set to: ${params[0] || ""}`,
+          kind: "sys",
+        });
+      }
+      scheduleUserRender();
+    }
+    return;
+  }
+  if (command === "MARKREAD") {
+    if (params[0]) applyMarker(params[0], markerToMs(params[1]));
+    return;
+  }
+  if (command === "METADATA") {
+    // METADATA <target> <key> <visibility> [:<value>]; no value = cleared.
+    applyMetadata(params[0], params[1], params[3]);
+    return;
+  }
+  if (command === "761" || command === "766") {
+    // 761 <me> <target> <key> <visibility> :<value>; 766 = key not set.
+    const value = command === "761" ? params[4] : undefined;
+    applyMetadata(params[1], params[2], value);
+    if (Date.now() < metaEchoUntil) {
+      addLine("*status", {
+        time,
+        text: `${params[1]} ${params[2]}: ${value ?? "(not set)"}`,
+        kind: "sys",
+      });
+    }
+    return;
+  }
+  if (["760", "762", "770", "771", "772"].includes(command)) return;
+  if (command === "730" || command === "731") {
+    const online = command === "730";
+    for (const target of parseMonitorTargets(params[1] || "")) {
+      const u = userInfo(target.nick);
+      u.online = online;
+      if (!online) u.away = undefined;
+      if (target.userhost) u.userhost = target.userhost;
+      if (!monitored.has(target.nick.toLowerCase())) {
+        addLine("*status", {
+          time,
+          text: `${target.nick} is ${online ? "online" : "offline"}`,
+          kind: "sys",
+        });
+      }
+    }
+    scheduleUserRender();
+    return;
+  }
+  if (command === "354") {
+    const entry = parseWhoxReply(params);
+    if (entry) {
+      const u = userInfo(entry.nick);
+      u.away = entry.away ? (u.away ?? "") : undefined;
+      u.bot = entry.bot;
+      if (entry.account) u.account = entry.account;
+      const chanKey = entry.channel.toLowerCase();
+      const buf = buffers.get(chanKey);
+      if (buf && pendingWho.has(chanKey)) {
+        const prefixChars = prefixCharsFromIsupport(isupport.get("PREFIX"));
+        const prefix = Array.from(entry.flags).filter((c) =>
+          prefixChars.includes(c)
+        ).join("");
+        buf.members.set(entry.nick, prefix);
+      }
+      if (pendingWho.has(chanKey)) return;
+      scheduleUserRender();
+    }
+  }
+  if (command === "315" && pendingWho.delete((params[1] || "").toLowerCase())) {
+    scheduleUserRender();
     return;
   }
   if (/^\d{3}$/.test(command)) {
@@ -2185,6 +2800,7 @@ function connectSocket(url: string): void {
 
   ws.onopen = () => {
     advertisedCaps = [];
+    resetIrcv3State();
     e2ee.resetConnection();
     sendRaw("CAP LS 302");
     sendRaw(`NICK ${myNick}`);
@@ -2225,6 +2841,7 @@ function showHelp(target: string): void {
     "/names [#chan] | /list [filter]",
     "/away [message] | /back | /setname <realname>",
     "/monitor +|- <nick> | /history [limit]",
+    "/meta set <key> <value> | /meta clear <key> | /meta list [nick]",
     "/e2ee [on|off|status|rotate|verify|reset]",
     "/oper <name> <pass> | /kill <nick> <reason> | /rehash",
     "/clear | /raw <line> | /quit [reason]",
@@ -2346,6 +2963,34 @@ function runSlashCommand(raw: string, buf: BufferState | undefined): void {
     case "monitor":
       if (rest) sendRaw(`MONITOR ${rest}`);
       return;
+    case "meta": {
+      // /meta set <key> <value> | /meta clear <key> | /meta list [nick]
+      const parts = rest.split(/\s+/).filter(Boolean);
+      const sub = (parts[0] || "list").toLowerCase();
+      const key = parts[1] || "";
+      const validKey = /^[a-z0-9_.\/-]{1,64}$/.test(key);
+      if (sub === "set" && validKey && parts.length >= 3) {
+        const value = rest.replace(/^\S+\s+\S+\s+/, "").trim();
+        metaEchoUntil = Date.now() + 5000;
+        sendRaw(`METADATA * SET ${key} :${value}`);
+      } else if (sub === "clear" && validKey) {
+        metaEchoUntil = Date.now() + 5000;
+        sendRaw(`METADATA * SET ${key}`);
+      } else if (sub === "list") {
+        const who = parts[1] && isSafeIrcTarget(parts[1]) ? parts[1] : "*";
+        metaEchoUntil = Date.now() + 5000;
+        sendRaw(`METADATA ${who} LIST`);
+      } else {
+        addLine(target, {
+          text:
+            `Usage: /meta set <key> <value> | /meta clear <key> | /meta list [nick]. Keys: ${
+              METADATA_KEYS.join(", ")
+            }`,
+          kind: "err",
+        });
+      }
+      return;
+    }
     case "history": {
       const limit = parseInt(rest, 10) || 50;
       if (buf && buf.name !== "*status") {
