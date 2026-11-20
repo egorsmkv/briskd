@@ -1046,6 +1046,12 @@ body {
   color: var(--warn);
 }
 
+// The phone icon tilted into a "hang up" handset. A class, not an inline
+// style: the page's CSP (`style-src 'self'`) blocks style attributes.
+.icon-hangup {
+  transform: rotate(135deg);
+}
+
 .call-btn {
   width: 36px;
   height: 36px;

@@ -277,24 +277,43 @@ handle_connection(
         {ok, <<"GET">>, {<<"/api/link-preview">>, Query}, Headers, _Body} ->
             handle_link_preview(Socket, Query, Headers);
         {ok, Method, {Path, _Query}, Headers, Body} ->
-            case check_auth(Headers) of
-                ok ->
-                    route(Socket, Method, Path, Headers, Body, IndexHtml);
-                unauthorized ->
-                    send_response(
-                        Socket,
-                        401,
-                        <<"Unauthorized">>,
-                        <<"application/json; charset=utf-8">>,
-                        [{<<"WWW-Authenticate">>, <<"Basic realm=\"ircd admin\"">>}],
-                        <<"{\"error\":\"unauthorized\"}">>
-                    )
+            case admin_path(Path) of
+                true ->
+                    case check_auth(Headers) of
+                        ok ->
+                            route(Socket, Method, Path, Headers, Body, IndexHtml);
+                        unauthorized ->
+                            send_response(
+                                Socket,
+                                401,
+                                <<"Unauthorized">>,
+                                <<"application/json; charset=utf-8">>,
+                                [{<<"WWW-Authenticate">>, <<"Basic realm=\"ircd admin\"">>}],
+                                <<"{\"error\":\"unauthorized\"}">>
+                            )
+                    end;
+                false ->
+                    %% Not a page or API of this server. Answering with the
+                    %% admin Basic challenge made browsers show a password
+                    %% dialog on the chat page whenever they probed a path of
+                    %% their own (apple-touch-icon, manifest, DevTools'
+                    %% /.well-known/appspecific/...).
+                    send_json(Socket, 404, <<"Not Found">>, #{error => <<"not_found">>})
             end;
         {error, payload_too_large} ->
             send_json(Socket, 413, <<"Payload Too Large">>, #{error => <<"payload_too_large">>});
         {error, _} ->
             send_json(Socket, 400, <<"Bad Request">>, #{error => <<"bad_request">>})
     end.
+
+%% Paths of the admin panel and its JSON API (`route/6`), the only ones
+%% behind HTTP Basic auth.
+admin_path(<<"/admin">>) -> true;
+admin_path(<<"/admin/", _/binary>>) -> true;
+admin_path(<<"/api/overview">>) -> true;
+admin_path(<<"/api/media">>) -> true;
+admin_path(<<"/api/action">>) -> true;
+admin_path(_) -> false.
 
 send_public_asset(Socket, _ContentType, _Cache, <<>>) ->
     send_json(Socket, 404, <<"Not Found">>, #{error => <<"not_found">>});

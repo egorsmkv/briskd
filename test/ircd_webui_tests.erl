@@ -72,6 +72,37 @@ live_webui() ->
             Port, <<"GET">>, <<"/api/overview">>, [{<<"Authorization">>, BadAuth}], <<>>
         ),
 
+        %% Paths that are not the admin panel get a plain 404 with no Basic
+        %% challenge, so a browser on the chat page never shows the admin
+        %% password dialog for its own probes.
+        lists:foreach(
+            fun({Method, Path}) ->
+                {404, NotFoundHeaders, _} = http_req(Port, Method, Path, [], <<>>),
+                ?assertNot(maps:is_key(<<"www-authenticate">>, NotFoundHeaders))
+            end,
+            [
+                {<<"GET">>, <<"/.well-known/appspecific/com.chrome.devtools.json">>},
+                {<<"GET">>, <<"/apple-touch-icon.png">>},
+                {<<"GET">>, <<"/manifest.json">>},
+                {<<"GET">>, <<"/channel">>},
+                {<<"POST">>, <<"/">>},
+                {<<"GET">>, <<"/administrator">>}
+            ]
+        ),
+        %% Every admin path still asks for credentials.
+        lists:foreach(
+            fun({Method, Path}) ->
+                {401, AdminHeaders, _} = http_req(Port, Method, Path, [], <<>>),
+                ?assert(maps:is_key(<<"www-authenticate">>, AdminHeaders))
+            end,
+            [
+                {<<"GET">>, <<"/admin/">>},
+                {<<"GET">>, <<"/admin/unknown">>},
+                {<<"GET">>, <<"/api/media">>},
+                {<<"POST">>, <<"/api/action">>}
+            ]
+        ),
+
         %% Authenticated GET /admin serves the HTML dashboard with strict CSP.
         {200, HtmlHeaders, HtmlBody} = http_req(
             Port, <<"GET">>, <<"/admin">>, [{<<"Authorization">>, GoodAuth}], <<>>
@@ -505,3 +536,17 @@ config_json(Db) ->
         list_to_binary(Db),
         <<"\"}">>
     ]).
+
+%% The pages are served with `style-src 'self'`, which blocks `style`
+%% attributes and `<style>` blocks; styling belongs in the stylesheets.
+no_inline_styles_test() ->
+    Pages = filelib:wildcard("priv/webui/*.html"),
+    ?assertNotEqual([], Pages),
+    lists:foreach(
+        fun(Page) ->
+            {ok, Html} = file:read_file(Page),
+            ?assertEqual({Page, nomatch}, {Page, re:run(Html, <<"\\sstyle\\s*=">>, [caseless])}),
+            ?assertEqual({Page, nomatch}, {Page, re:run(Html, <<"<style[\\s>]">>, [caseless])})
+        end,
+        Pages
+    ).
