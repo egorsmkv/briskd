@@ -1,6 +1,7 @@
 // Right sidebar: channel members with a filter.
 // Markup only: the WebIRC controllers (webui/src/webirc/) find these
 // elements by id and wire them when the chat starts.
+import { Icon } from "../../../components/Icon.tsx";
 
 export function MembersPanel() {
   return (
@@ -17,20 +18,24 @@ export function MembersPanel() {
             </div>
             <button
               type="button"
-              class="small"
+              class="ghost icon"
               id="btn-close-right"
               aria-label="Close members"
             >
-              ×
+              <Icon name="x" size={18} />
             </button>
           </div>
-          <input
-            type="text"
-            id="inp-member-filter"
-            dir="auto"
-            placeholder="Filter members..."
-            data-i18n-placeholder="ph.filter.members"
-          />
+          <label class="members-filter">
+            <Icon name="search" size={14} class="icon filter-icon" />
+            <input
+              type="search"
+              id="inp-member-filter"
+              dir="auto"
+              placeholder="Filter members..."
+              aria-label="Filter members"
+              data-i18n-placeholder="ph.filter.members"
+            />
+          </label>
         </div>
         <div id="members-list"></div>
       </aside>

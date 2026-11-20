@@ -1,5 +1,6 @@
 // Channel membership, nick changes, topics, modes, invites, and LIST.
 import { byId as $ } from "../../common/dom.ts";
+import { showMyNick } from "../sidebar.ts";
 import {
   ircFold,
   parseNamesEntry,
@@ -7,6 +8,7 @@ import {
   WHOX_FIELDS,
 } from "../../common/ircv3.ts";
 import { addLine, ensureBuf } from "../buffers.ts";
+import { refreshIntro } from "../chat/list.ts";
 import { capOn, isupport } from "../caps.ts";
 import { catchUp, historyAfter, sendRaw } from "../connection.ts";
 import { e2ee } from "../e2ee_ui.ts";
@@ -142,7 +144,7 @@ export function handleChannels(
       // is what a reconnect registers with next time.
       S.preferredNick = next;
       S.regainPending = false;
-      $("my-nick").textContent = S.myNick;
+      showMyNick();
       e2ee.setMyNick(S.myNick);
       saveSession();
     }
@@ -168,6 +170,7 @@ export function handleChannels(
     buf.topic = params[2] || "";
     if (S.activeBuf === ircFold(chan)) {
       $("active-topic").textContent = buf.topic;
+      refreshIntro(buf);
     }
     addLine(chan, { time, text: `Topic: ${buf.topic}`, kind: "sys" });
     return true;
@@ -179,6 +182,7 @@ export function handleChannels(
     buf.topic = params[1] || "";
     if (S.activeBuf === ircFold(chan)) {
       $("active-topic").textContent = buf.topic;
+      refreshIntro(buf);
     }
     addLine(chan, {
       time,

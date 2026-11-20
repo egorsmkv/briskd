@@ -1,5 +1,5 @@
 // Registration: welcome, nickname in use, ISUPPORT, heartbeat replies.
-import { byId as $ } from "../../common/dom.ts";
+import { showMyNick } from "../sidebar.ts";
 import { t } from "../../common/i18n.ts";
 import { ircFold } from "../../common/ircv3.ts";
 import { altNick, rejoinList } from "../../common/reconnect.ts";
@@ -34,7 +34,7 @@ export function handleRegistration(
   if (command === "001") {
     S.myNick = params[0] || S.myNick;
     S.isRegistered = true;
-    $("my-nick").textContent = S.myNick;
+    showMyNick();
     e2ee.setMyNick(S.myNick);
     e2ee.onRegistered();
     updateTitle();

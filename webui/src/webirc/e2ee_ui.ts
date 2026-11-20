@@ -43,7 +43,8 @@ export function updateE2eeUi(): void {
   const on = e2ee.isBufferEncrypted(buf.name);
   const ready = e2ee.isReady();
   btn.classList.toggle("on", on);
-  btn.textContent = on ? t("e2ee.on") : t("e2ee.off");
+  btn.setAttribute("aria-pressed", String(on));
+  $("btn-e2ee-label").textContent = on ? t("e2ee.on") : t("e2ee.off");
   if (!ready) {
     btn.title = e2ee.isServerSupported()
       ? t("e2ee.banner.noacct")
@@ -52,7 +53,9 @@ export function updateE2eeUi(): void {
     btn.title = on ? t("e2ee.on") : t("e2ee.off");
   }
   form.classList.toggle("e2ee-active", on);
-  inp.placeholder = on ? t("ph.msg.e2ee", { target: buf.name }) : t("ph.msg");
+  inp.placeholder = on
+    ? t("ph.msg.e2ee", { target: buf.name })
+    : t("ph.msg.to", { target: buf.name });
 }
 
 export function renderE2eeModal(): void {

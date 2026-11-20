@@ -1,0 +1,32 @@
+# WebIRC in a real browser, light and dark: screenshots of the main views at
+# desktop and phone width into test/webui/shots/, plus checks that fail the
+# run: no page errors, and every probed text at least 4.5:1 contrast
+# (WCAG AA) against its background (test/webui/run).
+
+services:
+  ircd:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: ircd-webui-server
+    working_dir: /workspace
+    volumes:
+      - ../..:/workspace:ro
+    command: ["sh", "/workspace/test/webui/server.sh", "/workspace/test/webui/ircd.json"]
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081"]
+      interval: 3s
+      timeout: 3s
+      retries: 100
+  tests:
+    build: .
+    image: ircd-webui-browser
+    environment:
+      WEBUI_HOST: ircd
+    volumes:
+      - ./shoot.mjs:/m/shoot.mjs:ro
+      - ./shots:/out
+    command: ["node", "shoot.mjs", "webirc"]
+    depends_on:
+      ircd:
+        condition: service_healthy

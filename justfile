@@ -9,6 +9,11 @@ build-webui:
 check-webui:
     cd webui && deno task check
 
+# Check formatting, type-check, lint, and unit-test the WebUI (includes the light and dark
+# theme contrast checks in src/common/theme_tokens_test.ts).
+test-webui:
+    cd webui && deno task fmt-check && deno task check && deno task lint && deno task test
+
 # Compile the application and dependencies.
 build:
     rebar3 compile

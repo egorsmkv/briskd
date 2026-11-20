@@ -1,6 +1,7 @@
 // Channel moderation: modes, bans, kicks.
 // Markup only: the WebIRC controllers (webui/src/webirc/) find these
 // elements by id and wire them when the chat starts.
+import { Icon } from "../../../components/Icon.tsx";
 
 export function ModerationDialog() {
   return (
@@ -19,11 +20,11 @@ export function ModerationDialog() {
             </h2>
             <button
               type="button"
-              class="small"
+              class="ghost icon"
               id="btn-close-mod"
               aria-label="Close moderation tools"
             >
-              ×
+              <Icon name="x" size={18} />
             </button>
           </div>
           <div class="modal-body">

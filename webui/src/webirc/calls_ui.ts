@@ -9,7 +9,7 @@ import { sendRaw } from "./connection.ts";
 import { switchBuf } from "./sidebar.ts";
 import { buffers, S } from "./state.ts";
 import { avatarOf, displayNameOf, peekUser } from "./users.ts";
-import { isChan, nickColor } from "./util.ts";
+import { isChan, NICK_COLORS, nickClass } from "./util.ts";
 
 // --- Voice calls (egorsmkv.github.io/calls, relayed through rtpengine) ---
 
@@ -48,7 +48,8 @@ export function callStatusText(view: CallView): string {
 
 export function fillCallAvatar(el: HTMLElement, nick: string): void {
   el.textContent = "";
-  el.style.backgroundColor = nickColor(nick);
+  for (let i = 0; i < NICK_COLORS; i++) el.classList.remove(`av-${i}`);
+  el.classList.add(nickClass(nick, "av"));
   const url = avatarOf(nick);
   if (url) {
     const img = document.createElement("img");

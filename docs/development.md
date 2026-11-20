@@ -45,6 +45,7 @@ If `just` is installed, `just --list` shows the available commands:
 | `just lint` | Lint `src/`, `test/`, and `include/` with ELP; fails on any diagnostic |
 | `just eqwalize` | Type-check `src/` and `test/` with eqWAlizer (ELP); fails on any finding |
 | `just test` | Run the EUnit suite, including the two-server interop test |
+| `just test-webui` | Check formatting, type-check, lint, and unit-test the WebUI (Deno), including the theme contrast tests |
 | `just cover` | Run the suite with coverage; fail below 90% |
 | `just docs` | Build the HTML documentation into `doc/` |
 | `just deps` | Fetch Rebar3 dependencies |
@@ -151,6 +152,28 @@ level, so the order in `webirc.ts` decides when listeners are attached. Pure
 logic with unit tests lives in `webui/src/common/` and the call modules
 (`calls.ts`, `call_settings.ts`, `hold_music.ts`).
 
+### Look and themes
+
+Colors, radii, and shadows are design tokens (CSS custom properties) in
+`webui/styles/_tokens.scss`; components use the tokens, never literal
+colors, so every theme follows. Light and dark are tuned by hand; the other
+themes set the base palette and derive the rest (`color-mix()`). Nicknames
+and avatars use eight palette slots (`--nick-N`, `--avatar-N`) that each
+theme can retune, chosen by `nickClass()` in `webirc/util.ts`. Icons are the
+line icons in `webui/src/common/icons.ts` (`iconEl()` for code that builds
+the DOM, `<Icon>` in TSX), not emoji or text glyphs.
+
+`src/common/theme_tokens_test.ts` (in `just test-webui`) checks, for light
+and dark, that every text color has at least 4.5:1 contrast (WCAG 2.1 AA) on
+each background it is used on, that both themes set the same tokens, and
+that every `var(--name)` in the stylesheets is defined.
+
+`test/webui/run` opens WebIRC in headless Chromium, in light and dark at
+desktop and phone width, with other users talking in a channel. It fails on
+a page error or on any probed text below 4.5:1 against what is actually
+behind it, and leaves screenshots of the main views in `test/webui/shots/`
+for review (CI keeps them as the `webirc-screenshots` artifact).
+
 ## End-to-end encryption tests
 
 `test/e2ee/run` builds the server image, starts two linked servers, and runs
@@ -160,11 +183,12 @@ Python clients that do X3DH, the Double Ratchet, and Sender Keys against them
 ## Continuous integration
 
 GitHub Actions builds the development image from the [Dockerfile](https://github.com/egorsmkv/irc-server/blob/main/Dockerfile)
-and runs `just format-check`, `just lint` and `just eqwalize` (ELP), and
-`just test` in that image. The image pins the same OTP, Rebar3, `just`, Deno, and ELP versions as
-local development. Two more jobs run `test/e2ee/run`, the end-to-end
-encryption tests on two linked servers, and `test/calls/run`, the voice call
-test with rtpengine and WebRTC clients.
+and runs `just format-check`, `just lint` and `just eqwalize` (ELP),
+`just test-webui`, and `just test` in that image. The image pins the same
+OTP, Rebar3, `just`, Deno, and ELP versions as local development. Three more jobs run
+`test/e2ee/run`, the end-to-end encryption tests on two linked servers,
+`test/calls/run`, the voice call test with rtpengine and WebRTC clients, and
+`test/webui/run`, WebIRC in a browser in light and dark themes.
 
 ## Building the documentation
 

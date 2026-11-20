@@ -72,6 +72,20 @@ live_webui() ->
             Port, <<"GET">>, <<"/api/overview">>, [{<<"Authorization">>, BadAuth}], <<>>
         ),
 
+        %% A connection that sends nothing (a browser's idle preconnect) is
+        %% closed without a reply: a 400 written to it would be read as the
+        %% answer to the page request the browser sends on it later.
+        {ok, Idle} = gen_tcp:connect("127.0.0.1", Port, [binary, {active, false}, {packet, raw}]),
+        ?assertEqual({error, closed}, gen_tcp:recv(Idle, 0, 10000)),
+        ok = gen_tcp:close(Idle),
+        %% A partial request that stalls still gets 400.
+        {ok, Partial} = gen_tcp:connect("127.0.0.1", Port, [
+            binary, {active, false}, {packet, raw}
+        ]),
+        ok = gen_tcp:send(Partial, <<"GET / HTTP/1.1\r\nHost: x\r\n">>),
+        {ok, <<"HTTP/1.1 400", _/binary>>} = gen_tcp:recv(Partial, 0, 10000),
+        ok = gen_tcp:close(Partial),
+
         %% Paths that are not the admin panel get a plain 404 with no Basic
         %% challenge, so a browser on the chat page never shows the admin
         %% password dialog for its own probes.

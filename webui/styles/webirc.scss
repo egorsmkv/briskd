@@ -10,30 +10,45 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px;
+  padding: 32px 20px;
+  // A soft glow of the accent behind the card.
+  background:
+    radial-gradient(
+      ellipse 80% 60% at 50% -10%,
+      color-mix(in srgb, var(--accent) 14%, transparent),
+      transparent 70%
+    ),
+    var(--bg);
 }
 
 .connect-card {
   width: 100%;
-  max-width: 480px;
-  background: var(--surface);
+  max-width: 420px;
+  background: var(--elevated);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 26px 28px;
-  box-shadow: var(--shadow);
+  border-radius: 16px;
+  padding: 28px 28px 22px;
+  box-shadow: var(--shadow-lg);
+  h1 {
+    margin: 16px 0 4px;
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
 }
 
 .connect-top {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 6px;
-  h1 {
-    margin: 0;
-    font-size: 20px;
-    letter-spacing: -0.01em;
-  }
+}
+
+.brand-mark.brand-mark-lg {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  font-size: 20px;
 }
 
 .head-actions {
@@ -43,22 +58,73 @@ body {
 }
 
 .sub {
-  margin: 0 0 18px;
+  margin: 0 0 22px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .field {
-  margin-bottom: 13px;
+  margin-bottom: 14px;
   label {
     display: block;
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 600;
-    margin-bottom: 4px;
-    color: var(--muted);
+    margin-bottom: 6px;
+    color: var(--text);
   }
   input {
     width: 100%;
+    height: 40px;
+    padding: 0 12px;
+    font-size: 14px;
+    border-radius: var(--radius);
+  }
+}
+
+// "Account and server": the fields most people leave as they are.
+.connect-advanced {
+  margin: 2px 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  > summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    cursor: pointer;
+    list-style: none;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    border-radius: var(--radius);
+    user-select: none;
+    &::-webkit-details-marker {
+      display: none;
+    }
+    &:hover {
+      color: var(--text);
+    }
+    .chev {
+      transition: transform 0.15s var(--ease);
+      transform: rotate(-90deg);
+    }
+  }
+  &[open] {
+    > summary {
+      border-bottom: 1px solid var(--border);
+      border-radius: var(--radius) var(--radius) 0 0;
+      .chev {
+        transform: none;
+      }
+    }
+    padding-bottom: 0;
+  }
+  > .row-2,
+  > .field {
+    padding: 0 12px;
+  }
+  > .row-2 {
+    padding-top: 12px;
   }
 }
 
@@ -75,21 +141,34 @@ body {
 
 .btn-full {
   width: 100%;
-  padding: 9px 14px;
+  height: 42px;
+  font-size: 14.5px;
+  font-weight: 600;
+  border-radius: var(--radius);
 }
 
 .foot-links {
-  margin: 14px 0 0;
-  text-align: center;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 10px;
+  margin: 18px 0 0;
   color: var(--muted);
   font-size: 13px;
+  a {
+    color: var(--accent-text);
+  }
 }
 
 #connect-err {
   display: none;
   color: var(--danger);
+  background: var(--notice-err-bg);
+  border: 1px solid var(--notice-err-border);
+  border-radius: var(--radius);
+  padding: 9px 12px;
   font-size: 13px;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 
 .altcha-box {
@@ -97,18 +176,19 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 10px 12px;
-  border-radius: 8px;
+  padding: 11px 12px;
+  border-radius: var(--radius);
   border: 1px solid var(--border);
-  background: var(--bg);
+  background: var(--surface-alt);
 }
 
 .altcha-left {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   font-size: 13.5px;
-  color: var(--fg);
+  font-weight: 500;
+  color: var(--text);
   cursor: pointer;
   margin: 0;
   input[type="checkbox"] {
@@ -121,13 +201,13 @@ body {
 
 .altcha-brand {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 700;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
   color: var(--muted);
   text-decoration: none;
   &:hover {
-    color: var(--accent);
+    color: var(--accent-text);
   }
 }
 
@@ -137,8 +217,8 @@ body {
   height: 100vh;
   height: 100dvh;
   position: relative;
-  grid-template-columns: 236px 1fr;
-  grid-template-rows: 52px 1fr auto;
+  grid-template-columns: 252px 1fr;
+  grid-template-rows: 56px 1fr auto;
   grid-template-areas:
     "left head"
     "left main"
@@ -147,7 +227,7 @@ body {
     display: grid;
   }
   &.members-open {
-    grid-template-columns: 236px 1fr 220px;
+    grid-template-columns: 252px 1fr 240px;
     grid-template-areas:
       "left head right"
       "left main right"
@@ -158,31 +238,62 @@ body {
   }
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .mobile-only,
-.tablet-only,
-.icon-mobile .btn-icon {
+.tablet-only {
   display: none;
+}
+
+svg.icon {
+  display: block;
+  flex-shrink: 0;
+  &.hidden {
+    display: none;
+  }
+}
+
+// The E2EE toggle shows a lock when on, an open lock when off.
+.btn-e2ee {
+  .e2ee-on-icon {
+    display: none;
+  }
+  &.on {
+    color: var(--ok);
+    .e2ee-on-icon {
+      display: block;
+    }
+    .e2ee-off-icon {
+      display: none;
+    }
+  }
 }
 
 .drawer-backdrop {
   display: none;
   position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  background: rgba(0, 0, 0, 0.45);
+  inset: 0;
+  background: rgba(8, 12, 20, 0.5);
+  backdrop-filter: blur(2px);
   z-index: 20;
   &.open {
     display: block;
   }
 }
 
+/* Header: what is open, then its tools; workspace actions on the right. */
 .chat-head {
   grid-area: head;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
-  padding: 0 16px;
+  padding: 0 12px 0 16px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -195,37 +306,93 @@ body {
   align-items: center;
   gap: 10px;
   min-width: 0;
+  flex: 1;
+}
+
+// A tile with the conversation's glyph; the connection dot sits on its corner.
+.head-glyph {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius);
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  .icon {
+    display: none;
+  }
+  .status-dot {
+    position: absolute;
+    right: -3px;
+    bottom: -3px;
+    border: 2px solid var(--surface);
+    width: 11px;
+    height: 11px;
+  }
+}
+
+.chat-head[data-kind="status"] .glyph-status,
+.chat-head[data-kind="channel"] .glyph-channel,
+.chat-head[data-kind="dm"] .glyph-dm {
+  display: block;
+}
+
+.head-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
 }
 
 .head-title {
-  font-weight: 700;
+  font-weight: 650;
   font-size: 15px;
+  letter-spacing: -0.01em;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .head-topic {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12.5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  &:empty {
+    display: none;
+  }
+}
+
+.head-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
 }
 
 .head-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 2px;
   flex-shrink: 0;
 }
 
+.head-sep {
+  width: 1px;
+  height: 20px;
+  margin: 0 6px;
+  background: var(--border);
+}
+
+// The sidebar's user card shows who you are; the header keeps it for
+// screen readers and narrow layouts only.
 .my-nick {
-  font-family: var(--mono);
-  font-size: 12.5px;
-  color: var(--muted);
-  padding: 3px 8px;
-  border-radius: 999px;
-  background: var(--surface-alt);
-  border: 1px solid var(--border);
+  display: none;
 }
 
 .status-dot {
@@ -235,11 +402,13 @@ body {
   background: var(--ok);
   display: inline-block;
   flex-shrink: 0;
+  transition: background-color 0.2s var(--ease);
   &.off {
     background: var(--danger);
   }
 }
 
+/* Left sidebar */
 .sidebar-left {
   grid-area: left;
   background: var(--sidebar);
@@ -250,21 +419,44 @@ body {
 }
 
 .workspace-brand {
-  height: 52px;
-  padding: 0 14px;
+  height: 56px;
+  padding: 0 12px 0 14px;
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  font-weight: 700;
-  font-size: 15px;
-  letter-spacing: -0.01em;
+  gap: 10px;
+  flex-shrink: 0;
+  .brand-name {
+    flex: 1;
+    min-width: 0;
+    font-weight: 700;
+    font-size: 15px;
+    letter-spacing: -0.01em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.brand-mark {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius);
+  background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #7c3aed));
+  color: #fff;
+  font-weight: 800;
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: var(--shadow-sm);
 }
 
 .buffer-scroll {
   flex: 1;
   overflow-y: auto;
-  padding: 10px 8px;
+  padding: 8px 8px 12px;
 }
 
 .section-label-row {
@@ -272,73 +464,109 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  padding: 8px 8px 4px;
+  min-height: 28px;
+  padding: 12px 6px 4px 10px;
   .section-label {
     padding: 0;
   }
 }
 
-.btn-discover {
-  height: 22px;
-  padding: 0 8px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  &:hover {
-    border-color: var(--accent);
-    color: var(--accent);
-  }
+.btn-discover.icon {
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
 }
 
 .section-label {
   font-size: 11px;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
   color: var(--muted);
   font-weight: 700;
   padding: 8px 8px 4px;
 }
 
 .buf-item {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
-  padding: 6px 8px;
-  border-radius: 6px;
+  height: 32px;
+  padding: 0 6px 0 10px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 13.5px;
-  margin-bottom: 2px;
-  &:hover {
+  font-size: 14px;
+  color: var(--muted);
+  margin-bottom: 1px;
+  user-select: none;
+  &:hover,
+  &:focus-within {
     background: var(--hover);
+    color: var(--text);
     .buf-close {
-      opacity: 1;
-    }
-  }
-  &.active {
-    background: var(--accent);
-    color: var(--accent-fg, #fff);
-    font-weight: 600;
-    .buf-close {
-      color: var(--accent-fg, #fff);
+      display: inline-flex;
     }
     .buf-badge {
-      background: rgba(255, 255, 255, 0.24);
-      color: var(--accent-fg, #fff);
+      display: none;
     }
+  }
+  &.unread {
+    color: var(--text);
+    font-weight: 650;
+  }
+  &.active {
+    background: var(--accent-soft);
+    color: var(--accent-text);
+    font-weight: 650;
+    .buf-lead {
+      color: var(--accent-text);
+    }
+    // A bar on the start edge marks the open conversation.
+    &::before {
+      content: "";
+      position: absolute;
+      inset-inline-start: -8px;
+      top: 7px;
+      bottom: 7px;
+      width: 3px;
+      border-radius: 0 3px 3px 0;
+      background: var(--accent);
+    }
+  }
+}
+
+.buf-lead {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--muted);
+  &.locked {
+    color: var(--ok);
+  }
+  .avatar {
+    width: 20px;
+    height: 20px;
+    margin: 0;
+    border-radius: 6px;
+    font-size: 9px;
+  }
+  .buf-presence {
+    position: absolute;
+    right: -3px;
+    bottom: -3px;
+    width: 9px;
+    height: 9px;
+    border: 2px solid var(--sidebar);
   }
 }
 
 .buf-name {
   flex: 1;
   min-width: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -348,7 +576,7 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 6px;
+  gap: 2px;
   flex-shrink: 0;
 }
 
@@ -356,71 +584,157 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: var(--muted);
-  color: #fff;
-  border-radius: 999px;
-  font-family: var(--mono);
+  background: var(--badge-bg);
+  color: var(--badge-fg);
+  border-radius: var(--radius-pill);
   font-variant-numeric: tabular-nums;
   font-size: 11px;
   font-weight: 700;
   line-height: 1;
-  height: 19px;
-  min-width: 24px;
+  height: 18px;
+  min-width: 20px;
   padding: 0 6px;
-  text-align: center;
   &.mention {
-    background: var(--danger);
+    background: var(--mention-bg);
+    color: var(--mention-fg);
   }
 }
 
-.buf-close,
-.buf-close-spacer {
-  width: 20px;
-  height: 20px;
+// The leave/close button takes the badge's place while the row is hovered
+// or focused; touch screens show both (see the coarse-pointer rules).
+.buf-close {
+  width: 22px;
+  height: 22px;
   flex-shrink: 0;
-  display: inline-flex;
+  display: none;
   align-items: center;
   justify-content: center;
-}
-
-.buf-close {
-  opacity: 0;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--muted);
   padding: 0;
-  font-size: 15px;
-  line-height: 1;
   &:hover {
-    background: rgba(0, 0, 0, 0.14);
+    background: color-mix(in srgb, var(--text) 10%, transparent);
+    color: var(--text);
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .buf-item .buf-close,
+  .buf-item:hover .buf-close {
+    display: inline-flex;
+  }
+  .buf-item:hover .buf-badge {
+    display: inline-flex;
   }
 }
 
 .join-box {
-  height: 60px;
-  padding: 0 10px;
+  position: relative;
+  padding: 10px;
   border-top: 1px solid var(--border);
   display: flex;
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
+  .join-icon {
+    position: absolute;
+    inset-inline-start: 20px;
+    color: var(--muted);
+    pointer-events: none;
+  }
   input {
     width: 100%;
     min-width: 0;
     height: 34px;
-    padding: 0 9px;
+    padding-block: 0;
+    padding-inline: 30px 9px;
     font-size: 13px;
+    background: var(--surface);
   }
   button {
     height: 34px;
   }
 }
 
+// Who you are, and whether the connection is up.
+.me-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  .me-avatar {
+    position: relative;
+    .avatar {
+      width: 32px;
+      height: 32px;
+      margin: 0;
+      border-radius: 50%;
+    }
+    &::after {
+      content: "";
+      position: absolute;
+      right: -1px;
+      bottom: -1px;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--ok);
+      border: 2px solid var(--sidebar);
+    }
+  }
+  .me-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    line-height: 1.25;
+  }
+  .me-nick {
+    font-weight: 650;
+    font-size: 13.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .me-state {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .me-offline {
+    display: none;
+  }
+}
+
+#chat-view.offline .me-card {
+  .me-avatar::after {
+    background: var(--danger);
+  }
+  .me-online {
+    display: none;
+  }
+  .me-offline {
+    display: inline;
+    color: var(--danger);
+  }
+}
+
+/* Nickname colors: text and avatar backgrounds from the theme palette. */
+@for $i from 0 through 7 {
+  .nc-#{$i} {
+    color: var(--nick-#{$i});
+  }
+  .av-#{$i} {
+    background-color: var(--avatar-#{$i});
+  }
+}
+
 .messages {
   grid-area: main;
   overflow-y: auto;
-  padding: 14px 20px;
+  padding: 12px 16px 16px;
   background: var(--surface);
   // Scroll position is managed by chat/scroll.ts (follow the newest line,
   // keep the reader's place); native anchoring would apply a second shift,
@@ -429,67 +743,82 @@ body {
   overscroll-behavior: contain;
 }
 
+// Every row has a 36px lead column (avatar, or the time for continuation and
+// system lines) so text lines up on one edge.
 .msg {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  padding: 4px 8px;
-  border-radius: 6px;
+  gap: 12px;
+  padding: 6px 12px;
+  margin-top: 6px;
+  border-radius: var(--radius);
   word-break: break-word;
   &:hover {
     background: var(--surface-alt);
   }
   &.grouped {
-    padding-top: 1px;
-    padding-bottom: 1px;
-    padding-left: 52px;
-    position: relative;
+    margin-top: 0;
+    padding-top: 2px;
+    padding-bottom: 2px;
     .compact-time {
-      position: absolute;
-      left: 10px;
-      top: 3px;
+      width: 36px;
+      padding-top: 3px;
+      text-align: center;
       opacity: 0;
+      transition: opacity 0.12s var(--ease);
     }
     &:hover .compact-time {
       opacity: 1;
     }
   }
   &.mention {
-    background: var(--accent-soft);
-    border-left: 3px solid var(--accent);
-    padding-left: 8px;
+    background: var(--mention-row);
+    box-shadow: inset 3px 0 0 var(--mention-bar);
+    &:hover {
+      background: color-mix(in srgb, var(--mention-bar) 14%, var(--surface));
+    }
   }
   &.sys,
   &.action,
-  &.notice {
+  &.notice,
+  &.err {
     align-items: baseline;
     color: var(--muted);
     font-size: 13px;
-    padding-left: 10px;
+    margin-top: 2px;
+    padding-top: 3px;
+    padding-bottom: 3px;
+    > .msg-time {
+      width: 36px;
+      text-align: center;
+    }
   }
   &.action {
     font-style: italic;
+    color: var(--text);
+  }
+  &.notice {
+    color: var(--text);
   }
   &.err {
-    align-items: baseline;
     color: var(--danger);
-    font-size: 13px;
-    padding-left: 10px;
   }
 }
 
 .avatar {
-  width: 34px;
-  height: 34px;
-  border-radius: 8px;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
   color: #fff;
   font-weight: 700;
-  font-size: 12px;
+  font-size: 13px;
+  letter-spacing: 0.02em;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
   margin-top: 2px;
+  user-select: none;
 }
 
 .msg-col {
@@ -501,39 +830,75 @@ body {
   display: flex;
   align-items: baseline;
   gap: 8px;
+  margin-bottom: 1px;
 }
 
 .msg-nick {
-  font-weight: 700;
-  font-size: 13.5px;
+  font-weight: 650;
+  font-size: 14px;
   cursor: pointer;
   &:hover {
     text-decoration: underline;
+    text-underline-offset: 2px;
   }
 }
 
 .msg-time {
   color: var(--muted);
-  font-family: var(--mono);
-  font-size: 11px;
+  font-size: 11.5px;
   font-variant-numeric: tabular-nums;
-  min-width: 36px;
   flex-shrink: 0;
 }
 
 .msg-text {
   white-space: pre-wrap;
   font-size: 14px;
+  line-height: 1.55;
 }
 
-/* Halloy-style day divider & rich IRC message formatting */
+// The head of a conversation: its glyph (or the person's avatar), name,
+// and topic or status.
+.conv-intro {
+  padding: 28px 12px 8px;
+  .conv-intro-glyph,
+  .avatar {
+    width: 56px;
+    height: 56px;
+    border-radius: 16px;
+    margin: 0 0 14px;
+  }
+  .avatar {
+    font-size: 20px;
+  }
+  .conv-intro-glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--accent-soft);
+    color: var(--accent-text);
+  }
+  h2 {
+    margin: 0 0 4px;
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 14px;
+    max-width: 640px;
+  }
+}
+
+// Day divider: a rule with the date in a pill.
 .day-divider {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin: 12px 0 8px;
+  gap: 12px;
+  margin: 18px 4px 6px;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
   user-select: none;
   &::before,
@@ -567,22 +932,22 @@ body {
 
 .irc-code {
   font-family: var(--mono);
-  font-size: 0.9em;
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: var(--surface-alt);
+  font-size: 0.88em;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--text) 6%, var(--surface));
   border: 1px solid var(--border);
 }
 
 .irc-link {
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: underline;
   text-underline-offset: 2px;
   word-break: break-all;
 }
 
 .irc-chan {
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 600;
   cursor: pointer;
   &:hover {
@@ -592,10 +957,10 @@ body {
 
 .irc-mention {
   background: var(--accent-soft);
-  color: var(--accent);
-  font-weight: 700;
+  color: var(--accent-text);
+  font-weight: 650;
   padding: 0 4px;
-  border-radius: 4px;
+  border-radius: 5px;
 }
 
 .composer-wrap {
@@ -604,7 +969,17 @@ body {
   display: flex;
   flex-direction: column;
   background: var(--surface);
-  border-top: 1px solid var(--border);
+  padding: 0 16px 10px;
+}
+
+.composer-hint {
+  padding: 6px 4px 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 // @-mention list, above the message box.
@@ -667,14 +1042,11 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  min-width: 38px;
-  height: 38px;
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
   padding: 0;
-  border-radius: 50%;
-  font-size: 22px;
-  font-weight: 500;
-  line-height: 1;
+  border-radius: var(--radius);
   flex-shrink: 0;
   &.hidden {
     display: none;
@@ -705,8 +1077,20 @@ body {
   }
 }
 
-.input-bar .btn-send .send-icon {
-  display: none;
+// Send: an accent square with the icon; the label is for screen readers.
+.input-bar .btn-send {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: var(--radius);
+  .send-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
 }
 
 .attach-list {
@@ -727,7 +1111,7 @@ body {
   border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--bg);
-  color: var(--fg);
+  color: var(--text);
   text-align: start;
   cursor: pointer;
   transition: border-color 0.14s ease, background-color 0.14s ease;
@@ -855,7 +1239,7 @@ body {
   font-size: 11px;
   padding: 1px 7px;
   border-radius: 999px;
-  background: var(--panel);
+  background: var(--elevated);
   border: 1px solid var(--border);
   color: var(--muted);
 }
@@ -898,8 +1282,8 @@ body {
   padding: 0;
   border-radius: 50%;
   border: 1px solid var(--border);
-  background: var(--panel);
-  color: var(--fg);
+  background: var(--elevated);
+  color: var(--text);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
   display: inline-flex;
   align-items: center;
@@ -914,46 +1298,54 @@ body {
   }
 }
 
+// The input bar is one rounded box: tools, the growing text field, send.
 .input-bar {
-  min-height: 60px;
-  background: var(--surface);
-  padding: 8px 16px;
   display: flex;
-  gap: 8px;
+  gap: 4px;
   // Buttons stay next to the last line while the composer grows upwards.
   align-items: flex-end;
+  padding: 5px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+  &:focus-within {
+    border-color: var(--accent);
+    box-shadow: var(--ring);
+  }
   input {
     flex: 1;
-    height: 38px;
-    padding: 0 12px;
+    height: 36px;
+    padding: 0 10px;
   }
-  // The message composer: one line that grows with Shift+Enter or a pasted
-  // multi-line text, then scrolls.
+  // The message field: one line that grows with Shift+Enter or a pasted
+  // multi-line text, then scrolls. The box around it draws the border.
   #inp-msg {
     flex: 1;
     min-width: 0;
-    min-height: 38px;
-    height: 38px;
+    min-height: 36px;
+    height: 36px;
     max-height: 168px;
-    padding: 8px 12px;
+    padding: 8px 6px;
     font: inherit;
+    font-size: 14.5px;
     line-height: 20px;
     resize: none;
     overflow-y: auto;
-    border-radius: 6px;
-    border: 1px solid var(--border);
-    background: var(--surface);
+    border: none;
+    border-radius: 0;
+    background: transparent;
     color: var(--text);
-    transition: border-color 0.12s ease;
-    &:focus {
+    &:focus,
+    &:focus-visible {
       outline: none;
-      border-color: var(--accent);
-      box-shadow: 0 0 0 2px var(--accent-soft);
+      box-shadow: none;
     }
   }
   button {
-    height: 38px;
-    padding: 0 16px;
+    height: 36px;
+    padding: 0 14px;
   }
 }
 
@@ -967,11 +1359,10 @@ body {
 }
 
 .members-head {
-  padding: 0;
   border-bottom: 1px solid var(--border);
   .members-head-top {
-    height: 52px;
-    padding: 0 12px;
+    height: 56px;
+    padding: 0 8px 0 16px;
     border-bottom: 1px solid var(--border);
     display: flex;
     align-items: center;
@@ -979,55 +1370,103 @@ body {
     gap: 8px;
   }
   .members-title {
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    font-size: 14px;
+    font-weight: 650;
+  }
+}
+
+.members-filter {
+  position: relative;
+  display: block;
+  margin: 10px;
+  .filter-icon {
+    position: absolute;
+    inset-inline-start: 10px;
+    top: 50%;
+    transform: translateY(-50%);
     color: var(--muted);
-    font-weight: 700;
+    pointer-events: none;
   }
   input {
-    width: calc(100% - 16px);
-    margin: 8px;
+    width: 100%;
     height: 32px;
-    padding: 0 9px;
-    font-size: 12.5px;
+    padding-block: 0;
+    padding-inline: 30px 9px;
+    font-size: 13px;
+    background: var(--surface);
   }
 }
 
 #members-list {
   flex: 1;
   overflow-y: auto;
-  padding: 8px;
+  padding: 4px 8px 12px;
+}
+
+.members-group {
+  padding: 12px 8px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.members-empty {
+  padding: 24px 8px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .member-item {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 5px 7px;
-  border-radius: 5px;
-  font-size: 13px;
+  gap: 9px;
+  height: 36px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  font-size: 13.5px;
   cursor: pointer;
   &:hover {
     background: var(--hover);
   }
 }
 
-.member-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
+.member-lead {
+  position: relative;
   flex-shrink: 0;
+  .avatar {
+    width: 26px;
+    height: 26px;
+    margin: 0;
+    border-radius: 50%;
+    font-size: 10px;
+  }
+  .buf-presence {
+    position: absolute;
+    right: -2px;
+    bottom: -2px;
+    width: 10px;
+    height: 10px;
+    border: 2px solid var(--sidebar);
+  }
 }
 
 .member-role {
+  flex-shrink: 0;
   font-family: var(--mono);
   font-weight: 700;
-  color: var(--accent);
-  font-size: 12px;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 4px;
+  color: var(--accent-text);
+  background: var(--accent-soft);
 }
 
 .member-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1308,27 +1747,28 @@ body {
   }
 }
 
+// Presence: green online, amber away, a hollow ring offline. The ring
+// around the dot (border) is set where it sits on an avatar.
 .buf-presence {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
-  border: 1.5px solid var(--muted);
+  background: var(--muted);
   &.online {
     background: var(--ok);
-    border-color: var(--ok);
   }
   &.away {
     background: var(--warn);
-    border-color: var(--warn);
   }
   &.offline {
-    background: transparent;
+    background: var(--sidebar);
+    box-shadow: inset 0 0 0 2px var(--muted);
   }
 }
 
 .member-item.away .member-name {
-  opacity: 0.55;
+  opacity: 0.6;
 }
 
 .hidden {
@@ -1518,69 +1958,105 @@ body.font-large .messages {
 .modal-backdrop {
   display: none;
   position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  background: rgba(0, 0, 0, 0.55);
+  inset: 0;
+  background: rgba(8, 12, 20, 0.55);
+  backdrop-filter: blur(3px);
   z-index: 50;
   align-items: center;
   justify-content: center;
   padding: 16px;
   &.open {
     display: flex;
+    animation: fade-in 0.15s var(--ease);
+    .modal-card {
+      animation: pop-in 0.18s var(--ease);
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modal-backdrop.open,
+  .modal-backdrop.open .modal-card {
+    animation: none;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
   }
 }
 
 .modal-card {
   width: 100%;
-  max-width: 460px;
+  max-width: 480px;
   max-height: 90vh;
   overflow-y: auto;
-  background: var(--surface);
+  background: var(--elevated);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: var(--shadow);
+  border-radius: 14px;
+  box-shadow: var(--shadow-lg);
 }
 
 .modal-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 18px;
+  gap: 12px;
+  padding: 14px 14px 14px 20px;
+  background: var(--elevated);
   border-bottom: 1px solid var(--border);
   h2 {
     margin: 0;
     font-size: 16px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
   }
 }
 
+// Tabs: text with an accent underline on the open one.
 .modal-tabs {
   display: flex;
-  gap: 4px;
-  padding: 8px 18px 0;
+  gap: 18px;
+  padding: 0 20px;
   border-bottom: 1px solid var(--border);
-  background: var(--surface-alt);
 }
 
 .modal-tab {
-  border: 1px solid transparent;
-  border-bottom: none;
-  border-radius: 6px 6px 0 0;
+  position: relative;
+  border: none;
+  border-radius: 0;
   background: transparent;
   color: var(--muted);
-  padding: 7px 14px;
-  font-size: 13px;
+  padding: 12px 0 11px;
+  font-size: 13.5px;
   font-weight: 600;
-  margin-bottom: -1px;
   &:hover {
     color: var(--text);
     background: transparent;
   }
   &.active {
-    background: var(--surface);
-    border-color: var(--border);
     color: var(--text);
+    &::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: -1px;
+      height: 2px;
+      border-radius: 2px 2px 0 0;
+      background: var(--accent);
+    }
   }
 }
 
@@ -1592,20 +2068,20 @@ body.font-large .messages {
 }
 
 .modal-body {
-  padding: 16px 18px 20px;
+  padding: 18px 20px 22px;
 }
 
 .setting-group {
-  margin-bottom: 16px;
+  margin-bottom: 18px;
 }
 
 .setting-label {
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.06em;
   color: var(--muted);
-  margin-bottom: 8px;
+  margin: 18px 0 10px;
 }
 
 .theme-grid {
@@ -1617,30 +2093,35 @@ body.font-large .messages {
 .theme-swatch {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: flex-start;
+  gap: 10px;
   padding: 8px 10px;
-  border-radius: 7px;
+  border-radius: var(--radius);
   border: 1px solid var(--border);
-  background: var(--surface-alt);
+  background: var(--surface);
   color: var(--text);
-  font-size: 12.5px;
-  text-align: left;
+  font-size: 13px;
+  text-align: start;
   cursor: pointer;
   &:hover {
-    border-color: var(--accent);
+    border-color: var(--border-strong);
+    background: var(--hover);
   }
   &.active {
     border-color: var(--accent);
-    box-shadow: 0 0 0 2px var(--accent-soft);
+    box-shadow: inset 0 0 0 1px var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent-text);
     font-weight: 600;
   }
 }
 
+// A small preview of the theme: its background with an accent corner.
 .swatch-chip {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  border: 2px solid var(--border);
+  width: 30px;
+  height: 20px;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
   flex-shrink: 0;
   display: inline-block;
 }
@@ -1650,27 +2131,68 @@ body.font-large .messages {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
   label {
-    font-size: 13.5px;
+    font-size: 14px;
     font-weight: 500;
   }
   select {
-    min-width: 170px;
+    min-width: 180px;
+    height: 34px;
   }
 }
 
+// Checkboxes in settings render as switches.
 .setting-check {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-  font-size: 13.5px;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+  font-size: 14px;
   cursor: pointer;
-  input {
-    width: auto;
+  border-bottom: 1px solid var(--border);
+  input[type="checkbox"] {
+    order: 2;
+    appearance: none;
+    flex-shrink: 0;
+    width: 36px;
+    height: 20px;
     margin: 0;
+    padding: 0;
+    border-radius: var(--radius-pill);
+    border: none;
+    background: var(--border-strong);
+    position: relative;
+    cursor: pointer;
+    transition: background-color 0.15s var(--ease);
+    &::before {
+      content: "";
+      position: absolute;
+      top: 2px;
+      inset-inline-start: 2px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+      transition: transform 0.15s var(--ease);
+    }
+    &:checked {
+      background: var(--accent);
+      &::before {
+        transform: translateX(16px);
+      }
+    }
+    &:focus-visible {
+      box-shadow: var(--ring);
+    }
   }
+}
+
+:root[dir="rtl"] .setting-check input[type="checkbox"]:checked::before {
+  transform: translateX(-16px);
 }
 
 // Settings → Calls
@@ -1751,25 +2273,13 @@ body.font-large .messages {
   }
 }
 
-.btn-e2ee {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-weight: 600;
-  &.on {
-    background: var(--ok);
-    border-color: var(--ok);
-    color: var(--accent-fg, #fff);
-    &:hover {
-      opacity: 0.92;
-    }
+.btn-e2ee.on {
+  background: color-mix(in srgb, var(--ok) 14%, transparent);
+  color: color-mix(in srgb, var(--ok) 80%, var(--text));
+  &:hover {
+    background: color-mix(in srgb, var(--ok) 22%, transparent);
+    color: color-mix(in srgb, var(--ok) 80%, var(--text));
   }
-}
-
-.buf-lock {
-  font-size: 11px;
-  opacity: 0.85;
-  margin-right: 4px;
 }
 
 .msg-e2ee {
@@ -1785,10 +2295,12 @@ body.font-large .messages {
   line-height: 1.4;
 }
 
-.input-bar.e2ee-active input,
-.input-bar.e2ee-active #inp-msg {
+// An encrypted conversation's input bar is outlined in the "ok" color.
+.input-bar.e2ee-active {
   border-color: var(--ok);
-  box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.16);
+  &:focus-within {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 30%, transparent);
+  }
 }
 
 .modal-card.modal-wide {
@@ -1976,35 +2488,31 @@ body.layout-mobile {
   .icon-mobile {
     width: 34px;
     padding: 0 !important;
-    .btn-icon {
-      display: block;
-    }
     .btn-label {
       display: none;
     }
-  }
-  .buf-close {
-    opacity: 0.85;
   }
   .messages {
     padding: 10px 10px;
     overscroll-behavior: contain;
   }
+  .composer-wrap {
+    padding: 0 8px calc(8px + env(safe-area-inset-bottom));
+  }
+  .composer-hint {
+    display: none;
+  }
   .input-bar {
-    padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+    margin-top: 6px;
     input {
-      height: 40px;
+      height: 38px;
       font-size: 16px;
     }
     // 16px stops iOS Safari from zooming into the field on focus.
     #inp-msg {
-      min-height: 40px;
+      min-height: 38px;
       font-size: 16px;
       line-height: 22px;
-    }
-    button {
-      height: 40px;
-      padding: 0 14px;
     }
   }
   .modal-backdrop {
@@ -2085,9 +2593,6 @@ body.layout-mobile {
         transform: translateX(0);
       }
     }
-    .buf-close {
-      opacity: 0.85;
-    }
     .head-topic,
     .my-nick,
     #btn-topic {
@@ -2101,9 +2606,6 @@ body.layout-mobile {
     .icon-mobile {
       width: 34px;
       padding: 0 !important;
-      .btn-icon {
-        display: block;
-      }
       .btn-label {
         display: none;
       }
@@ -2112,19 +2614,22 @@ body.layout-mobile {
       padding: 10px 10px;
       overscroll-behavior: contain;
     }
+    .composer-wrap {
+      padding: 0 8px calc(8px + env(safe-area-inset-bottom));
+    }
+    .composer-hint {
+      display: none;
+    }
     .input-bar {
-      padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+      margin-top: 6px;
       input {
-        height: 40px;
+        height: 38px;
         font-size: 16px;
       }
       #inp-msg {
-        min-height: 40px;
+        min-height: 38px;
         font-size: 16px;
         line-height: 22px;
-      }
-      button {
-        height: 40px;
       }
     }
   }
@@ -2133,12 +2638,12 @@ body.layout-mobile {
 /* iPhone 15 (393px) and compact phones (<= 430px) */
 @media (max-width: 430px) {
   #connect-view {
-    padding: calc(12px + env(safe-area-inset-top)) 12px calc(12px + env(safe-area-inset-bottom));
+    padding: calc(20px + env(safe-area-inset-top)) 14px calc(16px + env(safe-area-inset-bottom));
     align-items: flex-start;
   }
   .connect-card {
-    padding: 18px 14px;
-    border-radius: 10px;
+    padding: 22px 18px 18px;
+    border-radius: 14px;
   }
   .row-2 {
     grid-template-columns: 1fr;
@@ -2149,6 +2654,9 @@ body.layout-mobile {
   }
   .btn-full {
     min-height: 44px;
+  }
+  .foot-links span[aria-hidden="true"] {
+    display: none;
   }
   .chat-head {
     padding: calc(5px + env(safe-area-inset-top)) 8px 5px;
@@ -2333,8 +2841,8 @@ body.layout-mobile {
     display: none;
   }
   &.recording {
-    background: var(--err);
-    border-color: var(--err);
+    background: var(--danger);
+    border-color: var(--danger);
     color: #fff;
     animation: voice-pulse 1.2s ease-in-out infinite;
   }
@@ -2363,7 +2871,7 @@ body.layout-mobile {
   gap: 12px;
   padding: 10px 14px 10px 10px;
   margin-top: 4px;
-  background: var(--panel);
+  background: var(--elevated);
   border: 1px solid var(--border);
   border-radius: 14px;
   max-width: 340px;
@@ -2486,7 +2994,7 @@ body.layout-mobile {
   border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--bg);
-  color: var(--fg);
+  color: var(--text);
   cursor: pointer;
   transition: border-color 0.14s ease, color 0.14s ease;
   &:hover {
@@ -2501,9 +3009,9 @@ body.layout-mobile {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  width: 38px;
-  min-width: 38px;
-  height: 38px;
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
   padding: 0;
   svg {
     width: 17px;
@@ -2522,7 +3030,7 @@ body.layout-mobile {
 
 .input-bar .btn-voice {
   padding: 0 10px;
-  height: 38px;
+  height: 36px;
   svg {
     width: 17px;
     height: 17px;
@@ -2533,7 +3041,7 @@ body.layout-mobile {
 
 .input-bar .btn-code {
   padding: 0 9px;
-  height: 38px;
+  height: 36px;
 }
 
 #messages.drag-over {
@@ -2546,7 +3054,7 @@ body.layout-mobile {
   display: inline-flex;
   flex-direction: column;
   margin-top: 4px;
-  background: var(--panel);
+  background: var(--elevated);
   border: 1px solid var(--border);
   border-radius: 14px;
   overflow: hidden;
@@ -2633,7 +3141,7 @@ body.layout-mobile {
 .file-name {
   font-size: 13px;
   font-weight: 600;
-  color: var(--fg);
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2665,7 +3173,7 @@ body.layout-mobile {
   border-radius: 50%;
   border: 1px solid var(--border);
   background: var(--bg);
-  color: var(--fg);
+  color: var(--text);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2790,7 +3298,7 @@ body.layout-mobile {
   justify-content: space-between;
   gap: 10px;
   padding: 6px 16px;
-  background: var(--panel);
+  background: var(--elevated);
   border-bottom: 1px solid var(--border);
   border-inline-start: 3px solid var(--accent);
   font-size: 12.5px;
@@ -2842,31 +3350,38 @@ body.layout-mobile {
 
 .msg-actions {
   position: absolute;
-  top: -12px;
-  inset-inline-end: 10px;
+  top: -14px;
+  inset-inline-end: 12px;
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  padding: 2px 4px;
-  background: var(--panel);
+  gap: 1px;
+  padding: 3px;
+  background: var(--elevated);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.12s ease;
   z-index: 5;
 }
 
+.msg-act-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: var(--border);
+}
+
 .msg-act-btn {
   border: none;
   background: transparent;
-  color: var(--fg);
+  color: var(--muted);
   padding: 3px 6px;
-  height: 26px;
-  min-width: 26px;
-  border-radius: 5px;
-  font-size: 13px;
+  height: 28px;
+  min-width: 28px;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
   line-height: 1;
   cursor: pointer;
   display: inline-flex;
@@ -2874,6 +3389,7 @@ body.layout-mobile {
   justify-content: center;
   &:hover {
     background: var(--hover);
+    color: var(--text);
   }
   &.danger:hover {
     color: var(--danger);
@@ -2890,13 +3406,13 @@ body.layout-mobile {
   border: none;
   border-inline-start: 2px solid var(--accent);
   border-radius: 0 5px 5px 0;
-  background: var(--panel);
+  background: var(--elevated);
   color: var(--muted);
   font-size: 12px;
   cursor: pointer;
   text-align: start;
   &:hover {
-    color: var(--fg);
+    color: var(--text);
   }
   .reply-nick {
     font-weight: 700;
@@ -2925,8 +3441,8 @@ body.layout-mobile {
   height: 24px;
   border-radius: 999px;
   border: 1px solid var(--border);
-  background: var(--panel);
-  color: var(--fg);
+  background: var(--elevated);
+  color: var(--text);
   font-size: 12.5px;
   cursor: pointer;
   transition: border-color 0.12s ease, background-color 0.12s ease;
@@ -2984,7 +3500,7 @@ body.layout-mobile {
   display: block;
   padding: 0;
   border: none;
-  background: var(--panel);
+  background: var(--elevated);
   aspect-ratio: 1 / 1;
   overflow: hidden;
   cursor: zoom-in;
@@ -3023,7 +3539,7 @@ body.layout-mobile {
   color: var(--muted);
   padding: 6px 10px;
   border-radius: 8px;
-  background: var(--panel);
+  background: var(--elevated);
   border: 1px solid var(--border);
 }
 
@@ -3190,7 +3706,7 @@ body.layout-mobile {
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--bg);
-  color: var(--fg);
+  color: var(--text);
   resize: vertical;
   margin-bottom: 10px;
 }
@@ -3212,7 +3728,7 @@ body.layout-mobile {
   justify-content: space-between;
   gap: 8px;
   padding: 6px 10px;
-  background: var(--panel);
+  background: var(--elevated);
   border-bottom: 1px solid var(--border);
 }
 
@@ -3239,7 +3755,7 @@ body.layout-mobile {
   font-family: var(--mono);
   font-size: 12px;
   font-weight: 600;
-  color: var(--fg);
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3258,7 +3774,7 @@ body.layout-mobile {
   border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--bg);
-  color: var(--fg);
+  color: var(--text);
   cursor: pointer;
   &:hover {
     border-color: var(--accent);
@@ -3329,12 +3845,12 @@ body.layout-mobile {
   margin-top: 6px;
   padding: 9px 12px;
   max-width: 440px;
-  background: var(--panel);
+  background: var(--elevated);
   border: 1px solid var(--border);
   border-inline-start: 3px solid var(--accent);
   border-radius: 8px;
   text-decoration: none;
-  color: var(--fg);
+  color: var(--text);
   transition: border-color 0.14s ease, background-color 0.14s ease;
   &:hover {
     border-color: var(--accent);
@@ -3405,72 +3921,30 @@ a,
 
 @media (max-width: 680px) {
   body:not(.layout-desktop) {
-    .composer-wrap {
-      padding-bottom: env(safe-area-inset-bottom);
-    }
     .input-bar {
-      min-height: 56px;
-      padding: 8px 10px;
-      gap: 7px;
-      /* Collapse file + code into the crisp + popover menu on mobile */
+      gap: 2px;
+      /* Collapse file + code into the + menu on phones */
       .btn-file,
       .btn-code {
         display: none !important;
       }
-      .btn-plus {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 38px;
-        min-width: 38px;
-        height: 38px;
-        padding: 0;
-        border-radius: 50%;
-        font-size: 22px;
-        font-weight: 500;
-        line-height: 1;
-        flex-shrink: 0;
-        &.hidden {
-          display: none;
-        }
-      }
-      input {
-        height: 38px;
-        min-width: 0;
-        padding: 0 14px;
-        border-radius: 20px;
-        font-size: 16px;
-      }
-      .btn-voice {
-        width: 38px;
-        min-width: 38px;
-        height: 38px;
-        padding: 0;
-        border-radius: 50%;
-        justify-content: center;
-        &.recording {
-          width: auto;
-          padding: 0 12px;
-          border-radius: 20px;
-          flex: 1;
-        }
-      }
+      .btn-plus,
+      .btn-voice,
       .btn-send {
         width: 38px;
         min-width: 38px;
         height: 38px;
         padding: 0;
-        border-radius: 50%;
-        display: inline-flex;
-        align-items: center;
         justify-content: center;
         flex-shrink: 0;
-        .send-icon {
-          display: block;
-        }
-        .send-label {
+        &.hidden {
           display: none;
         }
+      }
+      .btn-voice.recording {
+        width: auto;
+        padding: 0 12px;
+        flex: 1;
       }
       &.recording-active {
         .btn-plus,
@@ -3481,7 +3955,6 @@ a,
         #btn-voice-cancel {
           height: 38px;
           padding: 0 14px;
-          border-radius: 20px;
         }
       }
     }
@@ -3582,7 +4055,7 @@ a,
   border-radius: 4px;
   border: 1px solid var(--border);
   background: var(--bg);
-  color: var(--fg);
+  color: var(--text);
   font-family: var(--mono);
   font-size: 11px;
   font-weight: 700;

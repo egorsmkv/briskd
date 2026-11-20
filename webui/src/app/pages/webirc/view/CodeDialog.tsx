@@ -1,6 +1,7 @@
 // Share a code snippet.
 // Markup only: the WebIRC controllers (webui/src/webirc/) find these
 // elements by id and wire them when the chat starts.
+import { Icon } from "../../../components/Icon.tsx";
 
 export function CodeDialog() {
   return (
@@ -19,11 +20,11 @@ export function CodeDialog() {
             </h2>
             <button
               type="button"
-              class="small"
+              class="ghost icon"
               id="btn-close-code"
               aria-label="Close code modal"
             >
-              ×
+              <Icon name="x" size={18} />
             </button>
           </div>
           <form class="modal-body" id="code-form">

@@ -3,6 +3,7 @@
 import { byId as $ } from "../../common/dom.ts";
 import { t } from "../../common/i18n.ts";
 import { ircFold } from "../../common/ircv3.ts";
+import { iconEl, type IconName } from "../../common/icons.ts";
 import { QUICK_EMOJIS } from "../constants.ts";
 import {
   sendReaction,
@@ -15,8 +16,9 @@ import { isOperatorInBuffer } from "../sidebar.ts";
 import { buffers, S } from "../state.ts";
 import type { ChatLine } from "../types.ts";
 
+/** A button of the action bar: an emoji, or one of the line icons. */
 function actionButton(
-  label: string,
+  label: string | { icon: IconName },
   title: string,
   onClick: () => void,
   danger = false,
@@ -24,7 +26,8 @@ function actionButton(
   const b = document.createElement("button");
   b.type = "button";
   b.className = danger ? "msg-act-btn danger" : "msg-act-btn";
-  b.textContent = label;
+  if (typeof label === "string") b.textContent = label;
+  else b.appendChild(iconEl(label.icon, 15));
   b.title = title;
   b.setAttribute("aria-label", title);
   b.onclick = onClick;
@@ -52,19 +55,30 @@ export function createActions(entry: ChatLine): HTMLElement | null {
       );
     }
   }
+  if (canReact && (canReply || canEdit || canDelete)) {
+    const sep = document.createElement("span");
+    sep.className = "msg-act-sep";
+    sep.setAttribute("aria-hidden", "true");
+    actions.appendChild(sep);
+  }
   if (canReply) {
     actions.appendChild(
-      actionButton("↩", t("msg.reply"), () => startReply(entry)),
+      actionButton({ icon: "reply" }, t("msg.reply"), () => startReply(entry)),
     );
   }
   if (canEdit) {
     actions.appendChild(
-      actionButton("✎", t("msg.edit"), () => startEdit(entry)),
+      actionButton({ icon: "pencil" }, t("msg.edit"), () => startEdit(entry)),
     );
   }
   if (canDelete) {
     actions.appendChild(
-      actionButton("🗑", t("msg.delete"), () => sendRedaction(msgid), true),
+      actionButton(
+        { icon: "trash" },
+        t("msg.delete"),
+        () => sendRedaction(msgid),
+        true,
+      ),
     );
   }
   return actions;

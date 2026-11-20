@@ -1,17 +1,62 @@
+// Theme-independent scales, and tokens derived from each theme's palette so
+// every theme gets them; light and dark tune the derived ones below.
 :root {
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --elevated: var(--surface);
+  --border-strong: color-mix(in srgb, var(--border) 70%, var(--text));
+  --accent-text: var(--accent);
+  --badge-bg: color-mix(in srgb, var(--muted) 24%, var(--surface));
+  --badge-fg: var(--text);
+  --mention-bg: var(--danger);
+  --mention-fg: #ffffff;
+  --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.12);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.35);
+  --scrollbar: color-mix(in srgb, var(--muted) 35%, transparent);
+  --mention-row: color-mix(in srgb, var(--warn) 12%, var(--surface));
+  --mention-bar: var(--warn);
+  // Avatar backgrounds carry white initials (each at least 4.5:1).
+  --avatar-0: #2563eb;
+  --avatar-1: #0e7490;
+  --avatar-2: #047857;
+  --avatar-3: #7c3aed;
+  --avatar-4: #be185d;
+  --avatar-5: #b45309;
+  --avatar-6: #dc2626;
+  --avatar-7: #4f46e5;
+  // Nickname text colors, readable on the message surface and highlights.
+  --nick-0: #1d4ed8;
+  --nick-1: #0e7490;
+  --nick-2: #047857;
+  --nick-3: #6d28d9;
+  --nick-4: #be185d;
+  --nick-5: #92400e;
+  --nick-6: #b91c1c;
+  --nick-7: #4338ca;
+}
+
+:root:not([data-theme]),
+:root[data-theme="light"] {
   color-scheme: light;
-  --bg: #f4f6f9;
+  --bg: #f5f6f8;
   --surface: #ffffff;
-  --surface-alt: #f8fafc;
-  --sidebar: #f1f5f9;
-  --hover: #e2e8f0;
-  --border: #dbe3ec;
-  --text: #0f172a;
-  --muted: #526071;
+  --surface-alt: #f7f8fa;
+  --sidebar: #f1f3f6;
+  --hover: #e7eaef;
+  --border: #e2e5ea;
+  --text: #111827;
+  --muted: #596273;
   --accent: #2563eb;
   --accent-hover: #1d4ed8;
   --accent-fg: #ffffff;
-  --accent-soft: rgba(37, 99, 235, 0.1);
+  --accent-soft: #e6eefd;
+  --accent-text: #1d4ed8;
   --danger: #dc2626;
   --danger-hover: #b91c1c;
   --ok: #15803d;
@@ -22,9 +67,35 @@
   --notice-ok-border: #86efac;
   --notice-err-bg: #fef2f2;
   --notice-err-border: #fca5a5;
-  --shadow: 0 1px 3px rgba(15, 23, 42, 0.08), 0 8px 24px rgba(15, 23, 42, 0.05);
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --font: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  --elevated: #ffffff;
+  --border-strong: #cdd3dc;
+  --badge-bg: #e3e7ed;
+  --badge-fg: #1f2937;
+  --mention-row: #fff8eb;
+  --mention-bar: #d97706;
+  --scrollbar: rgba(17, 24, 39, 0.18);
+  --shadow-sm: 0 1px 2px rgba(17, 24, 39, 0.06);
+  --shadow: 0 1px 3px rgba(17, 24, 39, 0.06), 0 8px 24px rgba(17, 24, 39, 0.06);
+  --shadow-lg: 0 4px 12px rgba(17, 24, 39, 0.08), 0 20px 48px rgba(17, 24, 39, 0.12);
+}
+
+// Dark themes get the light nickname palette for dark backgrounds.
+:root[data-theme="dark"],
+:root[data-theme="hacker"],
+:root[data-theme="nord"],
+:root[data-theme="solarized-dark"],
+:root[data-theme="dracula"],
+:root[data-theme="high-contrast"] {
+  --nick-0: #7aa7ff;
+  --nick-1: #38bdf8;
+  --nick-2: #34d399;
+  --nick-3: #b69cff;
+  --nick-4: #f472b6;
+  --nick-5: #fbbf24;
+  --nick-6: #f87171;
+  --nick-7: #a5b4fc;
+  --mention-bg: #dc2626;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
 }
 
 :root[data-theme="hacker"] {
@@ -58,17 +129,19 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0c1118;
-  --surface: #141b25;
-  --surface-alt: #18212e;
-  --sidebar: #111822;
-  --hover: #1f2b3c;
-  --border: #263448;
-  --text: #e6edf5;
-  --muted: #8fa1b7;
-  --accent: #3b82f6;
+  --bg: #0b0e13;
+  --surface: #11151c;
+  --surface-alt: #151a22;
+  --sidebar: #0d1117;
+  --hover: #1a212c;
+  --border: #222a36;
+  --text: #e6eaf1;
+  --muted: #9aa5b5;
+  --accent: #2f6fe4;
   --accent-hover: #2563eb;
-  --accent-soft: rgba(59, 130, 246, 0.14);
+  --accent-fg: #ffffff;
+  --accent-soft: #16233b;
+  --accent-text: #8ab4ff;
   --danger: #ef4444;
   --danger-hover: #dc2626;
   --ok: #4ade80;
@@ -79,11 +152,28 @@
   --notice-ok-border: #22543d;
   --notice-err-bg: #2e1518;
   --notice-err-border: #7f1d1d;
-  --shadow: 0 1px 3px rgba(0, 0, 0, 0.35), 0 12px 30px rgba(0, 0, 0, 0.35);
+  --elevated: #181e28;
+  --border-strong: #323c4b;
+  --badge-bg: #263040;
+  --badge-fg: #e6eaf1;
+  --mention-row: #221c10;
+  --mention-bar: #f59e0b;
+  --scrollbar: rgba(230, 234, 241, 0.16);
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 10px 28px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 6px 16px rgba(0, 0, 0, 0.45), 0 24px 56px rgba(0, 0, 0, 0.5);
 }
 
 :root[data-theme="nord"] {
   color-scheme: dark;
+  // Nord's mid-gray surfaces need lighter nickname colors.
+  --nick-0: #a8c8ff;
+  --nick-1: #7dd3fc;
+  --nick-2: #86efac;
+  --nick-3: #d0c2ff;
+  --nick-4: #f9a8d4;
+  --nick-5: #fcd34d;
+  --nick-6: #fca5a5;
+  --nick-7: #c7d2fe;
   --bg: #2e3440;
   --surface: #3b4252;
   --surface-alt: #434c5e;

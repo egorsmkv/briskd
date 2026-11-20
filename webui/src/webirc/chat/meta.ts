@@ -6,7 +6,7 @@ import { switchBuf } from "../sidebar.ts";
 import { S } from "../state.ts";
 import type { ChatLine } from "../types.ts";
 import { botLabel, displayNameOf, peekUser, userTooltip } from "../users.ts";
-import { nickColor } from "../util.ts";
+import { nickClass } from "../util.ts";
 
 export function createTime(entry: ChatLine, compact = false): HTMLElement {
   const time = document.createElement("span");
@@ -21,10 +21,9 @@ export function createMeta(entry: ChatLine): HTMLElement {
   const name = displayNameOf(entry.nick);
 
   const nick = document.createElement("span");
-  nick.className = "msg-nick";
+  nick.className = `msg-nick ${nickClass(entry.nick, "nc")}`;
   nick.dir = "auto";
   nick.textContent = name;
-  nick.style.color = nickColor(entry.nick);
   nick.title = userTooltip(entry.nick);
   nick.onclick = () => {
     if (ircFold(entry.nick) !== ircFold(S.myNick)) {

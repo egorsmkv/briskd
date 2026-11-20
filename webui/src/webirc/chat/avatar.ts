@@ -1,11 +1,10 @@
 // The author's avatar: their metadata image, or initials on their color.
 import { avatarOf } from "../users.ts";
-import { nickColor } from "../util.ts";
+import { nickClass } from "../util.ts";
 
 export function createAvatar(nick: string): HTMLElement {
   const av = document.createElement("div");
-  av.className = "avatar";
-  av.style.backgroundColor = nickColor(nick);
+  av.className = `avatar ${nickClass(nick, "av")}`;
   const initials = nick.slice(0, 2).toUpperCase();
   const url = avatarOf(nick);
   if (!url) {

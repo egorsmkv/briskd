@@ -146,8 +146,8 @@ export function renderThemeSwatches(): void {
     btn.className = "theme-swatch" + (t.id === active ? " active" : "");
     const chip = document.createElement("span");
     chip.className = "swatch-chip";
-    chip.style.backgroundColor = t.swatchBg;
-    chip.style.borderColor = t.swatchAccent;
+    chip.style.background =
+      `linear-gradient(135deg, ${t.swatchBg} 0 58%, ${t.swatchAccent} 58% 100%)`;
     const label = document.createElement("span");
     label.textContent = t.name;
     btn.appendChild(chip);

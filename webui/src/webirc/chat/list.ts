@@ -5,8 +5,12 @@
 import { byId as $ } from "../../common/dom.ts";
 import { dayKey, formatDayLabel } from "../../common/format.ts";
 import { t } from "../../common/i18n.ts";
+import { iconEl } from "../../common/icons.ts";
 import { buffers, S } from "../state.ts";
 import type { BufferState, ChatLine } from "../types.ts";
+import { bufSubtitle, displayNameOf } from "../users.ts";
+import { isChan } from "../util.ts";
+import { createAvatar } from "./avatar.ts";
 import { DOM_HARD_MAX, DOM_WINDOW, isAtBottom } from "./policy.ts";
 import { buildLineRow } from "./row.ts";
 import {
@@ -28,6 +32,42 @@ export function dayDivider(epochMs: number): HTMLElement {
   span.textContent = formatDayLabel(epochMs);
   sep.appendChild(span);
   return sep;
+}
+
+/**
+ * The head of a conversation whose oldest loaded line is rendered: what it
+ * is (channel and topic, or the person), before the first day divider.
+ * Trimming old rows removes it with them.
+ */
+function conversationIntro(buf: BufferState): HTMLElement | null {
+  if (buf.name === "*status") return null;
+  const intro = document.createElement("div");
+  intro.className = "conv-intro";
+  const chan = isChan(buf.name);
+  const glyph = chan ? document.createElement("span") : createAvatar(buf.name);
+  if (chan) {
+    glyph.className = "conv-intro-glyph";
+    glyph.appendChild(iconEl("hash", 26));
+  }
+  const title = document.createElement("h2");
+  title.dir = "auto";
+  title.textContent = chan
+    ? t("intro.channel", { name: buf.name })
+    : t("intro.dm", { name: displayNameOf(buf.name) });
+  const sub = document.createElement("p");
+  sub.dir = "auto";
+  sub.textContent = chan
+    ? (buf.topic || t("intro.channel.notopic"))
+    : (bufSubtitle(buf) || t("intro.dm.sub", { name: buf.name }));
+  intro.append(glyph, title, sub);
+  return intro;
+}
+
+/** Update the open conversation's intro, if shown (its topic changed). */
+export function refreshIntro(buf: BufferState): void {
+  const old = list().querySelector(":scope > .conv-intro");
+  const fresh = old && conversationIntro(buf);
+  if (old && fresh) old.replaceWith(fresh);
 }
 
 function earlierButton(hidden: number): HTMLElement {
@@ -82,6 +122,10 @@ export function renderMessages(
   if (!buf) return;
   const start = Math.max(0, buf.lines.length - S.renderWindow);
   if (start > 0) el.appendChild(earlierButton(start));
+  else {
+    const intro = conversationIntro(buf);
+    if (intro) el.appendChild(intro);
+  }
   let prev: ChatLine | undefined;
   for (let i = start; i < buf.lines.length; i++) {
     appendLineDom(buf.lines[i], prev, true);

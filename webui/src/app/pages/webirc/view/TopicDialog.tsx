@@ -1,6 +1,7 @@
 // Set the channel topic.
 // Markup only: the WebIRC controllers (webui/src/webirc/) find these
 // elements by id and wire them when the chat starts.
+import { Icon } from "../../../components/Icon.tsx";
 
 export function TopicDialog() {
   return (
@@ -19,11 +20,11 @@ export function TopicDialog() {
             </h2>
             <button
               type="button"
-              class="small"
+              class="ghost icon"
               id="btn-close-topic"
               aria-label="Close topic dialog"
             >
-              ×
+              <Icon name="x" size={18} />
             </button>
           </div>
           <form class="modal-body" id="topic-form">

@@ -304,6 +304,8 @@ handle_connection(
             end;
         {error, payload_too_large} ->
             send_json(Socket, 413, <<"Payload Too Large">>, #{error => <<"payload_too_large">>});
+        {error, {idle, _}} ->
+            ok;
         {error, _} ->
             send_json(Socket, 400, <<"Bad Request">>, #{error => <<"bad_request">>})
     end.
@@ -1384,6 +1386,13 @@ read_headers(Socket, Buf) ->
                     read_headers(Socket, <<Buf/binary, Chunk/binary>>);
                 {ok, _} ->
                     {error, payload_too_large};
+                {error, Reason} when Buf =:= <<>> ->
+                    %% Nothing was sent: a browser's preconnected socket that
+                    %% stayed idle, or one it closed. Answering 400 here would
+                    %% be read as the reply to the request the browser sends
+                    %% next on that socket (RFC 9112 section 9.5: close idle
+                    %% connections without a response).
+                    {error, {idle, Reason}};
                 {error, Reason} ->
                     {error, Reason}
             end

@@ -1,6 +1,7 @@
 // Settings dialog: General, Calls, and E2EE tabs.
 // Markup only: the WebIRC controllers (webui/src/webirc/) find these
 // elements by id and wire them when the chat starts.
+import { Icon } from "../../../components/Icon.tsx";
 
 export function SettingsDialog() {
   return (
@@ -19,11 +20,11 @@ export function SettingsDialog() {
             </h2>
             <button
               type="button"
-              class="small"
+              class="ghost icon"
               id="btn-close-settings"
               aria-label="Close settings"
             >
-              ×
+              <Icon name="x" size={18} />
             </button>
           </div>
           <div class="modal-tabs" role="tablist">

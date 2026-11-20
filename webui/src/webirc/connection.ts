@@ -106,10 +106,13 @@ export function metadataSubscribe(): void {
 
 export function setConnButtonState(offline: boolean): void {
   S.connOffline = offline;
+  $("chat-view").classList.toggle("offline", offline);
   const btn = $("btn-conn");
   const label = $("btn-conn-label");
+  // Offline, reconnecting is the one thing to do: the button turns primary.
   btn.classList.toggle("primary", offline);
-  btn.classList.toggle("danger", !offline);
+  btn.classList.toggle("ghost", !offline);
+  btn.classList.toggle("ghost-danger", !offline);
   $("icon-disconnect").classList.toggle("hidden", offline);
   $("icon-reconnect").classList.toggle("hidden", !offline);
   const text = offline ? t("btn.reconnect") : t("btn.disconnect");

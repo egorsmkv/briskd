@@ -1,6 +1,7 @@
 // Attachment menu: file, code snippet, voice message.
 // Markup only: the WebIRC controllers (webui/src/webirc/) find these
 // elements by id and wire them when the chat starts.
+import { Icon } from "../../../components/Icon.tsx";
 
 export function AttachDialog() {
   return (
@@ -19,11 +20,11 @@ export function AttachDialog() {
             </h2>
             <button
               type="button"
-              class="small"
+              class="ghost icon"
               id="btn-close-attach"
               aria-label="Close attachments"
             >
-              ×
+              <Icon name="x" size={18} />
             </button>
           </div>
           <div class="modal-body">

@@ -22,8 +22,8 @@ export const THEMES: ThemeMeta[] = [
     swatchBg: "#050a07",
     swatchAccent: "#00e64d",
   },
-  { id: "light", name: "Light", swatchBg: "#f4f6f9", swatchAccent: "#2563eb" },
-  { id: "dark", name: "Dark", swatchBg: "#0c1118", swatchAccent: "#3b82f6" },
+  { id: "light", name: "Light", swatchBg: "#f5f6f8", swatchAccent: "#2563eb" },
+  { id: "dark", name: "Dark", swatchBg: "#0b0e13", swatchAccent: "#2f6fe4" },
   { id: "nord", name: "Nord", swatchBg: "#2e3440", swatchAccent: "#88c0d0" },
   {
     id: "solarized-light",

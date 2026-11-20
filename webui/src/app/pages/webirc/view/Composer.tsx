@@ -1,6 +1,8 @@
 // Above and around the message box: reconnect bar, typing indicator, reply/edit banner, mention list, and the input bar.
 // Markup only: the WebIRC controllers (webui/src/webirc/) find these
-// elements by id and wire them when the chat starts.
+// elements by id and wire them when the chat starts. The input bar is one
+// rounded box (attach, voice, text, send) with a keyboard hint below it.
+import { Icon } from "../../../components/Icon.tsx";
 
 export function Composer() {
   return (
@@ -65,11 +67,11 @@ export function Composer() {
           </div>
           <button
             type="button"
-            class="small"
+            class="ghost icon small"
             id="btn-compose-cancel"
             aria-label="Cancel"
           >
-            ×
+            <Icon name="x" size={15} />
           </button>
         </div>
         <div
@@ -82,12 +84,12 @@ export function Composer() {
         <form class="input-bar" id="send-form">
           <button
             type="button"
-            class="small btn-plus hidden"
+            class="ghost icon btn-plus hidden"
             id="btn-attach-menu"
             aria-label="Attach"
             title="Attach file, code, or voice message"
           >
-            +
+            <Icon name="plus" size={18} />
           </button>
           <input type="file" id="inp-file" multiple class="hidden" />
           <button
@@ -132,8 +134,9 @@ export function Composer() {
             autocomplete="off"
             enterkeyhint="send"
             aria-label="Message"
-            placeholder="Message or /help (Shift+Enter for a new line, Tab to complete nicks)"
+            placeholder="Type a command, such as /join #channel or /help"
             data-i18n-placeholder="ph.msg"
+            aria-describedby="composer-hint"
           >
           </textarea>
           <button
@@ -160,6 +163,10 @@ export function Composer() {
             <span class="send-label" data-i18n="btn.send">Send</span>
           </button>
         </form>
+        <div class="composer-hint" id="composer-hint" data-i18n="composer.hint">
+          Enter to send · Shift+Enter for a new line · Tab completes names ·
+          /help for commands
+        </div>
       </div>
     </>
   );

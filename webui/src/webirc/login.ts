@@ -5,7 +5,7 @@ import { ircFold } from "../common/ircv3.ts";
 import { ensureBuf } from "./buffers.ts";
 import { connectSocket, stopReconnecting } from "./connection.ts";
 import { loadSession, pathToBuffer, saveSession } from "./session.ts";
-import { switchBuf } from "./sidebar.ts";
+import { showMyNick, switchBuf } from "./sidebar.ts";
 import { buffers, S } from "./state.ts";
 import { isChan } from "./util.ts";
 
@@ -43,7 +43,7 @@ export function startSession(opts: {
     }
     $("connect-view").style.display = "none";
     $("chat-view").classList.add("active");
-    $("my-nick").textContent = S.myNick;
+    showMyNick();
     if (S.desiredBuf && buffers.has(S.desiredBuf)) {
       switchBuf(S.desiredBuf);
       S.desiredBuf = "";
@@ -125,6 +125,14 @@ export function init(): void {
     }
   });
 
+  // The account and server fields sit in a disclosure: open it when one of
+  // them is invalid, or the browser would block a submit on a field the
+  // user cannot see.
+  const advanced = $<HTMLDetailsElement>("connect-advanced");
+  for (const id of ["inp-ws", "inp-acct", "inp-pass"]) {
+    $(id).addEventListener("invalid", () => advanced.open = true);
+  }
+
   // Auto-restore saved WebIRC session across page refreshes
   (function restoreSavedSession() {
     const saved = loadSession();
@@ -134,6 +142,7 @@ export function init(): void {
     $<HTMLInputElement>("inp-pass").value = saved.pass;
     $<HTMLInputElement>("inp-channels").value = saved.channels.join(",");
     $<HTMLInputElement>("inp-ws").value = saved.wsUrl;
+    if (saved.acct) advanced.open = true;
     const pathBuf = pathToBuffer(location.pathname);
     startSession({
       nick: saved.nick,

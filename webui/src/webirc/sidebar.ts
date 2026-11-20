@@ -24,7 +24,9 @@ import {
   presenceText,
   userTooltip,
 } from "./users.ts";
-import { isChan, nickColor } from "./util.ts";
+import { isChan } from "./util.ts";
+import { iconEl } from "../common/icons.ts";
+import { createAvatar } from "./chat/avatar.ts";
 
 export function closeDrawers(): void {
   $("sidebar-left").classList.remove("open");
@@ -70,6 +72,11 @@ export function switchBuf(key: string, updateUrl = true): void {
   S.activeBuf = key;
   buf.unread = 0;
   buf.mentions = 0;
+  $("chat-head").dataset.kind = buf.name === "*status"
+    ? "status"
+    : isChan(buf.name)
+    ? "channel"
+    : "dm";
   const titleEl = $("active-title");
   titleEl.dir = buf.name === "*status" ? "auto" : "ltr";
   titleEl.textContent = buf.name === "*status" ? t("status.title") : buf.name;
@@ -98,32 +105,71 @@ export function switchBuf(key: string, updateUrl = true): void {
   $<HTMLTextAreaElement>("inp-msg").focus();
 }
 
+/** Show our nickname in the header and on the sidebar's user card. */
+export function showMyNick(): void {
+  $("my-nick").textContent = S.myNick;
+  $("me-nick").textContent = S.myNick;
+  $("me-avatar").replaceChildren(createAvatar(S.myNick));
+}
+
+/** Make a row act as a button for the keyboard (Enter or Space). */
+function keyActivate(el: HTMLElement, fn: () => void): void {
+  el.tabIndex = 0;
+  el.onclick = fn;
+  el.onkeydown = (ev) => {
+    if (ev.target !== el) return;
+    if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      fn();
+    }
+  };
+}
+
+/** The glyph before a conversation: server, channel (or lock), or avatar. */
+function bufLead(buf: BufferState, key: string): HTMLElement {
+  const lead = document.createElement("span");
+  lead.className = "buf-lead";
+  if (key === "*status") {
+    lead.appendChild(iconEl("server", 15));
+  } else if (isChan(buf.name)) {
+    const locked = e2ee.isBufferEncrypted(buf.name);
+    lead.appendChild(iconEl(locked ? "lock" : "hash", 15));
+    if (locked) lead.classList.add("locked");
+  } else {
+    lead.classList.add("buf-lead-avatar");
+    lead.appendChild(createAvatar(buf.name));
+    const presence = presenceClass(buf.name);
+    if (presence) {
+      const dot = document.createElement("span");
+      dot.className = `buf-presence ${presence}`;
+      dot.title = presenceText(buf.name);
+      lead.appendChild(dot);
+    }
+  }
+  return lead;
+}
+
 export function buildBufRow(buf: BufferState, key: string): HTMLElement {
   const item = document.createElement("div");
-  item.className = "buf-item" + (key === S.activeBuf ? " active" : "");
+  const active = key === S.activeBuf;
+  item.className = "buf-item" + (active ? " active" : "") +
+    (buf.unread > 0 && !active ? " unread" : "");
+  item.setAttribute("role", "listitem");
+  if (active) item.setAttribute("aria-current", "page");
+  item.appendChild(bufLead(buf, key));
 
   const label = document.createElement("span");
   label.className = "buf-name";
-  if (key !== "*status" && e2ee.isBufferEncrypted(buf.name)) {
-    const lock = document.createElement("span");
-    lock.className = "buf-lock";
-    lock.textContent = "🔒";
-    label.appendChild(lock);
-  }
-  const presence = key !== "*status" && !isChan(buf.name)
-    ? presenceClass(buf.name)
-    : "";
-  if (presence) {
-    const dot = document.createElement("span");
-    dot.className = `buf-presence ${presence}`;
-    dot.title = presenceText(buf.name);
-    label.appendChild(dot);
-  }
   const nameSpan = document.createElement("span");
   nameSpan.dir = buf.name === "*status" ? "auto" : "ltr";
-  nameSpan.textContent = buf.name === "*status" ? t("status.short") : buf.name;
+  nameSpan.textContent = buf.name === "*status"
+    ? t("status.short")
+    : isChan(buf.name)
+    ? buf.name.replace(/^#/, "")
+    : displayNameOf(buf.name);
   label.appendChild(nameSpan);
   item.appendChild(label);
+  item.title = buf.name === "*status" ? t("status.title") : buf.name;
 
   const right = document.createElement("span");
   right.className = "buf-right";
@@ -131,6 +177,12 @@ export function buildBufRow(buf: BufferState, key: string): HTMLElement {
     const b = document.createElement("span");
     b.className = "buf-badge" + (buf.mentions > 0 ? " mention" : "");
     b.textContent = buf.unread > 99 ? "99+" : String(buf.unread);
+    b.setAttribute(
+      "aria-label",
+      buf.mentions > 0
+        ? t("badge.mentions", { count: buf.unread })
+        : t("badge.unread", { count: buf.unread }),
+    );
     right.appendChild(b);
   }
   if (key !== "*status") {
@@ -138,7 +190,8 @@ export function buildBufRow(buf: BufferState, key: string): HTMLElement {
     close.type = "button";
     close.className = "buf-close";
     close.title = isChan(buf.name) ? "Leave channel" : "Close conversation";
-    close.textContent = "×";
+    close.setAttribute("aria-label", close.title);
+    close.appendChild(iconEl("x", 14));
     close.onclick = (ev) => {
       ev.stopPropagation();
       if (isChan(buf.name)) {
@@ -151,14 +204,9 @@ export function buildBufRow(buf: BufferState, key: string): HTMLElement {
       }
     };
     right.appendChild(close);
-  } else {
-    const spacer = document.createElement("span");
-    spacer.className = "buf-close-spacer";
-    spacer.setAttribute("aria-hidden", "true");
-    right.appendChild(spacer);
   }
   item.appendChild(right);
-  item.onclick = () => switchBuf(key);
+  keyActivate(item, () => switchBuf(key));
   return item;
 }
 
@@ -191,6 +239,12 @@ export function roleRank(prefix: string): number {
   return 2;
 }
 
+/** Member list group of a channel prefix: operators, voiced, everyone else. */
+function roleGroup(prefix: string): "ops" | "voiced" | "members" {
+  const rank = roleRank(prefix);
+  return rank === 0 ? "ops" : rank === 1 ? "voiced" : "members";
+}
+
 export function renderMembers(): void {
   const buf = buffers.get(S.activeBuf);
   const list = $("members-list");
@@ -209,35 +263,59 @@ export function renderMembers(): void {
   $("members-title").textContent = t("members.count", {
     count: buf.members.size,
   });
+  if (sorted.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "members-empty";
+    empty.textContent = t("members.none");
+    list.appendChild(empty);
+    return;
+  }
   const amOp = isOperatorInBuffer(buf);
+  let group = "";
   for (const [nick, prefix] of sorted) {
+    const g = roleGroup(prefix);
+    if (g !== group) {
+      group = g;
+      const head = document.createElement("div");
+      head.className = "members-group";
+      const count = sorted.filter(([, p]) => roleGroup(p) === g).length;
+      head.textContent = `${t(`members.group.${g}`)} — ${count}`;
+      list.appendChild(head);
+    }
     const info = peekUser(nick);
     const row = document.createElement("div");
     row.className = "member-item" + (info?.away !== undefined ? " away" : "");
     row.title = userTooltip(nick);
-    const dot = document.createElement("span");
-    dot.className = "member-dot";
-    dot.style.backgroundColor = nickColor(nick);
-    row.appendChild(dot);
-
-    if (prefix) {
-      const role = document.createElement("span");
-      role.className = "member-role";
-      role.textContent = prefix;
-      row.appendChild(role);
+    const lead = document.createElement("span");
+    lead.className = "member-lead";
+    lead.appendChild(createAvatar(nick));
+    if (info?.away !== undefined) {
+      const dot = document.createElement("span");
+      dot.className = "buf-presence away";
+      lead.appendChild(dot);
     }
+    row.appendChild(lead);
+
     const name = document.createElement("span");
     name.className = "member-name";
     name.dir = "auto";
     name.textContent = displayNameOf(nick);
     row.appendChild(name);
+    if (prefix) {
+      const role = document.createElement("span");
+      role.className = "member-role";
+      role.textContent = prefix;
+      role.title = /[@&~]/.test(prefix)
+        ? t("members.role.op")
+        : t("members.role.voice");
+      row.appendChild(role);
+    }
     if (info?.bot) {
       const bot = document.createElement("span");
       bot.className = "msg-bot";
       bot.textContent = t("badge.bot");
       row.appendChild(bot);
     }
-
     const isSelf = ircFold(nick) === ircFold(S.myNick);
     if (amOp && !isSelf) {
       const acts = document.createElement("div");
@@ -245,7 +323,7 @@ export function renderMembers(): void {
       const hasOp = /[@&~]/.test(prefix || "");
       const hasVoice = /\+/.test(prefix || "");
       const mkBtn = (
-        label: string,
+        label: string | SVGSVGElement,
         title: string,
         cls: string,
         fn: () => void,
@@ -253,7 +331,9 @@ export function renderMembers(): void {
         const b = document.createElement("button");
         b.type = "button";
         b.className = `member-mod-btn ${cls}`;
-        b.textContent = label;
+        if (typeof label === "string") b.textContent = label;
+        else b.appendChild(label);
+        b.setAttribute("aria-label", title);
         b.title = title;
         b.onclick = (ev) => {
           ev.stopPropagation();
@@ -279,14 +359,14 @@ export function renderMembers(): void {
       );
       acts.appendChild(
         mkBtn(
-          "✕",
+          iconEl("x", 13),
           `Kick ${nick}`,
           "danger",
           () => sendRaw(`KICK ${buf.name} ${nick} :Removed by moderator`),
         ),
       );
       acts.appendChild(
-        mkBtn("⊘", `Kick & Ban ${nick}`, "danger", () => {
+        mkBtn(iconEl("ban", 13), `Kick & Ban ${nick}`, "danger", () => {
           sendRaw(`MODE ${buf.name} +b ${nick}!*@*`);
           sendRaw(`KICK ${buf.name} ${nick} :Banned by moderator`);
         }),
@@ -294,12 +374,12 @@ export function renderMembers(): void {
       row.appendChild(acts);
     }
 
-    row.onclick = () => {
+    keyActivate(row, () => {
       if (!isSelf) {
         ensureBuf(nick);
         switchBuf(ircFold(nick));
       }
-    };
+    });
     list.appendChild(row);
   }
 }
