@@ -3,5 +3,5 @@
     {vsn, "0.1.0"},
     {registered, [ircd_sup, ircd_state, ircd_sessions, ircd_links]},
     {mod, {ircd_app, []}},
-    {applications, [kernel, stdlib, crypto, public_key, ssl, gen_smtp, livery_s3]}
+    {applications, [kernel, stdlib, crypto, public_key, ssl, gen_smtp, hackney, livery_s3]}
 ]}.

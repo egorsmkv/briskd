@@ -178,7 +178,9 @@ event_playback(Port) ->
     _ = collect(Plain),
     send(Player, <<"TOPIC #events :a topic">>),
     send(Player, <<"PRIVMSG #events :spoken">>),
+    %% Typing indicators are ephemeral and are not stored; other TAGMSGs are.
     send(Player, <<"@+typing=active TAGMSG #events">>),
+    send(Player, <<"@+draft/react=ok TAGMSG #events">>),
     _ = collect(Player),
     _ = collect(Plain),
     send(Player, <<"CHATHISTORY LATEST #events * 20">>),
@@ -187,6 +189,8 @@ event_playback(Port) ->
     ?assert(has(Events, <<"TOPIC #events :a topic">>)),
     ?assert(has(Events, <<"PRIVMSG #events :spoken">>)),
     ?assert(has(Events, <<"TAGMSG #events">>)),
+    ?assert(has(Events, <<"+draft/react=ok">>)),
+    ?assertNot(has(Events, <<"+typing">>)),
     send(Plain, <<"CHATHISTORY LATEST #events * 20">>),
     Messages = collect(Plain),
     ?assert(has(Messages, <<"PRIVMSG #events :spoken">>)),

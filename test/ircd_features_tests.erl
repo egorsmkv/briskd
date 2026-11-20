@@ -110,10 +110,29 @@ cap_features_advertisement_test() ->
 
 reaction_persistence_test() ->
     Old = persistent_term:get({ircd_state, config}, undefined),
-    ok = mnesia:start(),
-    _ = mnesia:create_table(channel_history, [
-        {attributes, [channel, entries]}, {record_name, channel_history}
-    ]),
+    %% Start a RAM-only Mnesia in a scratch directory unless one is already
+    %% running, and stop it afterwards so later suites can start `ircd`.
+    Started = not lists:keymember(mnesia, 1, application:which_applications()),
+    Dir = filename:join(
+        "/tmp", "ircd-features-" ++ integer_to_list(erlang:unique_integer([positive]))
+    ),
+    case Started of
+        true ->
+            _ = application:load(mnesia),
+            ok = application:set_env(mnesia, dir, Dir),
+            ok = mnesia:start();
+        false ->
+            ok
+    end,
+    case
+        mnesia:create_table(channel_history, [
+            {attributes, [channel, entries]}, {record_name, channel_history}
+        ])
+    of
+        {atomic, ok} -> ok;
+        {aborted, {already_exists, channel_history}} -> ok
+    end,
+    ok = mnesia:wait_for_tables([channel_history], 5000),
     try
         persistent_term:put({ircd_state, config}, #{chathistory => true, history_limit => 50}),
         Key = <<"#react_persist_test">>,
@@ -151,5 +170,14 @@ reaction_persistence_test() ->
         case Old of
             undefined -> persistent_term:erase({ircd_state, config});
             _ -> persistent_term:put({ircd_state, config}, Old)
+        end,
+        case Started of
+            true ->
+                _ = mnesia:delete_table(channel_history),
+                stopped = mnesia:stop(),
+                _ = application:unset_env(mnesia, dir),
+                _ = file:del_dir_r(Dir);
+            false ->
+                ok
         end
     end.

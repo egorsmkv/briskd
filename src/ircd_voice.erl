@@ -248,7 +248,6 @@ delete(Id) when is_binary(Id) ->
                 true ->
                     case livery_s3:delete_object(client(Cfg), Bucket, Id) of
                         ok -> ok;
-                        {ok, _} -> ok;
                         {error, not_found} -> ok;
                         {error, Reason} -> {error, Reason}
                     end

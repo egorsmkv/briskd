@@ -850,7 +850,7 @@ request_password_reset_web(_, _, _) ->
 maybe_send_reset(Verification, Ttl, Email, RecoveryUrl) ->
     case ircd_account:find_by_email(Email) of
         {ok, #account{key = Folded, name = AccountName, email = StoredEmail}} ->
-            ensure_reset_table(),
+            _ = ensure_reset_table(),
             Code = verification_code(),
             Hash = crypto:hash(sha256, Code),
             Expires = erlang:system_time(millisecond) + Ttl * 1000,
@@ -884,7 +884,7 @@ complete_password_reset_web(Email0, Code0, NewPassword, PeerIP) when
                     EmailKey = string:lowercase(string:trim(Email0)),
                     CodeHash = crypto:hash(sha256, string:trim(Code0)),
                     Now = erlang:system_time(millisecond),
-                    ensure_reset_table(),
+                    _ = ensure_reset_table(),
                     case ets:lookup(ircd_password_reset, EmailKey) of
                         [{EmailKey, _Folded, AccountName, StoredHash, Expires}] when
                             Now =< Expires

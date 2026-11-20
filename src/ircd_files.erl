@@ -114,7 +114,7 @@ Falls back to `<<"file.bin">>` when empty.
 sanitize_filename(Name) when is_binary(Name) ->
     Base = strip_path(Name),
     Clean = <<<<C>> || <<C>> <= Base, is_safe_name_byte(C)>>,
-    Trimmed = string:trim(Clean, both, " ."),
+    Trimmed = iolist_to_binary(string:trim(Clean, both, " .")),
     case Trimmed of
         <<>> ->
             <<"file.bin">>;
@@ -253,7 +253,6 @@ delete(Id) when is_binary(Id) ->
                 true ->
                     case livery_s3:delete_object(client(Cfg), Bucket, Id) of
                         ok -> ok;
-                        {ok, _} -> ok;
                         {error, not_found} -> ok;
                         {error, Reason} -> {error, Reason}
                     end
