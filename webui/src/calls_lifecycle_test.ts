@@ -152,20 +152,33 @@ function setup(settings: Partial<CallAudioSettings> = {}) {
     play: () => Promise.resolve(),
   } as unknown as HTMLAudioElement;
   let current: CallAudioSettings = { ...DEFAULT_CALL_SETTINGS, ...settings };
+  const music: Array<{ track: FakeTrack; stopped: boolean }> = [];
   const calls = new CallManager({
     send: (l) => sent.push(l),
     onChange: () => {},
     onEnded: () => {},
     remoteAudio: () => audio,
     audio: () => current,
+    holdSource: () => {
+      const m = { track: new FakeTrack(), stopped: false };
+      music.push(m);
+      return {
+        track: m.track as unknown as MediaStreamTrack,
+        stop: () => {
+          m.stopped = true;
+          m.track.stop();
+        },
+      };
+    },
   });
   calls.enabled = true;
+  calls.holdSupported = true;
   const change = (patch: Partial<CallAudioSettings>) => {
     const previous = current;
     current = { ...current, ...patch };
     return calls.applyAudioSettings(previous);
   };
-  return { calls, sent, audio, change };
+  return { calls, sent, audio, change, music };
 }
 
 function chunks(kind: string, token: string): string[][] {
@@ -303,6 +316,89 @@ Deno.test("only the newest of two quick switches is kept", async () => {
     assert(tracks.length === 3, "three tracks opened");
     assert(sender.track === tracks[1], "newest switch wins");
     assert(tracks[2].stopped, "superseded track stopped");
+    calls.hangup();
+  });
+});
+
+Deno.test("hold sends music instead of the microphone; resume restores it", async () => {
+  await withFakes(async () => {
+    const { calls, sent, audio, music } = setup();
+    const token = await activeCall(calls);
+    const sender = FakePC.all[0].senders[0];
+    const mic = tracks[0];
+    calls.toggleMute(); // mute survives hold and resume
+    await calls.toggleHold();
+    assert(calls.state.held, "held");
+    assert(sent.includes(`CALL HOLD bob ${token}`), "HOLD sent");
+    assert(sender.track === (music[0].track as unknown), "music on sender");
+    assert(audio.muted === true, "other side muted while held");
+    assert(!mic.stopped, "microphone kept for resume");
+    await calls.toggleHold();
+    assert(!calls.state.held, "resumed");
+    assert(sent.includes(`CALL RESUME bob ${token}`), "RESUME sent");
+    assert(sender.track === mic, "microphone back on sender");
+    assert(!mic.enabled, "still muted");
+    assert(music[0].stopped, "music released on resume");
+    assert(audio.muted === false, "other side audible again");
+    calls.hangup();
+    assertReleased(audio, calls);
+  });
+});
+
+Deno.test("hanging up while on hold releases the hold music", async () => {
+  await withFakes(async () => {
+    const { calls, audio, music } = setup();
+    const token = await activeCall(calls);
+    await calls.toggleHold();
+    calls.handle("bob", ["HANGUP", "me", token, "normal"]);
+    assert(music[0].stopped, "music stopped");
+    assert(audio.muted === false, "audio element unmuted for the next call");
+    assertReleased(audio, calls);
+  });
+});
+
+Deno.test("switching microphone on hold keeps the music until resume", async () => {
+  await withFakes(async () => {
+    const { calls, change, music } = setup();
+    await activeCall(calls);
+    await calls.toggleHold();
+    await change({ inputId: "usb-mic" });
+    const sender = FakePC.all[0].senders[0];
+    assert(sender.track === (music[0].track as unknown), "music still sent");
+    assert(tracks[0].stopped, "old microphone released");
+    await calls.toggleHold();
+    assert(sender.track === tracks[1], "new microphone sent after resume");
+    calls.hangup();
+  });
+});
+
+Deno.test("hold from the other side is shown, and only while active", async () => {
+  await withFakes(async () => {
+    const { calls } = setup();
+    for (const p of chunks("OFFER", "incoming3")) calls.handle("alice", p);
+    calls.handle("alice", ["HOLD", "me", "incoming3"]);
+    assert(!calls.state.remoteHeld, "ignored before the call is active");
+    calls.decline();
+    const token = await activeCall(calls);
+    calls.handle("bob", ["HOLD", "me", "othertoken1"]);
+    assert(!calls.state.remoteHeld, "other token ignored");
+    calls.handle("bob", ["HOLD", "me", token]);
+    assert(calls.state.remoteHeld, "remote hold shown");
+    calls.handle("bob", ["RESUME", "me", token]);
+    assert(!calls.state.remoteHeld, "remote resume shown");
+    calls.hangup();
+  });
+});
+
+Deno.test("hold works locally when the server cannot relay it", async () => {
+  await withFakes(async () => {
+    const { calls, sent, music } = setup();
+    calls.holdSupported = false;
+    await activeCall(calls);
+    await calls.toggleHold();
+    assert(calls.state.held, "held");
+    assert(!sent.some((l) => l.startsWith("CALL HOLD")), "no HOLD line");
+    assert(music.length === 1, "music still sent");
     calls.hangup();
   });
 });

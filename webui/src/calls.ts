@@ -13,6 +13,7 @@ import {
   DEFAULT_CALL_SETTINGS,
   needsNewTrack,
 } from "./call_settings.ts";
+import { createHoldMusic, type HoldSource } from "./hold_music.ts";
 
 export const CALLS_CAP = "egorsmkv.github.io/calls";
 
@@ -35,6 +36,10 @@ export interface CallView {
   token: string;
   outgoing: boolean;
   muted: boolean;
+  /** We put the call on hold (hold audio is sent instead of the microphone). */
+  held: boolean;
+  /** The other side put the call on hold. */
+  remoteHeld: boolean;
   /** `performance.now()` when media connected; 0 before. */
   connectedAt: number;
 }
@@ -48,6 +53,8 @@ export interface CallHooks {
   remoteAudio(): HTMLAudioElement;
   /** Current audio preferences (devices, processing, bitrate, ring sound). */
   audio?(): CallAudioSettings;
+  /** Audio to send while on hold; defaults to the generated hold music. */
+  holdSource?(): HoldSource | null;
 }
 
 interface Assembly {
@@ -122,6 +129,8 @@ export class CallManager {
     token: "",
     outgoing: false,
     muted: false,
+    held: false,
+    remoteHeld: false,
     connectedAt: 0,
   };
   private pc: RTCPeerConnection | null = null;
@@ -131,7 +140,11 @@ export class CallManager {
   private tone: Tone | null = null;
   /** Bumped per microphone switch, so only the newest switch takes effect. */
   private trackGen = 0;
+  private holdMusic: HoldSource | null = null;
+  private holdBusy = false;
   enabled = false;
+  /** The server relays HOLD/RESUME (`hold` in the capability value). */
+  holdSupported = false;
 
   constructor(hooks: CallHooks) {
     this.hooks = hooks;
@@ -209,6 +222,56 @@ export class CallManager {
     );
   }
 
+  /**
+   * Put an active call on hold, or take it off hold. On hold the microphone
+   * track on the RTP sender is replaced by hold music (no renegotiation),
+   * the other side's audio is muted here, and the other side is told with
+   * `CALL HOLD`; resuming restores the microphone (keeping mute).
+   */
+  async toggleHold(): Promise<void> {
+    const pc = this.pc;
+    if (!pc || this.view.phase !== "active" || this.holdBusy) return;
+    const sender = pc.getSenders().find((x) => x.track?.kind === "audio") ??
+      pc.getSenders()[0];
+    if (!sender) return;
+    const { peer, token } = this.view;
+    const live = () => this.pc === pc && this.view.token === token;
+    this.holdBusy = true;
+    try {
+      if (!this.view.held) {
+        const music = (this.hooks.holdSource ?? createHoldMusic)();
+        this.holdMusic = music;
+        this.set({ held: true });
+        this.hooks.remoteAudio().muted = true;
+        try {
+          await sender.replaceTrack(music?.track ?? null);
+        } catch {
+          // Closed meanwhile; finish() releases the music.
+        }
+        if (!live()) {
+          music?.stop();
+          return;
+        }
+        if (this.holdSupported) this.hooks.send(`CALL HOLD ${peer} ${token}`);
+      } else {
+        this.set({ held: false });
+        this.hooks.remoteAudio().muted = false;
+        const mic = this.stream?.getAudioTracks()[0] ?? null;
+        try {
+          await sender.replaceTrack(mic);
+        } catch {
+          // Closed meanwhile.
+        }
+        this.stopHoldMusic();
+        if (live() && this.holdSupported) {
+          this.hooks.send(`CALL RESUME ${peer} ${token}`);
+        }
+      }
+    } finally {
+      this.holdBusy = false;
+    }
+  }
+
   toggleMute(): void {
     if (!this.stream) return;
     const muted = !this.view.muted;
@@ -228,7 +291,9 @@ export class CallManager {
     if (!pc || !this.stream) return;
     const next = this.settings();
     if (needsNewTrack(previous, next)) {
-      const sender = pc.getSenders().find((x) => x.track?.kind === "audio");
+      // The only sender is the audio one; on hold with silence it has no track.
+      const sender = pc.getSenders().find((x) => x.track?.kind === "audio") ??
+        pc.getSenders()[0];
       if (!sender) return;
       const gen = ++this.trackGen;
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -248,11 +313,15 @@ export class CallManager {
         return;
       }
       track.enabled = !this.view.muted;
-      try {
-        await sender.replaceTrack(track);
-      } catch (err) {
-        for (const t of stream.getTracks()) t.stop();
-        throw err;
+      // On hold the sender carries the hold music: keep it, and send the
+      // new microphone when the call is resumed.
+      if (!this.view.held) {
+        try {
+          await sender.replaceTrack(track);
+        } catch (err) {
+          for (const t of stream.getTracks()) t.stop();
+          throw err;
+        }
       }
       // finish() may have run during replaceTrack and released this.stream;
       // the new stream must not outlive the call.
@@ -294,6 +363,12 @@ export class CallManager {
         if (this.view.token === token && this.view.phase === "calling") {
           this.set({ phase: "ringing" });
           this.startTone("ringback");
+        }
+        return true;
+      case "HOLD":
+      case "RESUME":
+        if (this.view.token === token && this.view.phase === "active") {
+          this.set({ remoteHeld: sub === "HOLD" });
         }
         return true;
       case "REJECT":
@@ -518,6 +593,7 @@ export class CallManager {
 
   private finish(peer: string, summary: string): void {
     this.stopTone();
+    this.stopHoldMusic();
     if (this.pc) {
       this.pc.onconnectionstatechange = null;
       this.pc.ontrack = null;
@@ -530,6 +606,7 @@ export class CallManager {
     }
     const audio = this.hooks.remoteAudio();
     audio.srcObject = null;
+    audio.muted = false;
     this.remoteOffer = "";
     this.view = {
       phase: "idle",
@@ -537,6 +614,8 @@ export class CallManager {
       token: "",
       outgoing: false,
       muted: false,
+      held: false,
+      remoteHeld: false,
       connectedAt: 0,
     };
     this.hooks.onChange(this.state);
@@ -553,6 +632,11 @@ export class CallManager {
     const s = this.settings();
     if (kind === "ring" && !s.ringtone) return;
     this.tone = new Tone(kind, s.outputId);
+  }
+
+  private stopHoldMusic(): void {
+    this.holdMusic?.stop();
+    this.holdMusic = null;
   }
 
   private stopTone(): void {

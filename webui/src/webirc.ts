@@ -46,6 +46,16 @@ import {
   type CallView,
 } from "./calls.ts";
 import {
+  CONCAT_TAG,
+  MULTILINE_CAP,
+  MultilineAssembler,
+  multilineBytes,
+  type MultilineLimits,
+  parseMultilineCap,
+  splitMultiline,
+  utf8Bytes,
+} from "./common/multiline.ts";
+import {
   audioConstraints,
   type CallAudioSettings,
   canSelectOutput,
@@ -677,6 +687,9 @@ interface UserInfo {
 const MAX_USERS = 5000;
 const MONITOR_CHUNK = 20;
 const enabledCaps = new Set<string>();
+/** draft/multiline limits from CAP LS; null when not offered. */
+let multilineLimits: MultilineLimits | null = null;
+const multiline = new MultilineAssembler();
 const isupport = new Map<string, string>();
 const users = new Map<string, UserInfo>();
 /** Nicks we monitor automatically because a DM buffer is open. */
@@ -694,6 +707,7 @@ function capOn(cap: string): boolean {
 
 function resetIrcv3State(): void {
   enabledCaps.clear();
+  multiline.clear();
   isupport.clear();
   users.clear();
   monitored.clear();
@@ -996,6 +1010,14 @@ function callStatusText(view: CallView): string {
     case "connecting":
       return t("call.connecting");
     case "active":
+      // The duration keeps running on hold: the call is still connected.
+      if (view.held || view.remoteHeld) {
+        const d = callDuration(view);
+        const label = view.held
+          ? t("call.on_hold")
+          : t("call.remote_hold", { nick: displayNameOf(view.peer) });
+        return d ? `${label} · ${d}` : label;
+      }
       return callDuration(view) || t("call.connecting");
     default:
       return "";
@@ -1041,6 +1063,15 @@ function renderCall(view: CallView = calls.state): void {
       "hidden",
       !view.muted,
     );
+    const hold = $<HTMLButtonElement>("btn-call-hold");
+    hold.disabled = view.phase !== "active";
+    hold.setAttribute("aria-pressed", String(view.held));
+    hold.classList.toggle("on", view.held);
+    hold.title = view.held ? t("call.resume") : t("call.hold");
+    hold.setAttribute("aria-label", hold.title);
+    hold.querySelector(".icon-pause")?.classList.toggle("hidden", view.held);
+    hold.querySelector(".icon-play")?.classList.toggle("hidden", !view.held);
+    dock.classList.toggle("held", view.held || view.remoteHeld);
     $("btn-call-hangup").title = view.phase === "active" ||
         view.phase === "connecting"
       ? t("call.hangup")
@@ -1127,6 +1158,7 @@ $("btn-call-accept").onclick = () => {
 $("btn-call-decline").onclick = () => calls.decline();
 $("btn-call-hangup").onclick = () => calls.hangup();
 $("btn-call-mute").onclick = () => calls.toggleMute();
+$("btn-call-hold").onclick = () => void calls.toggleHold();
 $("call-dock-peer").onclick = () => {
   const peer = calls.state.peer;
   if (peer) {
@@ -1437,7 +1469,7 @@ function updateE2eeUi(): void {
   const buf = buffers.get(activeBuf);
   const btn = $("btn-e2ee");
   const form = $("send-form");
-  const inp = $<HTMLInputElement>("inp-msg");
+  const inp = $<HTMLTextAreaElement>("inp-msg");
   if (!buf || buf.name === "*status") {
     btn.style.display = "none";
     form.classList.remove("e2ee-active");
@@ -2222,7 +2254,7 @@ function switchBuf(key: string, updateUrl = true): void {
     }
     saveSession();
   }
-  $<HTMLInputElement>("inp-msg").focus();
+  $<HTMLTextAreaElement>("inp-msg").focus();
 }
 
 function buildBufRow(buf: BufferState, key: string): HTMLElement {
@@ -2511,18 +2543,25 @@ function metadataSubscribe(): void {
 }
 
 function handleMessage(raw: string): void {
-  const msg = parseIrc(raw);
+  let msg = parseIrc(raw);
   if (!msg) return;
-  const time = msg.tags.time;
-  const { command, params, nick } = msg;
-
-  if (command === "PING") {
-    sendRaw(`PONG :${params[0] || ""}`);
+  if (msg.command === "PING") {
+    sendRaw(`PONG :${msg.params[0] || ""}`);
     return;
   }
+  // E2EE first: encrypted envelopes travel in their own draft/multiline
+  // batches (tagged with the E2EE type), which the manager reassembles.
   if (e2ee.handleIrc(msg)) {
     return;
   }
+  // Other draft/multiline batches: lines are held until the batch ends, which
+  // is then handled as one PRIVMSG/NOTICE whose text has line breaks.
+  const assembled = multiline.feed(msg);
+  if (assembled.kind === "consumed") return;
+  if (assembled.kind === "complete") msg = assembled.message;
+  const time = msg.tags.time;
+  const { command, params, nick } = msg;
+
   if (command === "CAP") {
     const sub = (params[1] || "").toUpperCase();
     if (sub === "LS" || sub === "NEW") {
@@ -2534,6 +2573,15 @@ function handleMessage(raw: string): void {
         const capName = eq === -1 ? tok : tok.slice(0, eq);
         offered.push(capName);
         if (!advertisedCaps.includes(capName)) advertisedCaps.push(capName);
+        if (capName === CALLS_CAP) {
+          calls.holdSupported = eq !== -1 &&
+            tok.slice(eq + 1).split(",").includes("hold");
+        }
+        if (capName === MULTILINE_CAP) {
+          multilineLimits = eq === -1
+            ? null
+            : parseMultilineCap(tok.slice(eq + 1));
+        }
         if (capName === FILES_CAP && eq !== -1) {
           const m = /max-bytes=(\d+)/.exec(tok.slice(eq + 1));
           if (m) {
@@ -3804,9 +3852,29 @@ $<HTMLInputElement>("inp-member-filter").addEventListener("input", (ev) => {
   renderMembers();
 });
 
-const msgInp = $<HTMLInputElement>("inp-msg");
+const msgInp = $<HTMLTextAreaElement>("inp-msg");
+
+/** Grow the composer with its content, up to the CSS max-height. */
+function autosizeComposer(): void {
+  msgInp.style.height = "auto";
+  msgInp.style.height = `${msgInp.scrollHeight}px`;
+}
+msgInp.addEventListener("input", autosizeComposer);
 
 msgInp.addEventListener("keydown", (ev) => {
+  // Enter sends; Shift+Enter inserts a line break. Keys pressed while an
+  // input method is composing (e.g. CJK) belong to the IME.
+  if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
+    ev.preventDefault();
+    $<HTMLFormElement>("send-form").requestSubmit();
+    return;
+  }
+  // History only from the first or last line, so arrows still move the
+  // caret inside a multi-line message.
+  const caret = msgInp.selectionStart ?? 0;
+  const onFirstLine = !msgInp.value.slice(0, caret).includes("\n");
+  const onLastLine = !msgInp.value.slice(msgInp.selectionEnd ?? caret)
+    .includes("\n");
   if (ev.key === "Tab") {
     const buf = buffers.get(activeBuf);
     if (!buf || !isChan(buf.name)) return;
@@ -3822,13 +3890,14 @@ msgInp.addEventListener("keydown", (ev) => {
       const suffix = lastSpace === -1 ? ": " : " ";
       msgInp.value = val.slice(0, lastSpace + 1) + match + suffix;
     }
-  } else if (ev.key === "ArrowUp" && !ev.altKey) {
+  } else if (ev.key === "ArrowUp" && !ev.altKey && onFirstLine) {
     if (sentHistory.length > 0) {
       ev.preventDefault();
       histPos = Math.min(histPos + 1, sentHistory.length - 1);
       msgInp.value = sentHistory[sentHistory.length - 1 - histPos];
+      autosizeComposer();
     }
-  } else if (ev.key === "ArrowDown" && !ev.altKey) {
+  } else if (ev.key === "ArrowDown" && !ev.altKey && onLastLine) {
     if (histPos > 0) {
       ev.preventDefault();
       histPos -= 1;
@@ -3838,6 +3907,7 @@ msgInp.addEventListener("keydown", (ev) => {
       histPos = -1;
       msgInp.value = "";
     }
+    autosizeComposer();
   }
 });
 
@@ -3853,14 +3923,32 @@ document.addEventListener("keydown", (ev) => {
 
 $<HTMLFormElement>("send-form").addEventListener("submit", (ev) => {
   ev.preventDefault();
-  const raw = msgInp.value;
+  // Line breaks at the end are not part of the message.
+  const raw = msgInp.value.replace(/\r\n?/g, "\n").replace(/\s+$/, "");
   if (!raw.trim()) return;
+  const buf = buffers.get(activeBuf);
+  const multi = raw.includes("\n");
+  if (raw.startsWith("/") && multi) {
+    addLine(activeBuf, { text: t("ml.command"), kind: "err" });
+    return;
+  }
+  // Refuse before clearing the composer, so nothing typed is lost.
+  if (
+    multi && buf && buf.name !== "*status" && !raw.startsWith("/") &&
+    !e2ee.isBufferEncrypted(buf.name)
+  ) {
+    const problem = multilineProblem(buf.name, raw);
+    if (problem) {
+      addLine(activeBuf, { text: problem, kind: "err" });
+      return;
+    }
+  }
   msgInp.value = "";
+  autosizeComposer();
   sentHistory.push(raw);
   if (sentHistory.length > 100) sentHistory.shift();
   histPos = -1;
 
-  const buf = buffers.get(activeBuf);
   if (raw.startsWith("/")) {
     runSlashCommand(raw, buf);
     return;
@@ -3885,18 +3973,77 @@ $<HTMLFormElement>("send-form").addEventListener("submit", (ev) => {
   if (composeMode?.kind === "edit" && featureOn("editing")) {
     const targetId = composeMode.msgid;
     clearComposeMode();
-    sendRaw(`@${EDIT_TAG}=${targetId} PRIVMSG ${buf.name} :${raw}`);
+    sendText(buf.name, raw, `${EDIT_TAG}=${targetId}`);
     return;
   }
   if (composeMode?.kind === "reply" && featureOn("replies")) {
     const targetId = composeMode.msgid;
     clearComposeMode();
-    sendRaw(`@${REPLY_TAG}=${targetId} PRIVMSG ${buf.name} :${raw}`);
+    sendText(buf.name, raw, `${REPLY_TAG}=${targetId}`);
     return;
   }
   clearComposeMode();
-  sendRaw(`PRIVMSG ${buf.name} :${raw}`);
+  sendText(buf.name, raw);
 });
+
+// Room for the text of one PRIVMSG once the server adds our prefix (RFC 1459:
+// 512 bytes per line): about 400 bytes minus the target.
+function lineBudget(target: string): number {
+  return Math.max(100, 400 - utf8Bytes(target));
+}
+
+/** Lines sent one by one when the server has no draft/multiline. */
+const MAX_PLAIN_LINES = 10;
+
+/** Why `text` cannot be sent to `target` as a multi-line message, or "". */
+function multilineProblem(target: string, text: string): string {
+  const lines = splitMultiline(text, lineBudget(target));
+  if (capOn(MULTILINE_CAP) && multilineLimits) {
+    if (lines.length > multilineLimits.maxLines) {
+      return t("ml.too_many_lines", { max: multilineLimits.maxLines });
+    }
+    if (multilineBytes(lines) > multilineLimits.maxBytes) {
+      return t("ml.too_long", { max: multilineLimits.maxBytes });
+    }
+    return "";
+  }
+  const plain = lines.filter((l) => l.text.trim() !== "").length;
+  return plain > MAX_PLAIN_LINES
+    ? t("ml.unsupported", { max: MAX_PLAIN_LINES })
+    : "";
+}
+
+/**
+ * Send `text` as a PRIVMSG with optional message `tags` (`key=value;...`).
+ * Text with line breaks goes as one draft/multiline batch, with the tags on
+ * the opening BATCH line; without the capability each non-blank line becomes
+ * its own PRIVMSG (the tags on the first).
+ */
+function sendText(target: string, text: string, tags = ""): void {
+  if (!text.includes("\n")) {
+    sendRaw(`${tags ? `@${tags} ` : ""}PRIVMSG ${target} :${text}`);
+    return;
+  }
+  const lines = splitMultiline(text, lineBudget(target));
+  if (capOn(MULTILINE_CAP) && multilineLimits) {
+    const ref = Math.random().toString(36).slice(2, 10) || "ml";
+    sendRaw(
+      `${tags ? `@${tags} ` : ""}BATCH +${ref} ${MULTILINE_CAP} ${target}`,
+    );
+    for (const l of lines) {
+      const lineTags = l.concat ? `batch=${ref};${CONCAT_TAG}` : `batch=${ref}`;
+      sendRaw(`@${lineTags} PRIVMSG ${target} :${l.text}`);
+    }
+    sendRaw(`BATCH -${ref}`);
+    return;
+  }
+  let first = true;
+  for (const l of lines) {
+    if (!l.text.trim()) continue;
+    sendRaw(`${first && tags ? `@${tags} ` : ""}PRIVMSG ${target} :${l.text}`);
+    first = false;
+  }
+}
 
 type ComposeMode =
   | { kind: "reply"; msgid: string; nick: string; snippet: string }
@@ -3939,11 +4086,13 @@ function startEdit(entry: ChatLine): void {
   $("compose-banner-snippet").textContent = entry.text.slice(0, 100);
   $("compose-banner").classList.remove("hidden");
   msgInp.value = entry.text;
+  autosizeComposer();
   msgInp.focus();
 }
 
 $("btn-compose-cancel").onclick = () => {
   if (composeMode?.kind === "edit") msgInp.value = "";
+  autosizeComposer();
   clearComposeMode();
 };
 

@@ -294,6 +294,15 @@ live() ->
             )
         ),
 
+        %% A ringing call cannot be put on hold.
+        send(Alice, <<"CALL HOLD bob call0001\r\n">>),
+        ?assert(
+            has(
+                recv_until(Alice, <<"INVALID_STATE">>),
+                <<"FAIL CALL INVALID_STATE call0001">>
+            )
+        ),
+
         %% Carol cannot call Bob while he is in a call.
         send_sdp(Carol, <<"OFFER">>, <<"bob">>, <<"carolcall1">>, sdp(<<"audio">>)),
         ?assert(has(recv_until(Carol, <<"TARGET_BUSY">>), <<"FAIL CALL TARGET_BUSY carolcall1">>)),
@@ -306,6 +315,32 @@ live() ->
         ?assert(is_map_key(<<"to-tag">>, AnswerMsg)),
         AliceAnswer = recv_until(Alice, <<"CALL ANSWER alice call0001">>, fun sdp_complete/1),
         ?assertEqual(fake_sdp(<<"FROM-RTPENGINE-ANSWER">>), sdp_of(AliceAnswer, <<"ANSWER">>)),
+
+        %% Hold and resume go to the other party only, from either side; a
+        %% third user's HOLD with the same token is not a call of theirs.
+        send(Bob, <<"CALL HOLD alice call0001\r\n">>),
+        ?assert(
+            has(
+                recv_until(Alice, <<"CALL HOLD">>),
+                <<":bob!bob@127.0.0.1 CALL HOLD alice call0001">>
+            )
+        ),
+        send(Bob, <<"CALL RESUME alice call0001\r\n">>),
+        ?assert(
+            has(
+                recv_until(Alice, <<"CALL RESUME">>),
+                <<":bob!bob@127.0.0.1 CALL RESUME alice call0001">>
+            )
+        ),
+        send(Alice, <<"CALL HOLD bob call0001\r\n">>),
+        ?assert(
+            has(
+                recv_until(Bob, <<"CALL HOLD">>),
+                <<":alice!alice@127.0.0.1 CALL HOLD bob call0001">>
+            )
+        ),
+        send(Carol, <<"CALL HOLD bob call0001\r\n">>),
+        ?assert(has(recv_until(Carol, <<"UNKNOWN_CALL">>), <<"FAIL CALL UNKNOWN_CALL call0001">>)),
 
         %% Hang up: Bob is told, rtpengine deletes the call.
         send(Alice, <<"CALL HANGUP bob call0001 :normal\r\n">>),

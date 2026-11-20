@@ -15,6 +15,8 @@ CALL RINGING <nick> <token>                                       callee → cal
 CALL ANSWER  <nick> <token> <part> <total> :<base64 SDP chunk>   callee → caller
 CALL REJECT  <nick> <token> [:<reason>]                           callee → caller
 CALL HANGUP  <nick> <token> [:<reason>]                           either side
+CALL HOLD    <nick> <token>                                       either side
+CALL RESUME  <nick> <token>                                       either side
 ```
 
 The server relays each to the other party with that party's prefix
@@ -23,6 +25,11 @@ caller's `<token>`; after the `OFFER`, `<nick>` is informational, so a nick
 change does not break a call. Server-originated `HANGUP`s (ring timeout,
 `max_duration`, disconnect, media failure) come from the server name.
 Errors are `FAIL CALL <code> <token> :<text>`.
+
+`HOLD` and `RESUME` only tell the other party that a user put an active
+call on hold (and plays hold audio in place of the microphone) or took it off
+hold; the media path through rtpengine is unchanged, so the call keeps
+running and `max_duration` still applies.
 
 Process model: `command/3` runs inside `m:ircd_state`, validates syntax,
 resolves the callee among local users, checks both capabilities, and casts
@@ -68,11 +75,14 @@ start_link(Config) ->
 enabled() ->
     maps:get(calls, persistent_term:get({ircd_state, config}, #{}), null) =/= null.
 
--doc "Value of the `egorsmkv.github.io/calls` capability: protocol version and ring timeout.".
+-doc """
+Value of the `egorsmkv.github.io/calls` capability: protocol version, ring
+timeout, and `hold` (the server relays `HOLD` and `RESUME`).
+""".
 -spec cap_value() -> binary().
 cap_value() ->
     Calls = maps:get(calls, persistent_term:get({ircd_state, config}, #{})),
-    <<"v=1,ring=", (integer_to_binary(maps:get(ring_timeout, Calls)))/binary>>.
+    <<"v=1,ring=", (integer_to_binary(maps:get(ring_timeout, Calls)))/binary, ",hold">>.
 
 -doc """
 Handle `CALL` from a registered local client. Runs in `m:ircd_state`.
@@ -130,7 +140,11 @@ dispatch(Sub, [Nick, Token, PartBin, TotalBin, Chunk | _], #client{pid = Pid}, _
             fail(Pid, <<"INVALID_PARAMS">>, echo(Token), <<"Invalid CALL parameters">>)
     end;
 dispatch(Sub, [_Nick, Token | Rest], #client{pid = Pid}, _Server) when
-    Sub =:= <<"RINGING">>; Sub =:= <<"REJECT">>; Sub =:= <<"HANGUP">>
+    Sub =:= <<"RINGING">>;
+    Sub =:= <<"REJECT">>;
+    Sub =:= <<"HANGUP">>;
+    Sub =:= <<"HOLD">>;
+    Sub =:= <<"RESUME">>
 ->
     case ircd_call_proto:valid_token(Token) of
         true ->
@@ -148,7 +162,9 @@ dispatch(Sub, _Params, #client{pid = Pid}, _Server) when
     Sub =:= <<"ANSWER">>;
     Sub =:= <<"RINGING">>;
     Sub =:= <<"REJECT">>;
-    Sub =:= <<"HANGUP">>
+    Sub =:= <<"HANGUP">>;
+    Sub =:= <<"HOLD">>;
+    Sub =:= <<"RESUME">>
 ->
     fail(Pid, <<"INVALID_PARAMS">>, [], <<"Not enough parameters">>);
 dispatch(Sub, _Params, #client{pid = Pid}, _Server) ->
@@ -172,7 +188,9 @@ echo(Token) ->
 
 signal(<<"RINGING">>) -> ringing;
 signal(<<"REJECT">>) -> reject;
-signal(<<"HANGUP">>) -> hangup.
+signal(<<"HANGUP">>) -> hangup;
+signal(<<"HOLD">>) -> hold;
+signal(<<"RESUME">>) -> resume.
 
 %% The callee: a different local user that negotiated the capability.
 callee(Nick, Pid) ->
@@ -243,6 +261,9 @@ handle_cast({answer, Pid, Token, Part, Total, Chunk}, State) ->
     {noreply, answer_chunk(Pid, Token, Part, Total, Chunk, State)};
 handle_cast({ringing, Pid, Token, _}, State) ->
     {noreply, ringing(Pid, Token, State)};
+handle_cast({Hold, Pid, Token, _}, State) when Hold =:= hold; Hold =:= resume ->
+    hold(Hold, Pid, Token, State),
+    {noreply, State};
 handle_cast({reject, Pid, Token, Reason}, State) ->
     {noreply, reject(Pid, Token, Reason, State)};
 handle_cast({hangup, Pid, Token, Reason}, State) ->
@@ -468,6 +489,27 @@ ringing(Pid, Token, State) ->
             State;
         _ ->
             State
+    end.
+
+%% Relay HOLD or RESUME to the other party of an active call.
+hold(Kind, Pid, Token, State) ->
+    Line =
+        case Kind of
+            hold -> <<"HOLD">>;
+            resume -> <<"RESUME">>
+        end,
+    case lookup(Pid, Token, State) of
+        {ok, #{state := active, caller := Caller, callee := Callee}} ->
+            Other =
+                case Pid of
+                    Caller -> Callee;
+                    Callee -> Caller
+                end,
+            relay(Pid, Other, [Line], Token, none);
+        {ok, _} ->
+            fail(Pid, <<"INVALID_STATE">>, [Token], <<"Only an active call can be put on hold">>);
+        error ->
+            fail(Pid, <<"UNKNOWN_CALL">>, [Token], <<"No such call">>)
     end.
 
 reject(Pid, Token, Reason, State) ->

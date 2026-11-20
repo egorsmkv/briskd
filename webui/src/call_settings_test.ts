@@ -85,3 +85,15 @@ Deno.test("meter maps RMS to 0..100 on a 60 dB scale", () => {
   assert(meterLevel(2) === 100, "clamped");
   assert(meterLevel(0.0316) === 50, "-30 dB is half");
 });
+
+Deno.test("hold music loops over four chords with a bass note per chord", async () => {
+  const { holdNotes, midiToHz } = await import("./hold_music.ts");
+  assert(Math.abs(midiToHz(69) - 440) < 1e-9, "A4");
+  assert(holdNotes(0).bass !== undefined, "bass on the first step");
+  assert(holdNotes(1).bass === undefined, "no bass mid-chord");
+  assert(
+    JSON.stringify(holdNotes(0)) === JSON.stringify(holdNotes(32)),
+    "loops after 4 chords of 8 steps",
+  );
+  assert(holdNotes(8).melody !== holdNotes(0).melody, "chord changes");
+});

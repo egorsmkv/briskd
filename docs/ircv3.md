@@ -57,7 +57,10 @@ QUIT and JOIN. User mode `+B` marks a bot (`BOT=B`, WHOIS 335, WHO flag `B`).
 
 Messages: `echo-message` returns the sender's own messages with their
 `msgid`. `draft/multiline` batches (up to 4096 bytes and 100 lines) are
-delivered as batches to capable clients and as separate lines to others.
+delivered as batches to capable clients and as separate lines to others. WebIRC
+sends a message with line breaks (Shift+Enter, or pasted text) as one batch,
+cutting lines longer than about 400 bytes into `draft/multiline-concat`
+continuations, and shows received batches as one message.
 `CHATHISTORY` (`BEFORE`, `AFTER`, `LATEST`, `AROUND`, `BETWEEN`, `TARGETS`,
 by `timestamp=` or `msgid=`) returns history in a `chathistory` batch.
 Channel history is available to current members. Direct-message history is

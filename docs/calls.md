@@ -43,7 +43,7 @@ server: a user on a linked server cannot be called.
 | `require_account` | `false` | Only users logged in to an account may use `CALL`; calling a user who is not logged in fails with `TARGET_UNSUPPORTED` |
 
 With `calls` set, the server advertises the capability
-`egorsmkv.github.io/calls=v=1,ring=<ring_timeout>`. Changes need a restart
+`egorsmkv.github.io/calls=v=1,ring=<ring_timeout>,hold`. Changes need a restart
 (`REHASH` does not apply them).
 
 WebRTC needs a secure context: serve WebIRC over HTTPS (`wss_port` or a TLS
@@ -57,8 +57,12 @@ Open a private conversation and press **Call** in the header (or type
 `/call nick`). The other user sees an incoming-call dialog with **Accept** and
 **Decline**, a ring tone, and, when the tab is in the background and
 notifications are allowed, a desktop notification. During a call a floating
-bar shows the other user, the call state and duration, a mute button, and a
-hang-up button. `/hangup` ends the call. The conversation records how each
+bar shows the other user, the call state and duration, a mute button, a
+hold button, and a hang-up button. **Hold** sends a generated music loop to
+the other side in place of your microphone and silences their audio for you;
+they see "… put you on hold". **Resume** brings your microphone back (mute is
+kept). The call stays connected on hold, so its duration and `max_duration`
+keep counting. `/hangup` ends the call. The conversation records how each
 call ended ("Call ended (3:12)", "Missed call from alice", "Line busy").
 
 A user can be in one call at a time; a second caller is rejected as busy.
@@ -97,6 +101,8 @@ CALL RINGING <nick> <token>                           callee → caller
 CALL ANSWER  <nick> <token> <part> <total> :<chunk>   callee → caller
 CALL REJECT  <nick> <token> [:<reason>]               callee → caller
 CALL HANGUP  <nick> <token> [:<reason>]               either side
+CALL HOLD    <nick> <token>                           either side
+CALL RESUME  <nick> <token>                           either side
 ```
 
 `<token>` (8 to 32 letters and digits) is chosen by the caller and names the
@@ -107,6 +113,12 @@ sender's prefix:
 ```text
 :alice!a@host CALL OFFER bob Xk2r9QmT41 1 3 :dj0wDQpvPS0gNDYx...
 ```
+
+`HOLD` and `RESUME` are accepted only in an active call and relayed to the
+other party. They are notices: the hold audio itself is ordinary media that
+the client sends instead of its microphone (`RTCRtpSender.replaceTrack`), so
+rtpengine and the media path are unchanged. A server whose capability value
+lacks `hold` does not relay them; WebIRC then still sends the hold audio.
 
 The server ends calls itself with a `HANGUP` from the server name and one of
 these reasons: `no-answer` (ring timeout), `max-duration`, `disconnected`
@@ -127,7 +139,7 @@ Errors are standard replies, `FAIL CALL <code> [<token>] :<text>`:
 | `LIMIT_REACHED`, `RATE_LIMITED` | `max_calls` or `calls_per_minute` exceeded |
 | `INVALID_SDP` | The description is not valid base64 SDP with audio only |
 | `TIMEOUT` | A chunked description was not completed within 10 seconds |
-| `INVALID_STATE`, `UNKNOWN_CALL` | The command does not fit the call's state, or no such call |
+| `INVALID_STATE`, `UNKNOWN_CALL` | The command does not fit the call's state (for example `HOLD` before the call is answered), or no such call |
 | `MEDIA_ERROR` | rtpengine refused the description or did not answer |
 
 ## Server behavior
