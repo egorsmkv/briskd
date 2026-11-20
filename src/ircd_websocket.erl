@@ -71,12 +71,16 @@ handshake(Data, Origins) ->
 check(RequestLine, Headers, Origins, Rest) ->
     Upgrade = ircd_wire:lower(maps:get(<<"upgrade">>, Headers, <<>>)),
     Connection = ircd_wire:lower(maps:get(<<"connection">>, Headers, <<>>)),
-    Key = maps:get(<<"sec-websocket-key">>, Headers, undefined),
+    Key =
+        case maps:get(<<"sec-websocket-key">>, Headers, <<>>) of
+            Given when is_binary(Given) -> Given;
+            _ -> <<>>
+        end,
     Version = maps:get(<<"sec-websocket-version">>, Headers, undefined),
     Origin = maps:get(<<"origin">>, Headers, undefined),
     Upgradable =
         binary:match(RequestLine, <<"GET ">>) =:= {0, 4} andalso Upgrade =:= <<"websocket">> andalso
-            binary:match(Connection, <<"upgrade">>) =/= nomatch andalso is_binary(Key) andalso
+            binary:match(Connection, <<"upgrade">>) =/= nomatch andalso
             byte_size(Key) > 0 andalso byte_size(Key) =< 64,
     if
         not Upgradable ->

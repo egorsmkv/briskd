@@ -14,13 +14,14 @@
 %% `last` is the last activity time in seconds since the epoch.
 -record(activity, {pid :: pid(), last :: integer()}).
 %% `key` is {FoldedNick, -SecondsSinceEpoch, Unique}, so a key range scan is
-%% newest-first per nickname.
+%% newest-first per nickname. Only registered clients are recorded, so `user`
+%% and `real` are always set.
 -record(whowas, {
     key :: {binary(), integer(), pos_integer()},
     nick :: binary(),
-    user :: binary() | undefined,
+    user :: binary(),
     host :: binary(),
-    real :: binary() | undefined,
+    real :: binary(),
     server :: binary(),
     time :: integer()
 }).

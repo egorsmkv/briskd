@@ -445,13 +445,13 @@ drop_last_user(Turns) ->
     end.
 
 context_line(Nick, Target, true, _Bot) ->
-    Network = maps:get(network, persistent_term:get({ircd_state, config}, #{}), <<"IRC">>),
+    Network = maps:get(network, ircd_config:current_or_empty(), <<"IRC">>),
     <<"You are ", Nick/binary, ", an assistant in the IRC channel ", Target/binary, " on ",
         Network/binary,
         ". User messages are prefixed with the sender's nickname. Reply in plain text "
         "without Markdown; keep answers short.">>;
 context_line(Nick, Target, false, _Bot) ->
-    Network = maps:get(network, persistent_term:get({ircd_state, config}, #{}), <<"IRC">>),
+    Network = maps:get(network, ircd_config:current_or_empty(), <<"IRC">>),
     <<"You are ", Nick/binary, ", an assistant in a private IRC conversation with ", Target/binary,
         " on ", Network/binary, ". Reply in plain text without Markdown; keep answers short.">>.
 

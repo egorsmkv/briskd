@@ -194,7 +194,7 @@ consume_bucket(Units, LastMs, NowMs, Burst, Refill, WindowMs, Cost) ->
     end.
 
 config() ->
-    maps:get(flood, persistent_term:get({ircd_state, config}, #{}), default_config()).
+    maps:get(flood, ircd_config:current_or_empty(), default_config()).
 
 load_buckets(Pid, Config, Now) ->
     case ets:lookup(?TABLE, {conn, Pid}) of

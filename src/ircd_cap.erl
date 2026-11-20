@@ -492,7 +492,7 @@ sts_value(#{duration := Duration, preload := Preload}, true) ->
     end.
 
 config(Key, Default) ->
-    maps:get(Key, persistent_term:get({ircd_state, config}, #{}), Default).
+    maps:get(Key, ircd_config:current_or_empty(), Default).
 
 requested_version([<<"LS">>, Raw | _]) ->
     try binary_to_integer(Raw) of

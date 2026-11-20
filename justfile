@@ -48,10 +48,10 @@ lint:
     elp lint --no-connect --path test
     elp lint --no-connect --path include
 
-# Type-check with eqWAlizer (ELP). A report, not a gate: modules are not yet
-# typed to eqWAlizer's stricter rules.
+# Type-check src/ with eqWAlizer (ELP); fails on any finding. Test modules
+# are excluded in .elp.toml (they pass ill-typed input on purpose).
 eqwalize:
-    elp eqwalize-all --no-connect
+    elp eqwalize-all --no-connect --bail-on-error
 
 # Run the Erlang unit test suite (the web UI tests fetch the built assets).
 test: build-webui

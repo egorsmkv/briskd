@@ -73,7 +73,7 @@ start_link(Config) ->
 -doc "Whether voice calls are configured (the `calls` key is set).".
 -spec enabled() -> boolean().
 enabled() ->
-    maps:get(calls, persistent_term:get({ircd_state, config}, #{}), null) =/= null.
+    maps:get(calls, ircd_config:current_or_empty(), null) =/= null.
 
 -doc """
 Value of the `egorsmkv.github.io/calls` capability: protocol version, ring
@@ -81,8 +81,8 @@ timeout, and `hold` (the server relays `HOLD` and `RESUME`).
 """.
 -spec cap_value() -> binary().
 cap_value() ->
-    Calls = maps:get(calls, persistent_term:get({ircd_state, config}, #{})),
-    <<"v=1,ring=", (integer_to_binary(maps:get(ring_timeout, Calls)))/binary, ",hold">>.
+    #{calls := #{ring_timeout := Ring}} = ircd_config:current(),
+    <<"v=1,ring=", (integer_to_binary(Ring))/binary, ",hold">>.
 
 -doc """
 Handle `CALL` from a registered local client. Runs in `m:ircd_state`.
@@ -104,14 +104,11 @@ command([], Client, Server) ->
     ircd_state_send:numeric(Client, Server, <<"461">>, [<<"CALL">>], <<"Not enough parameters">>).
 
 caller_ok(Pid) ->
-    Calls = maps:get(calls, persistent_term:get({ircd_state, config}, #{})),
     case ircd_cap:enabled(Pid, ?CAP) of
         false ->
             {error, <<"NEED_CAPABILITY">>, <<"Negotiate egorsmkv.github.io/calls first">>};
         true ->
-            case
-                maps:get(require_account, Calls) andalso ircd_state_v3:account(Pid) =:= undefined
-            of
+            case needs_account() andalso ircd_state_v3:account(Pid) =:= undefined of
                 true -> {error, <<"ACCOUNT_REQUIRED">>, <<"Log in to make calls">>};
                 false -> ok
             end
@@ -220,8 +217,8 @@ callee(Nick, Pid) ->
     end.
 
 needs_account() ->
-    Calls = maps:get(calls, persistent_term:get({ircd_state, config}, #{})),
-    maps:get(require_account, Calls).
+    #{calls := #{require_account := Required}} = ircd_config:current(),
+    Required.
 
 cast(Msg) ->
     gen_server:cast(?MODULE, Msg).

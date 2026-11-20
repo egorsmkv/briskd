@@ -43,7 +43,7 @@ If `just` is installed, `just --list` shows the available commands:
 | `just xref` | Check for undefined and deprecated calls |
 | `just dialyzer` | Run Dialyzer with strict warnings |
 | `just lint` | Lint `src/`, `test/`, and `include/` with ELP; fails on any diagnostic |
-| `just eqwalize` | Type-check with eqWAlizer (ELP); a report, not a gate |
+| `just eqwalize` | Type-check `src/` with eqWAlizer (ELP); fails on any finding |
 | `just test` | Run the EUnit suite, including the two-server interop test |
 | `just cover` | Run the suite with coverage; fail below 90% |
 | `just docs` | Build the HTML documentation into `doc/` |
@@ -77,11 +77,25 @@ the eqWAlizer type checker, and a language server for editors.
       elp lint --no-connect --path src --diagnostic-filter W0032 --apply-fix --one-shot
   ```
 
-- `just eqwalize` type-checks every module with eqWAlizer, which is stricter
-  than Dialyzer (it reports any expression whose type is wider than the spec
-  expects; about 350 findings today, mostly `incompatible_types` in the state
-  modules). It is not part of CI. To adopt it module by module, fix a
-  module's findings and keep it clean.
+- `just eqwalize` type-checks `src/` with eqWAlizer and runs in CI. It is
+  stricter than Dialyzer: an expression whose type is wider than the spec
+  expects is an error, so `term()` must be narrowed before use. Test modules
+  are excluded in `.elp.toml` because they pass ill-typed input on purpose.
+- Keep the code typed rather than suppressed:
+  - Read the running configuration with `ircd_config:current/0` (typed as
+    `ircd_config:config()`), or `current_or_empty/0` where code also runs
+    before the server starts; write it only with `ircd_config:store/1`.
+  - Per-connection state goes through `ircd_conn:get/2,3` and `put/3`, whose
+    specs give each key its value type; add a new key to `ircd_conn:key()`
+    and to those specs.
+  - Bind a Mnesia row as `[#client{} = Client]`, not `[Client]`, and list a
+    table's keys with `ircd_state:table_keys/1`.
+  - Narrow untyped input (decoded JSON, `gen_tcp:recv/3` data, ETS rows)
+    with a guard (`is_binary/1`, `is_integer/1`) where it enters.
+- An `% eqwalizer:ignore` needs a reason and, since ELP flags it (W0074), an
+  `% elp:ignore W0074 (reason)` above it. Two remain: `ircd_wire:retain/1`
+  (a generic identity eqWAlizer cannot express) and the STARTTLS
+  `ssl:handshake/3` call (its option types are not exported by `ssl`).
 
 Editors: install the "Erlang Language Platform" extension in VS Code
 (`erlang-language-platform.erlang-language-platform`), or point an LSP client
@@ -143,8 +157,8 @@ Python clients that do X3DH, the Double Ratchet, and Sender Keys against them
 ## Continuous integration
 
 GitHub Actions builds the development image from the [Dockerfile](https://github.com/egorsmkv/irc-server/blob/main/Dockerfile)
-and runs `just format-check`, `just lint` (ELP), and `just test` in that
-image. The image pins the same OTP, Rebar3, `just`, Deno, and ELP versions as
+and runs `just format-check`, `just lint` and `just eqwalize` (ELP), and
+`just test` in that image. The image pins the same OTP, Rebar3, `just`, Deno, and ELP versions as
 local development. Two more jobs run `test/e2ee/run`, the end-to-end
 encryption tests on two linked servers, and `test/calls/run`, the voice call
 test with rtpengine and WebRTC clients.

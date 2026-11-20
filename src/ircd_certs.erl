@@ -62,8 +62,8 @@ check_now() ->
 -spec check_async() -> ok.
 check_async() ->
     case whereis(?MODULE) of
-        undefined -> ok;
-        Pid -> gen_server:cast(Pid, check)
+        Pid when is_pid(Pid) -> gen_server:cast(Pid, check);
+        undefined -> ok
     end.
 
 -doc """
@@ -106,7 +106,7 @@ handle_call(_, _From, State) ->
 handle_cast(check, #{interval := OldInterval} = State) ->
     {_, Checked} = check(State),
     NewInterval = maps:get(
-        tls_reload_interval, persistent_term:get({ircd_state, config}, #{}), OldInterval
+        tls_reload_interval, ircd_config:current_or_empty(), OldInterval
     ),
     Next =
         case NewInterval =:= OldInterval of

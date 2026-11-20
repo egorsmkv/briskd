@@ -83,6 +83,11 @@ channel. Empty non-predefined channels without remote members are bounded by
 ]).
 -include("ircd_state.hrl").
 
+%% A message body: `none` for TAGMSG, the text of a PRIVMSG or NOTICE, or a
+%% draft/multiline batch as {Concat, Line} pairs in order.
+-type body() :: none | binary() | {multiline, [{boolean(), binary()}]}.
+-export_type([body/0]).
+
 -doc """
 Store or delete a channel whose last local member has left.
 
@@ -92,7 +97,7 @@ channels are kept when retention is `channels` or the channel is configured
 in `channels`, so a predefined channel stays available. Otherwise the
 channel row, its message history, and its metadata are deleted.
 """.
--spec release_if_empty(#channel{}, term()) -> ok.
+-spec release_if_empty(#channel{}, #{pid() => [channel_role()]}) -> ok.
 release_if_empty(#channel{key = Key, name = <<$!, _/binary>>} = Channel, Remaining) ->
     note_channel_empty(Key),
     mnesia:dirty_write(track_opless(Channel, Remaining)),
@@ -170,7 +175,7 @@ index_safe_channels() ->
                             ok
                     end
                 end,
-                mnesia:dirty_all_keys(channel)
+                ircd_state:table_keys(channel)
             )
     end.
 
@@ -212,11 +217,11 @@ their count exceeds `max_empty_channels` (default 1000).
 -spec prune_empty_channels() -> ok.
 prune_empty_channels() ->
     Max = maps:get(
-        max_empty_channels, persistent_term:get({ircd_state, config}, #{}), 1000
+        max_empty_channels, ircd_config:current_or_empty(), 1000
     ),
     Empty = [
         {has_retained_state(Channel), empty_since(Key, Created), Key, Channel}
-     || Key <- mnesia:dirty_all_keys(channel),
+     || Key <- ircd_state:table_keys(channel),
         [#channel{members = Members, created = Created} = Channel] <- [
             mnesia:dirty_read(channel, Key)
         ],
@@ -263,7 +268,7 @@ prune_invited(Pid) when is_pid(Pid) ->
                     ok
             end
         end,
-        mnesia:dirty_all_keys(channel)
+        ircd_state:table_keys(channel)
     ).
 
 -doc """
@@ -360,7 +365,7 @@ monotonic deadline passes a uniformly chosen local member is given
 reop_channels(Server) ->
     Now = erlang:system_time(second),
     Ttl = maps:get(
-        empty_channel_ttl, persistent_term:get({ircd_state, config}, #{}), 86400
+        empty_channel_ttl, ircd_config:current_or_empty(), 86400
     ),
     lists:foreach(
         fun(Key) ->
@@ -378,7 +383,7 @@ reop_channels(Server) ->
                     ok
             end
         end,
-        mnesia:dirty_all_keys(channel)
+        ircd_state:table_keys(channel)
     ).
 
 maybe_expire_empty(_Channel, _Now, 0) ->
@@ -471,7 +476,7 @@ operator), the join is propagated to peers, members receive `JOIN` (and
 332 RPL_TOPIC and 333 RPL_TOPICWHOTIME when a topic is set, the NAMES reply
 (unless `no-implicit-names`), metadata, and history replay.
 """.
--spec join_channels([binary()], term(), term(), term()) -> ok.
+-spec join_channels([binary()], [binary()], pid(), binary()) -> ok.
 join_channels([], _, _, _) ->
     ok;
 join_channels([Name | Names], Keys, Pid, Server) ->
@@ -544,7 +549,7 @@ scan_safe_short(Wanted) ->
     case
         [
             Name
-         || Key <- mnesia:dirty_all_keys(channel),
+         || Key <- ircd_state:table_keys(channel),
             [#channel{name = <<$!, _Id:5/binary, ExistingShort/binary>> = Name}] <-
                 [mnesia:dirty_read(channel, Key)],
             ircd_wire:fold(ExistingShort) =:= Wanted
@@ -572,7 +577,7 @@ safe_channel_id(Value, Alphabet, Acc) ->
 add_member(Key, Name, #client{pid = Pid} = Client, Server, Password) ->
     {Channel, IsNew} =
         case mnesia:dirty_read(channel, Key) of
-            [Existing] ->
+            [#channel{} = Existing] ->
                 {Existing, false};
             [] ->
                 {
@@ -725,7 +730,7 @@ Remove a local client from a channel; see `leave/6`.
 
 `Notify` controls both the local notice and peer propagation.
 """.
--spec leave(binary(), #client{}, binary(), none | iodata(), boolean()) -> ok.
+-spec leave(binary(), #client{}, binary(), none | binary(), boolean()) -> ok.
 leave(Key, Client, Command, Reason, Notify) ->
     leave(Key, Client, Command, Reason, Notify, Notify).
 
@@ -741,7 +746,7 @@ member is removed, the operatorless deadline is updated, an emptied channel
 is handled by `release_if_empty/2`, and the channel is removed from the
 client's list.
 """.
--spec leave(binary(), #client{}, binary(), none | iodata(), boolean(), boolean()) -> ok.
+-spec leave(binary(), #client{}, binary(), none | binary(), boolean(), boolean()) -> ok.
 leave(Key, #client{pid = Pid} = Client, Command, Reason, Notify, Propagate) ->
     [#channel{name = Name, members = Members, flags = Flags} = Channel] =
         mnesia:dirty_read(channel, Key),
@@ -802,7 +807,7 @@ kicked member is announced to the channel (only to the kicker and target on a
 member on another server is removed from the `remote_channel` row; its home
 server removes it there when the propagated `KICK` arrives.
 """.
--spec kick(term(), [binary()], term(), term(), term()) -> ok.
+-spec kick(binary(), [binary()], binary(), #client{}, binary()) -> ok.
 kick(_, [], _, _, _) ->
     ok;
 kick(Name, [Nick | Nicks], Reason, #client{pid = Pid} = Client, Server) ->
@@ -952,7 +957,7 @@ Local session pids that should see a `NICK` change by `Client`.
 The client itself plus every local member of its channels, excluding
 anonymous `+a` and quiet `+q` channels. The list is sorted and unique.
 """.
--spec nick_recipients(#client{}) -> [term(), ...].
+-spec nick_recipients(#client{}) -> [pid(), ...].
 nick_recipients(#client{pid = Pid, channels = Channels}) ->
     lists:usort([
         Pid
@@ -1047,7 +1052,9 @@ capability.
 
 `NOTICE` failures are silent.
 """.
--spec deliver_body(binary(), binary(), term(), #client{}, binary(), term()) -> ok.
+-spec deliver_body(binary(), binary(), body(), #client{}, binary(), [
+    {binary(), undefined | binary()}
+]) -> ok.
 deliver_body(Command, Target, Body, #client{pid = Pid} = Client, Server, ClientTags) ->
     MsgId = ircd_state_send:msgid(),
     Now = erlang:system_time(millisecond),
@@ -1233,7 +1240,7 @@ message_error(_, Client, Server, Number, Middle, Text) ->
 -doc """
 Record a channel `PRIVMSG` or `NOTICE` accepted from a server peer; see `note_channel_history/5`.
 """.
--spec note_channel_history(binary(), binary(), undefined | binary(), none | iodata()) -> ok.
+-spec note_channel_history(binary(), binary(), binary(), none | iodata()) -> ok.
 note_channel_history(Key, Command, Prefix, Text) ->
     note_channel_history(Key, Command, Prefix, Text, []).
 
@@ -1247,7 +1254,7 @@ present (a line without `msgid` is stored without one; a missing or invalid
 A non-binary body, such as `TAGMSG`'s `none`, is not recorded. The body is
 never logged.
 """.
--spec note_channel_history(binary(), binary(), undefined | binary(), none | iodata(), [
+-spec note_channel_history(binary(), binary(), binary(), none | iodata(), [
     {binary(), undefined | binary()}
 ]) -> ok.
 note_channel_history(Key, Command, Prefix, Text, Tags) when is_binary(Text) ->
@@ -1294,7 +1301,7 @@ status (482 ERR_CHANOPRIVSNEEDED). A new topic is stored with its setter and tim
 broadcast to members, recorded in history, and propagated to peers. When the
 local row has no topic, the topic reported by a peer is shown.
 """.
--spec topic(binary(), term(), #client{}, binary()) -> ok.
+-spec topic(binary(), [binary()], #client{}, binary()) -> ok.
 topic(Name, Rest, #client{pid = Pid} = Client, Server) ->
     case mnesia:dirty_read(channel, ircd_wire:fold(Name)) of
         [#channel{name = Canonical, members = Members, flags = Flags} = Channel] ->
@@ -1553,8 +1560,8 @@ names_unattached(#client{pid = RequesterPid}, Server) ->
     Requester = ircd_state_client:client(RequesterPid),
     Entries = lists:sort([
         Member#client.nick
-     || Pid <- mnesia:dirty_all_keys(client),
-        [Member] <- [mnesia:dirty_read(client, Pid)],
+     || Pid <- ircd_state_client:pids(),
+        [#client{} = Member] <- [mnesia:dirty_read(client, Pid)],
         ircd_state_client:ready(Member),
         ircd_state_client:user_visible(Member, Requester),
         %% Only users on no channel are listed under `*`; a user who is only
@@ -1570,11 +1577,11 @@ True when channel member `Pid` may be listed to `Requester`.
 every member; otherwise the rule of `ircd_state_client:user_visible/2`
 applies.
 """.
--spec visible_member(pid(), #client{}, map()) -> boolean().
+-spec visible_member(pid(), #client{}, #{pid() => [channel_role()]}) -> boolean().
 visible_member(Pid, Requester, Members) ->
     maps:is_key(Requester#client.pid, Members) orelse
         case mnesia:dirty_read(client, Pid) of
-            [Member] -> ircd_state_client:user_visible(Member, Requester);
+            [#client{} = Member] -> ircd_state_client:user_visible(Member, Requester);
             [] -> false
         end.
 
@@ -1587,7 +1594,7 @@ would carry about 370 octets of names, so each reply stays under the
 (including flags reported by peers), and `=` otherwise. Sends nothing for an
 empty list.
 """.
--spec names_lines([binary()], [term()], term(), term(), term(), term()) -> ok.
+-spec names_lines([binary()], [binary()], non_neg_integer(), binary(), #client{}, binary()) -> ok.
 names_lines([], [], _, _, _, _) ->
     ok;
 names_lines([], Acc, _, Name, Client, Server) ->
@@ -1917,7 +1924,7 @@ remember_remote_invite(NickKey, Name) ->
     Key = ircd_wire:fold(Name),
     Channel =
         case mnesia:dirty_read(remote_channel, Key) of
-            [Existing] -> Existing;
+            [#remote_channel{} = Existing] -> Existing;
             [] -> #remote_channel{key = Key, name = Name}
         end,
     Invited = Channel#remote_channel.invited,
@@ -1940,7 +1947,7 @@ notify_invite(
 
 invite_origin_prefix(Channel, Client) ->
     case mnesia:dirty_read(channel, ircd_wire:fold(Channel)) of
-        [Record] -> channel_origin_prefix(Record, Client);
+        [#channel{} = Record] -> channel_origin_prefix(Record, Client);
         [] -> ircd_state_send:prefix(Client)
     end.
 
@@ -1975,7 +1982,7 @@ row. Applied changes are announced
 as one `MODE` line to members, recorded in history (except key changes), and
 propagated to peers.
 """.
--spec mode_command(binary(), term(), #client{}, binary()) -> ok.
+-spec mode_command(binary(), [binary()], #client{}, binary()) -> ok.
 mode_command(Target, Rest, Client, Server) ->
     case ircd_wire:channel(Target) of
         true -> channel_mode(Target, Rest, Client, Server);
@@ -2266,7 +2273,7 @@ change_modes([Mode | Rest], Action, Args, Channel, Client, Server) ->
             %% `+o`/`+v` on a member of another server: the role lives in the
             %% `remote_channel` row; the change is announced like a local one.
             case mnesia:dirty_read(remote_channel, Updated#remote_channel.key) of
-                [Updated] ->
+                [#remote_channel{} = Updated] ->
                     ok;
                 _ ->
                     mnesia:dirty_write(Updated),
@@ -2525,7 +2532,7 @@ move to the new key. `draft/channel-rename` clients see `RENAME`; other
 members see `PART`, then `JOIN` with the topic and NAMES reply. A case-only
 rename sends no fallback.
 """.
--spec rename(term(), #client{}, binary()) -> ok.
+-spec rename([binary()], #client{}, binary()) -> ok.
 rename([Old, New | Rest], #client{pid = Pid} = Client, Server) ->
     Reason =
         case Rest of
@@ -2630,7 +2637,7 @@ apply_rename(
                 maps:keys(Members)
             ),
             case mnesia:dirty_read(channel_history, OldKey) of
-                [History] ->
+                [#channel_history{} = History] ->
                     mnesia:dirty_delete(channel_history, OldKey),
                     mnesia:dirty_write(History#channel_history{channel = NewKey});
                 [] ->
@@ -2658,7 +2665,7 @@ apply_rename(
             lists:foreach(
                 fun(Pid) ->
                     case mnesia:dirty_read(client, Pid) of
-                        [Member] ->
+                        [#client{real = Real} = Member] when is_binary(Real) ->
                             Self = ircd_state_send:prefix(Member),
                             ircd_state_send:send(Pid, Self, <<"PART">>, [OldName], PartReason),
                             ircd_state_v3:join_broadcast(
@@ -2666,7 +2673,7 @@ apply_rename(
                                 Self,
                                 Name,
                                 ircd_state_v3:account(Pid),
-                                Member#client.real
+                                Real
                             ),
                             join_topic(Renamed, Member, Server),
                             ircd_state_history:markread_on_join(Pid, Name, Server),

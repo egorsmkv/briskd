@@ -32,11 +32,11 @@ The count and the start run under one `global:trans/2` lock, so concurrent
 listeners cannot exceed the limit. On success the caller still owns the
 socket and must transfer it to the new process.
 """.
--spec start_child(atom(), term(), binary()) -> supervisor:startchild_ret().
+-spec start_child(atom(), term(), binary()) -> {ok, pid()} | {error, term()}.
 start_child(Kind, Socket, Peer) ->
     %% TCP and TLS listeners can accept concurrently, so serialize the check
     %% and child start to make the configured limit strict.
-    global:trans({?MODULE, self()}, fun() ->
+    Result = global:trans({?MODULE, self()}, fun() ->
         Counts = supervisor:count_children(?MODULE),
         Active = proplists:get_value(active, Counts, 0),
         Limit = persistent_term:get({?MODULE, max_clients}),
@@ -53,7 +53,14 @@ start_child(Kind, Socket, Peer) ->
                     }
                 )
         end
-    end).
+    end),
+    case Result of
+        {ok, Pid} when is_pid(Pid) -> {ok, Pid};
+        {error, Reason} -> {error, Reason};
+        %% `aborted` (global:trans/2 gave up) or an unexpected start result.
+        Other -> {error, Other}
+    end.
+
 %% Initialize the supervisor and publish its admission limit to session admission.
 -doc false.
 init(MaxClients) ->

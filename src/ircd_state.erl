@@ -34,6 +34,7 @@
     retention/0,
     administrator/1,
     predefined_channel/1,
+    table_keys/1,
     store_accounts/1,
     seed_channels/0,
     signup_account/4,
@@ -45,10 +46,9 @@
     wildcard_match/2
 ]).
 -include("ircd_state.hrl").
-%% Used by record_info(fields, ...) when the Mnesia tables are created, which
-%% ELP's unused-include check does not count.
-% elp:ignore W0020 (record_info/2 use)
 -include("ircd_account.hrl").
+%% Used only by record_info(fields, ...) when the Mnesia tables are created,
+%% which ELP's unused-include check does not count.
 % elp:ignore W0020 (record_info/2 use)
 -include("ircd_e2ee.hrl").
 
@@ -194,7 +194,7 @@ command_as(Primary, Command, Params, Bytes, Tags) ->
 Run an administrative control action from `m:ircd_ctl` inside the `ircd_state`
 process so state writes stay serialized.
 """.
--spec ctl(term()) -> term().
+-spec ctl(ircd_ctl:state_action()) -> {ok, map()} | {error, term()}.
 ctl(Action) ->
     gen_server:call(?MODULE, {ctl, Action}, 15000).
 
@@ -364,7 +364,7 @@ init(#{name := Name} = Config) ->
     ensure_ets(ircd_safe_channels),
     ensure_ets(ircd_empty_channels),
     ok = ircd_flood:init(),
-    persistent_term:put({?MODULE, config}, Config),
+    ircd_config:store(Config),
     persistent_term:put({?MODULE, config_path}, maps:get(config_path, Config)),
     persistent_term:put({?MODULE, motd_file}, maps:get(motd_file, Config, null)),
     persistent_term:put({?MODULE, client_password}, maps:get(client_password, Config, null)),
@@ -583,13 +583,13 @@ reset_channels() ->
             lists:foreach(
                 fun(Key) ->
                     case mnesia:dirty_read(channel, Key) of
-                        [Channel] ->
+                        [#channel{} = Channel] ->
                             mnesia:dirty_write(cleared_membership(Channel));
                         [] ->
                             ok
                     end
                 end,
-                mnesia:dirty_all_keys(channel)
+                table_keys(channel)
             ),
             lists:foreach(
                 fun(Key) ->
@@ -598,7 +598,7 @@ reset_channels() ->
                         [_] -> ok
                     end
                 end,
-                mnesia:dirty_all_keys(channel_history)
+                table_keys(channel_history)
             ),
             ok;
         transient ->
@@ -613,7 +613,7 @@ reset_channels() ->
                             ok
                     end
                 end,
-                mnesia:dirty_all_keys(channel)
+                table_keys(channel)
             ),
             {atomic, ok} = mnesia:clear_table(channel_history),
             {atomic, ok} = mnesia:clear_table(direct_history),
@@ -653,7 +653,7 @@ topic, modes, key, and limit. Called at startup and by `REHASH`.
 """.
 -spec seed_channels() -> ok.
 seed_channels() ->
-    Config = persistent_term:get({?MODULE, config}, #{}),
+    Config = ircd_config:current_or_empty(),
     lists:foreach(fun seed_channel/1, maps:get(channels, Config, [])).
 
 seed_channel(#{
@@ -691,6 +691,32 @@ administrator(Pid) when is_pid(Pid) ->
     end.
 
 -doc """
+Every key of the Mnesia table `Table`, typed by the table's record key.
+""".
+-spec table_keys
+    (client | user_modes | activity) -> [pid()];
+    (
+        channel
+        | channel_history
+        | channel_meta
+        | remote_channel
+        | remote_client
+        | known_server
+        | service
+        | account
+    ) -> [binary()];
+    (read_marker) -> [{binary(), binary()}];
+    (direct_history) -> [{dm_party(), dm_party()}].
+table_keys(Table) ->
+    stored_keys(mnesia:dirty_all_keys(Table)).
+
+%% mnesia:dirty_all_keys/1 returns [term()]; the key type of each table is the
+%% key field of its record (include/*.hrl), which table_keys/1 states.
+-spec stored_keys([term()]) -> dynamic().
+stored_keys(Keys) ->
+    Keys.
+
+-doc """
 True when the folded channel key `Key` names a channel from the JSON
 `channels` setting. Such a channel is kept when its last member leaves.
 """.
@@ -707,7 +733,7 @@ clear client sessions and imported peer state.
 """.
 -spec retention() -> transient | channels.
 retention() ->
-    maps:get(retention, persistent_term:get({?MODULE, config}), channels).
+    maps:get(retention, ircd_config:current(), channels).
 
 -doc """
 Longest accepted nickname in bytes: the `nicklen` setting, default 9 from
@@ -715,7 +741,7 @@ RFC 1459. Advertised as `NICKLEN` in RPL_ISUPPORT.
 """.
 -spec nicklen() -> pos_integer().
 nicklen() ->
-    maps:get(nicklen, persistent_term:get({?MODULE, config}, #{}), 9).
+    maps:get(nicklen, ircd_config:current_or_empty(), 9).
 
 -doc """
 The `history_limit` setting (default 100): how many messages, and separately
@@ -724,7 +750,7 @@ how many events, are kept per channel or direct conversation. Advertised as
 """.
 -spec history_limit() -> pos_integer().
 history_limit() ->
-    maps:get(history_limit, persistent_term:get({?MODULE, config}), 100).
+    maps:get(history_limit, ircd_config:current(), 100).
 
 -doc false.
 handle_call({connect, Host}, From, Server) ->
@@ -768,7 +794,7 @@ handle_call({server_command, Peer, Prefix0, Command, Params, Tags}, From, Server
     %% UTF8ONLY: text from peers reaches local clients only as valid UTF-8;
     %% invalid bytes become U+FFFD.
     Safe =
-        case maps:get(utf8_only, persistent_term:get({?MODULE, config}), false) of
+        case maps:get(utf8_only, ircd_config:current(), false) of
             true -> [ircd_websocket:utf8_safe(P) || P <- Params];
             false -> Params
         end,
@@ -1074,7 +1100,7 @@ end_reply(Server) ->
 %% and `unknown` for a name that is not a known server.
 behind_peer(Peer, Target) ->
     Folded = ircd_wire:fold(Peer),
-    Local = ircd_wire:fold(maps:get(name, persistent_term:get({?MODULE, config}))),
+    Local = ircd_wire:fold(maps:get(name, ircd_config:current())),
     case ircd_wire:fold(Target) of
         Folded ->
             true;
@@ -1122,8 +1148,10 @@ session_down(Pid, State) ->
     ets:delete(ircd_attached, Pid),
     ok = ircd_e2ee:session_down(Pid),
     case mnesia:dirty_read(client, Pid) of
-        [Client] -> ircd_state_client:disconnect(Client, <<"Connection closed">>, State);
-        [] -> ok
+        [#client{} = Client] ->
+            ircd_state_client:disconnect(Client, <<"Connection closed">>, State);
+        [] ->
+            ok
     end,
     {noreply, State}.
 
@@ -1248,7 +1276,7 @@ utf8_rejected(Command, _Params) when
 ->
     false;
 utf8_rejected(_Command, Params) ->
-    maps:get(utf8_only, persistent_term:get({?MODULE, config}), false) andalso
+    maps:get(utf8_only, ircd_config:current(), false) andalso
         not lists:all(fun ircd_state_v3:valid_utf8/1, Params).
 
 %% Route commands accepted before registration and enforce registration for the rest.
@@ -1553,7 +1581,7 @@ registered_command(<<"WALLOPS">>, [Text | _], #client{pid = Pid} = Client, Serve
         true ->
             Recipients = [
                 P
-             || P <- mnesia:dirty_all_keys(user_modes),
+             || P <- table_keys(user_modes),
                 [#client{} = C] <- [mnesia:dirty_read(client, P)],
                 ircd_state_client:ready(C),
                 maps:is_key($w, ircd_state_client:user_modes(P))
@@ -1596,7 +1624,7 @@ registered_command(<<"NAMES">>, Params, Client, Server) ->
             %% Channels oldest first (then by name), so the listing is stable.
             Ordered = lists:sort([
                 {Created, Key}
-             || Key <- mnesia:dirty_all_keys(channel),
+             || Key <- table_keys(channel),
                 [#channel{created = Created}] <- [mnesia:dirty_read(channel, Key)]
             ]),
             lists:foreach(
@@ -1606,7 +1634,7 @@ registered_command(<<"NAMES">>, Params, Client, Server) ->
             %% Remote-only channels; keys are unique, so `--` keeps each once.
             lists:foreach(
                 fun(Key) -> ircd_state_link:remote_names_listing(Key, Client, Server) end,
-                mnesia:dirty_all_keys(remote_channel) -- mnesia:dirty_all_keys(channel)
+                table_keys(remote_channel) -- table_keys(channel)
             ),
             ircd_state_channel:names_unattached(Client, Server),
             ircd_state_send:numeric(Client, Server, <<"366">>, [<<"*">>], <<"End of NAMES list">>)
@@ -1615,7 +1643,7 @@ registered_command(<<"LIST">>, Params, Client, Server) ->
     Keys =
         case Params of
             [Names | _] -> [ircd_wire:fold(Name) || Name <- ircd_state_channel:split(Names)];
-            [] -> mnesia:dirty_all_keys(channel)
+            [] -> table_keys(channel)
         end,
     Entries = lists:foldl(
         fun(Key, Acc) ->
@@ -1729,7 +1757,7 @@ registered_command(<<"WHOWAS">>, [NickMasks | Rest], Client, Server) ->
         ircd_state_info:query_local_server(
             case Target of
                 undefined -> [];
-                _ -> [Target]
+                Given when is_binary(Given) -> [Given]
             end,
             Server
         )
@@ -1948,7 +1976,7 @@ ready(A0) -> ircd_state_client:ready(A0).
 -doc """
 User modes of the local client with pid `Pid`, as a set of mode characters.
 """.
--spec user_modes(term()) -> #{char() => true}.
+-spec user_modes(pid()) -> #{char() => true}.
 user_modes(A0) -> ircd_state_client:user_modes(A0).
 
 -doc """
@@ -1963,7 +1991,7 @@ user_visible(A0, A1) -> ircd_state_client:user_visible(A0, A1).
 True when the channel member `Pid` is visible to `Requester`: the requester
 is in `Members` (the channel's member map), or `user_visible/2` holds.
 """.
--spec visible_member(term(), #client{}, map()) -> boolean().
+-spec visible_member(pid(), #client{}, #{pid() => [channel_role()]}) -> boolean().
 visible_member(A0, A1, A2) -> ircd_state_channel:visible_member(A0, A1, A2).
 
 -doc """
@@ -1977,19 +2005,19 @@ wildcard_match(A0, A1) -> ircd_state_channel:wildcard_match(A0, A1).
 Mode flags of the imported remote channel `Name`, or `#{}` when no peer
 reported it.
 """.
--spec remote_channel_flags(binary()) -> #{atom() | char() => term()}.
+-spec remote_channel_flags(binary()) -> remote_flags().
 remote_channel_flags(A0) -> ircd_state_link:remote_channel_flags(A0).
 
 -doc """
 True when a remote user (folded nick key and user modes) is visible to the
 local `Requester`: it is not `+i`, or it shares a channel with the requester.
 """.
--spec remote_user_visible_to_requester(term(), map(), term()) -> boolean().
+-spec remote_user_visible_to_requester(binary(), #{char() => true}, #client{}) -> boolean().
 remote_user_visible_to_requester(A0, A1, A2) ->
     ircd_state_link:remote_user_visible_to_requester(A0, A1, A2).
 
 -doc """
 Send a numeric reply to a local client. See `ircd_state_send:numeric/5`.
 """.
--spec numeric(#client{}, term(), term(), term(), term()) -> ok.
+-spec numeric(#client{}, binary(), binary(), [binary()], none | iodata()) -> ok.
 numeric(A0, A1, A2, A3, A4) -> ircd_state_send:numeric(A0, A1, A2, A3, A4).

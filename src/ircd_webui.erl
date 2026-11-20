@@ -124,7 +124,7 @@ init(#{webui := #{ip := IP, port := Port}}) ->
             Acceptor = spawn_link(fun() -> accept_loop(Listen, Assets, Counter) end),
             logger:notice(#{
                 event => webui_listening,
-                ip => list_to_binary(inet:ntoa(IP)),
+                ip => ircd_wire:ip_text(IP),
                 port => ActualPort
             }),
             {ok, #{
@@ -345,7 +345,7 @@ handle_static(Socket, Name, Static) ->
     end.
 
 handle_webirc_page(Socket, AppHtml, Path, Headers) ->
-    Config = persistent_term:get({ircd_state, config}, #{}),
+    Config = ircd_config:current_or_empty(),
     case maps:get(ws, Config, null) =:= null andalso maps:get(wss, Config, null) =:= null of
         true ->
             send_json(Socket, 404, <<"Not Found">>, #{error => <<"webirc_disabled">>});
@@ -358,7 +358,7 @@ handle_webirc_page(Socket, AppHtml, Path, Headers) ->
 %% (link previews and search engines read it), the page's stylesheet (so the
 %% first paint is styled), and the client config as JSON.
 send_app(Socket, AppHtml, Page, Path, Headers) ->
-    Config = persistent_term:get({ircd_state, config}, #{}),
+    Config = ircd_config:current_or_empty(),
     Network = maps:get(network, Config, maps:get(name, Config, <<"IRC">>)),
     Channels = default_channels(Config),
     Origin = public_origin(Headers, Config),
@@ -515,7 +515,7 @@ handle_webirc_verify_api(Socket, Headers, Body) ->
     end.
 
 handle_recover_page(Socket, AppHtml, Headers) ->
-    Config = persistent_term:get({ircd_state, config}, #{}),
+    Config = ircd_config:current_or_empty(),
     case maps:get(account_verification, Config, null) of
         #{smtp := _} ->
             send_app(Socket, AppHtml, recover, <<"/recover">>, Headers);
@@ -530,7 +530,7 @@ handle_recover_request_api(Socket, Headers, Body) ->
                 #{<<"email">> := Email} = Req when is_binary(Email), byte_size(Email) > 0 ->
                     case require_altcha(Req) of
                         ok ->
-                            Config = persistent_term:get({ircd_state, config}, #{}),
+                            Config = ircd_config:current_or_empty(),
                             Origin = public_origin(Headers, Config),
                             RecoveryUrl = <<Origin/binary, "/recover">>,
                             PeerIP = peer_ip(Socket),
@@ -650,7 +650,7 @@ handle_recover_confirm_api(Socket, Headers, Body) ->
     end.
 
 handle_signup_page(Socket, AppHtml, Headers) ->
-    Config = persistent_term:get({ircd_state, config}, #{}),
+    Config = ircd_config:current_or_empty(),
     case maps:get(account_registration, Config, true) of
         true ->
             send_app(Socket, AppHtml, signup, <<"/signup">>, Headers);
@@ -993,7 +993,7 @@ extract_query_param(Key, Query) ->
 
 peer_ip(Socket) ->
     case inet:peername(Socket) of
-        {ok, {Addr, _}} -> list_to_binary(inet:ntoa(Addr));
+        {ok, {Addr, _}} when is_tuple(Addr) -> ircd_wire:ip_text(Addr);
         _ -> <<"unknown">>
     end.
 
@@ -1017,7 +1017,7 @@ require_altcha(Req) ->
     end.
 
 handle_verify_page(Socket, AppHtml, Headers) ->
-    Config = persistent_term:get({ircd_state, config}, #{}),
+    Config = ircd_config:current_or_empty(),
     case maps:get(account_verification, Config, null) of
         null ->
             send_json(Socket, 404, <<"Not Found">>, #{error => <<"verification_disabled">>});
@@ -1026,7 +1026,7 @@ handle_verify_page(Socket, AppHtml, Headers) ->
     end.
 
 handle_verify_api(Socket, Headers, Body) ->
-    Config = persistent_term:get({ircd_state, config}, #{}),
+    Config = ircd_config:current_or_empty(),
     case maps:get(account_verification, Config, null) of
         null ->
             send_json(Socket, 404, <<"Not Found">>, #{
@@ -1114,7 +1114,7 @@ route(Socket, <<"GET">>, Path, Headers, _Body, Html) when
 ->
     send_app(Socket, Html, admin, Path, Headers);
 route(Socket, <<"GET">>, <<"/api/overview">>, _Headers, _Body, _Html) ->
-    Config = persistent_term:get({ircd_state, config}, #{}),
+    Config = ircd_config:current_or_empty(),
     Payload = #{
         status => ctl_json([<<"status">>]),
         clients => ctl_json([<<"clients">>]),
@@ -1136,7 +1136,7 @@ route(Socket, <<"GET">>, <<"/api/overview">>, _Headers, _Body, _Html) ->
     },
     send_json(Socket, 200, <<"OK">>, Payload);
 route(Socket, <<"GET">>, <<"/api/media">>, _Headers, _Body, _Html) ->
-    Config = persistent_term:get({ircd_state, config}, #{}),
+    Config = ircd_config:current_or_empty(),
     send_json(Socket, 200, <<"OK">>, #{
         features => current_features(Config),
         voice => ircd_voice:list(),
@@ -1193,9 +1193,9 @@ dispatch_action(Socket, <<"dronebl-ban">>, [IP | Rest]) ->
 dispatch_action(Socket, <<"toggle-feature">>, [KeyBin, ValBin]) ->
     case parse_feature_toggle(KeyBin, ValBin) of
         {ok, Key, Bool} ->
-            Config = persistent_term:get({ircd_state, config}, #{}),
+            Config = ircd_config:current(),
             Updated = (current_features(Config))#{Key => Bool},
-            persistent_term:put({ircd_state, config}, Config#{features => Updated}),
+            ircd_config:store(Config#{features => Updated}),
             logger:notice(#{event => admin_feature_toggled, feature => Key, enabled => Bool}),
             send_json(Socket, 200, <<"OK">>, #{status => <<"updated">>, features => Updated});
         error ->
@@ -1334,7 +1334,7 @@ decode_safe(Bin) ->
 %%% Authentication
 
 check_auth(Headers) ->
-    Config = persistent_term:get({ircd_state, config}, #{}),
+    Config = ircd_config:current_or_empty(),
     case maps:get(webui, Config, null) of
         #{username := ExpectedUser, password := ExpectedPass} ->
             case maps:get(<<"authorization">>, Headers, undefined) of
@@ -1378,7 +1378,9 @@ read_headers(Socket, Buf) ->
             {error, payload_too_large};
         [_] ->
             case gen_tcp:recv(Socket, 0, ?IO_TIMEOUT_MS) of
-                {ok, Chunk} when byte_size(Buf) + byte_size(Chunk) =< ?MAX_REQUEST_BYTES ->
+                {ok, Chunk} when
+                    is_binary(Chunk), byte_size(Buf) + byte_size(Chunk) =< ?MAX_REQUEST_BYTES
+                ->
                     read_headers(Socket, <<Buf/binary, Chunk/binary>>);
                 {ok, _} ->
                     {error, payload_too_large};
@@ -1443,7 +1445,7 @@ read_exact(_Socket, Len, Buf, Method, Path, Headers) when byte_size(Buf) >= Len 
 read_exact(Socket, Len, Buf, Method, Path, Headers) ->
     Remaining = Len - byte_size(Buf),
     case gen_tcp:recv(Socket, Remaining, ?IO_TIMEOUT_MS) of
-        {ok, Chunk} ->
+        {ok, Chunk} when is_binary(Chunk) ->
             read_exact(Socket, Len, <<Buf/binary, Chunk/binary>>, Method, Path, Headers);
         {error, Reason} ->
             {error, Reason}

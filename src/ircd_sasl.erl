@@ -84,7 +84,7 @@ step(plain, Data) ->
     end;
 step({external, undefined}, _Data) ->
     {error, failed};
-step({external, Fingerprint}, Authz) ->
+step({external, Fingerprint}, Authz) when is_binary(Fingerprint) ->
     case ircd_account:by_certfp(Fingerprint) of
         {ok, #account{name = Name}} ->
             case authz_ok(Authz, Name) of

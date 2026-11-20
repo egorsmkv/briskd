@@ -26,6 +26,7 @@ and IRCv3 side effects to `m:ircd_state_v3`.
 """.
 -export([
     client/1,
+    pids/0,
     identified/1,
     connection_stats/1,
     disconnect/3,
@@ -52,7 +53,7 @@ sessions known to exist (for example the sender of the current command).
 """.
 -spec client(pid()) -> #client{}.
 client(Pid) ->
-    [Client] = mnesia:dirty_read(client, Pid),
+    [#client{} = Client] = mnesia:dirty_read(client, Pid),
     Client.
 
 -doc """
@@ -80,6 +81,14 @@ identified(#client{nick = Nick, user = User, pass = Pass}) ->
     Password = persistent_term:get({ircd_state, client_password}, null),
     Authenticated = Password =:= null orelse Pass =:= true,
     HasIdentity andalso Authenticated.
+
+-doc """
+The pids of every local connection, registered or not (the keys of the
+`client` table).
+""".
+-spec pids() -> [pid()].
+pids() ->
+    ircd_state:table_keys(client).
 
 -doc """
 Look up a local client by nickname under the RFC 1459 case mapping.
@@ -286,7 +295,7 @@ and bit 3 (value 8) sets `+i`. Other bits are ignored. A non-numeric value,
 such as the RFC 1459 hostname field or the usual `*`, sets no modes and
 returns `{ok, #{}}`. A negative number returns `error`.
 """.
--spec initial_user_modes(term()) -> error | {ok, #{105 => true, 119 => true}}.
+-spec initial_user_modes(binary()) -> error | {ok, #{char() => true}}.
 initial_user_modes(Mode) ->
     try binary_to_integer(Mode) of
         Mask when Mask >= 0 ->
@@ -336,15 +345,22 @@ Return the traffic counters of a connection, or `#{}` when it has none.
 """.
 -spec connection_stats(pid()) ->
     #{
-        connected_at => term(),
-        recv_bytes => term(),
-        recv_messages => term(),
-        sent_bytes => term(),
-        sent_messages => term()
-    }.
+        connected_at := integer(),
+        recv_bytes := non_neg_integer(),
+        recv_messages := non_neg_integer(),
+        sent_bytes := non_neg_integer(),
+        sent_messages := non_neg_integer()
+    }
+    | #{}.
 connection_stats(Pid) ->
     case ets:lookup(ircd_connection_stats, Pid) of
-        [{Pid, ConnectedAt, SentMessages, SentBytes, RecvMessages, RecvBytes}] ->
+        [{Pid, ConnectedAt, SentMessages, SentBytes, RecvMessages, RecvBytes}] when
+            is_integer(ConnectedAt),
+            is_integer(SentMessages),
+            is_integer(SentBytes),
+            is_integer(RecvMessages),
+            is_integer(RecvBytes)
+        ->
             #{
                 connected_at => ConnectedAt,
                 sent_messages => SentMessages,
@@ -362,7 +378,9 @@ Add one message of `Bytes` octets to a connection's sent or received counters.
 Only the key pairs `sent_messages`/`sent_bytes` and `recv_messages`/`recv_bytes`
 are recognised; any other pair, or a connection without counters, is ignored.
 """.
--spec update_connection_stats(pid(), term(), term(), term()) -> ok.
+-spec update_connection_stats(
+    pid(), sent_messages | recv_messages, sent_bytes | recv_bytes, non_neg_integer()
+) -> ok.
 update_connection_stats(Pid, MessagesKey, BytesKey, Bytes) ->
     case {MessagesKey, BytesKey} of
         {sent_messages, sent_bytes} -> update_connection_stats_counter(Pid, 3, 4, Bytes);
@@ -397,7 +415,7 @@ and `user_modes` rows, nickname index entry, administrator entry, capability
 state, IRCv3 state, and traffic counters are removed. Logs
 `client_disconnected`.
 """.
--spec disconnect(#client{}, none | iodata(), binary()) -> ok.
+-spec disconnect(#client{}, none | binary(), binary()) -> ok.
 disconnect(#client{pid = Pid, channels = Channels} = Client, Reason, Server) ->
     ircd_state_v3:remember_channels(Client),
     case ready(Client) of
@@ -564,7 +582,9 @@ remember_key(Key, Pid) ->
     ok.
 
 %% Keep the most recent user identity for lookup after a nickname is released.
-save_whowas(#client{nick = Nick, user = User, host = Host, real = Real}, Server) ->
+save_whowas(#client{nick = Nick, user = User, host = Host, real = Real}, Server) when
+    is_binary(User), is_binary(Real)
+->
     Time = erlang:system_time(second),
     Fold = ircd_wire:fold(Nick),
     Key = {Fold, -Time, erlang:unique_integer([positive])},

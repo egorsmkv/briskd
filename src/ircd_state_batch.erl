@@ -242,7 +242,9 @@ Server-link lines for a message body. A multiline message travels as
 lines tagged `batch=<ref>`, and `BATCH -<ref>`, so peers deliver it whole.
 A plain binary body is one ordinary line with `Tags`.
 """.
--spec link_lines(iodata(), binary(), binary(), term(), list()) -> [iodata()].
+-spec link_lines(iodata(), binary(), binary(), ircd_state_channel:body(), [
+    {binary(), undefined | binary()}
+]) -> [iodata()].
 link_lines(Prefix, Command, Target, {multiline, Lines}, Tags) ->
     Ref = ircd_state_send:batch_ref(),
     [

@@ -15,13 +15,25 @@
     hop = 1 :: non_neg_integer(),
     account :: binary() | undefined
 }).
-%% `members` maps a folded nick to {AdjacentPeer, Roles}. `flags` holds mode
-%% letters and the key, limit, topic, and list entries learned from peers.
+%% Mode letters a peer set on a channel, plus the topic, key, limit, and the
+%% ban, exception, and invite-exception lists it reported.
+-type remote_flags() :: #{
+    topic => binary(),
+    key => binary(),
+    limit => pos_integer(),
+    ban => [binary()],
+    exception => [binary()],
+    invite => [binary()],
+    char() => true
+}.
+
+%% `members` maps a folded nick to {AdjacentPeer, Roles}; `flags` is what
+%% peers reported about the channel.
 -record(remote_channel, {
     key :: binary(),
     name :: binary(),
     members = #{} :: #{binary() => {binary(), [atom()]}},
-    flags = #{} :: #{char() | atom() => term()},
+    flags = #{} :: remote_flags(),
     invited = #{} :: #{binary() => true}
 }).
 %% One known server reached through an adjacent link. `hop` is the distance

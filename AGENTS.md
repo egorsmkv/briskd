@@ -315,12 +315,13 @@ Run these in the development container when Docker is the environment in use:
 just build
 just format-check
 just lint
+just eqwalize
 just test
 ```
 
-`just lint` runs ELP's linter over `src/`, `test/`, and `include/` and fails on any diagnostic (configuration in `.elp_lint.toml`; see `docs/development.md`). Fix a finding rather than suppress it; a suppression (`% elp:ignore Wxxxx (reason)`) needs the reason. After applying an ELP auto-fix, build and run the tests: fixes are not always safe. `just eqwalize` (eqWAlizer) is a report, not a gate.
+`just lint` runs ELP's linter over `src/`, `test/`, and `include/` and fails on any diagnostic (configuration in `.elp_lint.toml`; see `docs/development.md`). Fix a finding rather than suppress it; a suppression (`% elp:ignore Wxxxx (reason)`) needs the reason. After applying an ELP auto-fix, build and run the tests: fixes are not always safe. `just eqwalize` type-checks `src/` with eqWAlizer and fails on any finding (test modules are excluded in `.elp.toml`). Give new code precise specs instead of `term()`, read configuration through `ircd_config:current/0`, and narrow untyped data with a guard where it enters; `docs/development.md` lists the conventions.
 
-GitHub Actions (`.github/workflows/ci.yml`) builds the development image and runs `just format-check`, `just lint`, and `just test`. `just test` includes `ircd_interop_tests`, which starts two ircd OS processes linked over TCP; keep it green for link changes. Keep that workflow on the same OTP image as the Dockerfile.
+GitHub Actions (`.github/workflows/ci.yml`) builds the development image and runs `just format-check`, `just lint`, `just eqwalize`, and `just test`. `just test` includes `ircd_interop_tests`, which starts two ircd OS processes linked over TCP; keep it green for link changes. Keep that workflow on the same OTP image as the Dockerfile.
 
 Add `rebar3 dialyzer`, `rebar3 xref`, Common Test, and a release smoke test when those providers exist for the change. `rebar.config` enables `warnings_as_errors` and erlfmt. A new warning or format drift is a defect. Say so when a check is skipped because the container or a plugin is absent.
 

@@ -298,8 +298,8 @@ burst_lines(_Server) ->
         iolist_to_binary(
             ircd_wire:line(ircd_state_send:prefix(Client), <<"ACCOUNT">>, [Account], none)
         )
-     || Pid <- mnesia:dirty_all_keys(client),
-        [Client] <- [mnesia:dirty_read(client, Pid)],
+     || Pid <- ircd_state_client:pids(),
+        [#client{} = Client] <- [mnesia:dirty_read(client, Pid)],
         ircd_state_client:ready(Client),
         Account <- [account(Pid)],
         Account =/= undefined
@@ -310,7 +310,7 @@ burst_lines(_Server) ->
                 <<Nick/binary, "!", User/binary, "@", Host/binary>>, <<"ACCOUNT">>, [Account], none
             )
         )
-     || Key <- mnesia:dirty_all_keys(remote_client),
+     || Key <- ircd_state:table_keys(remote_client),
         [#remote_client{nick = Nick, user = User, host = Host, account = Account}] <-
             [mnesia:dirty_read(remote_client, Key)],
         Account =/= undefined
@@ -522,12 +522,12 @@ register([Requested, Email, Password | _], #client{pid = Pid, nick = Current} = 
             _ -> Requested
         end,
     Enabled = maps:get(
-        account_registration, persistent_term:get({ircd_state, config}), true
+        account_registration, ircd_config:current(), true
     ),
     Verification = maps:get(
-        account_verification, persistent_term:get({ircd_state, config}), null
+        account_verification, ircd_config:current(), null
     ),
-    Config = persistent_term:get({ircd_state, config}),
+    Config = ircd_config:current(),
     EmailRequired =
         Verification =/= null orelse maps:get(account_registration_email_required, Config, false),
     EmailOk = valid_email(Email) andalso (not EmailRequired orelse Email =/= <<"*">>),
@@ -829,7 +829,7 @@ account matches (to prevent email enumeration).
 -spec request_password_reset_web(binary(), binary() | null, binary()) ->
     ok | {error, disabled | rate_limited | bad_email}.
 request_password_reset_web(Email0, RecoveryUrl, PeerIP) when is_binary(Email0) ->
-    Config = persistent_term:get({ircd_state, config}, #{}),
+    Config = ircd_config:current_or_empty(),
     case maps:get(account_verification, Config, null) of
         #{ttl := Ttl, smtp := _} = Verification ->
             case ircd_flood:allow_register(PeerIP) of
@@ -852,7 +852,9 @@ request_password_reset_web(_, _, _) ->
 
 maybe_send_reset(Verification, Ttl, Email, RecoveryUrl) ->
     case ircd_account:find_by_email(Email) of
-        {ok, #account{key = Folded, name = AccountName, email = StoredEmail}} ->
+        {ok, #account{key = Folded, name = AccountName, email = StoredEmail}} when
+            is_binary(StoredEmail)
+        ->
             _ = ensure_reset_table(),
             Code = verification_code(),
             Hash = crypto:hash(sha256, Code),
@@ -877,7 +879,7 @@ updating the account's SCRAM-SHA-256 password verifier. Runs inside
 complete_password_reset_web(Email0, Code0, NewPassword, PeerIP) when
     is_binary(Email0), is_binary(Code0), is_binary(NewPassword)
 ->
-    Config = persistent_term:get({ircd_state, config}, #{}),
+    Config = ircd_config:current_or_empty(),
     case maps:get(account_verification, Config, null) of
         #{smtp := _} ->
             case ircd_flood:allow_register(PeerIP) of
@@ -944,7 +946,7 @@ Returns `{ok, created | verification_required, AccountName}` or `{error, Reason}
 -spec signup_account_web(binary(), undefined | binary(), binary(), binary()) ->
     {ok, created | verification_required, binary()} | {error, atom()}.
 signup_account_web(Name, Email0, Password, PeerIP) ->
-    Config = persistent_term:get({ircd_state, config}, #{}),
+    Config = ircd_config:current_or_empty(),
     case maps:get(account_registration, Config, true) of
         false ->
             {error, registration_disabled};
@@ -1048,7 +1050,7 @@ valid_realname(Real) ->
     byte_size(Real) =< ?NAMELEN andalso valid_utf8_if_required(Real).
 
 valid_utf8_if_required(Text) ->
-    case maps:get(utf8_only, persistent_term:get({ircd_state, config}), false) of
+    case maps:get(utf8_only, ircd_config:current(), false) of
         true -> valid_utf8(Text);
         false -> true
     end.
@@ -1318,7 +1320,7 @@ receive_remote_chghost(Peer, Prefix, [User, Host | _]) ->
                             ok
                     end
                 end,
-                mnesia:dirty_all_keys(remote_channel)
+                ircd_state:table_keys(remote_channel)
             ),
             ircd_state_link:relay_except(
                 Peer, ircd_wire:line(Prefix, <<"CHGHOST">>, [User, Host], none)
@@ -1355,7 +1357,7 @@ webirc(
             not maps:get(webirc, ircd_cap:info(Pid), false) andalso
             maps:get(version, ircd_cap:state(Pid)) =:= 0 andalso
             map_size(maps:get(enabled, ircd_cap:state(Pid))) =:= 0,
-    Gateways = maps:get(webirc, persistent_term:get({ircd_state, config}), []),
+    Gateways = maps:get(webirc, ircd_config:current(), []),
     Trusted =
         case inet:parse_address(binary_to_list(GatewayHost)) of
             {ok, Address} ->
@@ -1454,7 +1456,7 @@ handshake. Otherwise sends 691 and returns `ok`.
 -spec starttls(#client{}, binary()) -> ok | starttls.
 starttls(#client{pid = Pid} = Client, Server) ->
     Info = ircd_cap:info(Pid),
-    Configured = maps:get(tls_options, persistent_term:get({ircd_state, config}), []) =/= [],
+    Configured = maps:get(tls_options, ircd_config:current(), []) =/= [],
     case
         Configured andalso maps:get(transport, Info, undefined) =:= tcp andalso
             not maps:get(secure, Info, false) andalso not ircd_state_client:ready(Client)
@@ -1477,7 +1479,7 @@ may attach to that client's nickname instead of getting 433.
 """.
 -spec attachable(#client{}, #client{}) -> boolean().
 attachable(#client{pid = Pid} = Client, #client{pid = Holder} = HolderClient) ->
-    Config = persistent_term:get({ircd_state, config}),
+    Config = ircd_config:current(),
     Account = account(Pid),
     maps:get(multiclient, Config, false) andalso Account =/= undefined andalso
         not ircd_state_client:ready(Client) andalso ircd_state_client:ready(HolderClient) andalso
@@ -1525,9 +1527,7 @@ disconnects (in memory, until the next login or restart).
 """.
 -spec remember_channels(#client{}) -> ok.
 remember_channels(#client{pid = Pid, channels = Keys}) ->
-    case
-        {maps:get(account_rejoin, persistent_term:get({ircd_state, config}), false), account(Pid)}
-    of
+    case {maps:get(account_rejoin, ircd_config:current(), false), account(Pid)} of
         {true, Account} when is_binary(Account), Keys =/= [] ->
             Names = [
                 Name

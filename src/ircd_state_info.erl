@@ -46,13 +46,22 @@ a wildcard mask (see `ircd_state_channel:wildcard_match/2`) matched against
 `Server`. Returns `true` for no argument or a match, otherwise
 `{false, Target}` so the caller can send 402 ERR_NOSUCHSERVER.
 """.
--spec query_local_server([binary()], term()) -> true | {false, binary()}.
+-spec query_local_server([binary()], binary()) -> true | {false, binary()}.
 query_local_server([], _) ->
     true;
 query_local_server([Target | _], Server) ->
     case ircd_state_channel:wildcard_match(Target, Server) of
         true -> true;
         false -> {false, Target}
+    end.
+
+%% The configuration path as text for a reply. A path that is not valid
+%% Unicode (raw bytes from the file system) is shown with replacement marks.
+-spec path_text(file:filename_all()) -> binary().
+path_text(Path) ->
+    case unicode:characters_to_binary(Path) of
+        Bin when is_binary(Bin) -> Bin;
+        _ -> iolist_to_binary(io_lib:format("~tp", [Path]))
     end.
 
 -doc """
@@ -89,7 +98,7 @@ trace_server(Client, Server) ->
     lists:foreach(
         fun(Pid) ->
             case mnesia:dirty_read(client, Pid) of
-                [User] when User#client.nick =/= <<"*">> ->
+                [#client{} = User] when User#client.nick =/= <<"*">> ->
                     IsOperator = maps:is_key($o, ircd_state_client:user_modes(Pid)),
                     case IsOperator orelse RequesterIsOperator of
                         true -> trace_user(User, Client, Server);
@@ -99,7 +108,7 @@ trace_server(Client, Server) ->
                     ok
             end
         end,
-        mnesia:dirty_all_keys(client)
+        ircd_state_client:pids()
     ),
     trace_end(Client, Server).
 
@@ -139,7 +148,7 @@ server_wallops(Text, Server) ->
     Recipients =
         [
             Pid
-         || Pid <- mnesia:dirty_all_keys(client),
+         || Pid <- ircd_state_client:pids(),
             maps:is_key($w, ircd_state_client:user_modes(Pid))
         ],
     ircd_state_send:broadcast(Recipients, Server, <<"WALLOPS">>, [], Text).
@@ -165,16 +174,15 @@ operator account names, so they are restricted).
 """.
 -spec stats([binary()], #client{}, binary()) -> ok.
 stats(Params, Client, Server) ->
-    {Query, Target} =
+    {Query, Targets} =
         case Params of
-            [Letter, Name | _] -> {Letter, Name};
-            [Letter] -> {Letter, undefined};
-            [] -> {<<"*">>, undefined}
+            [Letter | Rest] -> {Letter, Rest};
+            [] -> {<<"*">>, []}
         end,
-    case Target =/= undefined andalso not ircd_state_channel:wildcard_match(Target, Server) of
-        true ->
+    case query_local_server(Targets, Server) of
+        {false, Target} ->
             ircd_state_send:numeric(Client, Server, <<"402">>, [Target], <<"No such server">>);
-        false ->
+        true ->
             report_stats(Query, Client, Server)
     end.
 
@@ -206,7 +214,7 @@ report_stats(<<"m">>, Client, Server) ->
 report_stats(<<"l">>, #client{pid = Self} = Client, Server) ->
     Pids =
         case is_operator(Self) of
-            true -> mnesia:dirty_all_keys(client);
+            true -> ircd_state_client:pids();
             false -> [Self]
         end,
     lists:foreach(
@@ -460,7 +468,7 @@ rehash_config(NewConfig, Path, Client, Server) ->
                 Server
             ),
             ircd_state_send:numeric(
-                Client, Server, <<"382">>, [unicode:characters_to_binary(Path)], <<"Rehashing">>
+                Client, Server, <<"382">>, [path_text(Path)], <<"Rehashing">>
             )
     end.
 
@@ -492,7 +500,7 @@ rehash_server(Server) ->
                         [<<"ircdctl rehashed the configuration">>],
                         Server
                     ),
-                    {ok, unicode:characters_to_binary(Path)}
+                    {ok, path_text(Path)}
             end
     end.
 
@@ -501,7 +509,7 @@ static_unchanged(NewConfig) ->
     StaticKeys = [
         name, ip, tcp, tls, ws, wss, tls_options, mnesia_dir, client_password, server_links
     ],
-    maps:with(StaticKeys, persistent_term:get({ircd_state, config})) =:=
+    maps:with(StaticKeys, ircd_config:current()) =:=
         maps:with(StaticKeys, NewConfig).
 
 %% Apply an accepted reload and tell clients what changed.
@@ -549,7 +557,7 @@ notify_isupport_changes(Old, New, Clients, Server) ->
     ).
 
 apply_rehash(Config) ->
-    persistent_term:put({ircd_state, config}, Config),
+    ircd_config:store(Config),
     ircd_state:store_accounts(Config),
     ircd_state:seed_channels(),
     persistent_term:put({ircd_state, motd_file}, maps:get(motd_file, Config)),
@@ -722,14 +730,14 @@ mask, then 365 RPL_ENDOFLINKS.
 """.
 -spec links([binary()], #client{}, binary()) -> ok.
 links(Params, Client, Server) ->
-    {Remote, Mask} =
+    {Remotes, Mask} =
         case Params of
-            [] -> {undefined, <<"*">>};
-            [GivenMask] -> {undefined, GivenMask};
-            [GivenRemote, GivenMask | _] -> {GivenRemote, GivenMask}
+            [] -> {[], <<"*">>};
+            [GivenMask] -> {[], GivenMask};
+            [GivenRemote, GivenMask | _] -> {[GivenRemote], GivenMask}
         end,
-    case Remote =:= undefined orelse ircd_state_channel:wildcard_match(Remote, Server) of
-        false ->
+    case query_local_server(Remotes, Server) of
+        {false, Remote} ->
             ircd_state_send:numeric(Client, Server, <<"402">>, [Remote], <<"No such server">>);
         true ->
             case ircd_state_channel:wildcard_match(Mask, Server) of
@@ -766,7 +774,7 @@ links(Params, Client, Server) ->
 
 %% Server description for LINKS (`server_info` in configuration).
 server_info() ->
-    maps:get(server_info, persistent_term:get({ircd_state, config}), <<"Erlang/OTP IRC server">>).
+    maps:get(server_info, ircd_config:current(), <<"Erlang/OTP IRC server">>).
 
 -doc """
 Record the current local and global registered-user counts so the maxima
@@ -867,8 +875,8 @@ lusers(Params, Client, Server) ->
                             UnknownCount,
                             map_size(
                                 maps:from_keys(
-                                    mnesia:dirty_all_keys(channel) ++
-                                        mnesia:dirty_all_keys(remote_channel),
+                                    ircd_state:table_keys(channel) ++
+                                        ircd_state:table_keys(remote_channel),
                                     true
                                 )
                             ),

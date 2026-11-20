@@ -74,7 +74,7 @@ burst_lines(_Server) ->
     ],
     Markers = [
         iolist_to_binary(markread_line(Account, Target, Time))
-     || Key <- mnesia:dirty_all_keys(read_marker),
+     || Key <- ircd_state:table_keys(read_marker),
         [#read_marker{key = {Account, Target}, time = Time}] <- [
             mnesia:dirty_read(read_marker, Key)
         ]
@@ -116,7 +116,7 @@ local account (created no later than the incoming one) stops the line here.
 Returns `{error, invalid_accountsync}` for a wrong parameter count or any
 malformed field.
 """.
--spec receive_accountsync(binary(), undefined | binary(), [binary()]) -> ok | {error, term()}.
+-spec receive_accountsync(binary(), binary(), [binary()]) -> ok | {error, term()}.
 receive_accountsync(Peer, Prefix, [Name, Salt, I, Stored, ServerKey, Created | Rest]) ->
     try
         true = is_binary(Prefix) andalso ircd_state_link:trusted_server(Peer, Prefix),
@@ -221,7 +221,7 @@ reached through `Peer`; otherwise the result is
 returned unchanged, and a short parameter list is
 `{error, invalid_metadata}`.
 """.
--spec receive_metadata(binary(), undefined | binary(), [binary()]) -> ok | {error, term()}.
+-spec receive_metadata(binary(), binary(), [binary()]) -> ok | {error, term()}.
 receive_metadata(Peer, Prefix, [Target, Key, _Visibility | Rest]) ->
     Value =
         case Rest of
@@ -289,7 +289,7 @@ must be a decimal integer, otherwise the result is
 `{error, invalid_markread}`. A marker that is not newer than the stored one
 is accepted but not relayed.
 """.
--spec receive_markread(binary(), undefined | binary(), [binary()]) -> ok | {error, term()}.
+-spec receive_markread(binary(), binary(), [binary()]) -> ok | {error, term()}.
 receive_markread(Peer, Prefix, [Account, Target, Raw | _]) ->
     case
         is_binary(Prefix) andalso ircd_state_link:trusted_server(Peer, Prefix) andalso
@@ -321,4 +321,4 @@ receive_valid_markread(Peer, Prefix, Account, Target, Raw) ->
     end.
 
 server() ->
-    maps:get(name, persistent_term:get({ircd_state, config})).
+    maps:get(name, ircd_config:current()).

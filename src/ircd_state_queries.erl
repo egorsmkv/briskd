@@ -287,7 +287,7 @@ who_mask_nonchannel(Mask, OperatorsOnly, Client, Server) ->
             lists:foreach(
                 fun(Pid) ->
                     case mnesia:dirty_read(client, Pid) of
-                        [Member] ->
+                        [#client{} = Member] ->
                             case
                                 ircd_state:ready(Member) andalso who_matches(Mask, Member) andalso
                                     ircd_state:user_visible(Member, Client) andalso
@@ -304,7 +304,7 @@ who_mask_nonchannel(Mask, OperatorsOnly, Client, Server) ->
                             ok
                     end
                 end,
-                mnesia:dirty_all_keys(client)
+                ircd_state_client:pids()
             ),
             remote_who_mask(Mask, OperatorsOnly, Client, Server)
     end.
@@ -449,7 +449,7 @@ remote_who_mask(Mask, OperatorsOnly, Client, Server) ->
                     ok
             end
         end,
-        mnesia:dirty_all_keys(remote_client)
+        ircd_state:table_keys(remote_client)
     ).
 
 bot_flag(Modes) ->
@@ -604,7 +604,7 @@ whois(Nick, Client, Server) ->
             real = Real,
             away = Away,
             channels = Channels
-        } = Target when User =/= undefined ->
+        } = Target when is_binary(User), is_binary(Real) ->
             case ircd_state:user_visible(Target, Client) of
                 true ->
                     ircd_state:numeric(
@@ -660,7 +660,7 @@ home_server_name(_Server, Peer) ->
 
 remote_whois(Nick, Client, Server) ->
     case mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) of
-        [Remote] ->
+        [#remote_client{} = Remote] ->
             Actual = Remote#remote_client.nick,
             User = Remote#remote_client.user,
             Host = Remote#remote_client.host,
@@ -774,7 +774,7 @@ Parse the optional `[<count> [<target>]]` parameters of `WHOWAS`.
 Returns `{Count, Target}`. A missing or non-numeric count is `all`, and a
 missing target is `undefined`.
 """.
--spec whowas_options([binary()]) -> {all | integer(), term()}.
+-spec whowas_options([binary()]) -> {all | integer(), undefined | binary()}.
 whowas_options([]) ->
     {all, undefined};
 whowas_options([Count | Rest]) ->

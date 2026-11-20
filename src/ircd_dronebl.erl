@@ -25,7 +25,7 @@ Private, loopback, and link-local addresses are skipped by default
 (`skip_private: true`), and authenticated RFC 2813 server links are never
 disconnected by a DroneBL result.
 
-Configuration is read dynamically from `persistent_term` (`{ircd_state, config}`),
+Configuration is read dynamically with `ircd_config:current_or_empty/0`,
 so enabling, disabling, or tuning `dronebl` takes effect immediately on
 `REHASH` or `ircdctl rehash`.
 """.
@@ -170,7 +170,7 @@ list_bans() ->
                     ({IP, banned, Exp, Code, Reason}, Acc) when Exp > Now ->
                         [
                             #{
-                                ip => list_to_binary(inet:ntoa(IP)),
+                                ip => ircd_wire:ip_text(IP),
                                 code => Code,
                                 reason => Reason,
                                 expires_in => Exp - Now
@@ -314,11 +314,12 @@ Only `127.0.0.Code` answers with `Code >= 2` are treated as DroneBL listings;
 `127.0.0.1` and non-`127.0.0.*` addresses are ignored to prevent false bans
 from hijacked DNS resolvers.
 """.
--spec classify_answers([inet:ip_address()], all | [byte()]) ->
+%% Answers are untrusted DNS data; anything but 127.0.0.N (N >= 2) is skipped.
+-spec classify_answers([term()], all | [byte()]) ->
     clean | {listed, byte(), binary()}.
 classify_answers([], _Types) ->
     clean;
-classify_answers([{127, 0, 0, Code} | Rest], Types) when Code >= 2 ->
+classify_answers([{127, 0, 0, Code} | Rest], Types) when is_integer(Code), Code >= 2 ->
     case Types =:= all orelse lists:member(Code, Types) of
         true -> {listed, Code, type_name(Code)};
         false -> classify_answers(Rest, Types)
@@ -331,7 +332,7 @@ Format the `ERROR :Closing Link` reason sent to a DroneBL-banned client.
 """.
 -spec ban_reason(inet:ip_address(), byte(), binary()) -> binary().
 ban_reason(IP, Code, Desc) ->
-    IPBin = list_to_binary(inet:ntoa(IP)),
+    IPBin = ircd_wire:ip_text(IP),
     <<
         "Banned: listed in DroneBL (",
         Desc/binary,
@@ -367,7 +368,7 @@ handle_call({ban, IP, Code, Desc}, _From, State) ->
     ),
     logger:warning(#{
         event => dronebl_ban_added,
-        ip => list_to_binary(inet:ntoa(IP)),
+        ip => ircd_wire:ip_text(IP),
         code => Code,
         description => Desc
     }),
@@ -492,7 +493,7 @@ terminate(_, _) ->
 %%% Internals
 
 current_cfg() ->
-    Config = persistent_term:get({ircd_state, config}, #{}),
+    Config = ircd_config:current_or_empty(),
     maps:get(dronebl, Config, #{enabled => false}).
 
 lookup_cache(IP) ->
@@ -536,7 +537,7 @@ handle_result(Table, IP, Waiters, {listed, Code, Desc}) ->
     store_entry(Table, IP, {IP, banned, Exp, Code, Reason}, maps:get(max_entries, Cfg, 10000)),
     logger:warning(#{
         event => dronebl_listed,
-        ip => list_to_binary(inet:ntoa(IP)),
+        ip => ircd_wire:ip_text(IP),
         code => Code,
         description => Desc,
         ban_ttl => maps:get(ban_ttl, Cfg, 3600)
@@ -557,7 +558,7 @@ handle_result(Table, IP, _Waiters, clean) ->
 handle_result(_Table, IP, _Waiters, {error, Reason}) ->
     logger:debug(#{
         event => dronebl_lookup_error,
-        ip => list_to_binary(inet:ntoa(IP)),
+        ip => ircd_wire:ip_text(IP),
         reason => Reason
     }),
     ok.

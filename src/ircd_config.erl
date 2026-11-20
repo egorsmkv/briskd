@@ -26,7 +26,323 @@ table in the [Configuration guide](configuration.html). Notable checks:
 
 The module also provides `secret_match/2` for comparing configured passwords.
 """.
--export([load/1, parse_log_level/1, secret_match/2]).
+-export([
+    current/0,
+    current_or_empty/0,
+    load/1,
+    parse_log_level/1,
+    secret_match/2,
+    store/1
+]).
+
+%% The configuration load/1 returns. Every key is always present; optional
+%% sections are `null` when unset (a predefined channel's password and limit
+%% use `undefined`).
+-type port_or_null() :: null | inet:port_number().
+
+-type config() :: #{
+    %% identity and listeners
+    config_path := file:filename_all(),
+    name := binary(),
+    network := binary(),
+    network_icon := null | binary(),
+    server_info := binary(),
+    ip := inet:ip_address(),
+    tcp := port_or_null(),
+    tls := port_or_null(),
+    ws := port_or_null(),
+    wss := port_or_null(),
+    %% [] when neither tls nor wss is set (tls_options(null, _)). Only TLS
+    %% options, no socket options: STARTTLS hands them to ssl:handshake/3.
+    tls_options := [ssl:tls_server_option()],
+    tls_reload_interval := non_neg_integer(),
+    ws_origins := null | [binary()],
+    sts := sts(),
+    %% logging
+    level := logger:level() | trace,
+    log_format := binary(),
+    %% limits
+    max_clients := pos_integer(),
+    reop_delay := pos_integer(),
+    shutdown_grace := 0..300,
+    max_sendq := 100..1000000,
+    max_accounts := pos_integer(),
+    max_empty_channels := pos_integer(),
+    empty_channel_ttl := 0..2592000,
+    max_read_markers := pos_integer(),
+    max_direct_conversations := pos_integer(),
+    max_peer_users := pos_integer(),
+    max_peer_servers := pos_integer(),
+    max_peer_services := pos_integer(),
+    monitor_limit := pos_integer(),
+    nicklen := 9..30,
+    resource_delay := 0..86400,
+    history_limit := 1..10000,
+    %% files and storage
+    motd_file := null | string(),
+    mnesia_dir := string(),
+    retention := retention(),
+    %% access
+    client_password := null | binary(),
+    operators := [credential()],
+    administrators := [credential()],
+    webirc := [webirc_gateway()],
+    %% accounts
+    account_password_min := 1..300,
+    account_registration := boolean(),
+    account_registration_before_connect := boolean(),
+    account_registration_email_required := boolean(),
+    account_verification := account_verification(),
+    multiclient := boolean(),
+    account_rejoin := boolean(),
+    utf8_only := boolean(),
+    chathistory := boolean(),
+    %% channels, links, admin
+    channels := [channel_entry()],
+    server_links := [server_link()],
+    admin := admin_info(),
+    %% optional subsystems
+    flood := flood(),
+    dronebl := dronebl(),
+    webui := webui(),
+    e2ee := e2ee(),
+    voice := voice(),
+    files := files(),
+    calls := calls(),
+    features := features(),
+    bots := [bot()]
+}.
+
+-type retention() :: transient | channels.
+
+%% {Folded name or nick, Password}; operators fold `name`, administrators `nick`.
+-type credential() :: {binary(), binary()}.
+
+-type sts() ::
+    null
+    | #{port := 1..65535, duration := non_neg_integer(), preload := boolean()}.
+
+-type webirc_gateway() :: #{password := binary(), hosts := [inet:ip_address(), ...]}.
+
+-type channel_entry() :: #{
+    key := binary(),
+    name := binary(),
+    topic := binary(),
+    %% NB: channel_key/channel_limit map JSON null to `undefined`, not `null`.
+    password := undefined | binary(),
+    limit := undefined | 1..2147483647,
+    flags := #{char() => true}
+}.
+
+-type server_link() :: #{
+    name := binary(),
+    host := binary(),
+    port := 1..65535,
+    password := binary(),
+    tls := boolean()
+}.
+
+-type admin_info() :: #{
+    name := binary(),
+    location1 := binary(),
+    location2 := binary(),
+    email := binary()
+}.
+
+-type flood() ::
+    null
+    | #{
+        lines_burst := pos_integer(),
+        lines_per_second := pos_integer(),
+        messages_burst := pos_integer(),
+        messages_per_second := pos_integer(),
+        join_burst := pos_integer(),
+        join_per_minute := pos_integer(),
+        nick_burst := pos_integer(),
+        nick_per_minute := pos_integer(),
+        register_per_minute := pos_integer()
+    }.
+
+%% Always a map: `false`/`true` are shorthands for enabled => false/true.
+-type dronebl() :: #{
+    enabled := boolean(),
+    zone := binary(),
+    timeout_ms := 100..30000,
+    ban_ttl := 60..604800,
+    cache_ttl := 0..86400,
+    types := all | [2..255],
+    skip_private := boolean(),
+    max_entries := 100..1000000,
+    max_in_flight := 1..1024
+}.
+
+%% `false` in JSON also becomes null.
+-type webui() ::
+    null
+    | #{
+        ip := inet:ip_address(),
+        port := inet:port_number(),
+        username := binary(),
+        password := binary(),
+        terms_url := binary(),
+        privacy_url := binary()
+    }.
+
+-type e2ee() ::
+    null
+    | #{
+        max_devices := 1..32,
+        max_prekeys := 1..1000,
+        queue_limit := 0..10000,
+        queue_ttl := 60..7776000,
+        fetch_rate := 1..1000
+    }.
+
+-type s3_bucket() :: #{
+    endpoint := binary(),
+    region := binary(),
+    bucket := binary(),
+    access_key_id := binary(),
+    secret_access_key := binary(),
+    max_bytes := pos_integer()
+}.
+
+%% `false` in JSON also becomes null. s3_bucket() plus max_duration.
+-type voice() ::
+    null
+    | #{
+        endpoint := binary(),
+        region := binary(),
+        bucket := binary(),
+        access_key_id := binary(),
+        secret_access_key := binary(),
+        max_bytes := 1024..20971520,
+        max_duration := 1..600
+    }.
+
+-type files() :: null | s3_bucket().
+
+-type calls() ::
+    null
+    | #{
+        rtpengine := {binary(), 1..65535},
+        ring_timeout := 5..300,
+        max_duration := 0..86400,
+        max_calls := 1..10000,
+        calls_per_minute := 1..120,
+        require_account := boolean()
+    }.
+
+-type features() :: #{
+    reactions := boolean(),
+    replies := boolean(),
+    typing := boolean(),
+    editing := boolean(),
+    redaction := boolean(),
+    link_previews := boolean()
+}.
+
+-type account_verification() ::
+    null
+    | #{
+        ttl := 1..86400,
+        %% present when `command` was configured: absolute exe + args as strings
+        command => [string(), ...],
+        smtp => smtp(),
+        verify_url => binary()
+    }.
+
+-type smtp() :: #{
+    relay := binary(),
+    port := 1..65535,
+    from := binary(),
+    tls := always | if_available | never,
+    ssl := boolean(),
+    subject := binary(),
+    username := null | binary(),
+    password := null | binary()
+}.
+
+-type ai_provider() :: #{
+    name := binary(),
+    base_url := binary(),
+    api_key := undefined | binary(),
+    %% name of an unset/empty api_key_env variable, else undefined
+    missing_key_env := undefined | binary(),
+    model := binary(),
+    %% milliseconds
+    timeout := pos_integer()
+}.
+
+-type bot() :: #{
+    nick := binary(),
+    user := binary(),
+    realname := binary(),
+    provider := ai_provider(),
+    model := binary(),
+    system_prompt := binary(),
+    channels := [binary()],
+    respond_to := mention | all,
+    direct_messages := boolean(),
+    context := conversation | channel,
+    history_lines := 0..100,
+    max_tokens := 1..32768,
+    temperature := float(),
+    max_reply_lines := 1..30,
+    requests_per_minute := 1..600
+}.
+
+-export_type([
+    config/0,
+    channel_entry/0,
+    server_link/0,
+    admin_info/0,
+    flood/0,
+    dronebl/0,
+    webui/0,
+    e2ee/0,
+    voice/0,
+    files/0,
+    calls/0,
+    features/0,
+    account_verification/0,
+    smtp/0,
+    ai_provider/0,
+    bot/0
+]).
+
+-doc """
+The running server's configuration, as `load/1` returned it (with the log
+level and feature switches an operator may have changed since). Raises
+`badarg` before `m:ircd_state` has stored it.
+""".
+-spec current() -> config().
+current() ->
+    stored(persistent_term:get({ircd_state, config})).
+
+-doc """
+Like `current/0`, but an empty map before the server has stored its
+configuration. For code that also runs without `m:ircd_state` (some unit
+tests) and reads every key with a default.
+""".
+-spec current_or_empty() -> config() | #{}.
+current_or_empty() ->
+    stored(persistent_term:get({ircd_state, config}, #{})).
+
+-doc """
+Store `Config` as the running configuration. Called by `m:ircd_state` at
+startup and on `REHASH`, and when an operator changes the log level or a
+feature switch.
+""".
+-spec store(config()) -> ok.
+store(Config) ->
+    persistent_term:put({ircd_state, config}, Config).
+
+%% Only store/1 writes the term, always with a config(); unit tests may store
+%% a partial map.
+-spec stored(term()) -> dynamic().
+stored(Config) ->
+    Config.
 
 -doc """
 Parse a `log_level` name (`trace`, `debug`, `info`, `notice`, `warning`,
@@ -70,7 +386,7 @@ file). Returns `{error, {invalid_config, Path, Reason}}` when the file cannot
 be read, is not valid JSON, or fails any check; `Reason` names the failed
 check where one exists, for example `{invalid_log_level, Value}`.
 """.
--spec load(file:filename()) -> {ok, map()} | {error, term()}.
+-spec load(file:filename()) -> {ok, config()} | {error, term()}.
 load(Path) ->
     try
         {ok, Bytes} = file:read_file(Path),
@@ -615,7 +931,11 @@ administrators([Entry | Rest], NickLen, Seen, Acc) ->
     end.
 
 administrator(Entry, NickLen) when is_map(Entry) ->
-    Nick = maps:get(<<"nick">>, Entry, undefined),
+    Nick =
+        case maps:get(<<"nick">>, Entry, undefined) of
+            Given when is_binary(Given) -> Given;
+            Other -> erlang:error({invalid_administrator, Other})
+        end,
     Password = maps:get(<<"password">>, Entry, undefined),
     case ircd_wire:nickname(Nick, NickLen) of
         true -> ok;
@@ -653,8 +973,12 @@ channels([Entry | Rest], Seen, Acc) ->
     end.
 
 channel_entry(Entry) when is_map(Entry) ->
-    Name = maps:get(<<"name">>, Entry, undefined),
-    case is_binary(Name) andalso ircd_wire:channel(Name) andalso binary:first(Name) =/= $! of
+    Name =
+        case maps:get(<<"name">>, Entry, undefined) of
+            Given when is_binary(Given) -> Given;
+            Other -> erlang:error({invalid_channel, channel_label(Other)})
+        end,
+    case ircd_wire:channel(Name) andalso binary:first(Name) =/= $! of
         true -> ok;
         false -> erlang:error({invalid_channel, channel_label(Name)})
     end,

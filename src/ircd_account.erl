@@ -66,7 +66,7 @@ default 100000.
 -spec max_accounts() -> pos_integer().
 max_accounts() ->
     maps:get(
-        max_accounts, persistent_term:get({ircd_state, config}, #{}), ?DEFAULT_MAX_ACCOUNTS
+        max_accounts, ircd_config:current_or_empty(), ?DEFAULT_MAX_ACCOUNTS
     ).
 
 -doc """
@@ -76,7 +76,7 @@ configuration, default 8. The longest accepted password is 300 bytes.
 -spec min_password() -> pos_integer().
 min_password() ->
     maps:get(
-        account_password_min, persistent_term:get({ircd_state, config}, #{}), ?MIN_PASSWORD
+        account_password_min, ircd_config:current_or_empty(), ?MIN_PASSWORD
     ).
 
 -doc """
@@ -127,7 +127,7 @@ Look up a usable (verified) account by email address (case-insensitive).
 -spec find_by_email(binary()) -> {ok, #account{}} | error.
 find_by_email(Email) when is_binary(Email) ->
     Target = email_key(Email),
-    find_verified_email(mnesia:dirty_all_keys(account), Target).
+    find_verified_email(ircd_state:table_keys(account), Target).
 
 find_verified_email([], _Target) ->
     error;
@@ -186,7 +186,7 @@ lookup(Name) ->
                 true -> error;
                 false -> {ok, pending}
             end;
-        [Account] ->
+        [#account{} = Account] ->
             {ok, Account};
         [] ->
             error
@@ -199,7 +199,7 @@ Every usable (verified) account, for a server-link burst.
 list() ->
     [
         Account
-     || Key <- mnesia:dirty_all_keys(account),
+     || Key <- ircd_state:table_keys(account),
         [#account{pending = undefined} = Account] <- [mnesia:dirty_read(account, Key)]
     ].
 
@@ -211,8 +211,8 @@ list_all() ->
     Now = erlang:system_time(millisecond),
     [
         Account
-     || Key <- mnesia:dirty_all_keys(account),
-        [Account] <- [mnesia:dirty_read(account, Key)],
+     || Key <- ircd_state:table_keys(account),
+        [#account{} = Account] <- [mnesia:dirty_read(account, Key)],
         case Account#account.pending of
             undefined -> true;
             {_, Expires} -> Now =< Expires
@@ -294,7 +294,7 @@ verify_by_email(Email, Code) when is_binary(Email), is_binary(Code) ->
     Target = email_key(Email),
     CodeHash = crypto:hash(sha256, string:trim(Code)),
     Now = erlang:system_time(millisecond),
-    find_and_verify_email(mnesia:dirty_all_keys(account), Target, CodeHash, Now).
+    find_and_verify_email(ircd_state:table_keys(account), Target, CodeHash, Now).
 
 find_and_verify_email([], _Target, _CodeHash, _Now) ->
     error;
@@ -406,7 +406,7 @@ prune_expired_pending() ->
                     ok
             end
         end,
-        mnesia:dirty_all_keys(account)
+        ircd_state:table_keys(account)
     ).
 
 -doc """
@@ -569,7 +569,7 @@ by_certfp(Fingerprint) ->
     case
         [
             Account
-         || Key <- mnesia:dirty_all_keys(account),
+         || Key <- ircd_state:table_keys(account),
             [#account{certfps = Fps, pending = undefined} = Account] <- [
                 mnesia:dirty_read(account, Key)
             ],

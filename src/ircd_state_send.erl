@@ -75,7 +75,8 @@ Lines with that user's prefix carry `account`, `bot`, and `draft/oper`.
 The `nick!user@host` prefix of a client, as iodata.
 """.
 -spec prefix(#client{}) -> iolist().
-prefix(#client{nick = Nick, user = User, host = Host}) -> [Nick, <<"!">>, User, <<"@">>, Host].
+prefix(#client{nick = Nick, user = User, host = Host}) when is_binary(User) ->
+    [Nick, <<"!">>, User, <<"@">>, Host].
 
 -doc """
 Send numeric reply `Number` from `Server` to a client.
@@ -84,7 +85,7 @@ The client's current nickname (`*` before registration) is added as the
 first parameter, as RFC 2812 2.4 requires. `Text` is the trailing parameter,
 or `none` for no trailing parameter.
 """.
--spec numeric(#client{}, binary(), term(), [binary()], none | iodata()) -> ok.
+-spec numeric(#client{}, binary(), binary(), [binary()], none | iodata()) -> ok.
 numeric(#client{pid = Pid, nick = Nick}, Server, Number, Params, Text) ->
     send(Pid, Server, Number, [Nick | Params], Text).
 
@@ -408,7 +409,7 @@ Run `Fun` with every line to `Pid` wrapped in one batch of `Type` with
 `Extra` tags go on the opening `BATCH` line. An empty batch is still sent.
 Lines to other recipients are not batched. Returns the result of `Fun`.
 """.
--spec with_batch(pid(), binary(), [binary()], list(), fun(() -> term())) -> term().
+-spec with_batch(pid(), binary(), [binary()], list(), fun(() -> T)) -> T.
 with_batch(Pid, Type, Params, Extra, Fun) ->
     case ircd_cap:enabled(Pid, <<"batch">>) of
         false ->
@@ -448,7 +449,7 @@ Run `Fun` with `Info` as the source, then restore the previous source.
 Used where a user's own line (`QUIT`, `JOIN`, `CHGHOST`) is sent outside
 that user's command, so account-tag and oper-tag still apply.
 """.
--spec with_source(map(), fun(() -> term())) -> term().
+-spec with_source(map(), fun(() -> T)) -> T.
 with_source(Info, Fun) ->
     Previous = get(ircd_source),
     put(ircd_source, Info),
@@ -543,7 +544,7 @@ Format milliseconds since the Unix epoch as `YYYY-MM-DDThh:mm:ss.sssZ` (UTC).
 """.
 -spec time_value(integer()) -> binary().
 time_value(Millis) ->
-    list_to_binary(
+    iolist_to_binary(
         calendar:system_time_to_rfc3339(Millis, [{unit, millisecond}, {offset, "Z"}])
     ).
 
@@ -710,4 +711,4 @@ batch_ref() ->
     integer_to_binary(Next, 36).
 
 local_server() ->
-    maps:get(name, persistent_term:get({ircd_state, config}), <<"irc.local">>).
+    maps:get(name, ircd_config:current(), <<"irc.local">>).

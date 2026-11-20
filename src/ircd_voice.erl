@@ -261,7 +261,7 @@ delete(_) ->
 %%--------------------------------------------------------------------
 
 config() ->
-    maps:get(voice, persistent_term:get({ircd_state, config}, #{}), null).
+    maps:get(voice, ircd_config:current_or_empty(), null).
 
 client(#{
     endpoint := Endpoint,

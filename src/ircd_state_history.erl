@@ -24,6 +24,21 @@
 -include("ircd_state.hrl").
 -include("ircd_account.hrl").
 
+%% One stored message or event. `msgid` is `undefined` for a line that
+%% arrived without one; events (JOIN, PART, ...) add `params` and `notarget`.
+-type entry() :: #{
+    cmd := binary(),
+    prefix := binary(),
+    text := ircd_state_channel:body(),
+    msgid := undefined | binary(),
+    time := integer(),
+    tags := [{binary(), undefined | binary()}],
+    account := undefined | binary(),
+    params => [binary()],
+    notarget => boolean()
+}.
+-export_type([entry/0]).
+
 -moduledoc """
 Message history for
 [draft/chathistory](https://ircv3.net/specs/extensions/chathistory),
@@ -65,7 +80,15 @@ client-only tags, and sender account.
 Stored binaries are copied (`ircd_wire:retain/1`) so they do not pin a
 receive buffer.
 """.
--spec entry(binary(), iodata(), term(), binary(), integer(), list(), undefined | binary()) -> map().
+-spec entry(
+    binary(),
+    iodata(),
+    ircd_state_channel:body(),
+    undefined | binary(),
+    integer(),
+    [{binary(), undefined | binary()}],
+    undefined | binary()
+) -> entry().
 entry(Command, Prefix, Text, MsgId, Time, Tags, Account) ->
     #{
         cmd => Command,
@@ -81,7 +104,7 @@ retain_text({multiline, Lines}) -> {multiline, [{C, ircd_wire:retain(T)} || {C, 
 retain_text(Text) -> ircd_wire:retain(Text).
 
 enabled() ->
-    maps:get(chathistory, persistent_term:get({ircd_state, config}), true).
+    maps:get(chathistory, ircd_config:current(), true).
 
 limit() ->
     ircd_state:history_limit().
@@ -171,7 +194,7 @@ Record a `QUIT` or `NICK` with a fresh `msgid` and time in the history of
 every channel in `Keys` (folded names). These lines have no channel
 parameter when replayed.
 """.
--spec note_user_event([binary()], binary(), iodata(), binary()) -> ok.
+-spec note_user_event([binary()], binary(), iodata(), none | binary()) -> ok.
 note_user_event(Keys, Command, Prefix, Text) ->
     {_, Meta} = event_tags(),
     note_user_event(Keys, Command, Prefix, Text, Meta).
@@ -180,7 +203,8 @@ note_user_event(Keys, Command, Prefix, Text) ->
 Like `note_user_event/4` with the `{MsgId, TimeMillis}` already sent on the
 live line (from `event_tags/0`).
 """.
--spec note_user_event([binary()], binary(), iodata(), binary(), {binary(), integer()}) -> ok.
+-spec note_user_event([binary()], binary(), iodata(), none | binary(), {binary(), integer()}) ->
+    ok.
 note_user_event(Keys, Command, Prefix, Text, Meta) ->
     lists:foreach(fun(Key) -> store_event(Key, Command, Prefix, notarget, Text, Meta) end, Keys).
 
@@ -310,11 +334,11 @@ dm_key(A, B) ->
 
 prune_direct_conversations({account, _} = Party, KeepingKey) ->
     Max = maps:get(
-        max_direct_conversations, persistent_term:get({ircd_state, config}, #{}), 200
+        max_direct_conversations, ircd_config:current_or_empty(), 200
     ),
     Convos = [
         {latest_entry_time(Entries), Key}
-     || Key <- mnesia:dirty_all_keys(direct_history),
+     || Key <- ircd_state:table_keys(direct_history),
         Key =/= KeepingKey,
         element(1, Key) =:= Party orelse element(2, Key) =:= Party,
         [#direct_history{entries = Entries}] <- [mnesia:dirty_read(direct_history, Key)]
@@ -769,7 +793,7 @@ targets(#client{pid = Pid, channels = Keys}, From, To, N) ->
                 Me = {account, Mine},
                 [
                     {other_party(Mine, Entries), latest_time(Entries)}
-                 || {A, B} = Pair <- mnesia:dirty_all_keys(direct_history),
+                 || {A, B} = Pair <- ircd_state:table_keys(direct_history),
                     A =:= Me orelse B =:= Me,
                     Entries <- [dm_entries(Pair)],
                     Entries =/= []
@@ -923,7 +947,7 @@ put_marker(Pid, Target, Time) ->
     end.
 
 max_read_markers() ->
-    maps:get(max_read_markers, persistent_term:get({ircd_state, config}, #{}), 500).
+    maps:get(max_read_markers, ircd_config:current_or_empty(), 500).
 
 trim_conn_markers(Markers, Target, Max) ->
     case maps:is_key(Target, Markers) orelse map_size(Markers) < Max of
@@ -977,7 +1001,7 @@ rename_markers(OldKey, NewKey) ->
             (_) ->
                 ok
         end,
-        mnesia:dirty_all_keys(read_marker)
+        ircd_state:table_keys(read_marker)
     ),
     case ets:whereis(ircd_conn) of
         undefined ->
@@ -1087,7 +1111,7 @@ redact(_, Client, Server) ->
     ircd_state_send:numeric(Client, Server, <<"461">>, [<<"REDACT">>], <<"Not enough parameters">>).
 
 redaction_enabled() ->
-    Features = maps:get(features, persistent_term:get({ircd_state, config}, #{}), #{}),
+    Features = maps:get(features, ircd_config:current_or_empty(), #{}),
     maps:get(redaction, Features, true).
 
 redact_channel(Target, MsgId, Reason, #client{pid = Pid} = Client, _Server) ->
@@ -1305,4 +1329,4 @@ apply_remote_redact(Peer, Prefix, Target, MsgId, Reason) ->
     ok.
 
 server() ->
-    maps:get(name, persistent_term:get({ircd_state, config})).
+    maps:get(name, ircd_config:current()).

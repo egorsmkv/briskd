@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   test:
-    name: format, lint, and eunit
+    name: format, lint, eqwalize, and eunit
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -23,13 +23,13 @@ jobs:
       - name: Build the OTP 29 development image
         run: docker build -t ircd-ci .
 
-      - name: Check formatting and run tests
+      - name: Check formatting, lint, type-check, and run tests
         run: >-
           docker run --rm
           -v "${GITHUB_WORKSPACE}:/workspace"
           -w /workspace
           ircd-ci
-          sh -c "just format-check && just lint && just test"
+          sh -c "just format-check && just lint && just eqwalize && just test"
 
   e2ee:
     name: E2EE end-to-end (two linked servers, Python clients)

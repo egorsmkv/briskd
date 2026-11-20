@@ -26,7 +26,7 @@ Current ISUPPORT tokens, sorted, built from the live configuration.
 """.
 -spec tokens() -> [binary()].
 tokens() ->
-    Config = persistent_term:get({ircd_state, config}, #{}),
+    Config = ircd_config:current_or_empty(),
     Limit = integer_to_binary(ircd_route:max_channels()),
     History = integer_to_binary(maps:get(history_limit, Config, 100)),
     Base = [

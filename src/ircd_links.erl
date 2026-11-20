@@ -119,6 +119,7 @@ outbound_pid(Name) ->
             Pid
          || {{server_link, Peer}, Pid, worker, _} <- supervisor:which_children(?MODULE),
             is_pid(Pid),
+            is_binary(Peer),
             ircd_wire:fold(Peer) =:= ircd_wire:fold(Name)
         ]
     of

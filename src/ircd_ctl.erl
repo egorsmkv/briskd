@@ -58,6 +58,22 @@ Subcommands:
 
 -define(MAX_CTL_BYTES, 65536).
 
+%% A state-changing control action, run inside ircd_state (ircd_state:ctl/1).
+%% Every binary comes from a control-socket argument.
+-type state_action() ::
+    rehash
+    | {set_log_level, binary()}
+    | {kick_client, binary(), binary()}
+    | {squit, binary(), binary()}
+    | {create_account, binary(), binary(), undefined | binary()}
+    | {notice_all, binary()}
+    | {set_topic, binary(), binary()}
+    | {notice_channel, binary(), binary()}
+    | {reset_password, binary(), binary()}
+    | {verify_account, binary()}
+    | {delete_account, binary()}.
+-export_type([state_action/0]).
+
 -doc """
 Start the local Unix-domain control socket server under `m:ircd_sup`.
 
@@ -102,7 +118,7 @@ socket, prints the server's output, and returns exit code `0` or `1`.
 """.
 -spec remote_cli([binary() | string()]) -> 0 | 1.
 remote_cli(RawArgs) ->
-    Bins = [to_bin(A) || A <- RawArgs],
+    Bins = [Bin || A <- RawArgs, Bin <- [to_bin(A)], is_binary(Bin)],
     NonFlags = [A || A <- Bins, A =/= <<"--json">>],
     case NonFlags of
         [] ->
@@ -165,11 +181,14 @@ send_remote(Path, Args) ->
                 Payload = iolist_to_binary(json:encode(Args)),
                 ok = gen_tcp:send(Socket, Payload),
                 case gen_tcp:recv(Socket, 0, 20000) of
-                    {ok, Reply} ->
+                    {ok, Reply} when is_binary(Reply) ->
                         case json:decode(Reply) of
-                            #{<<"ok">> := true, <<"output">> := Output} -> {ok, Output};
-                            #{<<"ok">> := false, <<"output">> := Output} -> {error, Output};
-                            _ -> {error, <<"Invalid response from ircd control socket">>}
+                            #{<<"ok">> := true, <<"output">> := Output} when is_binary(Output) ->
+                                {ok, Output};
+                            #{<<"ok">> := false, <<"output">> := Output} when is_binary(Output) ->
+                                {error, Output};
+                            _ ->
+                                {error, <<"Invalid response from ircd control socket">>}
                         end;
                     {error, Reason} ->
                         {error,
@@ -190,9 +209,7 @@ send_remote(Path, Args) ->
 init(Config) ->
     process_flag(trap_exit, true),
     Path = socket_path(Config),
-    %% A Unix socket path is at most 100 bytes here (sun_path is 104 or 108);
-    %% the path may hold any Unicode characters, so count its UTF-8 bytes.
-    case byte_size(unicode:characters_to_binary(Path)) =< 100 of
+    case socket_path_fits(Path) of
         false ->
             {ok, #{socket => undefined, path => undefined}};
         true ->
@@ -268,7 +285,7 @@ accept_loop(Listen) ->
 serve_client(Socket) ->
     try
         case gen_tcp:recv(Socket, 0, 5000) of
-            {ok, Payload} when byte_size(Payload) =< ?MAX_CTL_BYTES ->
+            {ok, Payload} when is_binary(Payload), byte_size(Payload) =< ?MAX_CTL_BYTES ->
                 Response =
                     try json:decode(Payload) of
                         Args when is_list(Args) ->
@@ -315,22 +332,35 @@ Execute an `ircdctl` command given its argument list.
 Pass `--json` anywhere in `RawArgs` to receive single-line JSON output instead
 of human-readable text. Returns `{ok, Binary}` or `{error, Binary}`.
 """.
--spec run([binary() | string()]) -> {ok, binary()} | {error, binary()}.
+-spec run([term()]) -> {ok, binary()} | {error, binary()}.
 run(RawArgs) ->
-    Bins = [to_bin(A) || A <- RawArgs],
-    Format =
-        case lists:member(<<"--json">>, Bins) of
-            true -> json;
-            false -> text
-        end,
-    Args = [A || A <- Bins, A =/= <<"--json">>],
-    dispatch(Args, Format).
+    case text_args(RawArgs, []) of
+        {ok, Bins} ->
+            Format =
+                case lists:member(<<"--json">>, Bins) of
+                    true -> json;
+                    false -> text
+                end,
+            Args = [A || A <- Bins, A =/= <<"--json">>],
+            dispatch(Args, Format);
+        error ->
+            {error, <<"Invalid control request">>}
+    end.
+
+%% Every argument of a control request must be text (a JSON string).
+text_args([], Acc) ->
+    {ok, lists:reverse(Acc)};
+text_args([Arg | Rest], Acc) ->
+    case to_bin(Arg) of
+        error -> error;
+        Bin -> text_args(Rest, [Bin | Acc])
+    end.
 
 -doc """
 Execute a state-mutating control action inside the `m:ircd_state` process.
 Called only from `ircd_state:handle_call({ctl, Action}, ...)`.
 """.
--spec handle_state_action(term(), binary()) -> {ok, map()} | {error, term()}.
+-spec handle_state_action(state_action(), binary()) -> {ok, map()} | {error, term()}.
 handle_state_action(rehash, Server) ->
     case ircd_state_info:rehash_server(Server) of
         {ok, Path} -> {ok, #{status => <<"rehashed">>, config_path => Path}};
@@ -339,8 +369,8 @@ handle_state_action(rehash, Server) ->
 handle_state_action({set_log_level, LevelBin}, _Server) ->
     case ircd_config:parse_log_level(LevelBin) of
         {ok, Level} ->
-            Config = persistent_term:get({ircd_state, config}, #{}),
-            persistent_term:put({ircd_state, config}, Config#{level => Level}),
+            Config = ircd_config:current(),
+            ircd_config:store(Config#{level => Level}),
             ok = ircd_log:apply_level(Level),
             logger:notice(#{event => ctl_log_level, level => Level}),
             {ok, #{status => <<"updated">>, log_level => LevelBin}};
@@ -379,8 +409,8 @@ handle_state_action({create_account, Name, Password, Email}, _Server) ->
 handle_state_action({notice_all, Text}, Server) ->
     Pids = [
         Pid
-     || Pid <- mnesia:dirty_all_keys(client),
-        [Client] <- [mnesia:dirty_read(client, Pid)],
+     || Pid <- ircd_state_client:pids(),
+        [#client{} = Client] <- [mnesia:dirty_read(client, Pid)],
         ircd_state_client:ready(Client)
     ],
     lists:foreach(
@@ -452,8 +482,10 @@ handle_state_action({delete_account, Name}, Server) ->
                             case ircd_wire:fold(Logged) =:= Key of
                                 true ->
                                     case mnesia:dirty_read(client, Pid) of
-                                        [Client] -> ircd_state_v3:logout(Client, Server);
-                                        [] -> ok
+                                        [#client{} = Client] ->
+                                            ircd_state_v3:logout(Client, Server);
+                                        [] ->
+                                            ok
                                     end;
                                 false ->
                                     ok
@@ -462,7 +494,7 @@ handle_state_action({delete_account, Name}, Server) ->
                             ok
                     end
                 end,
-                mnesia:dirty_all_keys(client)
+                ircd_state_client:pids()
             ),
             lists:foreach(
                 fun
@@ -471,7 +503,7 @@ handle_state_action({delete_account, Name}, Server) ->
                     (_) ->
                         ok
                 end,
-                mnesia:dirty_all_keys(read_marker)
+                ircd_state:table_keys(read_marker)
             ),
             lists:foreach(
                 fun
@@ -638,7 +670,7 @@ cmd_status(Format) ->
                 <<"ircd is not running">>
             );
         _ ->
-            Config = persistent_term:get({ircd_state, config}, #{}),
+            Config = ircd_config:current_or_empty(),
             StartedAt = persistent_term:get(
                 {ircd_state, started_at}, erlang:monotonic_time(second)
             ),
@@ -648,7 +680,8 @@ cmd_status(Format) ->
             ),
             Clients = [
                 C
-             || Pid <- mnesia:dirty_all_keys(client), [C] <- [mnesia:dirty_read(client, Pid)]
+             || Pid <- ircd_state_client:pids(),
+                [#client{} = C] <- [mnesia:dirty_read(client, Pid)]
             ],
             Registered = [C || C <- Clients, ircd_state_client:ready(C)],
             Operators = [
@@ -671,15 +704,15 @@ cmd_status(Format) ->
                 max_clients => maps:get(max_clients, Config, 10000),
                 registered_users => length(Registered),
                 operators_online => length(Operators),
-                remote_users => mnesia:table_info(remote_client, size),
-                channels => mnesia:table_info(channel, size),
-                remote_channels => mnesia:table_info(remote_channel, size),
-                known_servers => mnesia:table_info(known_server, size),
-                services => mnesia:table_info(service, size),
+                remote_users => table_size(remote_client),
+                channels => table_size(channel),
+                remote_channels => table_size(remote_channel),
+                known_servers => table_size(known_server),
+                services => table_size(service),
                 accounts => length(ircd_account:list()),
                 db_disk_bytes => mnesia_disk_bytes(),
                 db_memory_bytes => mnesia_memory_bytes(),
-                db_tables => length(mnesia:system_info(tables)),
+                db_tables => length(mnesia_tables()),
                 memory_bytes => erlang:memory(total),
                 erlang_processes => erlang:system_info(process_count)
             },
@@ -850,7 +883,7 @@ cmd_reload_certs(Format) ->
     end.
 
 cmd_get_log_level(Format) ->
-    Config = persistent_term:get({ircd_state, config}, #{}),
+    Config = ircd_config:current_or_empty(),
     Level = atom_to_binary(maps:get(level, Config, info)),
     reply_ok(Format, #{log_level => Level}, Level).
 
@@ -886,7 +919,7 @@ cmd_clients(Format) ->
                 idle_seconds => Idle
             }
         end
-     || Pid <- mnesia:dirty_all_keys(client),
+     || Pid <- ircd_state_client:pids(),
         [#client{nick = Nick, user = User, host = Host, channels = Channels} = Client] <- [
             mnesia:dirty_read(client, Pid)
         ]
@@ -940,7 +973,7 @@ cmd_channels(Format) ->
                 predefined => ircd_state:predefined_channel(Key)
             }
         end
-     || Key <- mnesia:dirty_all_keys(channel),
+     || Key <- ircd_state:table_keys(channel),
         [#channel{name = Name, members = Members, flags = Flags, topic = Topic}] <- [
             mnesia:dirty_read(channel, Key)
         ]
@@ -979,7 +1012,7 @@ cmd_links(Format) ->
             parent => Parent,
             info => Info
         }
-     || Key <- mnesia:dirty_all_keys(known_server),
+     || Key <- ircd_state:table_keys(known_server),
         [
             #known_server{
                 name = Name, hop = Hop, adjacent = Adjacent, parent = Parent, info = Info
@@ -1130,8 +1163,37 @@ cmd_state_call(Action, Format, TextFun) ->
 
 %%% Helpers
 
+%% A Unix socket path is at most 100 bytes here (sun_path is 104 or 108); the
+%% path may hold any Unicode characters, so count its UTF-8 bytes.
+socket_path_fits(Path) ->
+    case unicode:characters_to_binary(Path) of
+        Bin when is_binary(Bin) -> byte_size(Bin) =< 100;
+        _ -> false
+    end.
+
+%% mnesia:system_info/1 and mnesia:table_info/2 return term(); these narrow
+%% the results this module uses.
+-spec mnesia_tables() -> [atom()].
+mnesia_tables() ->
+    case mnesia:system_info(tables) of
+        Tables when is_list(Tables) -> [T || T <- Tables, is_atom(T)];
+        _ -> []
+    end.
+
+-spec table_size(atom()) -> non_neg_integer().
+table_size(Table) ->
+    case mnesia:table_info(Table, size) of
+        Size when is_integer(Size), Size >= 0 -> Size;
+        _ -> 0
+    end.
+
 mnesia_disk_bytes() ->
-    Dir = mnesia:system_info(directory),
+    case mnesia:system_info(directory) of
+        Dir when is_list(Dir) -> dir_bytes(Dir);
+        _ -> 0
+    end.
+
+dir_bytes(Dir) ->
     case file:list_dir(Dir) of
         {ok, Files} ->
             lists:foldl(
@@ -1161,7 +1223,7 @@ mnesia_memory_bytes() ->
             end
         end,
         0,
-        mnesia:system_info(tables)
+        mnesia_tables()
     ).
 
 active_listeners() ->
@@ -1174,11 +1236,9 @@ active_listeners() ->
                     case lists:keyfind(Kind, 1, supervisor:which_children(ircd_sup)) of
                         {Kind, Pid, _, _} when is_pid(Pid) ->
                             Port =
-                                try inet:port(sys:get_state(Pid, 1000)) of
+                                case ircd_listener:port(Pid) of
                                     {ok, P} -> P;
-                                    _ -> 0
-                                catch
-                                    _:_ -> 0
+                                    error -> 0
                                 end,
                             [#{transport => atom_to_binary(Kind), port => Port} | Acc];
                         _ ->
@@ -1206,8 +1266,29 @@ format_listeners_text(List) ->
 null_star(null) -> <<"*">>;
 null_star(Bin) -> Bin.
 
-to_bin(Bin) when is_binary(Bin) -> Bin;
-to_bin(List) when is_list(List) -> unicode:characters_to_binary(List).
+-spec to_bin(term()) -> binary() | error.
+to_bin(Bin) when is_binary(Bin) ->
+    Bin;
+to_bin(List) when is_list(List) ->
+    case code_points(List, []) of
+        {ok, Chars} ->
+            case unicode:characters_to_binary(Chars) of
+                Bin when is_binary(Bin) -> Bin;
+                _ -> error
+            end;
+        error ->
+            error
+    end;
+to_bin(_) ->
+    error.
+
+%% A list argument must be a flat list of Unicode code points.
+code_points([], Acc) ->
+    {ok, lists:reverse(Acc)};
+code_points([C | Rest], Acc) when is_integer(C), C >= 0, C =< 16#10FFFF ->
+    code_points(Rest, [C | Acc]);
+code_points(_, _) ->
+    error.
 
 reply_ok(json, Map, _Text) ->
     {ok, iolist_to_binary(json:encode(Map))};

@@ -158,7 +158,7 @@ handle_info(registration_timeout, {_, _, _, _, Role} = State) ->
             {noreply, State}
     end;
 handle_info(liveness_ping, {Kind, Socket, _, _, {server, undefined}} = State) ->
-    Config = persistent_term:get({ircd_state, config}),
+    Config = ircd_config:current(),
     Token = make_ref(),
     Module = transport(Kind),
     Ping = raw_line(<<"PING">>, [maps:get(name, Config)], none),
@@ -251,7 +251,7 @@ redact_state(State) ->
 %% A client that reads slower than lines arrive builds up this mailbox; past
 %% `max_sendq` queued lines it is disconnected, as IRC servers do for SendQ.
 sendq_exceeded() ->
-    Limit = maps:get(max_sendq, persistent_term:get({ircd_state, config}, #{}), 10000),
+    Limit = maps:get(max_sendq, ircd_config:current_or_empty(), 10000),
     case process_info(self(), message_queue_len) of
         {message_queue_len, Queued} when Queued > Limit -> {true, Queued};
         _ -> false
@@ -314,7 +314,7 @@ send_safelist_chunk(Module, Socket, [Line | Rest]) ->
     end.
 
 closing_link(Reason) ->
-    Server = maps:get(name, persistent_term:get({ircd_state, config}, #{}), <<"irc.local">>),
+    Server = maps:get(name, ircd_config:current_or_empty(), <<"irc.local">>),
     outgoing(
         iolist_to_binary(
             ircd_wire:line(Server, <<"ERROR">>, [], [
@@ -384,7 +384,7 @@ websocket_data(Packet, {Kind, Socket, _, _, _} = State, Peer) ->
     Module = transport(Kind),
     case get(ircd_ws) of
         #{phase := handshake, buffer := Pending} ->
-            Config = persistent_term:get({ircd_state, config}),
+            Config = ircd_config:current(),
             case
                 ircd_websocket:handshake(
                     <<Pending/binary, Packet/binary>>, maps:get(ws_origins, Config, null)
@@ -477,9 +477,13 @@ strip_crlf(Payload) ->
 %% same TCP socket with the listener's TLS options.
 starttls({tcp, Socket, Peer, _, Role} = State) ->
     ok = flush_plain(Socket),
-    Options = maps:get(tls_options, persistent_term:get({ircd_state, config})),
+    Options = maps:get(tls_options, ircd_config:current()),
     case inet:setopts(Socket, [{active, false}]) of
         ok ->
+            %% ssl does not export the narrower option types its handshake/3
+            %% spec names; the configured list holds TLS options only.
+            % elp:ignore W0074 (ssl:handshake/3 option types are not exported)
+            % eqwalizer:ignore incompatible_types
             case ssl:handshake(Socket, Options, 5000) of
                 {ok, Tls} ->
                     ok = ircd_state:tls_upgraded(connection_info(tls, Tls)),
@@ -658,7 +662,7 @@ process_server_intro(Name, Hop, Token, State) ->
                     ircd_route:valid_decimal(Hop) andalso ircd_route:valid_decimal(Token)
             of
                 true ->
-                    Config = persistent_term:get({ircd_state, config}),
+                    Config = ircd_config:current(),
                     LocalName = maps:get(name, Config),
                     Info = maps:get(server_info, Config, <<"Erlang/OTP IRC server">>),
                     Reply = [
@@ -692,7 +696,7 @@ process_server_intro(Name, Hop, Token, State) ->
 process_server_line(
     _Tags, _Prefix, <<"PING">>, [Origin | _], _Bytes, {Kind, Socket, _, _, _} = State
 ) ->
-    Config = persistent_term:get({ircd_state, config}),
+    Config = ircd_config:current(),
     Reply = raw_line(<<"PONG">>, [maps:get(name, Config), Origin], none),
     Module = transport(Kind),
     case Module:send(Socket, Reply) of
@@ -707,7 +711,7 @@ process_server_line(
     _Bytes,
     {_, _, PeerName, _, {server, Token}} = State
 ) when Token =/= undefined ->
-    Config = persistent_term:get({ircd_state, config}),
+    Config = ircd_config:current(),
     case Responder =:= PeerName andalso Origin =:= maps:get(name, Config) of
         true ->
             erlang:send_after(60000, self(), liveness_ping),

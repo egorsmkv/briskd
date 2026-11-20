@@ -88,9 +88,7 @@ start_mnesia(Dir) ->
         Applications when is_list(Applications) ->
             case lists:keymember(mnesia, 1, Applications) of
                 true ->
-                    case
-                        filename:absname(mnesia:system_info(directory)) =:= filename:absname(Dir)
-                    of
+                    case filename:absname(mnesia_directory()) =:= filename:absname(Dir) of
                         true -> {ok, false};
                         false -> {error, {mnesia_already_running, mnesia:system_info(directory)}}
                     end;
@@ -113,4 +111,10 @@ ensure_mnesia_schema(Dir) ->
     case filelib:is_file(filename:join(Dir, "schema.DAT")) of
         true -> ok;
         false -> mnesia:create_schema([node()])
+    end.
+
+%% mnesia:system_info(directory) returns term(); it is the directory name.
+mnesia_directory() ->
+    case mnesia:system_info(directory) of
+        Dir when is_list(Dir) -> Dir
     end.

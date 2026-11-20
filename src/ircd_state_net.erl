@@ -83,7 +83,7 @@ otherwise the result is `{error, invalid_server}`. Placement is decided by
 accepted server is stored as a `known_server` row and announced to every
 other peer with its hop count increased by one.
 """.
--spec introduce_server(binary(), undefined | binary(), binary(), binary(), binary(), binary()) ->
+-spec introduce_server(binary(), binary(), binary(), binary(), binary(), binary()) ->
     ok | {error, atom()}.
 introduce_server(Ingress, Prefix, Name, HopBin, Token, Info) ->
     case {ircd_route:valid_decimal(HopBin), valid_token(Token)} of
@@ -170,7 +170,7 @@ split(Lost, Reason, Except) ->
                         ok
                 end
             end,
-            mnesia:dirty_all_keys(remote_client)
+            ircd_state:table_keys(remote_client)
         )
     after
         ircd_state_send:end_batch()
@@ -187,7 +187,7 @@ split(Lost, Reason, Except) ->
                     ok
             end
         end,
-        mnesia:dirty_all_keys(service)
+        ircd_state:table_keys(service)
     ),
     lists:foreach(
         fun(Name) ->
@@ -481,7 +481,7 @@ remote_squery(Peer, Prefix, [Name, Text | _] = Params) when Text =/= <<>> ->
                 {ok, _} when ServicePeer =:= undefined ->
                     Operators = [
                         Pid
-                     || Pid <- mnesia:dirty_all_keys(client),
+                     || Pid <- ircd_state_client:pids(),
                         maps:is_key($o, ircd_state_client:user_modes(Pid))
                     ],
                     ircd_state_send:broadcast(
@@ -514,7 +514,7 @@ The home server is `Prefix`, or `Peer` when there is no prefix. Returns
 `{error, nickname_collision}` when a local or remote user holds the name.
 The service is stored but not relayed to other peers.
 """.
--spec import_service(binary(), undefined | binary(), [binary()]) -> ok | {error, atom()}.
+-spec import_service(binary(), binary(), [binary()]) -> ok | {error, atom()}.
 import_service(Peer, Prefix, Params) ->
     case service_params(Params) of
         error ->
@@ -544,7 +544,9 @@ Number of known services, local and imported.
 """.
 -spec service_count() -> non_neg_integer().
 service_count() ->
-    mnesia:table_info(service, size).
+    case mnesia:table_info(service, size) of
+        Size when is_integer(Size), Size >= 0 -> Size
+    end.
 
 -doc """
 `SERVER` lines for every known server, nearest first, for a new peer's burst
@@ -692,7 +694,7 @@ store_service(Name, Dist, Type, Info, Home, Peer) ->
 deliver_local_service(ServiceName, Text, Client, Server) ->
     Operators = [
         Pid
-     || Pid <- mnesia:dirty_all_keys(client),
+     || Pid <- ircd_state_client:pids(),
         maps:is_key($o, ircd_state_client:user_modes(Pid))
     ],
     ircd_state_send:broadcast(
@@ -779,7 +781,7 @@ drop_memberships(NickKey) ->
                     ok
             end
         end,
-        mnesia:dirty_all_keys(remote_channel)
+        ircd_state:table_keys(remote_channel)
     ).
 
 store_server(#{
@@ -818,7 +820,7 @@ known_maps() ->
             parent => Parent,
             info => Info
         }
-     || Key <- mnesia:dirty_all_keys(known_server),
+     || Key <- ircd_state:table_keys(known_server),
         [
             #known_server{
                 name = Name,
@@ -834,14 +836,15 @@ known_maps() ->
 services() ->
     [
         Service
-     || Key <- mnesia:dirty_all_keys(service), [Service] <- [mnesia:dirty_read(service, Key)]
+     || Key <- ircd_state:table_keys(service),
+        [#service{} = Service] <- [mnesia:dirty_read(service, Key)]
     ].
 
 %% `resource_delay` (seconds) overrides the default delay; 0 disables holds.
 hold(Kind, Name) ->
     Delay = maps:get(
         resource_delay,
-        persistent_term:get({ircd_state, config}, #{}),
+        ircd_config:current_or_empty(),
         ircd_route:resource_delay_seconds()
     ),
     case Delay of
@@ -905,12 +908,12 @@ peer_server_room(Peer, Name) ->
             true;
         [] ->
             Max = maps:get(
-                max_peer_servers, persistent_term:get({ircd_state, config}, #{}), 100
+                max_peer_servers, ircd_config:current_or_empty(), 100
             ),
             FoldedPeer = ircd_wire:fold(Peer),
             Count = length([
                 K
-             || K <- mnesia:dirty_all_keys(known_server),
+             || K <- ircd_state:table_keys(known_server),
                 K =/= FoldedPeer,
                 [#known_server{adjacent = Adjacent}] <- [mnesia:dirty_read(known_server, K)],
                 ircd_wire:fold(Adjacent) =:= FoldedPeer
@@ -925,12 +928,12 @@ peer_service_room(Peer, Name) ->
             true;
         _ ->
             Max = maps:get(
-                max_peer_services, persistent_term:get({ircd_state, config}, #{}), 100
+                max_peer_services, ircd_config:current_or_empty(), 100
             ),
             FoldedPeer = ircd_wire:fold(Peer),
             Count = length([
                 K
-             || K <- mnesia:dirty_all_keys(service),
+             || K <- ircd_state:table_keys(service),
                 [#service{peer = P}] <- [mnesia:dirty_read(service, K)],
                 is_binary(P),
                 ircd_wire:fold(P) =:= FoldedPeer
@@ -939,7 +942,7 @@ peer_service_room(Peer, Name) ->
     end.
 
 local_name() ->
-    maps:get(name, persistent_term:get({ircd_state, config})).
+    maps:get(name, ircd_config:current()).
 
 valid_token(Token) when is_binary(Token), byte_size(Token) > 0, byte_size(Token) =< 16 ->
     lists:all(fun(C) -> C >= $0 andalso C =< $9 end, binary_to_list(Token));

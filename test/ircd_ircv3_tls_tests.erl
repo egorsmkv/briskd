@@ -43,6 +43,7 @@ run() ->
     {_, ClientKey} = lists:keyfind(key, 1, ClientConf),
     Identity = [{cert, ClientCert}, {key, ClientKey}],
     try
+        listener_ports(),
         starttls(listener_port(tcp)),
         external(listener_port(tls), Identity),
         verification(listener_port(tcp), CodeFile),
@@ -352,6 +353,23 @@ collect(Recv, Acc, N) when N < 60 ->
     end;
 collect(_Recv, Acc, _) ->
     Acc.
+
+%% ircd_listener:port/1 answers for TCP and TLS listen sockets alike, and
+%% `ircdctl status` reports the TLS listener's bound port (it used to show 0:
+%% inet:port/1 does not accept an sslsocket).
+listener_ports() ->
+    lists:foreach(
+        fun(Kind) ->
+            {_, Pid, _, _} = lists:keyfind(Kind, 1, supervisor:which_children(ircd_sup)),
+            ?assertEqual({ok, listener_port(Kind)}, ircd_listener:port(Pid))
+        end,
+        [tcp, tls]
+    ),
+    {ok, Status} = ircd_ctl:run([<<"status">>, <<"--json">>]),
+    #{<<"listeners">> := Listeners} = json:decode(Status),
+    ?assert(
+        lists:member(#{<<"transport">> => <<"tls">>, <<"port">> => listener_port(tls)}, Listeners)
+    ).
 
 listener_port(Kind) ->
     {_, Pid, _, _} = lists:keyfind(Kind, 1, supervisor:which_children(ircd_sup)),

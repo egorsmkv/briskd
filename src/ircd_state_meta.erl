@@ -512,7 +512,7 @@ restore_channels() ->
                     mnesia:dirty_delete(channel_meta, Key)
             end
         end,
-        mnesia:dirty_all_keys(channel_meta)
+        ircd_state:table_keys(channel_meta)
     ).
 
 -doc """
@@ -605,7 +605,7 @@ announce(Target, Key, Value, #client{pid = Setter} = Client) ->
         case Target of
             {user, Pid, Nick} ->
                 case mnesia:dirty_read(client, Pid) of
-                    [Owner] ->
+                    [#client{} = Owner] ->
                         lists:usort(
                             ircd_state_channel:nick_recipients(Owner) ++
                                 ircd_state_monitor:watchers(Nick)
@@ -777,4 +777,4 @@ fail(Pid, Code, Context, Text) ->
     ircd_state_send:fail(Pid, <<"METADATA">>, Code, Context, Text).
 
 server() ->
-    maps:get(name, persistent_term:get({ircd_state, config})).
+    maps:get(name, ircd_config:current()).

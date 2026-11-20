@@ -71,7 +71,7 @@ A missing target list gets 461 and an unknown modifier 421.
 """.
 -spec monitor([binary()], #client{}, binary()) -> ok.
 monitor([<<"+">>, Targets | _], #client{pid = Pid} = Client, Server) ->
-    Limit = maps:get(monitor_limit, persistent_term:get({ircd_state, config}), 100),
+    Limit = maps:get(monitor_limit, ircd_config:current(), 100),
     Wanted = [T || T <- binary:split(Targets, <<",">>, [global, trim_all])],
     {Online, Offline, Rejected} = add(Wanted, Pid, Limit, [], [], []),
     lines(Client, Server, <<"730">>, lists:reverse(Online)),
@@ -193,4 +193,4 @@ reply(Pid, Server, Numeric, Target) ->
     ircd_state_send:send(Pid, Server, Numeric, [Nick], Target).
 
 server() ->
-    maps:get(name, persistent_term:get({ircd_state, config})).
+    maps:get(name, ircd_config:current()).

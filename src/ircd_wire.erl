@@ -38,6 +38,7 @@ the RFC 1459 case mapping.
     append_pending/2,
     channel/1,
     fold/1,
+    ip_text/1,
     line/4,
     message/5,
     nickname/1,
@@ -435,9 +436,13 @@ line(Prefix, Command, Middle, Trailing) ->
         Command,
         [[<<" ">>, Item] || Item <- Middle]
     ]),
-    case {byte_size(Head), Trailing} of
-        {Size, none} when Size =< 510 -> [Head, <<"\r\n">>];
-        {Size, Tail} when Size =< 508 ->
+    Size = byte_size(Head),
+    case Trailing of
+        none when Size =< 510 ->
+            [Head, <<"\r\n">>];
+        none ->
+            [];
+        Tail when Size =< 508 ->
             Bytes = iolist_to_binary(Tail),
             [
                 Head,
@@ -461,13 +466,34 @@ retain_fields(Record) when is_tuple(Record) ->
     list_to_tuple([retain(Field) || Field <- tuple_to_list(Record)]).
 
 -doc """
+The text form of an IP address, as a binary.
+
+```erlang
+1> ircd_wire:ip_text({127, 0, 0, 1}).
+<<"127.0.0.1">>
+2> ircd_wire:ip_text({0, 0, 0, 0, 0, 0, 0, 1}).
+<<"::1">>
+```
+""".
+-spec ip_text(inet:ip_address()) -> binary().
+ip_text(IP) ->
+    case inet:ntoa(IP) of
+        Text when is_list(Text) -> list_to_binary(Text);
+        {error, einval} -> erlang:error({badarg, IP})
+    end.
+
+-doc """
 Copy `Value` if it is a binary, so it no longer references a larger buffer.
 
 A sub-binary sliced from a socket read keeps the whole read alive. Copy at a
 long-lived ownership boundary, such as a Mnesia or ETS insert. Any other term
 is returned unchanged. Short-lived relay text should not be copied.
 """.
--spec retain(term()) -> term().
+-spec retain(T) -> T.
+%% binary:copy/1 of a binary is a binary, so the result has the type of Value;
+%% eqWAlizer cannot relate the two.
+% elp:ignore W0074 (generic identity over binaries)
+% eqwalizer:ignore incompatible_types
 retain(Value) when is_binary(Value) -> binary:copy(Value);
 retain(Value) -> Value.
 

@@ -18,7 +18,7 @@ session takes over, `nodelay` (Nagle's algorithm delays multi-line replies),
 and a 5-second send timeout.
 """.
 -behaviour(gen_server).
--export([start_link/3, init/1, handle_call/3, handle_cast/2, handle_info/2]).
+-export([start_link/3, port/1, init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -doc """
 Start a listener for one transport on `Port`.
@@ -32,6 +32,19 @@ in use.
 -spec start_link(tcp | tls | ws | wss, inet:port_number(), map()) -> gen_server:start_ret().
 start_link(Kind, Port, Config) ->
     gen_server:start_link(?MODULE, {Kind, Port, Config}, [{hibernate_after, 15000}]).
+
+-doc """
+The local port the listener `Listener` is bound to, or `error` when it does
+not answer within one second. Used by `ircdctl status`.
+""".
+-spec port(pid()) -> {ok, inet:port_number()} | error.
+port(Listener) ->
+    try gen_server:call(Listener, port, 1000) of
+        {ok, Port} when is_integer(Port), Port >= 0, Port =< 65535 -> {ok, Port};
+        _ -> error
+    catch
+        exit:_ -> error
+    end.
 
 -doc false.
 init({Kind, Port, #{ip := IP, tls_options := TLSOptions}}) ->
@@ -67,7 +80,22 @@ init({Kind, Port, #{ip := IP, tls_options := TLSOptions}}) ->
     end.
 
 -doc false.
-handle_call(_, _, State) -> {reply, {error, unsupported}, State}.
+handle_call(port, _From, Socket) ->
+    %% The state is the listen socket: a port for tcp and ws, an sslsocket for
+    %% tls and wss (inet:port/1 does not accept the latter).
+    Name =
+        case is_port(Socket) of
+            true -> inet:sockname(Socket);
+            false -> ssl:sockname(Socket)
+        end,
+    Reply =
+        case Name of
+            {ok, {_, Port}} -> {ok, Port};
+            _ -> error
+        end,
+    {reply, Reply, Socket};
+handle_call(_, _, State) ->
+    {reply, {error, unsupported}, State}.
 -doc false.
 handle_cast(_, State) -> {noreply, State}.
 -doc false.
@@ -116,16 +144,16 @@ handoff(Kind, Socket) ->
         case PeerResult of
             %% A host beginning with ':' (IPv6 such as ::1) would be read
             %% as a trailing parameter in WHO replies; prefix it with 0.
-            {ok, {Address, _}} ->
-                case inet:ntoa(Address) of
-                    [$: | _] = Text -> list_to_binary([$0 | Text]);
-                    Text -> list_to_binary(Text)
+            {ok, {Address, _}} when is_tuple(Address) ->
+                case ircd_wire:ip_text(Address) of
+                    <<$:, _/binary>> = Text -> <<$0, Text/binary>>;
+                    Text -> Text
                 end;
             _ ->
                 <<"unknown">>
         end,
     case ircd_sessions:start_child(Kind, Socket, Peer) of
-        {ok, Pid} ->
+        {ok, Pid} when is_pid(Pid) ->
             case Module:controlling_process(Socket, Pid) of
                 ok ->
                     Pid ! activate;

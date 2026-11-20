@@ -33,7 +33,7 @@ already gone.
 """.
 -spec drain(binary()) -> ok.
 drain(Reason) ->
-    Config = persistent_term:get({ircd_state, config}, #{}),
+    Config = ircd_config:current_or_empty(),
     Server = maps:get(name, Config, <<"irc.local">>),
     Grace = maps:get(shutdown_grace, Config, 5),
     Sessions = sessions(),

@@ -798,7 +798,7 @@ link_command(<<"USE">>, Peer, Prefix, [AccountText, DevText, IdText], _) ->
     {ok, Id} = non_neg(IdText),
     store(fun() ->
         case mnesia:dirty_read(e2ee_device, {ircd_wire:fold(Account), Dev}) of
-            [Device] -> consume(Device, Id);
+            [#e2ee_device{} = Device] -> consume(Device, Id);
             [] -> ok
         end
     end),
@@ -1248,7 +1248,7 @@ fail(Pid, Code, Context, Text) ->
     ircd_state_send:fail(Pid, <<"E2EE">>, Code, Context, Text).
 
 config() ->
-    maps:get(e2ee, persistent_term:get({ircd_state, config}, #{}), null).
+    maps:get(e2ee, ircd_config:current_or_empty(), null).
 
 server() ->
-    maps:get(name, persistent_term:get({ircd_state, config}, #{}), <<"irc.local">>).
+    maps:get(name, ircd_config:current_or_empty(), <<"irc.local">>).

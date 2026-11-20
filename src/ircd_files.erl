@@ -266,7 +266,7 @@ delete(_) ->
 %%--------------------------------------------------------------------
 
 config() ->
-    maps:get(files, persistent_term:get({ircd_state, config}, #{}), null).
+    maps:get(files, ircd_config:current_or_empty(), null).
 
 client(#{
     endpoint := Endpoint,

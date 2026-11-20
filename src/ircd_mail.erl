@@ -80,9 +80,7 @@ to `BaseUrl`.
 """.
 -spec verify_link(binary(), binary(), binary()) -> binary().
 verify_link(BaseUrl, Account, Code) ->
-    Query = iolist_to_binary(
-        uri_string:compose_query([{<<"account">>, Account}, {<<"code">>, Code}])
-    ),
+    Query = query_string([{<<"account">>, Account}, {<<"code">>, Code}]),
     Sep =
         case binary:match(BaseUrl, <<"?">>) of
             nomatch -> <<"?">>;
@@ -189,9 +187,7 @@ to `BaseUrl`.
 """.
 -spec reset_link(binary(), binary(), binary()) -> binary().
 reset_link(BaseUrl, Email, Code) ->
-    Query = iolist_to_binary(
-        uri_string:compose_query([{<<"email">>, Email}, {<<"code">>, Code}])
-    ),
+    Query = query_string([{<<"email">>, Email}, {<<"code">>, Code}]),
     Sep =
         case binary:match(BaseUrl, <<"?">>) of
             nomatch -> <<"?">>;
@@ -272,3 +268,12 @@ smtp_options(#{relay := Relay, port := Port, tls := Tls, ssl := Ssl} = Smtp) ->
 
 sanitize_header(Bin) ->
     binary:replace(Bin, [<<"\r">>, <<"\n">>, <<0>>], <<>>, [global]).
+
+%% The query part of a link. Every key and value here is a UTF-8 binary, so
+%% uri_string:compose_query/1 returns a binary; anything else is a bug.
+-spec query_string([{binary(), binary()}]) -> binary().
+query_string(Pairs) ->
+    case uri_string:compose_query(Pairs) of
+        Query when is_binary(Query) -> Query;
+        Other -> erlang:error({invalid_query, Other})
+    end.

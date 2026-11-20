@@ -41,7 +41,7 @@ Whether link previews are enabled in the active server configuration.
 """.
 -spec enabled() -> boolean().
 enabled() ->
-    Features = maps:get(features, persistent_term:get({ircd_state, config}, #{}), #{}),
+    Features = maps:get(features, ircd_config:current_or_empty(), #{}),
     maps:get(link_previews, Features, true).
 
 -doc """
