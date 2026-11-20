@@ -234,8 +234,15 @@ def stats_delta(before, after):
     return delta
 
 
-async def command_matrix(host, port, nick_for, iterations, oper, timeout):
-    """Run every command family and return per-command results."""
+async def command_matrix(host, port, nick_for, iterations, oper, timeout, pace=0.0):
+    """Run every command family and return per-command results.
+
+    `pace` caps the actor's send rate in lines per second (0: no cap), so a
+    server's flood limit does not disconnect it; the wait happens before
+    each timed iteration and is not part of the latency. If the server
+    closes the connection anyway, the family records the error and the
+    remaining families are reported as skipped.
+    """
     actor = await connect(host, port, nick_for(1), ACTOR_CAPS, timeout)
     peer = await connect(host, port, nick_for(2), "", timeout)
     outsider = await connect(host, port, nick_for(3), "", timeout)
@@ -356,20 +363,39 @@ async def command_matrix(host, port, nick_for, iterations, oper, timeout):
         ]
 
     results = []
+    lost = None
+    next_send = time.perf_counter()
     try:
         for name, build in families:
             delays, errors, examples = [], 0, []
+            if lost:
+                results.append(skipped(name, lost))
+                continue
             started = time.perf_counter()
             for i in range(iterations):
                 lines_out = build(i)
                 marker = f"k{len(results)}x{i}"
+                if pace:
+                    # One PING per iteration, plus a REDACT after PRIVMSG+REDACT.
+                    extra = 2 if name == "PRIVMSG+REDACT" else 1
+                    wait = next_send - time.perf_counter()
+                    if wait > 0:
+                        await asyncio.sleep(wait)
+                    next_send = max(next_send, time.perf_counter()) + (len(lines_out) + extra) / pace
                 begin = time.perf_counter()
-                await actor.send(*lines_out, f"PING {marker}")
                 try:
+                    await actor.send(*lines_out, f"PING {marker}")
                     got = await actor.lines_until(marker.encode(), timeout)
                 except (TimeoutError, EOFError, asyncio.TimeoutError) as exc:
                     errors += 1
                     examples.append(f"{type(exc).__name__}: {exc}")
+                    if isinstance(exc, EOFError):
+                        lost = "connection closed by the server"
+                    break
+                except (ConnectionError, OSError) as exc:
+                    errors += 1
+                    lost = f"connection closed by the server ({type(exc).__name__})"
+                    examples.append(lost)
                     break
                 delays.append(time.perf_counter() - begin)
                 if name == "PRIVMSG+REDACT":
@@ -403,5 +429,24 @@ async def command_matrix(host, port, nick_for, iterations, oper, timeout):
         stop.set()
         await asyncio.gather(*drains, return_exceptions=True)
         for conn in (actor, peer, outsider):
-            await conn.close()
+            try:
+                await conn.close()
+            except (ConnectionError, OSError):
+                pass
     return results
+
+
+def skipped(name, why):
+    """A family that did not run because the actor's connection was lost."""
+    return {
+        "command": name,
+        "iterations": 0,
+        "elapsed": 0.0,
+        "ops_per_s": 0.0,
+        "p50": None,
+        "p95": None,
+        "p99": None,
+        "max": None,
+        "errors": 0,
+        "examples": [f"skipped: {why}"],
+    }

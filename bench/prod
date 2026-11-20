@@ -1,0 +1,112 @@
+#!/bin/sh
+# Build the production image (docker-compose.prod.yml / Dockerfile.prod), run
+# it the way that compose file does, and benchmark it: bench/traffic.py, then
+# bench/faker_load.py. Reports go to bench/results/<date>-prod*.
+#
+# Same image, config/ircd.prod.json (unchanged, read-only), motd, init, and
+# nofile ulimit as docker-compose.prod.yml. Differences, so a running dev
+# server (ports 6667/8080/8081) is not disturbed: the IRC port is published
+# on PROD_BENCH_PORT (default 16667), the web ports are not published, and
+# the data volume is a fresh one that is deleted afterwards.
+#
+# config/ircd.prod.json limits each client to 50 lines per second with a
+# 500-line burst. The command matrix is therefore paced at 40 lines per
+# second and the pipelined PING phase sends 400; extra arguments override
+# these (for example --pace 0 to see the limit disconnect the client).
+set -eu
+cd "$(dirname "$0")/.."
+
+NAME=ircd-prod-bench
+VOLUME=ircd-prod-bench-data
+PORT=${PROD_BENCH_PORT:-16667}
+
+cleanup() {
+    docker rm -f "$NAME" >/dev/null 2>&1 || true
+    docker volume rm "$VOLUME" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+# The compose file requires IRCD_COOKIE; the build does not use it.
+IRCD_COOKIE=bench-build docker-compose -f docker-compose.prod.yml build ircd
+
+cleanup
+docker volume create "$VOLUME" >/dev/null
+docker run -d --name "$NAME" \
+    --init \
+    --ulimit nofile=65536:65536 \
+    -e IRCD_CONFIG=/etc/ircd/ircd.json \
+    -e "IRCD_COOKIE=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')" \
+    -p "127.0.0.1:${PORT}:6667" \
+    -v "${VOLUME}:/var/lib/ircd" \
+    -v "$(pwd)/config/ircd.prod.json:/etc/ircd/ircd.json:ro" \
+    -v "$(pwd)/config/motd.txt:/etc/ircd/motd.txt:ro" \
+    ircd:latest >/dev/null
+
+ready=0
+i=0
+while [ "$i" -lt 60 ]; do
+    if uv run --project bench --locked python - "$PORT" <<'PY'
+import socket, sys
+port = int(sys.argv[1])
+try:
+    sock = socket.create_connection(("127.0.0.1", port), 1)
+    sock.settimeout(2)
+    sock.sendall(b"NICK pwarmup00\r\nUSER pwarmup00 0 * :bench\r\n")
+    data = b""
+    while b" 001 " not in data:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise EOFError
+        data += chunk
+    sock.sendall(b"QUIT :bench\r\n")
+    sock.close()
+except Exception:
+    sys.exit(1)
+PY
+    then
+        ready=1
+        break
+    fi
+    i=$((i + 1))
+    sleep 0.5
+done
+if [ "$ready" -ne 1 ]; then
+    echo "production image did not listen on ${PORT}" >&2
+    docker logs "$NAME" >&2 || true
+    exit 1
+fi
+
+stamp=$(date -u +%F)
+uv run --project bench --locked python bench/traffic.py \
+    --host 127.0.0.1 \
+    --port "$PORT" \
+    --container "$NAME" \
+    --kind production \
+    --warmup 50 \
+    --pace 40 \
+    --flood 400 \
+    --output "bench/results/${stamp}-prod.md" \
+    --json "bench/results/${stamp}-prod.json" "$@"
+uv run --project bench --locked python bench/faker_load.py \
+    --host 127.0.0.1 \
+    --port "$PORT" \
+    --container "$NAME" \
+    --kind production \
+    --output "bench/results/${stamp}-prod-faker-load.json"
+# The server's warnings and errors during the run (flood limits, overload),
+# by event name; the full log goes away with the container.
+echo "Server warnings and errors by event:"
+docker logs "$NAME" 2>&1 | uv run --project bench --locked python -c '
+import collections, json, sys
+seen = collections.Counter()
+for line in sys.stdin:
+    try:
+        entry = json.loads(line)
+    except ValueError:
+        continue
+    if entry.get("level") in ("warning", "error", "critical", "alert", "emergency"):
+        seen[(entry.get("level"), entry.get("event", "?"))] += 1
+for (level, event), n in sorted(seen.items()):
+    print(f"  {level} {event}: {n}")
+print("  none" if not seen else "", end="")
+'

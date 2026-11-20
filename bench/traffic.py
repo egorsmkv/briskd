@@ -234,6 +234,17 @@ def otp_command(kind, container):
         'io:format("~s ~s~n",[erlang:system_info(otp_release), '
         "erlang:system_info(version)]), halt()."
     )
+    if kind == "production":
+        # The production image runs the release from /opt/ircd; its
+        # start_erl.data names the bundled ERTS and the release version.
+        return [
+            "docker",
+            "exec",
+            container,
+            "sh",
+            "-c",
+            'set -- $(cat /opt/ircd/releases/start_erl.data); echo "ERTS $1, release $2"',
+        ]
     if kind == "release":
         # A second emulator in the release container. halt/0 stops only that one.
         # Distribution rpc is not used: the release binds distribution to loopback
@@ -282,6 +293,22 @@ def otp_version(kind, container):
 def preamble(report):
     stats = f"One container sample taken during registration: `{report['stats']}`."
     otp = f"OTP/ERTS: `{report['otp']}`."
+    if report["kind"] == "production":
+        lines = [
+            "This is the production image (`Dockerfile.prod`: the release with",
+            "ERTS included, on Debian slim) run as `docker-compose.prod.yml` runs it:",
+            "`config/ircd.prod.json` unchanged (flood limits, DroneBL, `channels`",
+            "retention, JSON info logging), `ulimit -n` 65536, `init`, and a fresh",
+            "data volume. Only the published host port differs (`bench/prod`).",
+            "Load generator: host CPython asyncio through the published port.",
+            stats,
+            otp,
+        ]
+        if report["warmup"]:
+            lines.append(
+                f"Warmed up with {report['warmup']} registrations before the measured phases."
+            )
+        return lines
     if report["kind"] == "release":
         lines = [
             "This is a packaged release (`rebar3 as prod release`, ERTS included),",
@@ -359,6 +386,15 @@ def command_section(report):
         f"Each family runs {report['iterations']} times on one client, each followed by",
         "`PING <marker>`; latency is the time until that PONG, so it covers the whole",
         "reply. Errors count 4xx/5xx numerics, `FAIL` replies, and timeouts.",
+        *(
+            [
+                f"The client is paced to at most {report['pace']:g} lines per second (below",
+                "the server's flood limit); the pause is outside the measured latency, so",
+                "ops/s reflects the pacing, not the server's capacity.",
+            ]
+            if report.get("pace")
+            else []
+        ),
         "",
         "| Command | Runs | ops/s | p50 | p95 | p99 | max | Errors |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
@@ -466,6 +502,7 @@ async def main_async(args):
             args.commands,
             oper,
             args.timeout,
+            args.pace,
         )
     stats_after = await bench_commands.server_stats(
         args.host, args.port, nick_for(base, 92_000_000), oper
@@ -494,6 +531,7 @@ async def main_async(args):
         "channel": channel,
         "commands": matrix,
         "iterations": args.commands,
+        "pace": args.pace,
         "server": {
             "uptime": stats_after["uptime"],
             "lusers": stats_after["lusers"],
@@ -522,7 +560,9 @@ def main():
     parser.add_argument("--timeout", type=float, default=8)
     parser.add_argument("--output", default="")
     parser.add_argument("--container", default="irc-server_ircd-dev_1")
-    parser.add_argument("--kind", choices=("development", "release"), default="development")
+    parser.add_argument(
+        "--kind", choices=("development", "release", "production"), default="development"
+    )
     parser.add_argument("--warmup", type=int, default=0)
     parser.add_argument(
         "--commands",
@@ -534,6 +574,12 @@ def main():
         "--oper",
         default="",
         help="NAME:PASSWORD for OPER; adds operator commands and operator-only stats",
+    )
+    parser.add_argument(
+        "--pace",
+        type=float,
+        default=0.0,
+        help="cap the command matrix client at this many lines per second (0: no cap)",
     )
     parser.add_argument("--json", default="", help="also write the full report as JSON")
     args = parser.parse_args()

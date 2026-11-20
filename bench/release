@@ -27,7 +27,7 @@ docker-compose -f docker-compose.dev.yml run -d --name "$NAME" --no-deps -T \
 ready=0
 i=0
 while [ "$i" -lt 40 ]; do
-    if python3 - "$PORT" <<'PY'
+    if uv run --project bench --locked python - "$PORT" <<'PY'
 import socket, sys
 port = int(sys.argv[1])
 try:
@@ -59,7 +59,7 @@ if [ "$ready" -ne 1 ]; then
 fi
 
 stamp=$(date -u +%F)
-python3 bench/traffic.py \
+uv run --project bench --locked python bench/traffic.py \
     --host 127.0.0.1 \
     --port "$PORT" \
     --container "$NAME" \

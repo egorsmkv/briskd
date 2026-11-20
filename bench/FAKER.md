@@ -3,10 +3,11 @@
 Run against an already running development server on localhost:6667:
 
 ```sh
-python3 -m venv /tmp/ircd-faker-venv
-/tmp/ircd-faker-venv/bin/pip install -r bench/requirements-faker.txt
-/tmp/ircd-faker-venv/bin/python bench/faker_load.py --output bench/results/faker-load.json
+uv run --project bench --locked python bench/faker_load.py --output bench/results/faker-load.json
 ```
+
+uv installs Faker from `bench/uv.lock` into `bench/.venv`. `bench/prod`
+runs the same test against the production image (`--kind production`).
 
 Defaults: 10, 25, and 50 simultaneous TCP clients, two repetitions per size,
 five seconds per repetition, ten messages per client per second. Faker supplies
@@ -32,7 +33,8 @@ not a maximum capacity measurement. Run without concurrent builds or tests.
 Docker CPU is reported relative to one core and can exceed 100%.
 
 Optional flags include `--clients 10 25 50`, `--duration 5`, `--rate 10`,
-`--repeats 2`, `--seed 20261118`, `--host`, `--port`, and `--container`.
+`--repeats 2`, `--seed 20261118`, `--host`, `--port`, `--container`
+(default `irc-server_ircd-dev_1`), and `--kind development|production`.
 This runner targets plaintext client sessions only; TLS, direct server links,
 malformed input, saturation, and prolonged soak behavior are outside its scope.
 Scheduler utilization, mailbox lengths, GC, and kernel socket drops are not

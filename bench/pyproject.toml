@@ -1,0 +1,14 @@
+[project]
+name = "ircd-bench"
+version = "0.1.0"
+description = "Traffic and load benchmarks for ircd (bench/README.md)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # Synthetic names and sentences for faker_load.py (FAKER.md).
+    "Faker==40.54.0",
+]
+
+[tool.uv]
+# Scripts only: nothing to build or install as a package.
+package = false

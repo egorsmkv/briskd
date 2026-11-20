@@ -10,6 +10,7 @@
 # Generated: built from webui/ by `just build-webui` (dev container, CI) or
 # the webui stage of Dockerfile.prod. Never committed.
 /priv/webui/assets/
-# Python bytecode caches (bench/, test/).
+# Python bytecode caches (bench/, test/) and the bench's uv environment.
+/bench/.venv/
 __pycache__/
 *.pyc

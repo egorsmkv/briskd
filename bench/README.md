@@ -3,12 +3,36 @@
 `bench/traffic.py` drives a running server with real TCP clients and writes a
 Markdown report to `bench/results/<date>.md` (and JSON with `--json`).
 
+The bench is a [uv](https://docs.astral.sh/uv/) project: `pyproject.toml`
+pins its dependencies, `uv.lock` pins every version and hash, and
+`.python-version` pins the interpreter (uv downloads it when missing). The
+scripts run everything through `uv run --project bench --locked`, which
+creates `bench/.venv` on first use; there is nothing to install by hand.
+
 ```sh
-python3 bench/traffic.py                                   # dev server, port 6667
-python3 bench/traffic.py --oper yehor:devpass --json bench/results/run.json
-bench/run                                                  # same as the first line
+bench/run                                                  # dev server, port 6667
+bench/run --oper yehor:devpass --json bench/results/run.json
 bench/release                                              # packaged release on port 6668
+bench/prod                                                 # production image on port 16667
+uv run --project bench python bench/faker_load.py          # paced load test (FAKER.md)
 ```
+
+`bench/prod` builds the production image from `docker-compose.prod.yml`
+(`Dockerfile.prod`) and runs it as that compose file does: the same image,
+`config/ircd.prod.json` unchanged and read-only, the MOTD, `init`, and a
+65536 `nofile` limit. The only differences keep a running dev server
+undisturbed: the IRC port is published on `127.0.0.1:16667`
+(`PROD_BENCH_PORT`), the web ports are not published, and the data volume is
+a fresh one removed afterwards. It runs `traffic.py --kind production
+--warmup 50` and then `faker_load.py --kind production`, writes
+`bench/results/<date>-prod.md`, `-prod.json`, and `-prod-faker-load.json`,
+and prints the server's warning and error events by name. Extra arguments
+go to `traffic.py`. The production configuration's flood limits stay in
+force (50 lines per second per client, 500-line burst), so `bench/prod`
+paces the command matrix at 40 lines per second (`--pace 40`; the pause is
+outside the measured latency) and sends 400 pipelined `PING`s
+(`--flood 400`). With `--pace 0` the limit disconnects the matrix client;
+its family is reported with the error and the rest as skipped.
 
 ## Phases
 
@@ -46,7 +70,9 @@ The report ends with the server's own view of the run:
 `--host`, `--port`, `--pings`, `--flood`, `--registrations`, `--concurrency`,
 `--members`, `--each`, `--commands` (iterations per family, 0 skips the
 matrix), `--oper NAME:PASSWORD`, `--timeout`, `--output`, `--json`,
-`--container`, `--kind development|release`, `--warmup`.
+`--container`, `--kind development|release|production`, `--warmup`,
+`--pace` (lines per second for the command matrix client; 0, the default,
+does not pace).
 
 ## Notes
 
