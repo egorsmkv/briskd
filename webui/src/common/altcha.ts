@@ -33,6 +33,33 @@ export interface AltchaController {
   reset(): void;
 }
 
+/**
+ * Fetch an ALTCHA challenge and solve it (proof of work); resolves to the
+ * payload the server's forms expect.
+ */
+export async function solveAltcha(): Promise<string> {
+  const res = await fetch("/api/altcha", { cache: "no-store" });
+  if (!res.ok) throw new Error("Challenge unavailable");
+  const ch = (await res.json()) as AltchaChallenge;
+  const max = ch.maxnumber ?? 50000;
+  for (let n = 0; n <= max; n++) {
+    if ((await sha256Hex(ch.salt + n)) === ch.challenge) {
+      return btoa(
+        JSON.stringify({
+          algorithm: ch.algorithm,
+          challenge: ch.challenge,
+          number: n,
+          salt: ch.salt,
+          signature: ch.signature,
+        }),
+      );
+    }
+    // Yield now and then so the page stays responsive.
+    if ((n & 255) === 255) await new Promise((r) => setTimeout(r, 0));
+  }
+  throw new Error("Verification failed");
+}
+
 export function initAltcha(
   checkbox: HTMLInputElement,
   label: HTMLElement,
@@ -55,30 +82,7 @@ export function initAltcha(
     checkbox.disabled = true;
     label.textContent = "Verifying...";
     try {
-      const res = await fetch("/api/altcha", { cache: "no-store" });
-      if (!res.ok) throw new Error("Challenge unavailable");
-      const ch = (await res.json()) as AltchaChallenge;
-      const max = ch.maxnumber ?? 50000;
-      let found = -1;
-      for (let n = 0; n <= max; n++) {
-        if ((await sha256Hex(ch.salt + n)) === ch.challenge) {
-          found = n;
-          break;
-        }
-        if ((n & 255) === 255) {
-          await new Promise((r) => setTimeout(r, 0));
-        }
-      }
-      if (found < 0) throw new Error("Verification failed");
-      payload = btoa(
-        JSON.stringify({
-          algorithm: ch.algorithm,
-          challenge: ch.challenge,
-          number: found,
-          salt: ch.salt,
-          signature: ch.signature,
-        }),
-      );
+      payload = await solveAltcha();
       label.textContent = "Verified";
     } catch (err) {
       reset();

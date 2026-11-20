@@ -10,6 +10,13 @@ body {
   padding: 0;
 }
 
+// SPA wrappers (app/App.tsx) take no part in layout: pages are laid out as
+// direct children of <body>, as before. A hidden chat page stays hidden.
+#app,
+.page-webirc:not([hidden]) {
+  display: contents;
+}
+
 body {
   font-family: var(--font, Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif);
   background: var(--bg);

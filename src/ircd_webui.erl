@@ -103,11 +103,7 @@ init(#{webui := #{ip := IP, port := Port}}) ->
             {ok, {_, ActualPort}} = inet:sockname(Listen),
             ok = ircd_altcha:init(),
             Assets = #{
-                index => load_asset("index.html", <<"ircd admin UI asset missing">>),
-                signup => load_asset("signup.html", <<"ircd signup UI asset missing">>),
-                verify => load_asset("verify.html", <<"ircd verify UI asset missing">>),
-                recover => load_asset("recover.html", <<"ircd recover UI asset missing">>),
-                webirc => load_asset("webirc.html", <<"ircd webirc UI asset missing">>),
+                app => load_asset("app.html", <<"ircd web UI asset missing">>),
                 favicon_ico => load_raw_asset("favicon.ico", <<>>),
                 favicon_svg => load_raw_asset("favicon.svg", <<>>),
                 og_image => load_raw_asset("og-image.png", <<>>),
@@ -213,11 +209,7 @@ accept_loop(Listen, Assets, Counter) ->
 handle_connection(
     Socket,
     #{
-        index := IndexHtml,
-        signup := SignupHtml,
-        verify := VerifyHtml,
-        recover := RecoverHtml,
-        webirc := WebircHtml,
+        app := AppHtml,
         favicon_ico := FaviconIco,
         favicon_svg := FaviconSvg,
         og_image := OgImage,
@@ -251,17 +243,17 @@ handle_connection(
             binary_part(Path, 0, min(byte_size(Path), 9)) =:= <<"/channel/">>;
             binary_part(Path, 0, min(byte_size(Path), 4)) =:= <<"/dm/">>
         ->
-            handle_webirc_page(Socket, WebircHtml, Path, Headers);
-        {ok, <<"GET">>, {<<"/verify">>, Query}, _Headers, _Body} ->
-            handle_verify_page(Socket, VerifyHtml, Query);
+            handle_webirc_page(Socket, AppHtml, Path, Headers);
+        {ok, <<"GET">>, {<<"/verify">>, _Query}, Headers, _Body} ->
+            handle_verify_page(Socket, AppHtml, Headers);
         {ok, <<"POST">>, {<<"/api/verify">>, _Query}, Headers, Body} ->
             handle_verify_api(Socket, Headers, Body);
-        {ok, <<"GET">>, {<<"/signup">>, _Query}, _Headers, _Body} ->
-            handle_signup_page(Socket, SignupHtml);
+        {ok, <<"GET">>, {<<"/signup">>, _Query}, Headers, _Body} ->
+            handle_signup_page(Socket, AppHtml, Headers);
         {ok, <<"POST">>, {<<"/api/signup">>, _Query}, Headers, Body} ->
             handle_signup_api(Socket, Headers, Body);
-        {ok, <<"GET">>, {<<"/recover">>, Query}, _Headers, _Body} ->
-            handle_recover_page(Socket, RecoverHtml, Query);
+        {ok, <<"GET">>, {<<"/recover">>, _Query}, Headers, _Body} ->
+            handle_recover_page(Socket, AppHtml, Headers);
         {ok, <<"POST">>, {<<"/api/recover/request">>, _Query}, Headers, Body} ->
             handle_recover_request_api(Socket, Headers, Body);
         {ok, <<"POST">>, {<<"/api/recover/confirm">>, _Query}, Headers, Body} ->
@@ -281,7 +273,7 @@ handle_connection(
                 true ->
                     case check_auth(Headers) of
                         ok ->
-                            route(Socket, Method, Path, Headers, Body, IndexHtml);
+                            route(Socket, Method, Path, Headers, Body, AppHtml);
                         unauthorized ->
                             send_response(
                                 Socket,
@@ -342,33 +334,112 @@ handle_static(Socket, Name, Static) ->
             send_json(Socket, 404, <<"Not Found">>, #{error => <<"not_found">>})
     end.
 
-handle_webirc_page(Socket, WebircHtml, Path, Headers) ->
+handle_webirc_page(Socket, AppHtml, Path, Headers) ->
     Config = persistent_term:get({ircd_state, config}, #{}),
-    WsPort = maps:get(ws, Config, null),
-    WssPort = maps:get(wss, Config, null),
-    case WsPort =:= null andalso WssPort =:= null of
+    case maps:get(ws, Config, null) =:= null andalso maps:get(wss, Config, null) =:= null of
         true ->
             send_json(Socket, 404, <<"Not Found">>, #{error => <<"webirc_disabled">>});
         false ->
-            Network = escape_html(maps:get(network, Config, maps:get(name, Config, <<"IRC">>))),
-            WsBin = port_to_bin(WsPort),
-            WssBin = port_to_bin(WssPort),
-            DefaultChans = escape_html(default_channels(Config)),
-            Origin = public_origin(Headers, Config),
-            PublicUrl = escape_html(<<Origin/binary, Path/binary>>),
-            OgImageUrl = escape_html(<<Origin/binary, "/og-image.png">>),
-            P0 = binary:replace(WebircHtml, <<"__NETWORK_NAME__">>, Network, [global]),
-            P1 = binary:replace(P0, <<"__WS_PORT__">>, WsBin, [global]),
-            P2 = binary:replace(P1, <<"__WSS_PORT__">>, WssBin, [global]),
-            P3 = binary:replace(P2, <<"__DEFAULT_CHANNELS__">>, DefaultChans, [global]),
-            P4 = binary:replace(P3, <<"__PUBLIC_URL__">>, PublicUrl, [global]),
-            Page = binary:replace(P4, <<"__OG_IMAGE_URL__">>, OgImageUrl, [global]),
-            send_nonce_html(
-                Socket,
-                Page,
-                <<"connect-src 'self' ws: wss:; img-src 'self' data: blob:; media-src 'self' blob:; ">>
-            )
+            send_app(Socket, AppHtml, webirc, Path, Headers)
     end.
+
+%% The single-page app shell (priv/webui/app.html) serves every page. The
+%% server fills in what must be there before any script runs: the page meta
+%% (link previews and search engines read it), the page's stylesheet (so the
+%% first paint is styled), and the client config as JSON.
+send_app(Socket, AppHtml, Page, Path, Headers) ->
+    Config = persistent_term:get({ircd_state, config}, #{}),
+    Network = maps:get(network, Config, maps:get(name, Config, <<"IRC">>)),
+    Channels = default_channels(Config),
+    Origin = public_origin(Headers, Config),
+    {Title, Description, Robots} = page_meta(Page, Network, Channels),
+    Html = fill_template(AppHtml, #{
+        <<"__TITLE__">> => escape_html(Title),
+        <<"__DESCRIPTION__">> => escape_html(Description),
+        <<"__ROBOTS__">> => Robots,
+        <<"__NETWORK_NAME__">> => escape_html(Network),
+        <<"__PUBLIC_URL__">> => escape_html(<<Origin/binary, Path/binary>>),
+        <<"__OG_IMAGE_URL__">> => escape_html(<<Origin/binary, "/og-image.png">>),
+        <<"__STYLE__">> => <<(atom_to_binary(Page))/binary, ".css">>,
+        <<"__APP_CONFIG__">> => app_config_json(Config, Network, Channels)
+    }),
+    send_nonce_html(
+        Socket,
+        Html,
+        <<"connect-src 'self' ws: wss:; img-src 'self' data: blob:; media-src 'self' blob:; ">>
+    ).
+
+%% Replace each `__NAME__` placeholder in one pass: text that a value brings
+%% in (a network name, say) is never scanned for placeholders again.
+fill_template(Template, Values) ->
+    Parts = re:split(Template, <<"(__[A-Z_]+__)">>, [{return, binary}]),
+    iolist_to_binary([maps:get(P, Values, P) || P <- Parts]).
+
+page_meta(webirc, Network, Channels) ->
+    {
+        <<Network/binary, " - WebIRC">>,
+        <<"Join ", Network/binary, " IRC (", Channels/binary,
+            ") directly in your browser with IRCv3 WebSocket, chat history, themes, "
+            "and optional end-to-end encryption (E2EE).">>,
+        <<"index, follow">>
+    };
+page_meta(signup, Network, _) ->
+    {
+        <<"Sign Up - ", Network/binary>>,
+        <<
+            "Create an IRC SASL account for secure authentication and end-to-end "
+            "encrypted messaging."
+        >>,
+        <<"index, follow">>
+    };
+page_meta(verify, Network, _) ->
+    {
+        <<"Verify Account - ", Network/binary>>,
+        <<"Verify your IRC account with the code from your email.">>,
+        <<"noindex">>
+    };
+page_meta(recover, Network, _) ->
+    {
+        <<"Recover Password - ", Network/binary>>,
+        <<"Reset your IRC account password with your verified email address.">>,
+        <<"noindex">>
+    };
+page_meta(admin, Network, _) ->
+    {<<"Admin - ", Network/binary>>, <<>>, <<"noindex, nofollow">>}.
+
+%% Client config (webui/src/app/config.ts). It is embedded in a <script
+%% type="application/json"> block: `<`, `>`, and `&` are escaped so no value
+%% can close the block or start markup.
+app_config_json(Config, Network, Channels) ->
+    WebCfg =
+        case maps:get(webui, Config, null) of
+            M when is_map(M) -> M;
+            _ -> #{}
+        end,
+    Verification = maps:get(account_verification, Config, null),
+    Json = iolist_to_binary(
+        json:encode(#{
+            network => Network,
+            wsPort => port_to_bin(maps:get(ws, Config, null)),
+            wssPort => port_to_bin(maps:get(wss, Config, null)),
+            defaultChannels => Channels,
+            termsUrl => maps:get(terms_url, WebCfg, <<"https://example.com/terms">>),
+            privacyUrl => maps:get(privacy_url, WebCfg, <<"https://example.com/privacy">>),
+            features => #{
+                webirc =>
+                    maps:get(ws, Config, null) =/= null orelse
+                    maps:get(wss, Config, null) =/= null,
+                registration => maps:get(account_registration, Config, true) =:= true,
+                verification => Verification =/= null,
+                recovery => is_map(Verification) andalso is_map_key(smtp, Verification)
+            }
+        })
+    ),
+    lists:foldl(
+        fun({From, To}, Acc) -> binary:replace(Acc, From, To, [global]) end,
+        Json,
+        [{<<"<">>, <<"\\u003c">>}, {<<">">>, <<"\\u003e">>}, {<<"&">>, <<"\\u0026">>}]
+    ).
 
 public_origin(Headers, Config) ->
     Proto =
@@ -433,14 +504,11 @@ handle_webirc_verify_api(Socket, Headers, Body) ->
             send_json(Socket, 403, <<"Forbidden">>, #{error => <<"missing_csrf_header">>})
     end.
 
-handle_recover_page(Socket, RecoverHtml, Query) ->
+handle_recover_page(Socket, AppHtml, Headers) ->
     Config = persistent_term:get({ircd_state, config}, #{}),
     case maps:get(account_verification, Config, null) of
         #{smtp := _} ->
-            {_, Email, Code} = prefill_verify_query(Query),
-            P1 = binary:replace(RecoverHtml, <<"__EMAIL_PREFILL__">>, escape_html(Email), [global]),
-            Page = binary:replace(P1, <<"__CODE_PREFILL__">>, escape_html(Code), [global]),
-            send_nonce_html(Socket, Page);
+            send_app(Socket, AppHtml, recover, <<"/recover">>, Headers);
         _ ->
             send_json(Socket, 404, <<"Not Found">>, #{error => <<"recovery_disabled">>})
     end.
@@ -571,20 +639,11 @@ handle_recover_confirm_api(Socket, Headers, Body) ->
             send_json(Socket, 403, <<"Forbidden">>, #{error => <<"missing_csrf_header">>})
     end.
 
-handle_signup_page(Socket, SignupHtml) ->
+handle_signup_page(Socket, AppHtml, Headers) ->
     Config = persistent_term:get({ircd_state, config}, #{}),
     case maps:get(account_registration, Config, true) of
         true ->
-            WebCfg =
-                case maps:get(webui, Config, null) of
-                    M when is_map(M) -> M;
-                    _ -> #{}
-                end,
-            Terms = escape_html(maps:get(terms_url, WebCfg, <<"https://example.com/terms">>)),
-            Privacy = escape_html(maps:get(privacy_url, WebCfg, <<"https://example.com/privacy">>)),
-            Page0 = binary:replace(SignupHtml, <<"__TERMS_URL__">>, Terms, [global]),
-            Page = binary:replace(Page0, <<"__PRIVACY_URL__">>, Privacy, [global]),
-            send_nonce_html(Socket, Page);
+            send_app(Socket, AppHtml, signup, <<"/signup">>, Headers);
         false ->
             send_json(Socket, 404, <<"Not Found">>, #{error => <<"registration_disabled">>})
     end.
@@ -947,21 +1006,13 @@ require_altcha(Req) ->
             {error, <<"altcha_required">>, <<"Please complete the ALTCHA verification.">>}
     end.
 
-handle_verify_page(Socket, VerifyHtml, Query) ->
+handle_verify_page(Socket, AppHtml, Headers) ->
     Config = persistent_term:get({ircd_state, config}, #{}),
     case maps:get(account_verification, Config, null) of
         null ->
             send_json(Socket, 404, <<"Not Found">>, #{error => <<"verification_disabled">>});
         _ ->
-            {Email, Account, Code} = prefill_verify_query(Query),
-            Page0 = binary:replace(VerifyHtml, <<"__EMAIL_PREFILL__">>, escape_html(Email), [
-                global
-            ]),
-            Page1 = binary:replace(Page0, <<"__ACCOUNT_PREFILL__">>, escape_html(Account), [
-                global
-            ]),
-            Page = binary:replace(Page1, <<"__CODE_PREFILL__">>, escape_html(Code), [global]),
-            send_nonce_html(Socket, Page)
+            send_app(Socket, AppHtml, verify, <<"/verify">>, Headers)
     end.
 
 handle_verify_api(Socket, Headers, Body) ->
@@ -1032,28 +1083,6 @@ verify_from_json(Socket, Req, Code) ->
             })
     end.
 
-prefill_verify_query(<<>>) ->
-    {<<>>, <<>>, <<>>};
-prefill_verify_query(Query) ->
-    try uri_string:dissect_query(Query) of
-        Pairs when is_list(Pairs) ->
-            {
-                query_bin(<<"email">>, Pairs),
-                query_bin(<<"account">>, Pairs),
-                query_bin(<<"code">>, Pairs)
-            };
-        _ ->
-            {<<>>, <<>>, <<>>}
-    catch
-        _:_ -> {<<>>, <<>>, <<>>}
-    end.
-
-query_bin(Key, Pairs) ->
-    case lists:keyfind(Key, 1, Pairs) of
-        {_, Val} when is_binary(Val), byte_size(Val) =< 254 -> Val;
-        _ -> <<>>
-    end.
-
 escape_html(Bin) ->
     B1 = binary:replace(Bin, <<"&">>, <<"&amp;">>, [global]),
     B2 = binary:replace(B1, <<"<">>, <<"&lt;">>, [global]),
@@ -1061,7 +1090,7 @@ escape_html(Bin) ->
     B4 = binary:replace(B3, <<"\"">>, <<"&quot;">>, [global]),
     binary:replace(B4, <<"'">>, <<"&#39;">>, [global]).
 
-route(Socket, <<"GET">>, Path, _Headers, _Body, Html) when
+route(Socket, <<"GET">>, Path, Headers, _Body, Html) when
     Path =:= <<"/admin">>;
     Path =:= <<"/admin/">>;
     Path =:= <<"/admin/overview">>;
@@ -1073,7 +1102,7 @@ route(Socket, <<"GET">>, Path, _Headers, _Body, Html) when
     Path =:= <<"/admin/media">>;
     Path =:= <<"/admin/operations">>
 ->
-    send_nonce_html(Socket, Html);
+    send_app(Socket, Html, admin, Path, Headers);
 route(Socket, <<"GET">>, <<"/api/overview">>, _Headers, _Body, _Html) ->
     Config = persistent_term:get({ircd_state, config}, #{}),
     Payload = #{
@@ -1457,9 +1486,6 @@ send_response(Socket, Code, Reason, ContentType, ExtraHeaders, Body) ->
     _ = gen_tcp:send(Socket, [Headers, <<"\r\n">>, Bin]),
     ok.
 
-send_nonce_html(Socket, Html) ->
-    send_nonce_html(Socket, Html, <<>>).
-
 send_nonce_html(Socket, Html, ExtraCsp) ->
     Nonce = base64:encode(crypto:strong_rand_bytes(16)),
     Body = binary:replace(Html, <<"__CSP_NONCE__">>, Nonce, [global]),
@@ -1479,30 +1505,53 @@ send_nonce_html(Socket, Html, ExtraCsp) ->
         Body
     ).
 
+%% Every script and stylesheet the build wrote to priv/webui/assets: the app
+%% entry (app.js), its lazily loaded chunks (content-hashed names), and the
+%% page stylesheets. Names are restricted to a safe character set.
 load_static_assets() ->
-    Specs = [
-        {<<"admin.js">>, <<"application/javascript; charset=utf-8">>},
-        {<<"admin.css">>, <<"text/css; charset=utf-8">>},
-        {<<"signup.js">>, <<"application/javascript; charset=utf-8">>},
-        {<<"signup.css">>, <<"text/css; charset=utf-8">>},
-        {<<"verify.js">>, <<"application/javascript; charset=utf-8">>},
-        {<<"verify.css">>, <<"text/css; charset=utf-8">>},
-        {<<"recover.js">>, <<"application/javascript; charset=utf-8">>},
-        {<<"recover.css">>, <<"text/css; charset=utf-8">>},
-        {<<"webirc.js">>, <<"application/javascript; charset=utf-8">>},
-        {<<"webirc.css">>, <<"text/css; charset=utf-8">>}
-    ],
-    lists:foldl(
-        fun({Name, Mime}, Acc) ->
-            Rel = filename:join("assets", binary_to_list(Name)),
-            case read_asset_file(Rel) of
-                {ok, Bin} -> Acc#{Name => {Mime, Bin}};
-                error -> Acc
-            end
+    case first_dir([asset_dir(Base) || Base <- webui_dirs()]) of
+        {ok, Dir} ->
+            {ok, Names} = file:list_dir(Dir),
+            lists:foldl(
+                fun(Name, Acc) ->
+                    Bin = unicode:characters_to_binary(Name),
+                    case {static_mime(Bin), file:read_file(filename:join(Dir, Name))} of
+                        {undefined, _} -> Acc;
+                        {Mime, {ok, Body}} -> Acc#{Bin => {Mime, Body}};
+                        {_, {error, _}} -> Acc
+                    end
+                end,
+                #{},
+                Names
+            );
+        error ->
+            #{}
+    end.
+
+webui_dirs() ->
+    Priv =
+        case code:priv_dir(ircd) of
+            {error, _} -> [];
+            Dir -> [filename:join(Dir, "webui")]
         end,
-        #{},
-        Specs
-    ).
+    Priv ++ [filename:join("priv", "webui")].
+
+asset_dir(Base) -> filename:join(Base, "assets").
+
+first_dir([Dir | Rest]) ->
+    case filelib:is_dir(Dir) of
+        true -> {ok, Dir};
+        false -> first_dir(Rest)
+    end;
+first_dir([]) ->
+    error.
+
+static_mime(Name) ->
+    case re:run(Name, <<"^[A-Za-z0-9_-][A-Za-z0-9._-]*\\.(js|css)$">>, [{capture, [1], binary}]) of
+        {match, [<<"js">>]} -> <<"text/javascript; charset=utf-8">>;
+        {match, [<<"css">>]} -> <<"text/css; charset=utf-8">>;
+        nomatch -> undefined
+    end.
 
 read_asset_file(Rel) ->
     Candidates = [

@@ -1,22 +1,31 @@
 {
   "nodeModulesDir": "auto",
   "tasks": {
-    "build": "deno run --allow-read --allow-write --allow-env --allow-run build.ts",
-    "check": "deno check src/admin.ts src/signup.ts src/verify.ts src/recover.ts src/webirc.ts",
+    "build": "deno install && deno run --allow-read --allow-write --allow-env --allow-run build.ts",
+    "check": "deno check src/app/main.tsx",
     "lint": "deno lint src build.ts",
     "fmt": "deno fmt src build.ts",
     "fmt-check": "deno fmt --check src build.ts",
-    "test": "deno test src/e2ee/crypto_test.ts src/common/format_test.ts src/common/voice_player_test.ts src/common/file_card_test.ts src/common/code_card_test.ts src/common/ircv3_test.ts src/common/multiline_test.ts src/common/reconnect_test.ts src/common/link_preview_test.ts src/webirc/chat/policy_test.ts src/webirc/mention_test.ts src/common/admin_text_test.ts src/calls_test.ts src/calls_lifecycle_test.ts src/call_settings_test.ts"
+    "test": "deno test src/e2ee/crypto_test.ts src/common/format_test.ts src/common/voice_player_test.ts src/common/file_card_test.ts src/common/code_card_test.ts src/common/ircv3_test.ts src/common/multiline_test.ts src/common/reconnect_test.ts src/common/link_preview_test.ts src/webirc/chat/policy_test.ts src/webirc/mention_test.ts src/app/pages/admin/format_test.ts src/common/admin_text_test.ts src/calls_test.ts src/calls_lifecycle_test.ts src/call_settings_test.ts"
   },
   "compilerOptions": {
-    "lib": ["dom", "dom.iterable", "es2022"],
-    "strict": true
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "es2022"
+    ],
+    "strict": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact"
   },
   "imports": {
     "esbuild": "npm:esbuild@0.25.2",
     "sass": "npm:sass@1.86.3",
     "tweetnacl": "npm:tweetnacl@1.0.3",
     "@noble/hashes": "npm:@noble/hashes@1.7.1",
-    "@noble/ciphers": "npm:@noble/ciphers@1.2.1"
+    "@noble/ciphers": "npm:@noble/ciphers@1.2.1",
+    "preact": "npm:preact@10.26.4",
+    "preact/": "npm:/preact@10.26.4/",
+    "@preact/signals": "npm:@preact/signals@2.0.4"
   }
 }

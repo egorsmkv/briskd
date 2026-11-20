@@ -125,12 +125,27 @@ live_webui() ->
         ?assertEqual(nomatch, binary:match(Csp, <<"'unsafe-inline'">>)),
         ?assert(binary:match(Csp, <<"frame-ancestors 'none'">>) =/= nomatch),
         ?assertEqual(nomatch, binary:match(HtmlBody, <<"__CSP_NONCE__">>)),
-        ?assert(binary:match(HtmlBody, <<"<title>ircd admin</title>">>) =/= nomatch),
+        %% The single-page app shell, with escaped page meta and config.
+        ?assert(
+            binary:match(HtmlBody, <<"<title>Admin - Net&lt;/script&gt;&lt;b&gt;&amp;</title>">>) =/=
+                nomatch
+        ),
         ?assert(binary:match(HtmlBody, <<"noindex, nofollow">>) =/= nomatch),
+        ?assert(binary:match(HtmlBody, <<"<div id=\"app\"></div>">>) =/= nomatch),
+        ?assert(binary:match(HtmlBody, <<"/assets/admin.css">>) =/= nomatch),
+        %% The config block cannot be closed or broken by a value.
+        ?assert(
+            binary:match(
+                HtmlBody, <<"\"network\":\"Net\\u003c/script\\u003e\\u003cb\\u003e\\u0026\"">>
+            ) =/=
+                nomatch
+        ),
+        ?assertEqual(nomatch, binary:match(HtmlBody, <<"</script><b>">>)),
+        ?assertEqual(nomatch, binary:match(HtmlBody, <<"__APP_CONFIG__">>)),
         {200, _, SubAdminBody} = http_req(
             Port, <<"GET">>, <<"/admin/accounts">>, [{<<"Authorization">>, GoodAuth}], <<>>
         ),
-        ?assert(binary:match(SubAdminBody, <<"<title>ircd admin</title>">>) =/= nomatch),
+        ?assert(binary:match(SubAdminBody, <<"<title>Admin - ">>) =/= nomatch),
         {401, _, _} = http_req(Port, <<"GET">>, <<"/admin/accounts">>, [], <<>>),
 
         %% Public favicon.ico, favicon.svg, and robots.txt are served without auth.
@@ -222,16 +237,20 @@ live_webui() ->
         ?assertMatch(#{<<"status">> := <<"unbanned">>}, json:decode(Unban42)),
 
         %% Compiled static TypeScript/Sass assets are served with exact MIME types.
-        {200, JsHdrs, JsBody} = http_req(Port, <<"GET">>, <<"/assets/admin.js">>, [], <<>>),
-        ?assertEqual(
-            <<"application/javascript; charset=utf-8">>, maps:get(<<"content-type">>, JsHdrs)
-        ),
+        {200, JsHdrs, JsBody} = http_req(Port, <<"GET">>, <<"/assets/app.js">>, [], <<>>),
+        ?assertEqual(<<"text/javascript; charset=utf-8">>, maps:get(<<"content-type">>, JsHdrs)),
         ?assert(byte_size(JsBody) > 100),
+        %% Lazily loaded page chunks (content-hashed names) are served too.
+        {match, [Chunk | _]} = re:run(
+            JsBody, <<"chunk-[A-Z0-9]+\\.js">>, [global, {capture, first, binary}]
+        ),
+        {200, _, ChunkBody} = http_req(
+            Port, <<"GET">>, <<"/assets/", (hd(Chunk))/binary>>, [], <<>>
+        ),
+        ?assert(byte_size(ChunkBody) > 0),
         {200, CssHdrs, CssBody} = http_req(Port, <<"GET">>, <<"/assets/webirc.css">>, [], <<>>),
         ?assertEqual(<<"text/css; charset=utf-8">>, maps:get(<<"content-type">>, CssHdrs)),
         ?assert(byte_size(CssBody) > 100),
-        {200, _, RecJs} = http_req(Port, <<"GET">>, <<"/assets/recover.js">>, [], <<>>),
-        ?assert(byte_size(RecJs) > 100),
         {404, _, _} = http_req(Port, <<"GET">>, <<"/recover">>, [], <<>>),
         {404, _, _} = http_req(Port, <<"GET">>, <<"/assets/../../etc/passwd">>, [], <<>>),
 
@@ -279,12 +298,26 @@ live_webui() ->
             ) =/=
                 nomatch
         ),
-        ?assert(binary:match(SignupHtml, <<"<title>Sign Up - ircd</title>">>) =/= nomatch),
-        ?assert(binary:match(SignupHtml, <<"https://example.com/terms">>) =/= nomatch),
-        ?assert(binary:match(SignupHtml, <<"https://example.com/privacy">>) =/= nomatch),
-        ?assert(binary:match(SignupHtml, <<"altcha-check">>) =/= nomatch),
-        ?assertEqual(nomatch, binary:match(SignupHtml, <<"__TERMS_URL__">>)),
-        ?assertEqual(nomatch, binary:match(SignupHtml, <<"__PRIVACY_URL__">>)),
+        ?assert(binary:match(SignupHtml, <<"<title>Sign Up - Net">>) =/= nomatch),
+        ?assert(binary:match(SignupHtml, <<"/assets/signup.css">>) =/= nomatch),
+        %% The form is rendered by the app from the config block.
+        [ConfigJson] = [
+            J
+         || [_, J] <- [
+                binary:split(
+                    hd(binary:split(SignupHtml, <<"</script>">>)),
+                    <<"<script type=\"application/json\" id=\"app-config\">">>
+                )
+            ]
+        ],
+        ?assertMatch(
+            #{
+                <<"termsUrl">> := <<"https://example.com/terms">>,
+                <<"privacyUrl">> := <<"https://example.com/privacy">>,
+                <<"features">> := #{<<"registration">> := true, <<"webirc">> := true}
+            },
+            json:decode(ConfigJson)
+        ),
 
         %% Public POST /api/signup enforces CSRF, terms acceptance, and required ALTCHA.
         {403, _, _} = http_req(
@@ -540,6 +573,8 @@ parse_response(Raw) ->
 config_json(Db) ->
     iolist_to_binary([
         <<"{\"name\":\"irc.test\",\"bind\":\"127.0.0.1\",\"tcp_port\":0,\"tls_port\":null,\"ws_port\":0,">>,
+        %% A network name with markup characters: the app shell must escape it.
+        <<"\"network\":\"Net</script><b>&\",">>,
         <<"\"log_level\":\"warning\",\"log_format\":\"text\",\"shutdown_grace\":2,">>,
         <<"\"webui\":{\"bind\":\"127.0.0.1\",\"port\":0,\"username\":\"admin\",\"password\":\"topsecret\"},">>,
         <<"\"mnesia_dir\":\"">>,

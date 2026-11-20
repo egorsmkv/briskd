@@ -1,16 +1,16 @@
 // Saved session (sessionStorage), URL paths for conversations, and the WebSocket URL default.
+import { config } from "../app/config.ts";
 import { byId as $ } from "../common/dom.ts";
 import { buffers, S } from "./state.ts";
 import { type SavedSession } from "./types.ts";
 import { isChan } from "./util.ts";
 
-export const bodyData = document.body.dataset;
 
-export const WS_PORT = bodyData.wsPort || "";
+export const WS_PORT = config().wsPort;
 
-export const WSS_PORT = bodyData.wssPort || "";
+export const WSS_PORT = config().wssPort;
 
-export const BASE_TITLE = document.title;
+export const BASE_TITLE = `${config().network} - WebIRC`;
 
 export const SESSION_KEY = "ircd-webirc-session";
 
