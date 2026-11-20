@@ -93,6 +93,15 @@ export function featureOn(key: FeatureKey): boolean {
 
 export const settings: WebircSettings = loadSettings();
 
+/** Mark a switch the server has turned off, with the reason on hover. */
+function markServerOff(input: HTMLInputElement, off: boolean): void {
+  const label = input.closest("label");
+  if (!label) return;
+  label.classList.toggle("server-off", off);
+  if (off) label.title = t("settings.server_off");
+  else label.removeAttribute("title");
+}
+
 export function applySettings(): void {
   document.body.classList.toggle("layout-mobile", settings.layout === "mobile");
   document.body.classList.toggle(
@@ -133,7 +142,12 @@ export function applySettings(): void {
   ) {
     const el = $<HTMLInputElement>(`opt-${key}`);
     el.disabled = !serverFeatures[key];
+    markServerOff(el, !serverFeatures[key]);
   }
+  markServerOff(
+    $<HTMLInputElement>("opt-link-previews"),
+    !serverFeatures.link_previews,
+  );
 }
 
 export function renderThemeSwatches(): void {

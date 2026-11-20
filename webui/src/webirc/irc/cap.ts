@@ -15,8 +15,9 @@ import {
   VOICE_CAP,
 } from "../constants.ts";
 import { e2ee } from "../e2ee_ui.ts";
-import { updateFileButton } from "../files.ts";
-import { applySettings, serverFeatures } from "../settings.ts";
+import { closeAttachMenu, updateFileButton } from "../files.ts";
+import { parseFeatures } from "../feature_flags.ts";
+import { announceServices, setServerFeatures } from "../server_features.ts";
 import { S } from "../state.ts";
 import type { IrcMessage } from "../types.ts";
 import { updateVoiceButton } from "../voice.ts";
@@ -59,26 +60,13 @@ export function handleCap(
           }
         }
         if (capName === FEATURES_CAP && eq !== -1) {
-          const val = tok.slice(eq + 1);
-          const enabledSet = new Set(
-            val === "none" ? [] : val.split(",").filter(Boolean),
-          );
-          for (
-            const k of [
-              "reactions",
-              "replies",
-              "typing",
-              "editing",
-              "redaction",
-              "link_previews",
-            ] as const
-          ) {
-            serverFeatures[k] = enabledSet.has(k);
-          }
-          applySettings();
+          // The administrator's chat feature switches; a change arrives
+          // as CAP NEW with the new list.
+          setServerFeatures(parseFeatures(tok.slice(eq + 1)));
         }
       }
       if (sub === "NEW") {
+        announceServices(offered, true);
         // cap-notify: request newly offered capabilities we want.
         const toReq = wantedCaps().filter((c) =>
           offered.includes(c) && !enabledCaps.has(c)
@@ -88,8 +76,7 @@ export function handleCap(
       }
       if (more) return true;
       if (!S.advertisedCaps.includes(REDACT_CAP)) {
-        serverFeatures.redaction = false;
-        applySettings();
+        setServerFeatures({ redaction: false });
       }
       const toReq = wantedCaps().filter((c) => S.advertisedCaps.includes(c));
       if (toReq.length > 0) sendRaw(`CAP REQ :${toReq.join(" ")}`);
@@ -113,9 +100,10 @@ export function handleCap(
         updateCallButton();
       }
       if (removed.includes(REDACT_CAP)) {
-        serverFeatures.redaction = false;
-        applySettings();
+        setServerFeatures({ redaction: false });
       }
+      if (removed.includes(FILES_CAP)) closeAttachMenu();
+      announceServices(removed, false);
     } else if (sub === "ACK") {
       const acked = (params[2] || "").split(" ").filter(Boolean);
       for (const c of acked) {

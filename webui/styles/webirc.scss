@@ -2215,6 +2215,16 @@ body.font-large .messages {
 }
 
 // Checkboxes in settings render as switches.
+// A switch the server's administrator turned off (applySettings).
+.setting-check.server-off {
+  color: var(--muted);
+  cursor: not-allowed;
+  input[type="checkbox"] {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+}
+
 .setting-check {
   display: flex;
   align-items: center;
