@@ -4,8 +4,16 @@ Pure helpers for AI assistant bots (`m:ircd_bot`): deciding whether a message
 addresses the bot, building an OpenAI-compatible `chat/completions` request,
 reading the reply, and turning reply text into IRC message lines.
 
-Nothing here performs IO. The HTTP call itself is `request/3`, which a bot
-runs in a short-lived worker process.
+Nothing here performs IO except the HTTP call, `complete/3` (or
+`request/3`), which a bot runs in a short-lived worker process.
+
+Some models reject parameters other OpenAI-compatible providers accept: newer
+OpenAI models refuse `max_tokens` (they take `max_completion_tokens`) and any
+`temperature` but the default. When a provider answers HTTP 400 with a
+structured error naming one of those parameters (`error.param` with
+`error.code` `unsupported_parameter` or `unsupported_value`), `complete/3`
+adapts the request and retries, at most once per parameter, and returns the
+adaptations so the bot can send the right request first next time.
 
 Reply lines respect the RFC 1459 512-octet line limit: each chunk is sized so
 the line the server delivers (`:nick!user@host PRIVMSG target :text` plus
@@ -19,8 +27,23 @@ CRLF) stays within 512 octets, and splits never cut a UTF-8 sequence.
     text_budget/4,
     clean_input/1,
     clean_reply/2,
+    complete/3,
     request/3
 ]).
+
+%% A request change a provider asked for: send `max_completion_tokens` in
+%% place of `max_tokens`, or leave `temperature` at the provider default.
+-type adaptation() :: max_completion_tokens | default_temperature.
+%% What complete/3 builds the request from.
+-type request() :: #{
+    settings := #{model := binary(), max_tokens := pos_integer(), temperature := number()},
+    system := binary(),
+    context := binary(),
+    turns := [{user | assistant, binary()}],
+    question := binary(),
+    adapt := [adaptation()]
+}.
+-export_type([adaptation/0, request/0]).
 
 %% Largest provider reply body read, in bytes.
 -define(MAX_RESPONSE_BYTES, 1048576).
@@ -95,7 +118,8 @@ clean_reply(Text, Max) ->
 -doc """
 Build the JSON body of a `chat/completions` request.
 
-`Settings` holds `model`, `max_tokens`, and `temperature`. `System` is the
+`Settings` holds `model`, `max_tokens`, and `temperature`, and may hold
+`adapt`, the `t:adaptation/0` list a provider asked for. `System` is the
 operator's system prompt and `Context` a short description of where the bot
 is speaking. `Turns` are earlier exchanges, oldest first, as
 `{user | assistant, Content}`.
@@ -103,19 +127,28 @@ is speaking. `Turns` are earlier exchanges, oldest first, as
 -spec build_request(map(), binary(), binary(), [{user | assistant, binary()}], binary()) ->
     binary().
 build_request(Settings, System, Context, Turns, Question) ->
+    Adapt = maps:get(adapt, Settings, []),
     Messages =
         [#{role => <<"system">>, content => System} || System =/= <<>>] ++
             [#{role => <<"system">>, content => Context}] ++
             [#{role => atom_to_binary(Role), content => Content} || {Role, Content} <- Turns] ++
             [#{role => <<"user">>, content => Question}],
-    iolist_to_binary(
-        json:encode(#{
-            model => maps:get(model, Settings),
-            messages => Messages,
-            max_tokens => maps:get(max_tokens, Settings),
-            temperature => maps:get(temperature, Settings)
-        })
-    ).
+    TokenKey =
+        case lists:member(max_completion_tokens, Adapt) of
+            true -> max_completion_tokens;
+            false -> max_tokens
+        end,
+    Base = #{
+        model => maps:get(model, Settings),
+        messages => Messages,
+        TokenKey => maps:get(max_tokens, Settings)
+    },
+    Request =
+        case lists:member(default_temperature, Adapt) of
+            true -> Base;
+            false -> Base#{temperature => maps:get(temperature, Settings)}
+        end,
+    iolist_to_binary(json:encode(Request)).
 
 -doc """
 Read the assistant text from a `chat/completions` response body:
@@ -139,6 +172,47 @@ parse_reply(Body) ->
     catch
         error:_ -> {error, invalid_json}
     end.
+
+%% The structured parts of an OpenAI-style error body: `message` (at most 200
+%% bytes), `code` and `param` (at most 64 bytes each), and `adapt` when the
+%% error names a parameter complete/3 can adapt.
+-spec provider_error(binary()) ->
+    #{message => binary(), code => binary(), param => binary(), adapt => adaptation()}.
+provider_error(Body) ->
+    try json:decode(Body) of
+        #{<<"error">> := #{} = Error} ->
+            Fields = maps:from_list(
+                [
+                    {Key, utf8_prefix(Value, Max)}
+                 || {Key, Name, Max} <- [
+                        {message, <<"message">>, 200},
+                        {code, <<"code">>, 64},
+                        {param, <<"param">>, 64}
+                    ],
+                    Value <- [maps:get(Name, Error, undefined)],
+                    is_binary(Value)
+                ]
+            ),
+            case adaptation(Fields) of
+                {ok, Adapt} -> Fields#{adapt => Adapt};
+                none -> Fields
+            end;
+        _ ->
+            #{}
+    catch
+        error:_ -> #{}
+    end.
+
+adaptation(#{code := Code, param := Param}) when
+    Code =:= <<"unsupported_parameter">>; Code =:= <<"unsupported_value">>
+->
+    case Param of
+        <<"max_tokens">> -> {ok, max_completion_tokens};
+        <<"temperature">> -> {ok, default_temperature};
+        _ -> none
+    end;
+adaptation(_) ->
+    none.
 
 -doc """
 Bytes of message text that fit in one delivered line from `Nick!User@Host`
@@ -227,6 +301,36 @@ trim(Bin) ->
     iolist_to_binary(string:trim(Bin, both, " \t")).
 
 -doc """
+Ask `Provider` for a reply to `Request`, adapting the request when the
+provider rejects `max_tokens` or `temperature` (see the module docs).
+
+Returns the result and the adaptations in force, including any learned here.
+At most one retry per adaptation, so a request makes at most three calls.
+""".
+-spec complete(map(), request(), non_neg_integer()) ->
+    {{ok, binary()} | {error, term()}, [adaptation()]}.
+complete(Provider, Request, Timeout) ->
+    #{settings := Settings, adapt := Adapt} = Request,
+    Body = build_request(
+        Settings#{adapt => Adapt},
+        maps:get(system, Request),
+        maps:get(context, Request),
+        maps:get(turns, Request),
+        maps:get(question, Request)
+    ),
+    case request(Provider, Body, Timeout) of
+        {error, {http_status, 400, #{adapt := Needed}}} = Error when
+            Needed =:= max_completion_tokens; Needed =:= default_temperature
+        ->
+            case lists:member(Needed, Adapt) of
+                true -> {Error, Adapt};
+                false -> complete(Provider, Request#{adapt := [Needed | Adapt]}, Timeout)
+            end;
+        Result ->
+            {Result, Adapt}
+    end.
+
+-doc """
 POST `Body` to `<base_url>/chat/completions` of `Provider` and return the
 reply text.
 
@@ -259,9 +363,9 @@ request(Provider, Body, Timeout) ->
         {ok, Status, _Headers, Resp} when Status >= 200, Status < 300, is_binary(Resp) ->
             parse_reply(Resp);
         {ok, Status, _Headers, Resp} when is_binary(Resp) ->
-            case parse_reply(Resp) of
-                {error, {provider_error, _} = Err} -> {error, {http_status, Status, Err}};
-                _ -> {error, {http_status, Status}}
+            case provider_error(Resp) of
+                #{} = Detail when map_size(Detail) > 0 -> {error, {http_status, Status, Detail}};
+                #{} -> {error, {http_status, Status}}
             end;
         {error, Reason} ->
             {error, Reason}

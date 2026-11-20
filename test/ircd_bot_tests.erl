@@ -46,7 +46,135 @@ build_request_test() ->
             #{model => <<"m">>, max_tokens => 1, temperature => 0.0}, <<>>, <<"c">>, [], <<"q">>
         )
     ),
-    ?assertEqual(2, length(maps:get(<<"messages">>, Bare))).
+    ?assertEqual(2, length(maps:get(<<"messages">>, Bare))),
+    %% Adaptations a provider asked for change the token key and drop temperature.
+    Adapted = json:decode(
+        ircd_bot_ai:build_request(
+            #{
+                model => <<"m">>,
+                max_tokens => 7,
+                temperature => 0.7,
+                adapt => [max_completion_tokens, default_temperature]
+            },
+            <<>>,
+            <<"c">>,
+            [],
+            <<"q">>
+        )
+    ),
+    ?assertEqual(7, maps:get(<<"max_completion_tokens">>, Adapted)),
+    ?assertNot(maps:is_key(<<"max_tokens">>, Adapted)),
+    ?assertNot(maps:is_key(<<"temperature">>, Adapted)).
+
+%% A model that rejects max_tokens and a non-default temperature (as newer
+%% OpenAI models do): complete/3 adapts the request, reports what it learned,
+%% and a request built with that knowledge succeeds first time.
+complete_adapts_test() ->
+    {ok, _} = application:ensure_all_started(hackney),
+    Mock = start_strict_mock(self()),
+    Provider = #{
+        base_url => <<"http://127.0.0.1:", (integer_to_binary(mock_port(Mock)))/binary>>,
+        api_key => <<"sk-mock">>,
+        timeout => 5000
+    },
+    Request = #{
+        settings => #{model => <<"m">>, max_tokens => 64, temperature => 0.7},
+        system => <<>>,
+        context => <<"c">>,
+        turns => [],
+        question => <<"q">>,
+        adapt => []
+    },
+    try
+        {Result, Adapt} = ircd_bot_ai:complete(Provider, Request, 5000),
+        ?assertEqual({ok, <<"Strict answer">>}, Result),
+        ?assertEqual([default_temperature, max_completion_tokens], lists:sort(Adapt)),
+        ?assertEqual(3, length(drain_requests())),
+        %% With the adaptations known, one request is enough.
+        ?assertMatch(
+            {{ok, _}, _}, ircd_bot_ai:complete(Provider, Request#{adapt := Adapt}, 5000)
+        ),
+        [Body] = drain_requests(),
+        Sent = json:decode(Body),
+        ?assertEqual(64, maps:get(<<"max_completion_tokens">>, Sent)),
+        ?assertNot(maps:is_key(<<"max_tokens">>, Sent)),
+        ?assertNot(maps:is_key(<<"temperature">>, Sent)),
+        %% Any other 400 is returned as is, without a retry.
+        Unrelated = Request#{settings := #{model => <<"bad">>, max_tokens => 1, temperature => 1}},
+        ?assertMatch(
+            {{error, {http_status, 400, #{code := <<"model_not_found">>}}}, [_, _]},
+            ircd_bot_ai:complete(Provider, Unrelated#{adapt := Adapt}, 5000)
+        ),
+        ?assertEqual(1, length(drain_requests()))
+    after
+        Mock ! stop
+    end.
+
+drain_requests() ->
+    receive
+        {mock_request, Body} -> [Body | drain_requests()]
+    after 200 -> []
+    end.
+
+%% Answers like a model with strict parameters, using OpenAI's error shape.
+start_strict_mock(Test) ->
+    Parent = self(),
+    spawn(fun() ->
+        {ok, L} = gen_tcp:listen(0, [
+            binary, {active, false}, {packet, raw}, {reuseaddr, true}, {ip, {127, 0, 0, 1}}
+        ]),
+        {ok, Port} = inet:port(L),
+        Parent ! {mock_port, self(), Port},
+        strict_loop(L, Test)
+    end).
+
+strict_loop(L, Test) ->
+    receive
+        stop -> gen_tcp:close(L)
+    after 0 ->
+        case gen_tcp:accept(L, 100) of
+            {ok, S} ->
+                {_Headers, Body} = read_http(S, <<>>),
+                Test ! {mock_request, Body},
+                Sent = json:decode(Body),
+                {Status, Reply} =
+                    if
+                        is_map_key(<<"max_tokens">>, Sent) ->
+                            {400, strict_error(<<"unsupported_parameter">>, <<"max_tokens">>)};
+                        is_map_key(<<"temperature">>, Sent) ->
+                            {400, strict_error(<<"unsupported_value">>, <<"temperature">>)};
+                        map_get(<<"model">>, Sent) =/= <<"m">> ->
+                            {400, strict_error(<<"model_not_found">>, <<"model">>)};
+                        true ->
+                            {200,
+                                <<"{\"choices\":[{\"message\":{\"content\":\"Strict answer\"}}]}">>}
+                    end,
+                ok = gen_tcp:send(S, [
+                    <<"HTTP/1.1 ">>,
+                    integer_to_binary(Status),
+                    <<" X\r\ncontent-type: application/json\r\ncontent-length: ">>,
+                    integer_to_binary(byte_size(Reply)),
+                    <<"\r\nconnection: close\r\n\r\n">>,
+                    Reply
+                ]),
+                gen_tcp:close(S),
+                strict_loop(L, Test);
+            {error, timeout} ->
+                strict_loop(L, Test)
+        end
+    end.
+
+strict_error(Code, Param) ->
+    iolist_to_binary(
+        json:encode(#{
+            error => #{
+                message => <<"Unsupported: ", Param/binary>>,
+                type => <<"invalid_request_error">>,
+                param => Param,
+                code => Code
+            }
+        })
+    ).
 
 parse_reply_test() ->
     Ok = <<"{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\" Hi! \"}}]}">>,

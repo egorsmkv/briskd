@@ -88,8 +88,8 @@ A list of at most 50 bots:
 | `direct_messages` | `true` | Answer private messages. When `false`, a private message gets a `NOTICE` saying the bot only answers in channels |
 | `context` | `conversation` | What the model sees as history. `conversation`: only questions put to the bot and its answers. `channel`: the recent channel lines as well, whoever wrote them |
 | `history_lines` | `20` | Turns of history kept per channel or private conversation (0..100; 0 sends no history) |
-| `max_tokens` | `512` | `max_tokens` sent with each request (1..32768) |
-| `temperature` | `0.7` | `temperature` sent with each request (0..2) |
+| `max_tokens` | `512` | Reply token limit sent with each request (1..32768), as `max_tokens`, or as `max_completion_tokens` for a model that asks for it |
+| `temperature` | `0.7` | `temperature` sent with each request (0..2); left out for a model that accepts only its default |
 | `max_reply_lines` | `6` | Most IRC lines in one answer (1..30); a longer answer is cut and ends with `[…]` |
 | `requests_per_minute` | `10` | Requests the bot may make per minute (1..600), as a token bucket |
 
@@ -129,7 +129,18 @@ trigger an answer.
 a `NOTICE` to the asker ("still answering", "busy", or "too many requests").
 A failed or timed-out request gets a `NOTICE` saying no answer is available,
 and a `bot_request_failed` warning is logged with the bot's nickname and the
-failure kind (for example `{http_status, 429}` or `timeout`).
+failure kind (for example `{http_status, 429}` or `timeout`). When the
+provider returns an OpenAI-style error, its `code` and `param` are logged as
+`provider_code` and `provider_param`; its message is not, since it may quote
+the question.
+
+**Model parameters.** Newer OpenAI models reject `max_tokens` (they take
+`max_completion_tokens`) and any `temperature` other than their default, with
+HTTP 400 and an error whose `code` is `unsupported_parameter` or
+`unsupported_value` and whose `param` names the field. The bot then resends
+the request with that field adapted, at most once per field, and keeps
+sending the adapted form until it restarts. No configuration change is
+needed, and providers that accept both fields are unaffected.
 
 **Membership.** If a bot is kicked, it rejoins after 30 seconds. If an
 operator `KILL`s it, it registers again after 15 seconds. If its nickname is

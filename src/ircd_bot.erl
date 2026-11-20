@@ -71,6 +71,9 @@ init(Bot) ->
         registered => false,
         bucket => {float(maps:get(requests_per_minute, Bot)), now_ms()},
         pending => #{},
+        %% Request changes the provider asked for (ircd_bot_ai:complete/3),
+        %% kept so later requests are sent in the accepted form.
+        adapt => [],
         busy => #{},
         history => #{},
         dm_seq => 0,
@@ -111,12 +114,12 @@ handle_info(retry_nick, #{registered := false} = State) ->
     {noreply, register(State#{nick_attempt := 0})};
 handle_info(retry_nick, State) ->
     {noreply, State};
-handle_info({bot_result, Ref, Result}, #{pending := Pending} = State) ->
+handle_info({bot_result, Ref, Result, Adapt}, #{pending := Pending} = State) ->
     case maps:take(Ref, Pending) of
         {Req, Rest} ->
             demonitor(maps:get(mref, Req), [flush]),
             _ = erlang:cancel_timer(maps:get(guard, Req)),
-            {noreply, finish(Req, Result, State#{pending := Rest})};
+            {noreply, finish(Req, Result, State#{pending := Rest, adapt := Adapt})};
         error ->
             {noreply, State}
     end;
@@ -406,19 +409,21 @@ start_request(Target, Key, Asker, Question0, Origin, Bot, #{nick := Nick} = Stat
             false -> Turns
         end,
     Context = context_line(Nick, Target, InChannel, Bot),
-    Body = ircd_bot_ai:build_request(
-        maps:with([model, max_tokens, temperature], Bot),
-        maps:get(system_prompt, Bot),
-        Context,
-        Prior,
-        UserTurn
-    ),
+    Request = #{
+        settings => maps:with([model, max_tokens, temperature], Bot),
+        system => maps:get(system_prompt, Bot),
+        context => Context,
+        turns => Prior,
+        question => UserTurn,
+        adapt => maps:get(adapt, State)
+    },
     Provider = maps:get(provider, Bot),
     Timeout = maps:get(timeout, Provider),
     Self = self(),
     Ref = make_ref(),
     {Worker, MRef} = spawn_monitor(fun() ->
-        Self ! {bot_result, Ref, ircd_bot_ai:request(Provider, Body, Timeout)}
+        {Result, Adapt} = ircd_bot_ai:complete(Provider, Request, Timeout),
+        Self ! {bot_result, Ref, Result, Adapt}
     end),
     Guard = erlang:send_after(Timeout + ?GUARD_MS, self(), {bot_timeout, Ref}),
     typing(Target, <<"active">>),
@@ -468,11 +473,13 @@ finish(#{key := Key, target := Target, asker := Asker} = Req, Result, #{bot := B
                 end,
             remember(Key, Turns, State1);
         {error, Reason} ->
-            logger:warning(#{
-                event => bot_request_failed,
-                bot => maps:get(nick, Bot),
-                reason => failure_reason(Reason)
-            }),
+            logger:warning(
+                maps:merge(provider_fields(Reason), #{
+                    event => bot_request_failed,
+                    bot => maps:get(nick, Bot),
+                    reason => failure_reason(Reason)
+                })
+            ),
             typing(Target, <<"done">>),
             notice(Asker, <<"Sorry, I couldn't get an answer right now.">>),
             State1
@@ -487,6 +494,21 @@ failure_reason({worker_exit, _}) -> worker_exit;
 failure_reason(Reason) when is_atom(Reason) -> Reason;
 failure_reason(Reason) when is_tuple(Reason) -> element(1, Reason);
 failure_reason(_) -> other.
+
+%% The provider's error code and parameter name (short identifiers such as
+%% `unsupported_parameter` and `max_tokens`), but never its message.
+provider_fields({http_status, _, #{} = Detail}) ->
+    maps:fold(
+        fun
+            (code, Code, Acc) -> Acc#{provider_code => Code};
+            (param, Param, Acc) -> Acc#{provider_param => Param};
+            (_, _, Acc) -> Acc
+        end,
+        #{},
+        Detail
+    );
+provider_fields(_) ->
+    #{}.
 
 reply(Target, Asker, Text, ReplyTo, #{bot := Bot, nick := Nick}) ->
     Prefix =
