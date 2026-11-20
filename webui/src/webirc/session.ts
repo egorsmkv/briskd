@@ -1,5 +1,7 @@
 // Saved session (sessionStorage), URL paths for conversations, and the WebSocket URL default.
 import { config } from "../app/config.ts";
+import { RECLAIM_SECRET, reclaimSecret } from "../common/reconnect.ts";
+import { clearDms } from "./dm_cache.ts";
 import { byId as $ } from "../common/dom.ts";
 import { buffers, S } from "./state.ts";
 import { type SavedSession } from "./types.ts";
@@ -100,9 +102,39 @@ export function loadSession(): SavedSession | null {
 export function clearSession(): void {
   try {
     sessionStorage.removeItem(SESSION_KEY);
+    sessionStorage.removeItem(RECLAIM_KEY);
   } catch {
     // ignore
   }
+  memorySecret = null;
+  clearDms();
+}
+
+const RECLAIM_KEY = "ircd-webirc-reclaim";
+let memorySecret: string | null = null;
+
+/**
+ * This tab's `RECLAIM` secret, sent before `NICK` on every connection so a
+ * page reload takes back the nickname the server holds for the dropped
+ * connection. Kept in sessionStorage: it survives a reload but is not shared
+ * with other tabs; signing out (clearSession) makes a new one.
+ */
+export function tabReclaimSecret(): string {
+  try {
+    const saved = sessionStorage.getItem(RECLAIM_KEY);
+    if (saved && RECLAIM_SECRET.test(saved)) return saved;
+  } catch {
+    // Storage blocked: the secret lasts as long as the page.
+  }
+  const secret = memorySecret ??
+    reclaimSecret(crypto.getRandomValues(new Uint8Array(24)));
+  memorySecret = secret;
+  try {
+    sessionStorage.setItem(RECLAIM_KEY, secret);
+  } catch {
+    // ignore
+  }
+  return secret;
 }
 
 /** Wire this module's DOM listeners and initial state. */

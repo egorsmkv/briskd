@@ -145,6 +145,7 @@ settings the server puts in the HTML shell (`priv/webui/app.html`).
 | `files.ts`, `voice.ts` | Uploads, attachments, code snippets; voice messages |
 | `calls_ui.ts`, `call_settings_ui.ts`, `e2ee_ui.ts` | Call bar and dialogs; Settings → Calls; E2EE wiring and its tab |
 | `settings.ts`, `session.ts`, `login.ts`, `modals.ts`, `layout.ts` | Settings dialog; saved session and URL paths; login and session start; topic, moderation and discovery dialogs; scroll button and touch gestures |
+| `dm_cache.ts`, `dm_snapshot.ts` | Private conversations kept in the tab's `sessionStorage` across a page reload (the server keeps no private history for guests); logged-in users also get theirs back with `CHATHISTORY TARGETS` |
 
 Modules export functions and read or assign shared state through `S`. A
 module whose code runs on load puts it in `init()` rather than at the top

@@ -163,8 +163,14 @@ export function handleCap(
   }
 
   if (command === "900") {
+    S.account = params[2] || "";
     if (params[2]) e2ee.setAccount(params[2]);
     return true;
+  }
+
+  if (command === "901") {
+    S.account = "";
+    return false;
   }
 
   if (command === "903") {

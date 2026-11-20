@@ -20,6 +20,7 @@ every function here runs inside that process. Keys in use:
 - `wanted_nick`: the nickname a registering connection asked for
 - `attach_to`: the holder a second connection of the same account attaches to
 - `e2ee_fetch`: `E2EE FETCH` rate window, `{MonotonicSeconds, Count}`
+- `reclaim`: SHA-256 of the connection's `RECLAIM` secret (never the secret)
 
 The row is deleted with `delete/1` when the client disconnects, so nothing
 here survives the connection or a server restart.
@@ -37,7 +38,8 @@ here survives the connection or a server restart.
     | signon
     | wanted_nick
     | attach_to
-    | e2ee_fetch.
+    | e2ee_fetch
+    | reclaim.
 
 -type batch() :: #{
     ref := binary(),
@@ -62,7 +64,8 @@ The spec gives each key its value type (see the module documentation).
     (pid(), account) -> undefined | binary();
     (pid(), sasl) -> undefined | ircd_sasl:state();
     (pid(), batch) -> undefined | batch();
-    (pid(), attach_to) -> undefined | pid().
+    (pid(), attach_to) -> undefined | pid();
+    (pid(), reclaim) -> undefined | binary().
 get(Pid, Key) ->
     maps:get(Key, row(Pid), undefined).
 
@@ -100,7 +103,8 @@ another writer.
     (pid(), signon, integer()) -> ok;
     (pid(), wanted_nick, binary()) -> ok;
     (pid(), attach_to, pid()) -> ok;
-    (pid(), e2ee_fetch, {integer(), non_neg_integer()}) -> ok.
+    (pid(), e2ee_fetch, {integer(), non_neg_integer()}) -> ok;
+    (pid(), reclaim, binary()) -> ok.
 put(Pid, Key, Value) ->
     ets:insert(ircd_conn, {Pid, (row(Pid))#{Key => Value}}),
     ok.

@@ -40,10 +40,14 @@ A client may join at most ten channels (numeric 405). A nickname or channel
 released by a quit or a netsplit stays unavailable for `resource_delay`
 seconds (default 60, numeric 437; `0` disables). A nickname a local client
 gave up (quit, lost connection, or nick change) is held for everyone except
-that client: a new connection from the same address, or logged in to the
-same account, takes it back at once, so a reconnect or a WebIRC page reload
-keeps its nickname. Someone else on the same address (a shared NAT) can
-take it in that window too. Netsplit and `KILL` holds have no owner. A nickname introduced for an existing local or remote user kills both
+that client: a new connection that sent the same `RECLAIM` secret, or is
+logged in to the same account, takes it back at once, so a WebIRC page
+reload keeps its nickname. `RECLAIM <secret>` (a server extension, sent
+before `NICK`; 16 to 64 characters of letters, digits, `-`, `_`) stores only
+the secret's SHA-256 for the connection; a malformed secret gets
+`FAIL RECLAIM INVALID_SECRET` and a missing one 461. WebIRC keeps one secret
+per browser tab in `sessionStorage`. Holds without a secret or account, and
+netsplit and `KILL` holds, block everyone. A nickname introduced for an existing local or remote user kills both
 sides, and both peers are sent `KILL` and `QUIT`. `WHO` and `WHOIS` name a
 remote user's home server. Invisible users are hidden from `WHO`, `WHOIS`, and
 `NAMES` unless the requester shares a channel, including when the other user

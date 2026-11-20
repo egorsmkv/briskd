@@ -71,3 +71,18 @@ export function altNick(nick: string, maxLen: number, attempt: number): string {
   if (nick.length < max) return `${nick}_`;
   return `${nick.slice(0, max - 1)}${attempt % 10}`;
 }
+
+/** A `RECLAIM` secret is 16 to 64 of these characters (the server checks). */
+export const RECLAIM_SECRET = /^[A-Za-z0-9_-]{16,64}$/;
+
+/**
+ * A `RECLAIM` secret from random bytes, as base64url without padding (24
+ * bytes give 32 characters). The server keeps only its SHA-256 on the
+ * connection; a nickname that connection gives up can be taken back at
+ * once by a connection presenting the same secret.
+ */
+export function reclaimSecret(bytes: Uint8Array): string {
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}

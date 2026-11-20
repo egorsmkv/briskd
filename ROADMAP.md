@@ -48,6 +48,10 @@ in the referenced RFC.
   server waits up to `shutdown_grace` seconds (`ircd_shutdown`).
 - [x] Audit parameter limits, error numerics, visibility, and command edge cases
   against the RFCs.
+- [x] Nickname hold after a quit, lost connection, or nick change
+  (`resource_delay`, numeric 437), with `RECLAIM <secret>` (server-specific):
+  the connection that held the nickname, identified by that secret or by its
+  account, takes it back at once, so a WebIRC page reload keeps its nickname.
 
 ## Channels (RFC 2811)
 

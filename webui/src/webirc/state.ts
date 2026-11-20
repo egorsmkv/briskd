@@ -15,6 +15,8 @@ export const S = {
   lastWsUrl: "",
   myNick: "",
   saslUser: "",
+  /** The account this connection is logged in to (900), or "". */
+  account: "",
   saslPass: "",
   autoChannels: [] as string[],
   activeBuf: "*status",

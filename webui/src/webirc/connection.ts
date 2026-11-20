@@ -11,6 +11,7 @@ import { capOn, multiline, resetIrcv3State } from "./caps.ts";
 import { FEATURES_CAP, FILES_CAP, REDACT_CAP, VOICE_CAP } from "./constants.ts";
 import { e2ee } from "./e2ee_ui.ts";
 import { handleMessage } from "./handler.ts";
+import { tabReclaimSecret } from "./session.ts";
 import { renderMembers } from "./sidebar.ts";
 import { buffers, S } from "./state.ts";
 import { type BufferState } from "./types.ts";
@@ -264,6 +265,7 @@ export function connectSocket(url: string): void {
   }
   const sock = new WebSocket(parsed.href, ["text.ircv3.net"]);
   S.ws = sock;
+  S.account = "";
   $("status-dot").classList.remove("off");
   setConnButtonState(false);
   addLine("*status", { text: `Connecting to ${url}...`, kind: "sys" });
@@ -285,6 +287,9 @@ export function connectSocket(url: string): void {
     S.regainPending = false;
     S.myNick = S.preferredNick || S.myNick;
     sendRaw("CAP LS 302");
+    // Before NICK, so the nickname held for this tab's previous connection
+    // (a page reload) is ours again at once.
+    sendRaw(`RECLAIM ${tabReclaimSecret()}`);
     sendRaw(`NICK ${S.myNick}`);
     sendRaw(`USER ${S.myNick} 0 * :${S.myNick}`);
   };

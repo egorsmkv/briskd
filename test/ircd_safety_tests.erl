@@ -327,19 +327,23 @@ holds_expire() ->
     ?assertNot(ircd_state_net:nick_blocked(<<"stale">>)),
     ?assertEqual([], ets:lookup(ircd_holds, {nick, <<"stale">>})),
     true = ets:delete(ircd_holds, {nick, <<"kept">>}),
-    %% An owned hold (a local client's nickname) blocks other addresses and
-    %% accounts; its owner's address or account takes it back and clears it.
+    %% An owned hold (a local client's nickname) blocks others; the owner's
+    %% RECLAIM secret or account takes it back and clears it.
+    Token = crypto:hash(sha256, <<"0123456789abcdef">>),
     Owned = fun(Nick, Account) ->
         true = ets:insert(
-            ircd_holds,
-            {{nick, Nick}, Future, #{host => <<"198.51.100.4">>, account => Account}}
+            ircd_holds, {{nick, Nick}, Future, #{token => Token, account => Account}}
         )
     end,
     Other = #client{pid = self(), host = <<"203.0.113.9">>},
     Owned(<<"owned">>, undefined),
     ?assert(ircd_state_net:nick_blocked(<<"OWNED">>, Other)),
-    ?assertNot(ircd_state_net:nick_blocked(<<"owned">>, Other#client{host = <<"198.51.100.4">>})),
+    ok = ircd_conn:put(self(), reclaim, crypto:hash(sha256, <<"fedcba9876543210">>)),
+    ?assert(ircd_state_net:nick_blocked(<<"owned">>, Other)),
+    ok = ircd_conn:put(self(), reclaim, Token),
+    ?assertNot(ircd_state_net:nick_blocked(<<"owned">>, Other)),
     ?assertEqual([], ets:lookup(ircd_holds, {nick, <<"owned">>})),
+    ok = ircd_conn:remove(self(), reclaim),
     Owned(<<"acct">>, <<"Carol">>),
     ?assert(ircd_state_net:nick_blocked(<<"acct">>, Other)),
     ok = ircd_conn:put(self(), account, <<"carol">>),

@@ -31,6 +31,7 @@ them over immediately.
     links_entries/0,
     nick_blocked/1,
     nick_blocked/2,
+    reclaim/3,
     oper_command/4,
     register_adjacent/4,
     servlist/4,
@@ -224,19 +225,56 @@ hold_nick(Nick) ->
 -doc """
 Hold the nickname a local client gave up (quit, lost connection, or nick
 change), like `hold_nick/1`, but owned by that client: a later connection
-from the same address, or logged in to the same account, may take it back
-at once (`nick_blocked/2`). Everyone else waits out the delay. This is what
-lets a WebIRC page reload keep its nickname.
+that presents the same `RECLAIM` secret, or is logged in to the same
+account, may take it back at once (`nick_blocked/2`). Everyone else waits
+out the delay. This is what lets a WebIRC page reload keep its nickname.
 """.
 -spec hold_nick(binary(), #client{}) -> ok.
 hold_nick(Nick, Client) ->
     hold(nick, Nick, hold_owner(Client)).
 
-%% Who may take back a nickname held for a local client: its address (the
-%% peer address, or the user's address a WEBIRC gateway reported) and its
-%% account, if logged in.
-hold_owner(#client{pid = Pid, host = Host}) ->
-    #{host => Host, account => ircd_state_v3:account(Pid)}.
+%% Who may take back a nickname held for a local client: the hash of its
+%% RECLAIM secret, and its account, if logged in. Without either, the hold
+%% has no owner.
+hold_owner(#client{pid = Pid}) ->
+    case {ircd_conn:get(Pid, reclaim), ircd_state_v3:account(Pid)} of
+        {undefined, undefined} -> undefined;
+        {Token, Account} -> #{token => Token, account => Account}
+    end.
+
+-doc """
+Handle `RECLAIM <secret>`: remember the SHA-256 of a client-chosen secret
+for this connection, so a nickname it later gives up can be taken back by a
+connection presenting the same secret (`hold_nick/2`). A server extension
+used by WebIRC, which keeps the secret for the browser tab; send it before
+`NICK`. The secret is 16 to 64 characters of letters, digits, `-`, and `_`.
+A missing secret gets 461; an invalid one `FAIL RECLAIM INVALID_SECRET`.
+Success has no reply. The secret is never stored or logged.
+""".
+-spec reclaim([binary()], #client{}, binary()) -> ok.
+reclaim([Secret | _], #client{pid = Pid}, _Server) ->
+    case valid_secret(Secret) of
+        true ->
+            ircd_conn:put(Pid, reclaim, crypto:hash(sha256, Secret));
+        false ->
+            ircd_state_send:fail(
+                Pid, <<"RECLAIM">>, <<"INVALID_SECRET">>, [], <<"Invalid reclaim secret">>
+            )
+    end;
+reclaim([], Client, Server) ->
+    ircd_state_send:numeric(
+        Client, Server, <<"461">>, [<<"RECLAIM">>], <<"Not enough parameters">>
+    ).
+
+valid_secret(Secret) ->
+    byte_size(Secret) >= 16 andalso byte_size(Secret) =< 64 andalso
+        lists:all(
+            fun(C) ->
+                (C >= $a andalso C =< $z) orelse (C >= $A andalso C =< $Z) orelse
+                    (C >= $0 andalso C =< $9) orelse C =:= $- orelse C =:= $_
+            end,
+            binary_to_list(Secret)
+        ).
 
 -doc """
 Hold a channel name whose last remote member was lost, under the same rules
@@ -257,19 +295,23 @@ nick_blocked(Nick) ->
 
 -doc """
 True while `Nick` is held against `Client` (numeric 437). A hold owned by
-the same address or account (`hold_nick/2`) does not block `Client`; it is
-released instead, so the nickname is theirs again.
+the same `RECLAIM` secret or account (`hold_nick/2`) does not block
+`Client`; it is released instead, so the nickname is theirs again.
 """.
 -spec nick_blocked(binary(), #client{}) -> boolean().
-nick_blocked(Nick, #client{pid = Pid, host = Host}) ->
+nick_blocked(Nick, #client{pid = Pid}) ->
     Key = {nick, ircd_wire:fold(Nick)},
     case ets:lookup(?HOLDS, Key) of
-        [{_, _Until, #{host := OwnerHost, account := OwnerAccount}}] ->
+        [{_, _Until, #{token := OwnerToken, account := OwnerAccount}}] ->
+            Token = ircd_conn:get(Pid, reclaim),
+            SameToken =
+                is_binary(OwnerToken) andalso is_binary(Token) andalso
+                    crypto:hash_equals(OwnerToken, Token),
             Account = ircd_state_v3:account(Pid),
             SameAccount =
                 is_binary(OwnerAccount) andalso is_binary(Account) andalso
                     ircd_wire:fold(OwnerAccount) =:= ircd_wire:fold(Account),
-            case OwnerHost =:= Host orelse SameAccount of
+            case SameToken orelse SameAccount of
                 true ->
                     true = ets:delete(?HOLDS, Key),
                     false;

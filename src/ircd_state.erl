@@ -1188,6 +1188,10 @@ redact_command({ctl, {create_account, Name, _Password, Email}}) ->
 redact_command({command_as, Primary, Command, Params, Bytes, Tags}) ->
     {command, _, Redacted, _, _} = redact_command({command, Command, Params, Bytes, Tags}),
     {command_as, Primary, Command, Redacted, Bytes, Tags};
+redact_command({command, <<"RECLAIM">>, [_Secret | Rest], Bytes, Tags}) ->
+    {command, <<"RECLAIM">>, [redacted | Rest], Bytes, Tags};
+redact_command({command, <<"RECLAIM">>, [_Secret | Rest], Bytes}) ->
+    {command, <<"RECLAIM">>, [redacted | Rest], Bytes};
 redact_command({command, <<"PASS">>, [_Password | Rest], Bytes, Tags}) ->
     {command, <<"PASS">>, [redacted | Rest], Bytes, Tags};
 redact_command({command, <<"PASS">>, [_Password | Rest], Bytes}) ->
@@ -1299,6 +1303,8 @@ dispatch_command(<<"QUIT">>, Params, Client, Server, _Tags) ->
     quit;
 dispatch_command(<<"PASS">>, Params, Client, Server, _Tags) ->
     ircd_state_client:pass(Params, Client, Server);
+dispatch_command(<<"RECLAIM">>, Params, Client, Server, _Tags) ->
+    ircd_state_net:reclaim(Params, Client, Server);
 dispatch_command(<<"PING">>, [Token | _], Client, Server, _Tags) ->
     ircd_state_send:send(Client#client.pid, Server, <<"PONG">>, [Server], Token);
 dispatch_command(<<"PING">>, [], Client, Server, _Tags) ->
@@ -1903,6 +1909,7 @@ supported_command(Command) ->
             <<"MARKREAD">>,
             <<"METADATA">>,
             <<"MONITOR">>,
+            <<"RECLAIM">>,
             <<"REDACT">>,
             <<"REGISTER">>,
             <<"RENAME">>,

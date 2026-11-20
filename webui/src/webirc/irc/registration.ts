@@ -1,9 +1,9 @@
 // Registration: welcome, nickname in use, ISUPPORT, heartbeat replies.
-import { showMyNick } from "../sidebar.ts";
+import { renderBuffers, showMyNick } from "../sidebar.ts";
 import { t } from "../../common/i18n.ts";
 import { ircFold } from "../../common/ircv3.ts";
 import { altNick, rejoinList } from "../../common/reconnect.ts";
-import { addLine, updateTitle } from "../buffers.ts";
+import { addLine, ensureBuf, updateTitle } from "../buffers.ts";
 import { capOn, isupport } from "../caps.ts";
 import {
   catchUp,
@@ -20,6 +20,9 @@ import { buffers, S } from "../state.ts";
 import type { IrcMessage } from "../types.ts";
 import { dmNames, monitorAdd, requestMarker } from "../users.ts";
 import { isChan } from "../util.ts";
+
+/** Conversations with history asked for after registering. */
+const DM_TARGETS = 50;
 
 /**
  * Registration: welcome, nickname in use, ISUPPORT, heartbeat replies.
@@ -47,11 +50,24 @@ export function handleRegistration(
       buffers.forEach((b) => {
         if (isChan(b.name)) catchUp.add(ircFold(b.name));
       });
-      if (capOn("draft/chathistory")) {
-        for (const dm of dmNames()) {
-          const after = historyAfter(buffers.get(ircFold(dm)));
-          if (after) sendRaw(`CHATHISTORY AFTER ${dm} ${after} 100`);
-        }
+    }
+    // Private conversations (kept across a reload, or still open after a
+    // reconnect) fetch what they missed; a logged-in user's conversations
+    // that are not open yet come back through TARGETS.
+    if (capOn("draft/chathistory")) {
+      for (const dm of dmNames()) {
+        const after = historyAfter(buffers.get(ircFold(dm)));
+        sendRaw(
+          after
+            ? `CHATHISTORY AFTER ${dm} ${after} 100`
+            : `CHATHISTORY LATEST ${dm} * 50`,
+        );
+      }
+      if (S.account) {
+        sendRaw(
+          `CHATHISTORY TARGETS timestamp=${new Date().toISOString()} ` +
+            `timestamp=1970-01-01T00:00:00.000Z ${DM_TARGETS}`,
+        );
       }
     }
     S.reconnecting = false;
@@ -88,6 +104,18 @@ export function handleRegistration(
   // that connection went away (a page reload). Either way, register with a
   // fallback and retake the nickname later (see the heartbeat); without a
   // fallback, registration would stall with no nickname.
+  // A conversation with history (CHATHISTORY TARGETS, IRCv3
+  // draft/chathistory): reopen a private one we do not have yet.
+  if (command === "CHATHISTORY" && params[0] === "TARGETS") {
+    const target = params[1] || "";
+    if (target && !isChan(target) && !buffers.has(ircFold(target))) {
+      ensureBuf(target);
+      renderBuffers();
+      sendRaw(`CHATHISTORY LATEST ${target} * 50`);
+    }
+    return true;
+  }
+
   const nickRefused = command === "433" ||
     (command === "437" && !isChan(params[1] || ""));
   if (nickRefused && !S.isRegistered) {

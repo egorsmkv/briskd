@@ -80,7 +80,8 @@ Summarize a command's parameters for logging without secrets or message text.
 
 Returns:
 
-- `<<"redacted">>` for `PASS`, and only the account name for `OPER`.
+- `<<"redacted">>` for `PASS` and `RECLAIM`, and only the account name for
+  `OPER`.
 - For `MODE`, the parameters joined with spaces, or only the target and mode
   string when the mode string contains `k` or `K`, so a channel key is
   dropped.
@@ -93,6 +94,8 @@ Returns:
 """.
 -spec command_detail(binary(), [binary()]) -> binary().
 command_detail(<<"PASS">>, _) ->
+    <<"redacted">>;
+command_detail(<<"RECLAIM">>, _) ->
     <<"redacted">>;
 command_detail(<<"OPER">>, [Name | _]) ->
     Name;

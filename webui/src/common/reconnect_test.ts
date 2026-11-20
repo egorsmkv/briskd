@@ -3,6 +3,8 @@ import {
   altNick,
   backoffDelay,
   DEFAULT_BACKOFF,
+  RECLAIM_SECRET,
+  reclaimSecret,
   rejoinList,
 } from "./reconnect.ts";
 
@@ -50,4 +52,18 @@ Deno.test("alternative nicknames stay within the length limit", () => {
   for (let i = 0; i < 20; i++) {
     assert(altNick("abcdefghi", 9, i).length <= 9, "never longer");
   }
+});
+
+Deno.test("reclaimSecret: base64url the server accepts", () => {
+  const all = new Uint8Array(24).map((_, i) => (i * 37 + 251) & 0xff);
+  const secret = reclaimSecret(all);
+  assert(secret.length === 32, `length ${secret.length}`);
+  assert(RECLAIM_SECRET.test(secret), `accepted: ${secret}`);
+  assert(!/[+/=]/.test(secret), "no +, /, or padding");
+  assert(
+    reclaimSecret(new Uint8Array(24).fill(0xff)) === "_".repeat(32),
+    "0xff bytes map to _",
+  );
+  assert(!RECLAIM_SECRET.test("short"), "too short is refused");
+  assert(!RECLAIM_SECRET.test("has space in it 123"), "spaces refused");
 });
