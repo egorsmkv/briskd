@@ -964,10 +964,12 @@ ai_providers(Value) ->
 ai_provider(Name, Entry) when is_map(Entry) ->
     BaseUrl = webui_url(base_url, maps:get(<<"base_url">>, Entry, undefined)),
     Trimmed = string:trim(BaseUrl, trailing, "/"),
+    {ApiKey, MissingEnv} = provider_key(Name, Entry),
     #{
         name => Name,
         base_url => iolist_to_binary(Trimmed),
-        api_key => provider_key(Name, Entry),
+        api_key => ApiKey,
+        missing_key_env => MissingEnv,
         model => model_name(Name, maps:get(<<"model">>, Entry, undefined)),
         timeout => bot_int(Name, timeout, maps:get(<<"timeout">>, Entry, 60), 1, 600) * 1000
     };
@@ -975,14 +977,17 @@ ai_provider(Name, _) ->
     erlang:error({invalid_ai_provider, Name}).
 
 %% Either `api_key` or `api_key_env` (an environment variable read at load);
-%% neither means the endpoint needs no key (e.g. a local server).
+%% neither means the endpoint needs no key (e.g. a local server). Returns
+%% `{Key, MissingEnv}`: an unset or empty `api_key_env` is not a configuration
+%% error, so the server still starts; `ircd_bots` skips the provider's bots
+%% and logs `bot_disabled` naming the variable.
 provider_key(Name, Entry) ->
     case {maps:get(<<"api_key">>, Entry, null), maps:get(<<"api_key_env">>, Entry, null)} of
         {null, null} ->
-            undefined;
+            {undefined, undefined};
         {Key, null} when is_binary(Key), byte_size(Key) > 0, byte_size(Key) =< 512 ->
             case binary:match(Key, [<<0>>, <<"\r">>, <<"\n">>, <<" ">>]) of
-                nomatch -> retain_secret(Key);
+                nomatch -> {retain_secret(Key), undefined};
                 _ -> erlang:error({invalid_ai_provider, Name, api_key})
             end;
         {null, Var} when is_binary(Var) ->
@@ -992,9 +997,13 @@ provider_key(Name, Entry) ->
             end,
             case os:getenv(binary_to_list(Var)) of
                 Value when is_list(Value), Value =/= [], length(Value) =< 512 ->
-                    retain_secret(unicode:characters_to_binary(Value));
+                    {retain_secret(unicode:characters_to_binary(Value)), undefined};
+                false ->
+                    {undefined, ircd_wire:retain(Var)};
+                [] ->
+                    {undefined, ircd_wire:retain(Var)};
                 _ ->
-                    erlang:error({missing_api_key_env, Name, Var})
+                    erlang:error({invalid_ai_provider, Name, api_key_env})
             end;
         _ ->
             erlang:error({invalid_ai_provider, Name, api_key})

@@ -171,7 +171,25 @@ config_errors_test() ->
         <<"\"ai_providers\":{\"p\":{\"base_url\":\"https://x/v1\",\"model\":\"m\",">>,
         <<"\"api_key_env\":\"IRCD_BOT_MISSING_KEY\"}}">>
     ]),
-    ?assertMatch({error, {invalid_config, _, {missing_api_key_env, _, _}}}, Missing),
+    %% An unset key variable does not stop startup: the provider is marked
+    %% and its bots are skipped by ircd_bots.
+    ?assertMatch(
+        {ok, #{bots := []}}, Missing
+    ),
+    {ok, WithBot} = load([
+        <<"\"name\":\"irc.test\",\"ai_providers\":{">>,
+        <<"\"p\":{\"base_url\":\"https://x/v1\",\"model\":\"m\",\"api_key_env\":\"IRCD_BOT_MISSING_KEY\"},">>,
+        <<"\"q\":{\"base_url\":\"http://127.0.0.1:1/v1\",\"model\":\"m\"}},">>,
+        <<"\"bots\":[{\"nick\":\"helper\",\"provider\":\"p\"},{\"nick\":\"local\",\"provider\":\"q\"}]">>
+    ]),
+    [Helper, _] = maps:get(bots, WithBot),
+    ?assertMatch(
+        #{provider := #{api_key := undefined, missing_key_env := <<"IRCD_BOT_MISSING_KEY">>}},
+        Helper
+    ),
+    %% Only the bot whose provider has its key is started.
+    {ok, {_, Children}} = ircd_bots:init(WithBot),
+    ?assertEqual([{bot, <<"local">>}], [maps:get(id, C) || C <- Children]),
     %% A rejected key is never echoed back in the error.
     BadKey = load([
         <<"\"ai_providers\":{\"p\":{\"base_url\":\"https://x/v1\",\"model\":\"m\",">>,

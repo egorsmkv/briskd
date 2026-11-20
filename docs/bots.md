@@ -61,7 +61,7 @@ An object mapping a provider name (`[A-Za-z0-9_-]`, 1–32 characters, at most
 | --- | --- | --- |
 | `base_url` | required | `http://` or `https://` URL of the API root; `/chat/completions` is appended. A trailing `/` is ignored |
 | `api_key` | none | Bearer token sent as `Authorization: Bearer …` |
-| `api_key_env` | none | Name of an environment variable holding the key, read at startup. Startup fails when it is unset or empty. Use this instead of `api_key` to keep secrets out of the file |
+| `api_key_env` | none | Name of an environment variable holding the key, read at startup. Use this instead of `api_key` to keep secrets out of the file. When the variable is unset or empty, the server still starts but the bots using this provider are not started, and a `bot_disabled` warning names each bot and the variable |
 | `model` | required | Default model name for bots using this provider |
 | `timeout` | `60` | Seconds to wait for a reply (1..600) |
 
@@ -165,5 +165,5 @@ service. Decide what is acceptable for your users:
   (more than 5 restarts in 60 seconds), the bot supervisor stops and stays
   down, leaving listeners and clients unaffected. Restart the server to bring
   bots back.
-- Log events: `bot_registered`, `bot_disconnected`, `bot_nick_unavailable`,
+- Log events: `bot_disabled`, `bot_registered`, `bot_disconnected`, `bot_nick_unavailable`,
   `bot_join_refused`, `bot_rate_limited`, `bot_request_failed`.

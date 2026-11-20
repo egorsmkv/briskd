@@ -3,11 +3,17 @@
 ## Docker development environment
 
 Docker Compose provides OTP 29, Rebar3, and `just`, and mounts the checkout at
-`/workspace`:
+`/workspace`. The container reads its environment from `.dev.env`, which is
+not committed; create it once from the example:
 
 ```sh
+cp .dev.env.example .dev.env
 docker compose -f docker-compose.dev.yml up --build
 ```
+
+Set `OPENAI_API_KEY` in `.dev.env` to enable the `helper` AI bot from
+`config/ircd.dev.json`. When it is empty the server starts without that bot
+(see [AI assistant bots](bots.md)).
 
 The development server is available at `localhost:6667`, and IRC over
 WebSocket at `ws://localhost:8080`. To run the container
