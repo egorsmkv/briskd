@@ -16,6 +16,7 @@ from aiortc.mediastreams import AudioStreamTrack
 from av import AudioFrame
 
 HOST, PORT = os.environ.get("CALLS_IRC", "127.0.0.1:6667").split(":")
+NG_HOST, NG_PORT = os.environ.get("CALLS_NG", "127.0.0.1:2223").split(":")
 CAP = "egorsmkv.github.io/calls"
 CHUNK = 400
 
@@ -121,6 +122,34 @@ def counting_peer(freq):
     return pc, received
 
 
+def rtpengine_calls():
+    """Raw NG `list` reply: the call-ids rtpengine currently holds."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(2)
+    try:
+        cookie = secrets.token_hex(4).encode()
+        s.sendto(cookie + b" d7:command4:liste", (NG_HOST, int(NG_PORT)))
+        data, _ = s.recvfrom(65535)
+    finally:
+        s.close()
+    assert data.startswith(cookie + b" "), data
+    assert b"6:result2:ok" in data, data
+    return data
+
+
+async def until_released(timeout=5):
+    """Poll rtpengine until it holds no call from this server."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        listing = rtpengine_calls()
+        if b"irc.calltest-" not in listing:
+            return
+        if loop.time() > deadline:
+            raise AssertionError(f"rtpengine still holds a call: {listing!r}")
+        await asyncio.sleep(0.2)
+
+
 def own_ip():
     return socket.gethostbyname(socket.gethostname())
 
@@ -169,8 +198,13 @@ async def call_through_rtpengine():
         assert got_a["loud"] >= 100, got_a
         assert got_b["loud"] >= 100, got_b
 
+        # While the call is up rtpengine holds it...
+        assert b"irc.calltest-" in rtpengine_calls()
+
         alice.send(f"CALL HANGUP bob {token} :normal")
         await bob.expect(lambda l: f"CALL HANGUP bob {token} :normal" in l)
+        # ...and after the hangup the server's NG delete has released it.
+        await until_released()
     finally:
         await pc_a.close()
         await pc_b.close()

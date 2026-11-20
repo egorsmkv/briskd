@@ -7,6 +7,13 @@
 //   CALL OFFER|ANSWER <nick> <token> <part> <total> :<chunk>
 //   CALL RINGING|REJECT|HANGUP <nick> <token> [:<reason>]
 
+import {
+  audioConstraints,
+  type CallAudioSettings,
+  DEFAULT_CALL_SETTINGS,
+  needsNewTrack,
+} from "./call_settings.ts";
+
 export const CALLS_CAP = "egorsmkv.github.io/calls";
 
 const CHUNK = 400;
@@ -39,6 +46,8 @@ export interface CallHooks {
   /** A finished or failed call, for a line in the peer's conversation. */
   onEnded(peer: string, summary: string): void;
   remoteAudio(): HTMLAudioElement;
+  /** Current audio preferences (devices, processing, bitrate, ring sound). */
+  audio?(): CallAudioSettings;
 }
 
 interface Assembly {
@@ -120,6 +129,8 @@ export class CallManager {
   private remoteOffer = "";
   private assemblies = new Map<string, Assembly>();
   private tone: Tone | null = null;
+  /** Bumped per microphone switch, so only the newest switch takes effect. */
+  private trackGen = 0;
   enabled = false;
 
   constructor(hooks: CallHooks) {
@@ -143,6 +154,7 @@ export class CallManager {
       const pc = await this.preparePeer(token);
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
+      await this.applyBitrate(pc);
       await gathered(pc);
       if (this.view.token !== token) return; // cancelled meanwhile
       this.sendSdp("OFFER", nick, token, pc.localDescription?.sdp || "");
@@ -164,6 +176,7 @@ export class CallManager {
       await pc.setRemoteDescription({ type: "offer", sdp: this.remoteOffer });
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
+      await this.applyBitrate(pc);
       await gathered(pc);
       if (this.view.token !== token) return;
       this.sendSdp("ANSWER", peer, token, pc.localDescription?.sdp || "");
@@ -201,6 +214,57 @@ export class CallManager {
     const muted = !this.view.muted;
     for (const track of this.stream.getAudioTracks()) track.enabled = !muted;
     this.set({ muted });
+  }
+
+  /**
+   * Apply changed audio preferences to a call in progress: a new microphone
+   * track (device or processing changed) replaces the sent one without
+   * renegotiation, and the bitrate is updated. `previous` is what the call
+   * was using. Playback device and volume belong to the audio element.
+   */
+  async applyAudioSettings(previous: CallAudioSettings): Promise<void> {
+    const pc = this.pc;
+    const token = this.view.token;
+    if (!pc || !this.stream) return;
+    const next = this.settings();
+    if (needsNewTrack(previous, next)) {
+      const sender = pc.getSenders().find((x) => x.track?.kind === "audio");
+      if (!sender) return;
+      const gen = ++this.trackGen;
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: audioConstraints(next),
+        video: false,
+      });
+      // The call ended or a newer change started while the device opened.
+      if (
+        this.pc !== pc || this.view.token !== token || gen !== this.trackGen
+      ) {
+        for (const t of stream.getTracks()) t.stop();
+        return;
+      }
+      const track = stream.getAudioTracks()[0];
+      if (!track) {
+        for (const t of stream.getTracks()) t.stop();
+        return;
+      }
+      track.enabled = !this.view.muted;
+      try {
+        await sender.replaceTrack(track);
+      } catch (err) {
+        for (const t of stream.getTracks()) t.stop();
+        throw err;
+      }
+      // finish() may have run during replaceTrack and released this.stream;
+      // the new stream must not outlive the call.
+      if (this.pc !== pc || gen !== this.trackGen) {
+        for (const t of stream.getTracks()) t.stop();
+        return;
+      }
+      const old = this.stream;
+      this.stream = stream;
+      for (const t of old?.getTracks() ?? []) t.stop();
+    }
+    if (previous.bitrate !== next.bitrate) await this.applyBitrate(pc);
   }
 
   /** The IRC connection went away: drop any call without signalling. */
@@ -297,6 +361,9 @@ export class CallManager {
     try {
       await this.pc.setRemoteDescription({ type: "answer", sdp });
     } catch (err) {
+      // Hung up meanwhile: closing the connection rejected the call; the
+      // call is already finished and must not be signalled again.
+      if (this.view.token !== token) return;
       const { peer } = this.view;
       this.hooks.send(`CALL HANGUP ${peer} ${token} :failed`);
       this.finish(peer, `Call failed: ${errorText(err)}`);
@@ -376,11 +443,7 @@ export class CallManager {
       throw new Error("this browser cannot record audio (HTTPS is required)");
     }
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
+      audio: audioConstraints(this.settings()),
       video: false,
     });
     if (this.view.token !== token) {
@@ -417,6 +480,35 @@ export class CallManager {
     };
     this.pc = pc;
     return pc;
+  }
+
+  private settings(): CallAudioSettings {
+    return this.hooks.audio?.() ?? DEFAULT_CALL_SETTINGS;
+  }
+
+  /**
+   * Cap the Opus send bitrate (RTCRtpSender parameters, no renegotiation).
+   * 0 removes the cap. Unsupported browsers keep their default.
+   */
+  private async applyBitrate(pc: RTCPeerConnection): Promise<void> {
+    const kbps = this.settings().bitrate;
+    for (const sender of pc.getSenders()) {
+      if (sender.track?.kind !== "audio") continue;
+      try {
+        const params = sender.getParameters();
+        if (!params.encodings || params.encodings.length === 0) {
+          if (!kbps) continue;
+          params.encodings = [{}];
+        }
+        for (const enc of params.encodings) {
+          if (kbps) enc.maxBitrate = kbps * 1000;
+          else delete enc.maxBitrate;
+        }
+        await sender.setParameters(params);
+      } catch {
+        // Not supported here or the connection closed: keep the default.
+      }
+    }
   }
 
   private endedText(base: string): string {
@@ -458,7 +550,9 @@ export class CallManager {
 
   private startTone(kind: "ring" | "ringback"): void {
     this.stopTone();
-    this.tone = new Tone(kind);
+    const s = this.settings();
+    if (kind === "ring" && !s.ringtone) return;
+    this.tone = new Tone(kind, s.outputId);
   }
 
   private stopTone(): void {
@@ -482,11 +576,18 @@ class Tone {
   private ctx: AudioContext | null = null;
   private timer: number | null = null;
 
-  constructor(kind: "ring" | "ringback") {
+  constructor(kind: "ring" | "ringback", outputId = "") {
     try {
       this.ctx = new AudioContext();
     } catch {
       return;
+    }
+    // Ring on the chosen speakers where AudioContext.setSinkId exists.
+    const sink = this.ctx as AudioContext & {
+      setSinkId?: (id: string) => Promise<void>;
+    };
+    if (outputId && sink.setSinkId) {
+      void sink.setSinkId(outputId).catch(() => {});
     }
     const play = () => {
       const ctx = this.ctx;

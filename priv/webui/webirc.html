@@ -204,6 +204,7 @@
     </div>
     <div class="modal-tabs" role="tablist">
       <button type="button" class="modal-tab active" id="tab-settings-general" role="tab" aria-selected="true" data-i18n="settings.tab.general">General</button>
+      <button type="button" class="modal-tab" id="tab-settings-calls" role="tab" aria-selected="false" aria-controls="pane-settings-calls" data-i18n="settings.tab.calls">Calls</button>
       <button type="button" class="modal-tab" id="tab-settings-e2ee" role="tab" aria-selected="false" data-i18n="settings.tab.e2ee">E2EE Keys</button>
     </div>
     <div class="modal-body">
@@ -284,6 +285,75 @@
             <input type="checkbox" id="opt-remote-avatars">
             <span data-i18n="settings.remote_avatars">Load avatars from other sites</span>
           </label>
+        </div>
+      </div>
+
+      <div class="modal-pane" id="pane-settings-calls" role="tabpanel" aria-labelledby="tab-settings-calls">
+        <div class="call-settings-note hidden" id="call-settings-permission">
+          <span data-i18n="callset.permission">Allow microphone access to see your device names.</span>
+          <button type="button" class="small" id="btn-callset-allow" data-i18n="callset.allow">Allow access</button>
+        </div>
+        <div class="call-settings-note hidden" id="call-settings-error" role="alert"></div>
+        <div class="setting-group">
+          <div class="setting-label" data-i18n="callset.devices">Devices</div>
+          <div class="setting-row">
+            <label for="opt-call-input" data-i18n="callset.input">Microphone</label>
+            <select id="opt-call-input"></select>
+          </div>
+          <div class="mic-test">
+            <button type="button" class="small" id="btn-callset-mictest" aria-pressed="false" data-i18n="callset.mictest">Test microphone</button>
+            <div class="mic-meter" id="call-mic-meter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Microphone level" data-i18n-aria-label="callset.level">
+              <div class="mic-meter-fill" id="call-mic-meter-fill"></div>
+            </div>
+          </div>
+          <div class="setting-row" id="row-call-output">
+            <label for="opt-call-output" data-i18n="callset.output">Speakers</label>
+            <select id="opt-call-output"></select>
+          </div>
+          <div class="call-settings-hint hidden" id="call-output-unsupported" data-i18n="callset.output_unsupported">This browser plays calls through the system's default output.</div>
+          <div class="setting-row">
+            <label for="opt-call-volume" data-i18n="callset.volume">Call volume</label>
+            <div class="volume-control">
+              <input type="range" id="opt-call-volume" min="0" max="100" step="5">
+              <span class="volume-value" id="call-volume-value">100%</span>
+            </div>
+          </div>
+          <div class="speaker-test">
+            <button type="button" class="small" id="btn-callset-speakertest" data-i18n="callset.speakertest">Play test sound</button>
+          </div>
+        </div>
+        <div class="setting-group">
+          <div class="setting-label" data-i18n="callset.processing">Audio processing</div>
+          <label class="setting-check">
+            <input type="checkbox" id="opt-call-echo">
+            <span data-i18n="callset.echo">Echo cancellation</span>
+          </label>
+          <label class="setting-check">
+            <input type="checkbox" id="opt-call-noise">
+            <span data-i18n="callset.noise">Noise suppression</span>
+          </label>
+          <label class="setting-check">
+            <input type="checkbox" id="opt-call-agc">
+            <span data-i18n="callset.agc">Automatic microphone volume</span>
+          </label>
+        </div>
+        <div class="setting-group">
+          <div class="setting-label" data-i18n="callset.quality">Quality</div>
+          <div class="setting-row">
+            <label for="opt-call-bitrate" data-i18n="callset.bitrate">Audio quality</label>
+            <select id="opt-call-bitrate">
+              <option value="0" data-i18n="callset.bitrate.auto">Automatic</option>
+              <option value="16" data-i18n="callset.bitrate.16">Data saver (16 kbps)</option>
+              <option value="32" data-i18n="callset.bitrate.32">Standard (32 kbps)</option>
+              <option value="64" data-i18n="callset.bitrate.64">High (64 kbps)</option>
+              <option value="128" data-i18n="callset.bitrate.128">Studio (128 kbps)</option>
+            </select>
+          </div>
+          <label class="setting-check">
+            <input type="checkbox" id="opt-call-ringtone">
+            <span data-i18n="callset.ringtone">Ring sound for incoming calls</span>
+          </label>
+          <div class="call-settings-hint" data-i18n="callset.live_hint">Changes apply to a call in progress right away.</div>
         </div>
       </div>
 

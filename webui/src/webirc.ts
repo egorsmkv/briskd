@@ -45,6 +45,18 @@ import {
   CALLS_CAP,
   type CallView,
 } from "./calls.ts";
+import {
+  audioConstraints,
+  type CallAudioSettings,
+  canSelectOutput,
+  loadCallSettings,
+  meterLevel,
+  needsNewTrack,
+  normalizeCallSettings,
+  saveCallSettings,
+  setOutput,
+  toneWav,
+} from "./call_settings.ts";
 
 interface WebircSettings {
   layout: "auto" | "mobile" | "desktop";
@@ -291,6 +303,7 @@ initTheme([], {
 initLang();
 
 const settings: WebircSettings = loadSettings();
+let callSettings: CallAudioSettings = loadCallSettings();
 
 function applySettings(): void {
   document.body.classList.toggle("layout-mobile", settings.layout === "mobile");
@@ -359,18 +372,21 @@ function renderThemeSwatches(): void {
   }
 }
 
-function switchSettingsTab(tab: "general" | "e2ee"): void {
-  const isE2ee = tab === "e2ee";
-  $("tab-settings-general").classList.toggle("active", !isE2ee);
-  $("tab-settings-general").setAttribute("aria-selected", String(!isE2ee));
-  $("tab-settings-e2ee").classList.toggle("active", isE2ee);
-  $("tab-settings-e2ee").setAttribute("aria-selected", String(isE2ee));
-  $("pane-settings-general").classList.toggle("active", !isE2ee);
-  $("pane-settings-e2ee").classList.toggle("active", isE2ee);
-  if (isE2ee) renderE2eeModal();
+type SettingsTab = "general" | "calls" | "e2ee";
+
+function switchSettingsTab(tab: SettingsTab): void {
+  for (const name of ["general", "calls", "e2ee"] as const) {
+    const on = name === tab;
+    $(`tab-settings-${name}`).classList.toggle("active", on);
+    $(`tab-settings-${name}`).setAttribute("aria-selected", String(on));
+    $(`pane-settings-${name}`).classList.toggle("active", on);
+  }
+  if (tab === "e2ee") renderE2eeModal();
+  if (tab === "calls") renderCallSettings();
+  else stopCallSettingsMedia();
 }
 
-function openSettings(tab: "general" | "e2ee" = "general"): void {
+function openSettings(tab: SettingsTab = "general"): void {
   renderThemeSwatches();
   applySettings();
   switchSettingsTab(tab);
@@ -379,6 +395,7 @@ function openSettings(tab: "general" | "e2ee" = "general"): void {
 
 function closeSettings(): void {
   $("settings-modal").classList.remove("open");
+  stopCallSettingsMedia();
 }
 
 applySettings();
@@ -387,6 +404,7 @@ $("btn-settings-2").onclick = () => openSettings("general");
 $("btn-close-settings").onclick = closeSettings;
 $("tab-settings-general").onclick = () => switchSettingsTab("general");
 $("tab-settings-e2ee").onclick = () => switchSettingsTab("e2ee");
+$("tab-settings-calls").onclick = () => switchSettingsTab("calls");
 $("settings-modal").addEventListener("click", (ev) => {
   if (ev.target === $("settings-modal")) closeSettings();
 });
@@ -964,6 +982,7 @@ const calls = new CallManager({
     addLine(peer, { text: `📞 ${summary}`, kind: "sys" });
   },
   remoteAudio: () => $<HTMLAudioElement>("call-audio"),
+  audio: () => callSettings,
 });
 let callTicker: number | null = null;
 let callNotification: Notification | null = null;
@@ -1123,6 +1142,295 @@ $("call-incoming").addEventListener("keydown", (ev) => {
 });
 globalThis.addEventListener("pagehide", () => {
   if (calls.busy) calls.hangup();
+  stopCallSettingsMedia();
+});
+
+// --- Settings → Calls ------------------------------------------------------
+//
+// Device lists, a live microphone level meter, a speaker test, and the
+// preferences in call_settings.ts. The meter and the test sound hold a
+// microphone stream, an AudioContext, and an object URL; all of them are
+// released by stopCallSettingsMedia() when the test is stopped, the tab or
+// the dialog is left, or the page is hidden.
+
+let micTest: {
+  stream: MediaStream;
+  ctx: AudioContext;
+  frame: number;
+} | null = null;
+// Incremented on every start and stop: a getUserMedia() that resolves after
+// a newer start or a stop sees a different value and releases its stream.
+let micTestGen = 0;
+let micTestStarting = false;
+let speakerTest: { audio: HTMLAudioElement; url: string } | null = null;
+
+/** Play the other side at the chosen volume on the chosen speakers. */
+function applyCallPlayback(): void {
+  const audio = $<HTMLAudioElement>("call-audio");
+  audio.volume = callSettings.volume;
+  void setOutput(audio, callSettings.outputId);
+}
+applyCallPlayback();
+
+function callSettingsError(err: unknown | null): void {
+  const box = $("call-settings-error");
+  if (err === null) {
+    box.classList.add("hidden");
+    box.textContent = "";
+    return;
+  }
+  const name = err instanceof DOMException ? err.name : "";
+  box.textContent = name === "NotAllowedError" || name === "SecurityError"
+    ? t("callset.denied")
+    : name === "NotFoundError" || name === "OverconstrainedError"
+    ? t("callset.nomic")
+    : !navigator.mediaDevices?.getUserMedia
+    ? t("callset.unavailable")
+    : errorMessage(err);
+  box.classList.remove("hidden");
+}
+
+function fillDeviceSelect(
+  select: HTMLSelectElement,
+  devices: MediaDeviceInfo[],
+  chosen: string,
+): void {
+  select.textContent = "";
+  const def = document.createElement("option");
+  def.value = "";
+  def.textContent = t("callset.default");
+  select.appendChild(def);
+  let n = 0;
+  for (const d of devices) {
+    // Chrome lists the default device twice: as "default" and by its id.
+    if (d.deviceId === "default" || !d.deviceId) continue;
+    n++;
+    const opt = document.createElement("option");
+    opt.value = d.deviceId;
+    opt.textContent = d.label || t("callset.device", { n });
+    select.appendChild(opt);
+  }
+  // A saved device that is unplugged shows as the default; the preference is
+  // kept, so it is used again when the device comes back.
+  select.value = devices.some((d) => d.deviceId === chosen) ? chosen : "";
+}
+
+async function refreshCallDevices(): Promise<void> {
+  const md = navigator.mediaDevices;
+  if (!md?.enumerateDevices) {
+    callSettingsError(new Error(t("callset.unavailable")));
+    return;
+  }
+  let devices: MediaDeviceInfo[] = [];
+  try {
+    devices = await md.enumerateDevices();
+  } catch (err) {
+    callSettingsError(err);
+    return;
+  }
+  const inputs = devices.filter((d) => d.kind === "audioinput");
+  const outputs = devices.filter((d) => d.kind === "audiooutput");
+  fillDeviceSelect(
+    $<HTMLSelectElement>("opt-call-input"),
+    inputs,
+    callSettings.inputId,
+  );
+  fillDeviceSelect(
+    $<HTMLSelectElement>("opt-call-output"),
+    outputs,
+    callSettings.outputId,
+  );
+  // Labels are empty until the page has been granted microphone access.
+  const unlabelled = devices.length > 0 &&
+    !devices.some((d) => d.label);
+  $("call-settings-permission").classList.toggle("hidden", !unlabelled);
+}
+
+function renderCallSettings(): void {
+  const s = callSettings;
+  $<HTMLInputElement>("opt-call-echo").checked = s.echoCancellation;
+  $<HTMLInputElement>("opt-call-noise").checked = s.noiseSuppression;
+  $<HTMLInputElement>("opt-call-agc").checked = s.autoGainControl;
+  $<HTMLInputElement>("opt-call-ringtone").checked = s.ringtone;
+  $<HTMLSelectElement>("opt-call-bitrate").value = String(s.bitrate);
+  const volume = Math.round(s.volume * 100);
+  $<HTMLInputElement>("opt-call-volume").value = String(volume);
+  $("call-volume-value").textContent = `${volume}%`;
+  const outputs = canSelectOutput();
+  $("row-call-output").classList.toggle("hidden", !outputs);
+  $("call-output-unsupported").classList.toggle("hidden", outputs);
+  callSettingsError(null);
+  void refreshCallDevices();
+}
+
+/** Save a change, apply it to playback, and to a call in progress. */
+function updateCallSettings(patch: Partial<CallAudioSettings>): void {
+  const previous = callSettings;
+  callSettings = normalizeCallSettings({ ...callSettings, ...patch });
+  saveCallSettings(callSettings);
+  applyCallPlayback();
+  calls.applyAudioSettings(previous).catch((err) => callSettingsError(err));
+  if (micTest && needsNewTrack(previous, callSettings)) {
+    stopMicTest();
+    void startMicTest();
+  }
+}
+
+function setMicMeter(level: number): void {
+  $("call-mic-meter-fill").style.width = `${level}%`;
+  $("call-mic-meter").setAttribute("aria-valuenow", String(level));
+}
+
+function stopMicTest(): void {
+  micTestGen++;
+  micTestStarting = false;
+  if (micTest) {
+    cancelAnimationFrame(micTest.frame);
+    for (const track of micTest.stream.getTracks()) track.stop();
+    void micTest.ctx.close().catch(() => {});
+    micTest = null;
+  }
+  setMicMeter(0);
+  const btn = $<HTMLButtonElement>("btn-callset-mictest");
+  btn.textContent = t("callset.mictest");
+  btn.setAttribute("aria-pressed", "false");
+}
+
+async function startMicTest(): Promise<void> {
+  if (micTest || micTestStarting) return;
+  if (!navigator.mediaDevices?.getUserMedia) {
+    callSettingsError(new Error(t("callset.unavailable")));
+    return;
+  }
+  const gen = ++micTestGen;
+  micTestStarting = true;
+  const btn = $<HTMLButtonElement>("btn-callset-mictest");
+  btn.textContent = t("callset.mictest_stop");
+  btn.setAttribute("aria-pressed", "true");
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: audioConstraints(callSettings),
+      video: false,
+    });
+  } catch (err) {
+    if (gen !== micTestGen) return;
+    stopMicTest();
+    callSettingsError(err);
+    return;
+  }
+  // Stopped (tab or dialog closed) or restarted while the prompt was open.
+  if (gen !== micTestGen) {
+    for (const track of stream.getTracks()) track.stop();
+    return;
+  }
+  micTestStarting = false;
+  callSettingsError(null);
+  const ctx = new AudioContext();
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 1024;
+  ctx.createMediaStreamSource(stream).connect(analyser);
+  const samples = new Float32Array(analyser.fftSize);
+  const test = { stream, ctx, frame: 0 };
+  const tick = () => {
+    if (micTest !== test) return;
+    analyser.getFloatTimeDomainData(samples);
+    let sum = 0;
+    for (const x of samples) sum += x * x;
+    setMicMeter(meterLevel(Math.sqrt(sum / samples.length)));
+    test.frame = requestAnimationFrame(tick);
+  };
+  micTest = test;
+  tick();
+  // Labels become available once access is granted.
+  void refreshCallDevices();
+}
+
+function stopSpeakerTest(): void {
+  if (!speakerTest) return;
+  speakerTest.audio.pause();
+  speakerTest.audio.removeAttribute("src");
+  URL.revokeObjectURL(speakerTest.url);
+  speakerTest = null;
+}
+
+async function playSpeakerTest(): Promise<void> {
+  stopSpeakerTest();
+  const url = URL.createObjectURL(
+    new Blob([toneWav() as BlobPart], { type: "audio/wav" }),
+  );
+  const audio = new Audio();
+  const test = { audio, url };
+  speakerTest = test;
+  audio.volume = callSettings.volume;
+  audio.onended = () => {
+    if (speakerTest === test) stopSpeakerTest();
+  };
+  await setOutput(audio, callSettings.outputId);
+  if (speakerTest !== test) return;
+  audio.src = url;
+  try {
+    await audio.play();
+  } catch (err) {
+    if (speakerTest === test) stopSpeakerTest();
+    callSettingsError(err);
+  }
+}
+
+function stopCallSettingsMedia(): void {
+  stopMicTest();
+  stopSpeakerTest();
+}
+
+$("btn-callset-mictest").onclick = () => {
+  if (micTest || micTestStarting) stopMicTest();
+  else void startMicTest();
+};
+$("btn-callset-speakertest").onclick = () => void playSpeakerTest();
+$("btn-callset-allow").onclick = async () => {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+      video: false,
+    });
+    for (const track of stream.getTracks()) track.stop();
+    callSettingsError(null);
+  } catch (err) {
+    callSettingsError(err);
+  }
+  await refreshCallDevices();
+};
+$<HTMLSelectElement>("opt-call-input").onchange = (ev) =>
+  updateCallSettings({ inputId: (ev.target as HTMLSelectElement).value });
+$<HTMLSelectElement>("opt-call-output").onchange = (ev) =>
+  updateCallSettings({ outputId: (ev.target as HTMLSelectElement).value });
+$<HTMLInputElement>("opt-call-volume").oninput = (ev) => {
+  const volume = Number((ev.target as HTMLInputElement).value) / 100;
+  $("call-volume-value").textContent = `${Math.round(volume * 100)}%`;
+  updateCallSettings({ volume });
+};
+$<HTMLInputElement>("opt-call-echo").onchange = (ev) =>
+  updateCallSettings({
+    echoCancellation: (ev.target as HTMLInputElement).checked,
+  });
+$<HTMLInputElement>("opt-call-noise").onchange = (ev) =>
+  updateCallSettings({
+    noiseSuppression: (ev.target as HTMLInputElement).checked,
+  });
+$<HTMLInputElement>("opt-call-agc").onchange = (ev) =>
+  updateCallSettings({
+    autoGainControl: (ev.target as HTMLInputElement).checked,
+  });
+$<HTMLInputElement>("opt-call-ringtone").onchange = (ev) =>
+  updateCallSettings({ ringtone: (ev.target as HTMLInputElement).checked });
+$<HTMLSelectElement>("opt-call-bitrate").onchange = (ev) =>
+  updateCallSettings({
+    bitrate: Number((ev.target as HTMLSelectElement).value),
+  });
+navigator.mediaDevices?.addEventListener?.("devicechange", () => {
+  if ($("pane-settings-calls").classList.contains("active")) {
+    void refreshCallDevices();
+  }
 });
 
 function updateE2eeUi(): void {

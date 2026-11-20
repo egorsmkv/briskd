@@ -370,7 +370,16 @@ live() ->
         receive
             {ng, Unexpected, _} -> ?assertEqual(none, Unexpected)
         after 200 -> ok
-        end
+        end,
+
+        %% Every call above has ended (hangup, reject, busy, disconnect,
+        %% media error, ring timeout): nothing is left in the call table, no
+        %% party is still monitored, and no NG request or timer is pending.
+        Calls = whereis(ircd_calls),
+        #{calls := C, parties := P, busy := B, chunks := Ch, pending := Pe} =
+            sys:get_state(Calls),
+        ?assertEqual({#{}, #{}, #{}, #{}, #{}}, {C, P, B, Ch, Pe}),
+        ?assertEqual({monitors, []}, erlang:process_info(Calls, monitors))
     after
         _ = application:stop(ircd),
         os:unsetenv("IRCD_CONFIG"),

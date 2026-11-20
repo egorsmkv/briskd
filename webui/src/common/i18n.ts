@@ -41,6 +41,39 @@ const DICT: Record<Lang, Record<string, string>> = {
     "settings.title": "Workspace Settings",
     "settings.tab.general": "General",
     "settings.tab.e2ee": "E2EE Keys",
+    "settings.tab.calls": "Calls",
+    "callset.permission": "Allow microphone access to see your device names.",
+    "callset.allow": "Allow access",
+    "callset.devices": "Devices",
+    "callset.input": "Microphone",
+    "callset.output": "Speakers",
+    "callset.default": "System default",
+    "callset.device": "Device {{n}}",
+    "callset.output_unsupported":
+      "This browser plays calls through the system's default output.",
+    "callset.mictest": "Test microphone",
+    "callset.mictest_stop": "Stop test",
+    "callset.level": "Microphone level",
+    "callset.volume": "Call volume",
+    "callset.speakertest": "Play test sound",
+    "callset.processing": "Audio processing",
+    "callset.echo": "Echo cancellation",
+    "callset.noise": "Noise suppression",
+    "callset.agc": "Automatic microphone volume",
+    "callset.quality": "Quality",
+    "callset.bitrate": "Audio quality",
+    "callset.bitrate.auto": "Automatic",
+    "callset.bitrate.16": "Data saver (16 kbps)",
+    "callset.bitrate.32": "Standard (32 kbps)",
+    "callset.bitrate.64": "High (64 kbps)",
+    "callset.bitrate.128": "Studio (128 kbps)",
+    "callset.ringtone": "Ring sound for incoming calls",
+    "callset.live_hint": "Changes apply to a call in progress right away.",
+    "callset.denied":
+      "Microphone access was denied. Allow it in the browser's site settings.",
+    "callset.nomic": "No microphone was found.",
+    "callset.unavailable":
+      "This browser cannot record audio here (HTTPS is required).",
     "settings.theme": "Theme",
     "settings.lang": "Language",
     "settings.layout": "Screen layout",
@@ -202,6 +235,38 @@ const DICT: Record<Lang, Record<string, string>> = {
     "settings.title": "הגדרות סביבת העבודה",
     "settings.tab.general": "כללי",
     "settings.tab.e2ee": "מפתחות E2EE",
+    "settings.tab.calls": "שיחות",
+    "callset.permission": "יש לאשר גישה למיקרופון כדי לראות את שמות ההתקנים.",
+    "callset.allow": "אישור גישה",
+    "callset.devices": "התקנים",
+    "callset.input": "מיקרופון",
+    "callset.output": "רמקולים",
+    "callset.default": "ברירת המחדל של המערכת",
+    "callset.device": "התקן {{n}}",
+    "callset.output_unsupported":
+      "דפדפן זה משמיע שיחות דרך התקן הפלט של המערכת.",
+    "callset.mictest": "בדיקת מיקרופון",
+    "callset.mictest_stop": "עצירת הבדיקה",
+    "callset.level": "עוצמת המיקרופון",
+    "callset.volume": "עוצמת השיחה",
+    "callset.speakertest": "השמעת צליל בדיקה",
+    "callset.processing": "עיבוד שמע",
+    "callset.echo": "ביטול הד",
+    "callset.noise": "הפחתת רעשים",
+    "callset.agc": "כוונון אוטומטי של עוצמת המיקרופון",
+    "callset.quality": "איכות",
+    "callset.bitrate": "איכות השמע",
+    "callset.bitrate.auto": "אוטומטית",
+    "callset.bitrate.16": "חיסכון בנתונים (16 kbps)",
+    "callset.bitrate.32": "רגילה (32 kbps)",
+    "callset.bitrate.64": "גבוהה (64 kbps)",
+    "callset.bitrate.128": "אולפן (128 kbps)",
+    "callset.ringtone": "צלצול לשיחות נכנסות",
+    "callset.live_hint": "השינויים חלים מיד גם על שיחה פעילה.",
+    "callset.denied":
+      "הגישה למיקרופון נחסמה. יש לאשר אותה בהגדרות האתר בדפדפן.",
+    "callset.nomic": "לא נמצא מיקרופון.",
+    "callset.unavailable": "דפדפן זה אינו יכול להקליט כאן (נדרש HTTPS).",
     "settings.theme": "ערכת עיצוב",
     "settings.lang": "שפה",
     "settings.layout": "פריסת מסך",
@@ -355,6 +420,12 @@ export function applyLang(lang: Lang): void {
     .forEach((el) => {
       const key = el.dataset.i18nPlaceholder;
       if (key) el.placeholder = t(key);
+    });
+  document
+    .querySelectorAll<HTMLElement>("[data-i18n-aria-label]")
+    .forEach((el) => {
+      const key = el.dataset.i18nAriaLabel;
+      if (key) el.setAttribute("aria-label", t(key));
     });
 }
 

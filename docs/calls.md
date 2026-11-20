@@ -63,6 +63,25 @@ call ended ("Call ended (3:12)", "Missed call from alice", "Line busy").
 
 A user can be in one call at a time; a second caller is rejected as busy.
 
+**Settings → Calls** holds the audio preferences. They are stored in the
+browser (`localStorage`) and never sent to the server:
+
+- **Microphone** and **Speakers**: the input and output device. A device that
+  is unplugged falls back to the system default. Choosing the output needs
+  `setSinkId` (Chromium and Firefox); other browsers use the system output.
+  Device names appear after the page is allowed to use the microphone.
+- **Test microphone** shows a live level meter; **Play test sound** plays a
+  short tone on the chosen speakers at the call volume.
+- **Call volume**, and **Ring sound for incoming calls**.
+- **Audio processing**: echo cancellation, noise suppression, and automatic
+  microphone volume (the browser's `getUserMedia` constraints).
+- **Audio quality**: an Opus send bitrate cap of 16, 32, 64, or 128 kbit/s,
+  or automatic. It is set with `RTCRtpSender.setParameters` and limits what
+  this browser sends; the other side chooses its own.
+
+Changes apply to a call in progress: a new microphone or processing setting
+replaces the sent track without renegotiation, and mute is kept.
+
 ## Protocol
 
 Clients request the `egorsmkv.github.io/calls` capability. Session
