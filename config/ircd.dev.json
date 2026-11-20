@@ -12,6 +12,13 @@
   "retention": "channels",
   "history_limit": 100,
   "e2ee": {},
+  "ai_providers": {
+    "openai": { "base_url": "https://api.openai.com/v1", "api_key_env": "OPENAI_API_KEY", "model": "gpt-4o-mini" }
+  },
+  "bots": [
+    { "nick": "helper", "provider": "openai", "channels": ["#lobby"],
+      "system_prompt": "You are a friendly helper. Answer briefly." }
+  ],
   "voice": {
     "endpoint": "http://rustfs:9000",
     "region": "us-east-1",

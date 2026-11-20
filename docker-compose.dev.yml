@@ -29,8 +29,8 @@ services:
     depends_on:
       - inbucket
       - rustfs
-    environment:
-      IRCD_CONFIG: config/ircd.dev.json
+    env_file:
+      - .dev.env
     ports:
       - "6667:6667"
       - "8080:8080"

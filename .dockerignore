@@ -9,3 +9,4 @@
 !bin/**
 !config/**
 !bench/release.json
+.dev.env
