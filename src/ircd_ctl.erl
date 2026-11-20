@@ -34,6 +34,16 @@ Subcommands:
   and propagate `ACCOUNTSYNC` to peers.
 - `delete-account <name>`: log out local sessions of the account and delete
   its account, read markers, and E2EE device/queue rows.
+- `set-email <name> [<email>]`: set or clear an account's email address.
+- `add-certfp <name> <sha256>` / `remove-certfp <name> <sha256>`: manage the
+  client certificate fingerprints an account accepts for SASL EXTERNAL.
+- `create-channel <name> [<topic>]`: create an empty `#`, `&`, or `+` channel.
+- `delete-channel <name> [<reason>]`: kick every local member (as the server)
+  and delete the channel, its history, and its metadata. Configured channels
+  are refused.
+- `set-channel-modes <name> <modes> [<args>...]`: apply channel modes as the
+  server (including list modes `b`/`e`/`I` and server-only `q`), announced to
+  members and peers.
 - `backup <file>`: write a consistent online Mnesia backup (`mnesia:backup/1`).
 - `drain [<reason>]`: gracefully drain listeners, peers, and clients (`m:ircd_shutdown`).
 - `stop`: gracefully drain and stop the Erlang node (`init:stop/0`).
@@ -71,7 +81,13 @@ Subcommands:
     | {notice_channel, binary(), binary()}
     | {reset_password, binary(), binary()}
     | {verify_account, binary()}
-    | {delete_account, binary()}.
+    | {delete_account, binary()}
+    | {create_channel, binary(), binary()}
+    | {delete_channel, binary(), binary()}
+    | {set_channel_modes, binary(), binary(), [binary()]}
+    | {set_email, binary(), binary() | undefined}
+    | {add_certfp, binary(), binary()}
+    | {remove_certfp, binary(), binary()}.
 -export_type([state_action/0]).
 
 -doc """
@@ -530,6 +546,69 @@ handle_state_action({delete_account, Name}, Server) ->
             logger:notice(#{event => ctl_account_deleted, account => Actual}),
             {ok, #{status => <<"deleted">>, account => Actual}}
     end;
+handle_state_action({create_channel, Name, Topic}, Server) ->
+    case ircd_state_channel:admin_create(Name, Topic, Server) of
+        {ok, Actual} ->
+            logger:notice(#{event => ctl_channel_created, channel => Actual}),
+            {ok, #{status => <<"created">>, channel => Actual}};
+        {error, Reason} ->
+            {error, Reason}
+    end;
+handle_state_action({delete_channel, Name, Reason}, Server) ->
+    case ircd_state_channel:admin_destroy(Name, Reason, Server) of
+        {ok, Actual, Kicked} ->
+            logger:notice(#{event => ctl_channel_deleted, channel => Actual, kicked => Kicked}),
+            {ok, #{status => <<"deleted">>, channel => Actual, kicked => Kicked}};
+        {error, Why} ->
+            {error, Why}
+    end;
+handle_state_action({set_channel_modes, Name, Modes, Args}, Server) ->
+    case ircd_state_channel:admin_mode(Name, Modes, Args, Server) of
+        {ok, _Actual, <<>>, _Shown, [First | _]} ->
+            %% Nothing applied: report why (the first refusal).
+            {error, {mode_refused, First}};
+        {ok, Actual, Applied, Shown, Errors} ->
+            %% The mode string only: parameters may include a channel key.
+            logger:notice(#{event => ctl_channel_modes, channel => Actual, modes => Applied}),
+            {ok, #{
+                status => <<"updated">>,
+                channel => Actual,
+                applied => Applied,
+                params => Shown,
+                errors => Errors
+            }};
+        {error, Reason} ->
+            {error, Reason}
+    end;
+handle_state_action({set_email, Name, Email}, _Server) ->
+    case Email =:= undefined orelse ircd_state_v3:valid_email(Email) of
+        false ->
+            {error, invalid_email};
+        true ->
+            case ircd_account:set_email(Name, Email) of
+                {ok, #account{name = Actual}} ->
+                    logger:notice(#{event => ctl_account_email_set, account => Actual}),
+                    {ok, #{status => <<"updated">>, account => Actual}};
+                {error, Reason} ->
+                    {error, Reason}
+            end
+    end;
+handle_state_action({add_certfp, Name, Fp}, _Server) ->
+    case ircd_account:add_certfp(Name, Fp) of
+        {ok, #account{name = Actual, certfps = Fps}} ->
+            logger:notice(#{event => ctl_account_certfp_added, account => Actual}),
+            {ok, #{status => <<"updated">>, account => Actual, certfps => Fps}};
+        {error, Reason} ->
+            {error, Reason}
+    end;
+handle_state_action({remove_certfp, Name, Fp}, _Server) ->
+    case ircd_account:remove_certfp(Name, Fp) of
+        {ok, #account{name = Actual, certfps = Fps}} ->
+            logger:notice(#{event => ctl_account_certfp_removed, account => Actual}),
+            {ok, #{status => <<"updated">>, account => Actual, certfps => Fps}};
+        {error, Reason} ->
+            {error, Reason}
+    end;
 handle_state_action(Unknown, _Server) ->
     {error, {unknown_action, Unknown}}.
 
@@ -625,6 +704,65 @@ dispatch([<<"verify-account">>, Name | _], Format) ->
 dispatch([<<"delete-account">>, Name | _], Format) ->
     cmd_state_call({delete_account, Name}, Format, fun(#{account := A}) ->
         <<"Deleted account ", A/binary>>
+    end);
+dispatch([<<"create-channel">>, Name | Rest], Format) ->
+    Topic =
+        case Rest of
+            [T | _] when byte_size(T) =< 390 -> T;
+            _ -> <<>>
+        end,
+    cmd_state_call({create_channel, Name, Topic}, Format, fun(#{channel := C}) ->
+        <<"Created channel ", C/binary>>
+    end);
+dispatch([<<"delete-channel">>, Name | Rest], Format) ->
+    Reason =
+        case Rest of
+            [R | _] when R =/= <<>>, byte_size(R) =< 300 -> R;
+            _ -> <<"Channel closed by administrator">>
+        end,
+    cmd_state_call({delete_channel, Name, Reason}, Format, fun(#{channel := C, kicked := N}) ->
+        <<"Deleted channel ", C/binary, " (", (integer_to_binary(N))/binary, " members removed)">>
+    end);
+dispatch([<<"set-channel-modes">>, Name, Modes | Args], Format) when
+    byte_size(Modes) =< 32, length(Args) =< 12
+->
+    case valid_mode_args(Modes, Args) of
+        true ->
+            cmd_state_call(
+                {set_channel_modes, Name, Modes, Args},
+                Format,
+                fun(#{channel := C, applied := A, errors := E}) ->
+                    iolist_to_binary([
+                        <<"Modes of ">>,
+                        C,
+                        <<": ">>,
+                        case A of
+                            <<>> -> <<"no change">>;
+                            _ -> A
+                        end,
+                        [[<<"\n">>, Err] || Err <- E]
+                    ])
+                end
+            );
+        false ->
+            reply_error(Format, #{error => <<"invalid_modes">>}, <<"Invalid mode string">>)
+    end;
+dispatch([<<"set-email">>, Name | Rest], Format) ->
+    Email =
+        case Rest of
+            [E | _] when E =/= <<>>, E =/= <<"*">> -> E;
+            _ -> undefined
+        end,
+    cmd_state_call({set_email, Name, Email}, Format, fun(#{account := A}) ->
+        <<"Updated email of ", A/binary>>
+    end);
+dispatch([<<"add-certfp">>, Name, Fp | _], Format) ->
+    cmd_state_call({add_certfp, Name, Fp}, Format, fun(#{account := A}) ->
+        <<"Added a certificate fingerprint to ", A/binary>>
+    end);
+dispatch([<<"remove-certfp">>, Name, Fp | _], Format) ->
+    cmd_state_call({remove_certfp, Name, Fp}, Format, fun(#{account := A}) ->
+        <<"Removed a certificate fingerprint from ", A/binary>>
     end);
 dispatch([<<"backup">>, File | _], Format) ->
     cmd_backup(File, Format);
@@ -973,11 +1111,31 @@ cmd_channels(Format) ->
                 remote_members => RemoteCount,
                 modes => Modes,
                 topic => Topic,
-                predefined => ircd_state:predefined_channel(Key)
+                predefined => ircd_state:predefined_channel(Key),
+                %% Whether a key is set; the key itself is not shown.
+                has_key => Password =/= undefined,
+                limit =>
+                    case Limit of
+                        undefined -> null;
+                        _ -> Limit
+                    end,
+                bans => maps:get(ban, Lists, []),
+                exceptions => maps:get(exception, Lists, []),
+                invites => maps:get(invite, Lists, [])
             }
         end
      || Key <- ircd_state:table_keys(channel),
-        [#channel{name = Name, members = Members, flags = Flags, topic = Topic}] <- [
+        [
+            #channel{
+                name = Name,
+                members = Members,
+                flags = Flags,
+                topic = Topic,
+                password = Password,
+                limit = Limit,
+                lists = Lists
+            }
+        ] <- [
             mnesia:dirty_read(channel, Key)
         ]
     ]),
@@ -1079,6 +1237,7 @@ cmd_accounts(Format) ->
                     _ -> Email
                 end,
             certfps => length(Fps),
+            certfp_list => Fps,
             created_us => Created
         }
      || #account{
@@ -1165,6 +1324,26 @@ cmd_state_call(Action, Format, TextFun) ->
     end.
 
 %%% Helpers
+
+%% A mode string of `+`, `-`, and letters, and parameters that are each one
+%% non-empty IRC middle parameter (no space, not starting with `:`, no
+%% CR/LF/NUL), as MODE would carry them.
+valid_mode_args(Modes, Args) ->
+    Modes =/= <<>> andalso
+        lists:all(
+            fun(C) ->
+                C =:= $+ orelse C =:= $- orelse (C >= $a andalso C =< $z) orelse
+                    (C >= $A andalso C =< $Z)
+            end,
+            binary_to_list(Modes)
+        ) andalso
+        lists:all(
+            fun(A) ->
+                A =/= <<>> andalso byte_size(A) =< 200 andalso binary:first(A) =/= $: andalso
+                    binary:match(A, [<<" ">>, <<"\r">>, <<"\n">>, <<0>>]) =:= nomatch
+            end,
+            Args
+        ).
 
 %% A Unix socket path is at most 100 bytes here (sun_path is 104 or 108); the
 %% path may hold any Unicode characters, so count its UTF-8 bytes.
@@ -1322,6 +1501,12 @@ format_help(json) ->
                 <<"accounts">>,
                 <<"create-account <name> <password> [<email>]">>,
                 <<"delete-account <name>">>,
+                <<"set-email <name> [<email>]">>,
+                <<"add-certfp <name> <sha256>">>,
+                <<"remove-certfp <name> <sha256>">>,
+                <<"create-channel <name> [<topic>]">>,
+                <<"delete-channel <name> [<reason>]">>,
+                <<"set-channel-modes <name> <modes> [<args>...]">>,
                 <<"backup <file>">>,
                 <<"drain [<reason>]">>,
                 <<"stop [<reason>]">>,
@@ -1349,6 +1534,12 @@ format_help(text) ->
         "  accounts                                  List registered SASL accounts\n"
         "  create-account <name> <password> [email]  Provision a verified SASL account\n"
         "  delete-account <name>                     Delete an account, its E2EE devices, and read markers\n"
+        "  set-email <name> [<email>]                Set or clear an account's email address\n"
+        "  add-certfp <name> <sha256>                Allow a client certificate for SASL EXTERNAL\n"
+        "  remove-certfp <name> <sha256>             Remove an allowed client certificate\n"
+        "  create-channel <name> [<topic>]           Create an empty channel (#, &, or +)\n"
+        "  delete-channel <name> [<reason>]          Remove all members and delete a channel\n"
+        "  set-channel-modes <name> <modes> [args]   Change channel modes as the server\n"
         "  backup <file>                             Write a consistent online Mnesia backup to <file>\n"
         "  drain [<reason>]                          Gracefully drain listeners, links, and sessions\n"
         "  stop [<reason>]                           Gracefully drain and stop the server node\n"

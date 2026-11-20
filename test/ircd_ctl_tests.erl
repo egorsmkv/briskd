@@ -31,6 +31,17 @@ offline_commands_test() ->
         file:del_dir(Dir)
     end.
 
+accounts() ->
+    {ok, Json} = ircd_ctl:run(["accounts", "--json"]),
+    maps:get(<<"accounts">>, json:decode(Json)).
+
+channel(Name) ->
+    {ok, Json} = ircd_ctl:run(["channels", "--json"]),
+    case [C || #{<<"name">> := N} = C <- maps:get(<<"channels">>, json:decode(Json)), N =:= Name] of
+        [C] -> C;
+        [] -> undefined
+    end.
+
 live_ctl_test_() ->
     {timeout, 60, fun live_ctl/0}.
 
@@ -109,10 +120,83 @@ live_ctl() ->
         {ok, AcctsJson} = ircd_ctl:run(["accounts", "--json"]),
         #{<<"accounts">> := Accts} = json:decode(AcctsJson),
         ?assertMatch([#{<<"name">> := <<"devops">>}], Accts),
+        %% Email: set, refuse an invalid one, clear.
+        {ok, _} = ircd_ctl:run(["set-email", "devops", "new@example.org"]),
+        ?assertMatch([#{<<"email">> := <<"new@example.org">>}], accounts()),
+        ?assertMatch({error, _}, ircd_ctl:run(["set-email", "devops", "not-an-email"])),
+        ?assertMatch({error, _}, ircd_ctl:run(["set-email", "nobody", "x@example.org"])),
+        {ok, _} = ircd_ctl:run(["set-email", "devops"]),
+        ?assertMatch([#{<<"email">> := null}], accounts()),
+
+        %% Client certificate fingerprints: colons and upper case are
+        %% normalised, duplicates kept once, bad input refused.
+        Fp = binary:copy(<<"ab">>, 32),
+        Colons = lists:join(":", [
+            string:uppercase(binary_to_list(Fp, I * 2 + 1, I * 2 + 2))
+         || I <- lists:seq(0, 31)
+        ]),
+        {ok, AddJson} = ircd_ctl:run(["add-certfp", "devops", lists:flatten(Colons), "--json"]),
+        ?assertMatch(#{<<"certfps">> := [Fp]}, json:decode(AddJson)),
+        {ok, _} = ircd_ctl:run(["add-certfp", "devops", binary_to_list(Fp)]),
+        ?assertMatch([#{<<"certfps">> := 1, <<"certfp_list">> := [Fp]}], accounts()),
+        ?assertMatch({error, _}, ircd_ctl:run(["add-certfp", "devops", "abc"])),
+        {ok, _} = ircd_ctl:run(["remove-certfp", "devops", binary_to_list(Fp)]),
+        ?assertMatch([#{<<"certfps">> := 0}], accounts()),
+        ?assertMatch({error, _}, ircd_ctl:run(["remove-certfp", "devops", binary_to_list(Fp)])),
+
         {ok, DelJson} = ircd_ctl:run(["delete-account", "devops", "--json"]),
         ?assertMatch(
             #{<<"status">> := <<"deleted">>, <<"account">> := <<"devops">>}, json:decode(DelJson)
         ),
+
+        %% Channels: create, change modes as the server, delete.
+        {ok, NewJson} = ircd_ctl:run(["create-channel", "#new", "Hello there", "--json"]),
+        ?assertMatch(
+            #{<<"status">> := <<"created">>, <<"channel">> := <<"#new">>}, json:decode(NewJson)
+        ),
+        ?assertMatch({error, _}, ircd_ctl:run(["create-channel", "#NEW"])),
+        ?assertMatch({error, _}, ircd_ctl:run(["create-channel", "!abcdefoo"])),
+        ?assertMatch({error, _}, ircd_ctl:run(["create-channel", "nochan"])),
+        ?assertMatch(
+            #{<<"topic">> := <<"Hello there">>, <<"local_members">> := 0}, channel(<<"#new">>)
+        ),
+
+        {ok, ModeJson} = ircd_ctl:run([
+            "set-channel-modes", "#ops", "+mb", "*!*@bad.example", "--json"
+        ]),
+        ?assertMatch(
+            #{
+                <<"applied">> := <<"+mb">>,
+                <<"params">> := [<<"*!*@bad.example">>],
+                <<"errors">> := []
+            },
+            json:decode(ModeJson)
+        ),
+        _ = recv_until(Alice, <<":irc.test MODE #ops +mb *!*@bad.example">>, <<>>),
+        ?assertMatch(
+            #{<<"modes">> := <<"+m">>, <<"bans">> := [<<"*!*@bad.example">>]}, channel(<<"#ops">>)
+        ),
+        %% The key reaches members but not the reply or the listing.
+        {ok, KeyJson} = ircd_ctl:run(["set-channel-modes", "#ops", "+k", "hunter2", "--json"]),
+        ?assertMatch(#{<<"params">> := [<<"*">>]}, json:decode(KeyJson)),
+        ?assertNot(has(KeyJson, <<"hunter2">>)),
+        _ = recv_until(Alice, <<"MODE #ops +k hunter2">>, <<>>),
+        #{<<"has_key">> := true} = OpsKeyed = channel(<<"#ops">>),
+        ?assertNot(has(iolist_to_binary(json:encode(OpsKeyed)), <<"hunter2">>)),
+        {ok, _} = ircd_ctl:run(["set-channel-modes", "#ops", "-kb", "*", "*!*@bad.example"]),
+        ?assertMatch(#{<<"has_key">> := false, <<"bans">> := []}, channel(<<"#ops">>)),
+        %% Nothing applied: the reason is the error.
+        {error, LimitErr} = ircd_ctl:run(["set-channel-modes", "#ops", "+l", "lots", "--json"]),
+        ?assert(has(LimitErr, <<"Invalid channel limit">>)),
+        ?assertMatch({error, _}, ircd_ctl:run(["set-channel-modes", "#ops", "+b", ":x"])),
+        ?assertMatch({error, _}, ircd_ctl:run(["set-channel-modes", "#nope", "+m"])),
+
+        {ok, DropJson} = ircd_ctl:run(["delete-channel", "#ops", "Closing", "--json"]),
+        ?assertMatch(#{<<"status">> := <<"deleted">>, <<"kicked">> := 1}, json:decode(DropJson)),
+        _ = recv_until(Alice, <<":irc.test KICK #ops alice :Closing">>, <<>>),
+        ?assertEqual(undefined, channel(<<"#ops">>)),
+        {ok, _} = ircd_ctl:run(["delete-channel", "#new"]),
+        ?assertMatch({error, _}, ircd_ctl:run(["delete-channel", "#new"])),
 
         %% Kick client
         {ok, KickJson} = ircd_ctl:run(["kick-client", "alice", "Maintenance", "--json"]),

@@ -337,6 +337,18 @@ always-on bouncer details, and Sable's PostgreSQL history server.
   DroneBL, UTF-8 only, and limits, changed live with `CAP NEW`/`DEL`, kept in
   Mnesia across `REHASH` and restarts, and reset to the configuration file's
   value.
+- [x] Channel management from the admin panel and `ircdctl`
+  (`create-channel`, `set-channel-modes`, `delete-channel`): create an empty
+  `#`, `&`, or `+` channel; change modes, key, limit, and the `b`/`e`/`I`
+  lists as the server (the `MODE` is shown to members and sent to peers,
+  except for `&` channels); delete a channel by kicking its local members as
+  the server. Channels from the configuration file cannot be deleted. Safe
+  `!` channels cannot be created this way (they need a creator).
+- [x] Account editing from the admin panel and `ircdctl`: `set-email`
+  (refuses an address another account uses) and `add-certfp` /
+  `remove-certfp` for SASL EXTERNAL (SHA-256, at most 16 per account, one
+  account per fingerprint). These changes stay on this server; peers keep
+  their own copy (`ACCOUNTSYNC` keeps the first-created row).
 
 ## Documentation and verification
 

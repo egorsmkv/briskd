@@ -232,6 +232,12 @@ Key operational and security events to index and alert on:
   docker compose -f docker-compose.prod.yml exec -T ircd ircdctl accounts
   docker compose -f docker-compose.prod.yml exec -T ircd ircdctl create-account ops strongpass ops@example.org
   docker compose -f docker-compose.prod.yml exec -T ircd ircdctl delete-account olduser
+  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl set-email ops new@example.org
+  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl add-certfp ops <sha256-fingerprint>
+  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl create-channel '#help' "Ask here"
+  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl set-channel-modes '#help' +nt
+  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl set-channel-modes '#help' +b '*!*@203.0.113.*'
+  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl delete-channel '#old' "Channel closed"
   docker compose -f docker-compose.prod.yml exec -T ircd ircdctl backup /var/lib/ircd/backup.bup
   docker compose -f docker-compose.prod.yml exec -T ircd ircdctl drain "Maintenance"
   ```

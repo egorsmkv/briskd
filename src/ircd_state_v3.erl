@@ -30,6 +30,7 @@
     source_info/1,
     starttls/2,
     remote_source_info/1,
+    valid_email/1,
     valid_utf8/1,
     verify/3,
     verify_account_web/2,
@@ -659,6 +660,12 @@ nick_held_by_other(Name, Pid) ->
 reg_fail(Pid, Code, Name, Text) ->
     ircd_state_send:fail(Pid, <<"REGISTER">>, Code, [Name], Text).
 
+-doc """
+Whether `Email` is an acceptable email address: at most 254 bytes of UTF-8,
+one `@`, a non-empty local part, and a dot in the domain. `*` (REGISTER's
+"no address") is accepted.
+""".
+-spec valid_email(binary()) -> boolean().
 valid_email(<<"*">>) ->
     true;
 valid_email(Email) ->

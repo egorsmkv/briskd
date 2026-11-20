@@ -49,6 +49,9 @@ channel. Empty non-predefined channels without remote members are bounded by
 `max_empty_channels` and expire after `empty_channel_ttl` seconds.
 """.
 -export([
+    admin_create/3,
+    admin_destroy/3,
+    admin_mode/4,
     deliver/5,
     deliver_body/6,
     index_safe_channels/0,
@@ -2497,6 +2500,199 @@ apply_mode(Mode, _, [], _) when Mode =:= $k; Mode =:= $l; Mode =:= $o; Mode =:= 
     {error, <<"461">>, [<<"MODE">>], <<"Not enough parameters">>, []};
 apply_mode(Mode, _, Args, _) ->
     {error, <<"472">>, [<<Mode>>], <<"Unknown mode character">>, Args}.
+
+-doc """
+Create the empty channel `Name` with `Topic` for the admin panel
+(`ircdctl create-channel`). `#`, `&`, and `+` channels only: a safe `!`
+channel needs a creator. Like a channel created by `JOIN` it has no modes
+(`+` channels get `+t`); empty, it is kept under `channels` retention until
+`empty_channel_ttl` passes, as any channel its last member left.
+""".
+-spec admin_create(binary(), binary(), binary()) ->
+    {ok, binary()} | {error, invalid_channel | channel_exists}.
+admin_create(Name, Topic, Server) ->
+    Key = ircd_wire:fold(Name),
+    case ircd_wire:channel(Name) andalso binary:first(Name) =/= $! of
+        false ->
+            {error, invalid_channel};
+        true ->
+            case mnesia:dirty_read(channel, Key) of
+                [_] ->
+                    {error, channel_exists};
+                [] ->
+                    Now = erlang:system_time(second),
+                    {TopicBy, TopicAt} =
+                        case Topic of
+                            <<>> -> {undefined, undefined};
+                            _ -> {Server, Now}
+                        end,
+                    mnesia:dirty_write(#channel{
+                        key = Key,
+                        name = ircd_wire:retain(Name),
+                        topic = ircd_wire:retain(Topic),
+                        flags =
+                            case binary:first(Name) of
+                                $+ -> #{$t => true};
+                                _ -> #{}
+                            end,
+                        created = Now,
+                        topic_by = TopicBy,
+                        topic_at = TopicAt
+                    }),
+                    note_channel_empty(Key),
+                    {ok, Name}
+            end
+    end.
+
+-doc """
+Remove the channel `Name` for the admin panel (`ircdctl delete-channel`):
+every local member is kicked by the server with `Reason`, peers are told of
+each kick, and the channel's row, history, and metadata are deleted. A
+channel from the configuration file's `channels` is refused, since startup
+and `REHASH` would create it again. Members on other servers stay in their
+servers' copy of the channel. Returns the number of members kicked.
+""".
+-spec admin_destroy(binary(), binary(), binary()) ->
+    {ok, binary(), non_neg_integer()} | {error, no_such_channel | predefined_channel}.
+admin_destroy(Name, Reason, Server) ->
+    Key = ircd_wire:fold(Name),
+    case mnesia:dirty_read(channel, Key) of
+        [] ->
+            {error, no_such_channel};
+        [#channel{name = Canonical, members = Members} = Channel] ->
+            case ircd_state:predefined_channel(Key) of
+                true ->
+                    {error, predefined_channel};
+                false ->
+                    Pids = maps:keys(Members),
+                    Kicked = [
+                        Client
+                     || Pid <- Pids, [#client{} = Client] <- [mnesia:dirty_read(client, Pid)]
+                    ],
+                    lists:foreach(
+                        fun(#client{nick = Nick} = Client) ->
+                            ircd_state_send:broadcast(
+                                Pids, Server, <<"KICK">>, [Canonical, Nick], Reason
+                            ),
+                            admin_propagate(
+                                Canonical,
+                                ircd_wire:line(Server, <<"KICK">>, [Canonical, Nick], Reason)
+                            ),
+                            mnesia:dirty_write(Client#client{
+                                channels = lists:delete(Key, Client#client.channels)
+                            })
+                        end,
+                        Kicked
+                    ),
+                    drop_channel_row(Channel),
+                    {ok, Canonical, length(Kicked)}
+            end
+    end.
+
+-doc """
+Apply the channel modes `ModeString` with `Args` to `Name` as the server,
+for the admin panel (`ircdctl set-channel-modes`): the same modes and checks
+as `MODE` from a channel operator (`apply_mode/4`), plus the server-only
+quiet mode `q`. The changes that applied are announced to members with the
+server as the source, recorded in history (not a key change), and sent to
+peers. Returns the channel's name, the applied mode string, its parameters
+with a channel key shown as `*`, and the reasons of modes that did not
+apply.
+""".
+-spec admin_mode(binary(), binary(), [binary()], binary()) ->
+    {ok, binary(), binary(), [binary()], [binary()]} | {error, no_such_channel}.
+admin_mode(Name, ModeString, Args, Server) ->
+    Key = ircd_wire:fold(Name),
+    case mnesia:dirty_read(channel, Key) of
+        [] ->
+            {error, no_such_channel};
+        [#channel{name = Canonical} = Channel] ->
+            {Final, Changes, Errors} = admin_modes(
+                binary_to_list(ModeString), add, Args, Channel, [], []
+            ),
+            case Final =/= Channel of
+                true -> mnesia:dirty_write(Final);
+                false -> ok
+            end,
+            {Applied, Params} = mode_line(Changes),
+            case Changes of
+                [] ->
+                    ok;
+                _ ->
+                    #channel{members = Members} = Final,
+                    {Tags, Meta} = ircd_state_history:event_tags(),
+                    ircd_state_send:broadcast(
+                        maps:keys(Members),
+                        Server,
+                        <<"MODE">>,
+                        [Canonical, Applied | Params],
+                        none,
+                        Tags
+                    ),
+                    case lists:keymember($k, 2, Changes) of
+                        true ->
+                            ok;
+                        false ->
+                            ircd_state_history:note_event(
+                                Key, <<"MODE">>, Server, [Applied | Params], none, Meta
+                            )
+                    end,
+                    admin_propagate(
+                        Canonical,
+                        ircd_wire:line(Server, <<"MODE">>, [Canonical, Applied | Params], none)
+                    )
+            end,
+            Shown = lists:append([
+                case M of
+                    $k -> [<<"*">> || _ <- P];
+                    _ -> P
+                end
+             || {_, M, P} <- Changes
+            ]),
+            {ok, Canonical, Applied, Shown, lists:reverse(Errors)}
+    end.
+
+admin_modes([], _Action, _Args, Channel, Changes, Errors) ->
+    {Channel, lists:reverse(Changes), Errors};
+admin_modes([$+ | Rest], _, Args, Channel, Changes, Errors) ->
+    admin_modes(Rest, add, Args, Channel, Changes, Errors);
+admin_modes([$- | Rest], _, Args, Channel, Changes, Errors) ->
+    admin_modes(Rest, remove, Args, Channel, Changes, Errors);
+admin_modes([Mode | Rest], Action, Args, Channel, Changes, Errors) ->
+    Sign =
+        case Action of
+            add -> $+;
+            remove -> $-
+        end,
+    case apply_mode(Mode, Action, Args, Channel) of
+        {ok, New, Tail, Params} when New =:= Channel, Params =:= [] ->
+            admin_modes(Rest, Action, Tail, Channel, Changes, Errors);
+        {ok, New, Tail, Params} ->
+            admin_modes(Rest, Action, Tail, New, [{Sign, Mode, Params} | Changes], Errors);
+        {remote, Updated, Tail, Params} ->
+            mnesia:dirty_write(Updated),
+            admin_modes(Rest, Action, Tail, Channel, [{Sign, Mode, Params} | Changes], Errors);
+        {error, _Code, _Params, Message, Tail} ->
+            Error = <<Sign, Mode, ": ", Message/binary>>,
+            admin_modes(Rest, Action, Tail, Channel, Changes, [Error | Errors])
+    end.
+
+%% An admin change reaches peers unless the channel is a local `&` channel
+%% (RFC 2811 2.2: local to the server).
+admin_propagate(<<$&, _/binary>>, _Line) -> ok;
+admin_propagate(_Name, Line) -> ircd_state_link:server_broadcast(Line).
+
+%% One mode string and its parameters for a list of {Sign, Mode, Params}.
+mode_line(Changes) ->
+    {Letters, _} = lists:foldl(
+        fun
+            ({Sign, Mode, _}, {Acc, Sign}) -> {[Mode | Acc], Sign};
+            ({Sign, Mode, _}, {Acc, _}) -> {[Mode, Sign | Acc], Sign}
+        end,
+        {[], none},
+        Changes
+    ),
+    {list_to_binary(lists:reverse(Letters)), lists:append([P || {_, _, P} <- Changes])}.
 
 -doc """
 Split a comma-separated parameter, dropping empty items.

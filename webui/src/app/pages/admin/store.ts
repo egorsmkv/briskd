@@ -112,7 +112,7 @@ export interface ModalOptions {
   label?: string;
   value?: string;
   placeholder?: string;
-  inputType?: "text" | "password";
+  inputType?: "text" | "password" | "email";
   confirmLabel?: string;
   danger?: boolean;
   allowEmpty?: boolean;

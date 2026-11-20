@@ -50,6 +50,12 @@ export interface ChannelEntry {
   modes?: string;
   predefined?: boolean;
   topic?: string;
+  /** Whether a channel key (+k) is set; the key itself is not sent. */
+  has_key?: boolean;
+  limit?: number | null;
+  bans?: string[];
+  exceptions?: string[];
+  invites?: string[];
 }
 
 export interface ConnectedLink {
@@ -71,6 +77,7 @@ export interface AccountEntry {
   verified?: boolean;
   email?: string | null;
   certfps?: number;
+  certfp_list?: string[];
 }
 
 export interface DroneblBan {

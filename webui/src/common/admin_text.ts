@@ -16,6 +16,12 @@ const TITLES: Record<string, string> = {
   "verify-account": "Account verification",
   "reset-password": "Password reset",
   "delete-account": "Account deletion",
+  "set-email": "Email change",
+  "add-certfp": "Certificate addition",
+  "remove-certfp": "Certificate removal",
+  "create-channel": "Channel creation",
+  "delete-channel": "Channel deletion",
+  "set-channel-modes": "Mode change",
   "dronebl-ban": "IP ban",
   "dronebl-unban": "Unban",
   "backup": "Backup",
@@ -115,6 +121,30 @@ export function successMessage(
       return `Password updated for ${target}`;
     case "delete-account":
       return `Account ${target} deleted`;
+    case "set-email":
+      return args[1]
+        ? `Email of ${target} updated`
+        : `Email of ${target} removed`;
+    case "add-certfp":
+      return `Certificate added to ${target}`;
+    case "remove-certfp":
+      return `Certificate removed from ${target}`;
+    case "create-channel":
+      return `Channel ${String(field(data, "channel") ?? target)} created`;
+    case "delete-channel": {
+      const n = Number(field(data, "kicked") ?? 0);
+      return `Channel ${target} deleted${
+        n ? ` (${n} member${n === 1 ? "" : "s"} removed)` : ""
+      }`;
+    }
+    case "set-channel-modes": {
+      const applied = String(field(data, "applied") ?? "");
+      const errors = field(data, "errors");
+      const skipped = Array.isArray(errors) ? errors.length : 0;
+      return `${target}: ${applied || "no change"}${
+        skipped ? ` (${skipped} not applied: ${String(errors)})` : ""
+      }`;
+    }
     case "dronebl-ban":
       return `Banned ${target}`;
     case "dronebl-unban":

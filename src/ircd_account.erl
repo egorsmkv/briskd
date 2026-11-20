@@ -21,6 +21,10 @@
     find/1,
     find_by_email/1,
     set_password/2,
+    set_email/2,
+    add_certfp/2,
+    remove_certfp/2,
+    normalize_certfp/1,
     scram_credentials/1,
     valid_name/1,
     verifier/2
@@ -58,6 +62,8 @@ secret comparisons use `crypto:hash_equals/2`.
 -define(MIN_PASSWORD, 8).
 -define(MAX_PASSWORD, 300).
 -define(DEFAULT_MAX_ACCOUNTS, 100000).
+%% Client certificate fingerprints one account may list (admin panel).
+-define(MAX_CERTFPS, 16).
 
 -doc """
 Maximum number of stored accounts: `max_accounts` from the configuration,
@@ -557,6 +563,109 @@ scram_credentials(Name) ->
             }};
         error ->
             error
+    end.
+
+-doc """
+Set or clear (`undefined`) the email address of the account `Name`, for the
+admin panel. The caller validates the address; an address another account
+already uses (compared trimmed and lower-cased) is refused, since
+verification by email (`find_by_email/1`) must name one account.
+""".
+-spec set_email(binary(), binary() | undefined) ->
+    {ok, #account{}} | {error, no_such_account | email_in_use}.
+set_email(Name, Email) ->
+    Key = ircd_wire:fold(Name),
+    case mnesia:dirty_read(account, Key) of
+        [] ->
+            {error, no_such_account};
+        [#account{} = Account] ->
+            InUse =
+                Email =/= undefined andalso
+                    lists:any(
+                        fun(#account{key = K, email = E}) ->
+                            K =/= Key andalso is_binary(E) andalso email_key(E) =:= email_key(Email)
+                        end,
+                        list_all()
+                    ),
+            case InUse of
+                true ->
+                    {error, email_in_use};
+                false ->
+                    Updated = Account#account{email = retain_email(Email)},
+                    mnesia:dirty_write(Updated),
+                    {ok, Updated}
+            end
+    end.
+
+retain_email(undefined) -> undefined;
+retain_email(Email) -> ircd_wire:retain(Email).
+
+-doc """
+A SHA-256 certificate fingerprint as stored: 64 lowercase hex digits. Accepts
+upper case and `:` separators (as `openssl x509 -fingerprint -sha256`
+prints it); anything else is `error`.
+""".
+-spec normalize_certfp(binary()) -> {ok, binary()} | error.
+normalize_certfp(Text) ->
+    Hex = string:lowercase(binary:replace(string:trim(Text), <<":">>, <<>>, [global])),
+    case
+        is_binary(Hex) andalso byte_size(Hex) =:= 64 andalso
+            lists:all(
+                fun(C) -> (C >= $0 andalso C =< $9) orelse (C >= $a andalso C =< $f) end,
+                binary_to_list(Hex)
+            )
+    of
+        true -> {ok, Hex};
+        false -> error
+    end.
+
+-doc """
+Add a client certificate fingerprint for SASL EXTERNAL to the account
+`Name` (admin panel). At most 16 per account; a fingerprint another usable
+account lists is refused, since EXTERNAL must find one account.
+""".
+-spec add_certfp(binary(), binary()) ->
+    {ok, #account{}}
+    | {error, no_such_account | invalid_certfp | certfp_in_use | too_many_certfps}.
+add_certfp(Name, Text) ->
+    case {mnesia:dirty_read(account, ircd_wire:fold(Name)), normalize_certfp(Text)} of
+        {[], _} ->
+            {error, no_such_account};
+        {_, error} ->
+            {error, invalid_certfp};
+        {[#account{key = Key, certfps = Fps} = Account], {ok, Fp}} ->
+            case {lists:member(Fp, Fps), by_certfp(Fp), length(Fps) >= ?MAX_CERTFPS} of
+                {true, _, _} ->
+                    {ok, Account};
+                {false, {ok, #account{key = Other}}, _} when Other =/= Key ->
+                    {error, certfp_in_use};
+                {false, _, true} ->
+                    {error, too_many_certfps};
+                {false, _, false} ->
+                    Updated = Account#account{certfps = Fps ++ [Fp]},
+                    mnesia:dirty_write(Updated),
+                    {ok, Updated}
+            end
+    end.
+
+-doc "Remove a client certificate fingerprint from the account `Name`.".
+-spec remove_certfp(binary(), binary()) ->
+    {ok, #account{}} | {error, no_such_account | no_such_certfp}.
+remove_certfp(Name, Text) ->
+    case {mnesia:dirty_read(account, ircd_wire:fold(Name)), normalize_certfp(Text)} of
+        {[], _} ->
+            {error, no_such_account};
+        {[#account{certfps = Fps} = Account], {ok, Fp}} ->
+            case lists:member(Fp, Fps) of
+                true ->
+                    Updated = Account#account{certfps = lists:delete(Fp, Fps)},
+                    mnesia:dirty_write(Updated),
+                    {ok, Updated};
+                false ->
+                    {error, no_such_certfp}
+            end;
+        {[_], error} ->
+            {error, no_such_certfp}
     end.
 
 -doc """
