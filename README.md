@@ -22,6 +22,9 @@ the [roadmap](ROADMAP.md), plus the IRCv3 specifications on
 - Server-to-server links, including bursts, multi-hop routing, invitations,
   and netsplit cleanup.
 - Mnesia disk-copy tables, with persistence for WHOWAS history and safe-channel state.
+- Optional AI assistant bots configured in the JSON file, answering in
+  channels and private messages through any OpenAI-compatible API
+  ([guide](docs/bots.md)).
 - JSON logging by default, with text logging available in configuration. At
   `debug` or `trace`, each client and peer command is logged with the nick,
   command, and target. Message text, passwords, and channel keys are omitted.

@@ -293,6 +293,22 @@ always-on bouncer details, and Sable's PostgreSQL history server.
 - [x] End-to-end tests with Python clients doing X3DH, the Double Ratchet, and
   Sender Keys against two linked servers (`test/e2ee/run`, in CI).
 
+## AI assistant bots (server-specific extension)
+
+- [x] `ai_providers` and `bots` configuration (`ircd_config`,
+  [guide](docs/bots.md)): OpenAI-compatible `chat/completions` endpoints with
+  `api_key` or `api_key_env`, per-bot model, system prompt (inline or file),
+  channels, and limits.
+- [x] Bots as socketless local clients (`ircd_bot`, `ircd_bots`): `+B` bot
+  mode, channel joins, answers to mentions and private messages, typing
+  indicators, conversation or channel context, per-target and per-minute
+  limits, reconnect after `KILL`, rejoin after `KICK`.
+- [x] Reply lines sized for the 512-octet limit without splitting UTF-8
+  (`ircd_bot_ai`); no answers to `NOTICE`, CTCP, or `bot`-tagged messages.
+- [ ] Apply `bots` changes on `REHASH` (today a restart is required).
+- [ ] Bots on remote servers do not exist; a bot answers only from the
+  server that configures it (remote users can still address it).
+
 ## Documentation and verification
 
 - [x] README documents run instructions and links the guides in `docs/`:

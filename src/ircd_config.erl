@@ -86,6 +86,8 @@ load(Path) ->
         ok = distinct_accounts(Operators, Administrators),
         Channels = channels(maps:get(<<"channels">>, Json, [])),
         ServerLinks = server_links(maps:get(<<"server_links">>, Json, []), Name),
+        Providers = ai_providers(maps:get(<<"ai_providers">>, Json, #{})),
+        Bots = bots(maps:get(<<"bots">>, Json, []), Providers, NickLen),
         Admin = admin_info(Json),
         Network = network_name(maps:get(<<"network">>, Json, Name)),
         ServerInfo = text_value(Json, <<"server_info">>, <<"Erlang/OTP IRC server">>),
@@ -163,6 +165,7 @@ load(Path) ->
             administrators => Administrators,
             channels => Channels,
             server_links => ServerLinks,
+            bots => Bots,
             admin => Admin
         }}
     catch
@@ -935,3 +938,214 @@ features(Map) when is_map(Map) ->
     };
 features(Value) ->
     erlang:error({invalid_features, Value}).
+
+%%% AI assistant bots (`ai_providers` and `bots`)
+
+-define(MAX_BOTS, 50).
+-define(MAX_BOT_CHANNELS, 50).
+-define(MAX_SYSTEM_PROMPT_BYTES, 16384).
+
+%% `ai_providers` maps a name to an OpenAI-compatible endpoint. Errors name
+%% the provider and field but never carry the API key.
+ai_providers(Map) when is_map(Map), map_size(Map) =< 20 ->
+    maps:fold(
+        fun(Name, Entry, Acc) ->
+            case re:run(Name, <<"^[A-Za-z0-9_-]{1,32}$">>, [{capture, none}]) of
+                match -> Acc#{Name => ai_provider(Name, Entry)};
+                nomatch -> erlang:error({invalid_ai_provider_name, Name})
+            end
+        end,
+        #{},
+        Map
+    );
+ai_providers(Value) ->
+    erlang:error({invalid_ai_providers, Value}).
+
+ai_provider(Name, Entry) when is_map(Entry) ->
+    BaseUrl = webui_url(base_url, maps:get(<<"base_url">>, Entry, undefined)),
+    Trimmed = string:trim(BaseUrl, trailing, "/"),
+    #{
+        name => Name,
+        base_url => iolist_to_binary(Trimmed),
+        api_key => provider_key(Name, Entry),
+        model => model_name(Name, maps:get(<<"model">>, Entry, undefined)),
+        timeout => bot_int(Name, timeout, maps:get(<<"timeout">>, Entry, 60), 1, 600) * 1000
+    };
+ai_provider(Name, _) ->
+    erlang:error({invalid_ai_provider, Name}).
+
+%% Either `api_key` or `api_key_env` (an environment variable read at load);
+%% neither means the endpoint needs no key (e.g. a local server).
+provider_key(Name, Entry) ->
+    case {maps:get(<<"api_key">>, Entry, null), maps:get(<<"api_key_env">>, Entry, null)} of
+        {null, null} ->
+            undefined;
+        {Key, null} when is_binary(Key), byte_size(Key) > 0, byte_size(Key) =< 512 ->
+            case binary:match(Key, [<<0>>, <<"\r">>, <<"\n">>, <<" ">>]) of
+                nomatch -> retain_secret(Key);
+                _ -> erlang:error({invalid_ai_provider, Name, api_key})
+            end;
+        {null, Var} when is_binary(Var) ->
+            case re:run(Var, <<"^[A-Za-z_][A-Za-z0-9_]{0,63}$">>, [{capture, none}]) of
+                match -> ok;
+                nomatch -> erlang:error({invalid_ai_provider, Name, api_key_env})
+            end,
+            case os:getenv(binary_to_list(Var)) of
+                Value when is_list(Value), Value =/= [], length(Value) =< 512 ->
+                    retain_secret(unicode:characters_to_binary(Value));
+                _ ->
+                    erlang:error({missing_api_key_env, Name, Var})
+            end;
+        _ ->
+            erlang:error({invalid_ai_provider, Name, api_key})
+    end.
+
+model_name(Owner, Model) when is_binary(Model), byte_size(Model) > 0, byte_size(Model) =< 200 ->
+    case re:run(Model, <<"^[A-Za-z0-9._:/@+-]+$">>, [{capture, none}]) of
+        match -> ircd_wire:retain(Model);
+        nomatch -> erlang:error({invalid_model, Owner, Model})
+    end;
+model_name(Owner, Model) ->
+    erlang:error({invalid_model, Owner, Model}).
+
+bots(Entries, Providers, NickLen) when is_list(Entries), length(Entries) =< ?MAX_BOTS ->
+    Bots = [bot(Entry, Providers, NickLen) || Entry <- Entries],
+    Folded = [ircd_wire:fold(maps:get(nick, B)) || B <- Bots],
+    case length(lists:usort(Folded)) =:= length(Folded) of
+        true -> Bots;
+        false -> erlang:error(duplicate_bot_nick)
+    end;
+bots(Value, _Providers, _NickLen) ->
+    erlang:error({invalid_bots, Value}).
+
+bot(Entry, Providers, NickLen) when is_map(Entry) ->
+    Nick = maps:get(<<"nick">>, Entry, undefined),
+    case is_binary(Nick) andalso ircd_wire:nickname(Nick, NickLen) of
+        true -> ok;
+        false -> erlang:error({invalid_bot_nick, Nick})
+    end,
+    ProviderName = maps:get(<<"provider">>, Entry, undefined),
+    Provider =
+        case maps:find(ProviderName, Providers) of
+            {ok, P} -> P;
+            error -> erlang:error({unknown_ai_provider, Nick, ProviderName})
+        end,
+    Model =
+        case maps:get(<<"model">>, Entry, null) of
+            null -> maps:get(model, Provider);
+            M -> model_name(Nick, M)
+        end,
+    #{
+        nick => ircd_wire:retain(Nick),
+        user => bot_user(Nick, maps:get(<<"user">>, Entry, <<"bot">>)),
+        realname => bot_text(Nick, realname, maps:get(<<"realname">>, Entry, <<"AI assistant">>)),
+        provider => Provider,
+        model => Model,
+        system_prompt => system_prompt(Nick, Entry),
+        channels => bot_channels(Nick, maps:get(<<"channels">>, Entry, [])),
+        respond_to => bot_choice(
+            Nick, respond_to, maps:get(<<"respond_to">>, Entry, <<"mention">>), [
+                mention, all
+            ]
+        ),
+        direct_messages => boolean_setting(
+            direct_messages, maps:get(<<"direct_messages">>, Entry, true)
+        ),
+        context => bot_choice(Nick, context, maps:get(<<"context">>, Entry, <<"conversation">>), [
+            conversation, channel
+        ]),
+        history_lines => bot_int(
+            Nick, history_lines, maps:get(<<"history_lines">>, Entry, 20), 0, 100
+        ),
+        max_tokens => bot_int(Nick, max_tokens, maps:get(<<"max_tokens">>, Entry, 512), 1, 32768),
+        temperature => bot_temperature(Nick, maps:get(<<"temperature">>, Entry, 0.7)),
+        max_reply_lines => bot_int(
+            Nick, max_reply_lines, maps:get(<<"max_reply_lines">>, Entry, 6), 1, 30
+        ),
+        requests_per_minute => bot_int(
+            Nick, requests_per_minute, maps:get(<<"requests_per_minute">>, Entry, 10), 1, 600
+        )
+    };
+bot(Entry, _Providers, _NickLen) ->
+    erlang:error({invalid_bot, Entry}).
+
+bot_user(_Nick, User) when is_binary(User) ->
+    case re:run(User, <<"^[A-Za-z0-9._-]{1,32}$">>, [{capture, none}]) of
+        match -> ircd_wire:retain(User);
+        nomatch -> erlang:error({invalid_bot_user, User})
+    end;
+bot_user(Nick, User) ->
+    erlang:error({invalid_bot, Nick, user, User}).
+
+bot_text(Nick, Key, Text) when is_binary(Text), byte_size(Text) > 0, byte_size(Text) =< 200 ->
+    case binary:match(Text, [<<0>>, <<"\r">>, <<"\n">>]) of
+        nomatch -> ircd_wire:retain(Text);
+        _ -> erlang:error({invalid_bot, Nick, Key})
+    end;
+bot_text(Nick, Key, _Text) ->
+    erlang:error({invalid_bot, Nick, Key}).
+
+%% `system_prompt` inline, or `system_prompt_file` read at load (relative
+%% paths resolve against the working directory); not both.
+system_prompt(Nick, Entry) ->
+    Prompt =
+        case
+            {
+                maps:get(<<"system_prompt">>, Entry, null),
+                maps:get(<<"system_prompt_file">>, Entry, null)
+            }
+        of
+            {null, null} ->
+                <<>>;
+            {Text, null} when is_binary(Text) ->
+                Text;
+            {null, Path} when is_binary(Path), byte_size(Path) > 0 ->
+                case file:read_file(Path) of
+                    {ok, Bytes} ->
+                        string:trim(Bytes);
+                    {error, Reason} ->
+                        erlang:error({invalid_system_prompt_file, Nick, Path, Reason})
+                end;
+            _ ->
+                erlang:error({invalid_bot, Nick, system_prompt})
+        end,
+    Bin = iolist_to_binary(Prompt),
+    case
+        byte_size(Bin) =< ?MAX_SYSTEM_PROMPT_BYTES andalso
+            is_binary(unicode:characters_to_binary(Bin))
+    of
+        true -> Bin;
+        false -> erlang:error({invalid_bot, Nick, system_prompt})
+    end.
+
+bot_channels(Nick, Channels) when is_list(Channels), length(Channels) =< ?MAX_BOT_CHANNELS ->
+    lists:map(
+        fun(Channel) ->
+            case is_binary(Channel) andalso ircd_wire:channel(Channel) of
+                true -> ircd_wire:retain(Channel);
+                false -> erlang:error({invalid_bot_channel, Nick, Channel})
+            end
+        end,
+        Channels
+    );
+bot_channels(Nick, Channels) ->
+    erlang:error({invalid_bot, Nick, channels, Channels}).
+
+bot_choice(Nick, Key, Value, Allowed) when is_binary(Value) ->
+    case [A || A <- Allowed, atom_to_binary(A) =:= Value] of
+        [Choice] -> Choice;
+        [] -> erlang:error({invalid_bot, Nick, Key, Value})
+    end;
+bot_choice(Nick, Key, Value, _Allowed) ->
+    erlang:error({invalid_bot, Nick, Key, Value}).
+
+%% Bounds are inclusive.
+bot_int(_Owner, _Key, Value, Min, Max) when is_integer(Value, Min, Max) ->
+    Value;
+bot_int(Owner, Key, Value, _Min, _Max) ->
+    erlang:error({invalid_bot, Owner, Key, Value}).
+
+bot_temperature(_Nick, Value) when is_number(Value), Value >= 0, Value =< 2 ->
+    float(Value);
+bot_temperature(Nick, Value) ->
+    erlang:error({invalid_bot, Nick, temperature, Value}).

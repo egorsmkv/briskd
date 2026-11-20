@@ -13,6 +13,10 @@ restart intensity (one restart in five seconds):
 5. `m:ircd_certs`, the TLS certificate watcher, when a `tls` or `wss`
    listener is configured and `tls_reload_interval` is not 0. It restarts the
    `tls` and `wss` listeners after a certificate renewal.
+6. `m:ircd_dronebl`, `m:ircd_ctl`, and `m:ircd_webui` (when `webui` is set).
+7. `m:ircd_bots`, the AI assistant bot supervisor, when `bots` is not empty.
+   It is `transient`: if it exhausts its own restart intensity it stays down
+   instead of restarting the rest of the tree.
 
 With `rest_for_one`, a restart of the state process also restarts every
 session, link, and listener started after it, so no connection outlives the
@@ -63,4 +67,15 @@ init(Config) ->
                 #{id => ircd_webui, start => {ircd_webui, start_link, [Config]}}
              || maps:get(webui, Config, null) =/= null
             ],
-    {ok, {#{strategy => rest_for_one}, Children ++ Listeners ++ Certs ++ Ctl}}.
+    %% Bots last and transient: if the bot supervisor gives up, nothing else
+    %% restarts and it stays down; a state restart still restarts it.
+    Bots = [
+        #{
+            id => ircd_bots,
+            start => {ircd_bots, start_link, [Config]},
+            type => supervisor,
+            restart => transient
+        }
+     || maps:get(bots, Config, []) =/= []
+    ],
+    {ok, {#{strategy => rest_for_one}, Children ++ Listeners ++ Certs ++ Ctl ++ Bots}}.

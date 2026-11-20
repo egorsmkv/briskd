@@ -107,6 +107,9 @@ src/ircd_flood.erl           # client command/message flood and REGISTER rate li
 src/ircd_shutdown.erl        # graceful listener, peer, and client drain on stop
 src/ircd_link.erl            # one direct server peer
 src/ircd_links.erl           # link supervisor
+src/ircd_bots.erl            # AI assistant bot supervisor (transient, started last)
+src/ircd_bot.erl             # one configured AI assistant bot (socketless local client)
+src/ircd_bot_ai.erl          # bot addressing, chat/completions request/reply, line splitting (pure + HTTP)
 src/ircd_log.erl
 include/ircd_state.hrl       # includes the records below
 include/ircd_client.hrl
