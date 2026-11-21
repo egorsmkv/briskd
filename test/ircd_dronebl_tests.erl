@@ -122,16 +122,25 @@ live_lookup_and_ban() ->
         ok = ircd_dronebl:unban(<<"127.0.0.1">>),
         ?assertEqual([], ircd_dronebl:list_bans()),
         ok = ircd_dronebl:set_resolver(fun("1.0.0.127.dnsbl.dronebl.org", _Timeout) ->
+            %% A slow resolver: registration always finishes first, as it
+            %% did on a busy CI runner.
+            timer:sleep(200),
             atomics:add(Counter, 1, 1),
             {ok, []}
         end),
+        %% The lookup is asynchronous: the client may register (001) before
+        %% the worker has asked the resolver, so wait for it.
         Sock3 = register_client(Port, <<"alice">>),
-        ?assertEqual(2, atomics:get(Counter, 1)),
+        ok = wait_until(fun() -> atomics:get(Counter, 1) =:= 2 end),
+        %% ...and for its clean result to be cached.
+        ok = wait_until(fun() -> maps:get(cached_clean, ircd_dronebl:stats(), 0) >= 1 end),
         ok = gen_tcp:close(Sock3),
 
-        %% Subsequent connection hits clean cache (query count remains 2).
+        %% Subsequent connection hits the clean cache synchronously: no lookup
+        %% is started, so the count stays 2.
         Sock4 = register_client(Port, <<"bob">>),
         ?assertEqual(2, atomics:get(Counter, 1)),
+        ?assertMatch(#{in_flight := 0}, ircd_dronebl:stats()),
         ok = gen_tcp:close(Sock4),
 
         %% Resolver timeout fails open so legitimate users can still connect.
@@ -141,7 +150,7 @@ live_lookup_and_ban() ->
             {error, timeout}
         end),
         Sock5 = register_client(Port, <<"carol">>),
-        ?assertEqual(3, atomics:get(Counter, 1)),
+        ok = wait_until(fun() -> atomics:get(Counter, 1) =:= 3 end),
         ok = gen_tcp:close(Sock5)
     after
         _ = application:stop(ircd),
@@ -193,3 +202,17 @@ listener_port() ->
     {_, Pid, _, _} = lists:keyfind(tcp, 1, supervisor:which_children(ircd_sup)),
     {ok, {_, Port}} = inet:sockname(sys:get_state(Pid)),
     Port.
+
+%% Poll `Fun` every 20 ms, for up to 5 seconds.
+wait_until(Fun) -> wait_until(Fun, 250).
+
+wait_until(_Fun, 0) ->
+    erlang:error(timeout);
+wait_until(Fun, N) ->
+    case Fun() of
+        true ->
+            ok;
+        false ->
+            timer:sleep(20),
+            wait_until(Fun, N - 1)
+    end.
