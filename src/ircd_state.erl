@@ -402,6 +402,7 @@ init(#{name := Name} = Config) ->
     table(client, record_info(fields, client), [{index, [nick]}]),
     table(channel, record_info(fields, channel), []),
     table(channel_history, record_info(fields, channel_history), []),
+    table(channel_message, record_info(fields, channel_message), [{type, ordered_set}]),
     table(channel_meta, record_info(fields, channel_meta), []),
     table(activity, record_info(fields, activity), []),
     table(whowas, record_info(fields, whowas), []),
@@ -430,6 +431,7 @@ init(#{name := Name} = Config) ->
             client,
             channel,
             channel_history,
+            channel_message,
             channel_meta,
             activity,
             whowas,
@@ -625,14 +627,15 @@ reset_channels() ->
                 end,
                 table_keys(channel)
             ),
+            ok = ircd_state_history:init_channel_storage(),
             lists:foreach(
                 fun(Key) ->
                     case mnesia:dirty_read(channel, Key) of
-                        [] -> mnesia:dirty_delete(channel_history, Key);
+                        [] -> ircd_state_history:delete_channel_history(Key);
                         [_] -> ok
                     end
                 end,
-                table_keys(channel_history)
+                ircd_state_history:history_channels()
             ),
             ok;
         transient ->
@@ -650,6 +653,8 @@ reset_channels() ->
                 table_keys(channel)
             ),
             {atomic, ok} = mnesia:clear_table(channel_history),
+            {atomic, ok} = mnesia:clear_table(channel_message),
+            ok = ircd_state_history:init_channel_storage(),
             {atomic, ok} = mnesia:clear_table(direct_history),
             ok
     end,

@@ -125,19 +125,26 @@ reaction_persistence_test() ->
         false ->
             ok
     end,
-    case
-        mnesia:create_table(channel_history, [
-            {attributes, [channel, entries]}, {record_name, channel_history}
-        ])
-    of
-        {atomic, ok} -> ok;
-        {aborted, {already_exists, channel_history}} -> ok
-    end,
-    ok = mnesia:wait_for_tables([channel_history], 5000),
+    lists:foreach(
+        fun({Table, Opts}) ->
+            case mnesia:create_table(Table, Opts) of
+                {atomic, ok} -> ok;
+                {aborted, {already_exists, Table}} -> ok
+            end
+        end,
+        [
+            {channel_history, [{attributes, [channel, entries]}, {record_name, channel_history}]},
+            {channel_message, [
+                {attributes, [key, entry]}, {record_name, channel_message}, {type, ordered_set}
+            ]}
+        ]
+    ),
+    ok = mnesia:wait_for_tables([channel_history, channel_message], 5000),
+    ok = ircd_state_history:init_channel_storage(),
     try
         persistent_term:put({ircd_state, config}, #{chathistory => true, history_limit => 50}),
         Key = <<"#react_persist_test">>,
-        mnesia:dirty_delete(channel_history, Key),
+        ok = ircd_state_history:delete_channel_history(Key),
         Msg = ircd_state_history:entry(
             <<"PRIVMSG">>, <<"alice!a@h">>, <<"hi">>, <<"m1">>, 1000, [], <<"alice">>
         ),
@@ -162,11 +169,11 @@ reaction_persistence_test() ->
         ok = ircd_state_history:note_channel(Key, Msg),
         ok = ircd_state_history:note_channel(Key, React),
         ok = ircd_state_history:note_channel(Key, Typing),
-        [#channel_history{entries = Entries}] = mnesia:dirty_read(channel_history, Key),
+        Entries = ircd_state_history:channel_history(Key),
         %% Typing TAGMSG must NOT be persisted; PRIVMSG + reaction TAGMSG MUST be persisted.
         ?assertEqual(2, length(Entries)),
         ?assertEqual([<<"m2">>, <<"m1">>], [maps:get(msgid, E) || #{} = E <- Entries]),
-        mnesia:dirty_delete(channel_history, Key)
+        ok = ircd_state_history:delete_channel_history(Key)
     after
         case Old of
             undefined -> persistent_term:erase({ircd_state, config});
@@ -175,6 +182,7 @@ reaction_persistence_test() ->
         case Started of
             true ->
                 _ = mnesia:delete_table(channel_history),
+                _ = mnesia:delete_table(channel_message),
                 stopped = mnesia:stop(),
                 _ = application:unset_env(mnesia, dir),
                 _ = file:del_dir_r(Dir);

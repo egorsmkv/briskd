@@ -120,8 +120,7 @@ drop_channel_row(#channel{key = Key, name = Name}) ->
     clear_channel_empty(Key),
     ircd_state_meta:drop_channel(Key),
     mnesia:dirty_delete(channel, Key),
-    mnesia:dirty_delete(channel_history, Key),
-    ok.
+    ircd_state_history:delete_channel_history(Key).
 
 note_channel_empty(Key) ->
     case ets:whereis(ircd_empty_channels) of
@@ -246,7 +245,7 @@ has_retained_state(#channel{
 }) ->
     Topic =/= <<>> orelse map_size(Flags) > 0 orelse map_size(Lists) > 0 orelse
         Password =/= undefined orelse Limit =/= undefined orelse
-        mnesia:dirty_read(channel_history, Key) =/= [] orelse
+        ircd_state_history:has_channel_history(Key) orelse
         mnesia:dirty_read(channel_meta, Key) =/= [].
 
 channel_age_key(Created) when is_integer(Created) -> Created;

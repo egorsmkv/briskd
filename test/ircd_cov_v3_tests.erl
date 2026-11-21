@@ -688,9 +688,9 @@ history(Port) ->
     _ = M3,
     %% Legacy tuple entries replay without msgid and time.
     _ = cmd(H1, <<"JOIN #legacy">>),
-    ok = mnesia:dirty_write(#channel_history{
-        channel = <<"#legacy">>, entries = [{<<"PRIVMSG">>, <<"old!u@h">>, <<"old text">>}]
-    }),
+    ok = ircd_state_history:replace_channel(
+        <<"#legacy">>, [{<<"PRIVMSG">>, <<"old!u@h">>, <<"old text">>}]
+    ),
     _ = cmd(H2, <<"JOIN #legacy">>),
     Legacy = cmd(H1, <<"CHATHISTORY LATEST #legacy * 10">>),
     ?assert(has(Legacy, <<":old!u@h PRIVMSG #legacy :old text">>)),

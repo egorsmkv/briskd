@@ -660,14 +660,11 @@ live_webui() ->
         Me = {account, <<"eraseme">>},
         Keeper = {account, <<"keeper">>},
         Guest = {nick, <<"guest">>},
-        ok = mnesia:dirty_write(#channel_history{
-            channel = <<"#erase">>,
-            entries = [
-                Entry(<<"EraseMe">>, <<"mine">>),
-                Entry(<<"keeper">>, <<"theirs">>),
-                {<<"PRIVMSG">>, <<"old!x@x">>, <<"legacy">>}
-            ]
-        }),
+        ok = ircd_state_history:replace_channel(<<"#erase">>, [
+            Entry(<<"EraseMe">>, <<"mine">>),
+            Entry(<<"keeper">>, <<"theirs">>),
+            {<<"PRIVMSG">>, <<"old!x@x">>, <<"legacy">>}
+        ]),
         %% Keys are the sorted pair ({account, _} sorts before {nick, _}).
         WithKeeper = {Me, Keeper},
         WithGuest = {Me, Guest},
@@ -702,9 +699,9 @@ live_webui() ->
             json:decode(ErasedBody)
         ),
         ?assertEqual(error, ircd_account:find(<<"eraseme">>)),
-        [#channel_history{entries = ChanLeft}] = mnesia:dirty_read(channel_history, <<"#erase">>),
+        ChanLeft = ircd_state_history:channel_history(<<"#erase">>),
         ?assertMatch(
-            [#{text := <<"theirs">>}, {<<"PRIVMSG">>, _, <<"legacy">>}], ChanLeft
+            [#{text := <<"theirs">>}, #{text := <<"legacy">>, account := undefined}], ChanLeft
         ),
         ?assertMatch(
             [#direct_history{entries = [#{text := <<"hello">>}]}],

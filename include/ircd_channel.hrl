@@ -32,5 +32,16 @@
 %% for accepted channel PRIVMSG and NOTICE. The list is capped by history_limit.
 %% Entries are maps; rows written by older releases may still hold tuples.
 -record(channel_history, {channel :: binary(), entries = [] :: [map() | tuple()]}).
+%% Channel history, one row per entry (ordered_set, ircd_state_history). The
+%% key is {FoldedChannel, Class, Seq}: Class is `msg` (PRIVMSG, NOTICE,
+%% TAGMSG) or `event` (JOIN, MODE, ...), each kept to `history_limit` newest;
+%% Seq orders a channel's entries across both classes. Appending writes one
+%% small row, where the older `channel_history` row (one list per channel,
+%% now only read to migrate it) was rewritten whole for every message.
+-type history_class() :: msg | event.
+-record(channel_message, {
+    key :: {binary(), history_class(), pos_integer()},
+    entry :: map() | tuple()
+}).
 %% Durable channel metadata (draft/metadata-2), kept alongside the channel row.
 -record(channel_meta, {channel :: binary(), entries = #{} :: map()}).

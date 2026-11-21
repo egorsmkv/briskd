@@ -20,6 +20,8 @@ and a 5-second send timeout.
 -behaviour(gen_server).
 %% Per-socket driver read buffer, bytes (see the listen options).
 -define(RECV_BUFFER, 2048).
+%% Pending connections queued by the kernel (see the listen options).
+-define(LISTEN_BACKLOG, 1024).
 -export([start_link/3, port/1, init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -doc """
@@ -76,6 +78,14 @@ init({Kind, Port, #{ip := IP, tls_options := TLSOptions}}) ->
         %% 512 bytes plus an optional tag section, and longer input is read
         %% in several pieces and joined by the session's line buffer.
         {buffer, ?RECV_BUFFER},
+        %% Connections the kernel queues before accept/1 takes them. The
+        %% gen_tcp default is 5: with hundreds of clients connecting at once
+        %% the queue overflowed, the kernel dropped the attempts, and the
+        %% clients' retries (1 s, 3 s, 7 s, ...) made registration take tens of
+        %% seconds or fail (bench/traffic.py high-load phase,
+        %% bench/results/2026-11-21-prod.md). The kernel caps it at
+        %% net.core.somaxconn.
+        {backlog, ?LISTEN_BACKLOG},
         {send_timeout, 5000}
     ],
     case listen(Kind, Port, Options, TLSOptions) of

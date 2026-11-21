@@ -237,12 +237,11 @@ link_rules() ->
     end.
 
 history_ids(Key) ->
-    case mnesia:dirty_read(channel_history, Key) of
-        [#channel_history{entries = Entries}] ->
-            [Id || #{msgid := Id} <- Entries, lists:member(Id, [<<"m1">>, <<"m2">>])];
-        [] ->
-            []
-    end.
+    [
+        Id
+     || #{msgid := Id} <- ircd_state_history:channel_history(Key),
+        lists:member(Id, [<<"m1">>, <<"m2">>])
+    ].
 
 peer_batches(Peer) ->
     {dictionary, Dict} = process_info(state_pid(), dictionary),
