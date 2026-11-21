@@ -7,8 +7,11 @@ structured logging and alerting, capacity tuning, and graceful shutdown.
 ## 1. Runtime architecture and release layout
 
 `Dockerfile.prod` builds a self-contained OTP 29 release (`rebar3 as prod
-release`, or `just release`) with the Erlang Run-Time System (ERTS) bundled and
-runs it on `debian:trixie-slim` as an unprivileged user:
+release`, or `just release`) with the Erlang Run-Time System (ERTS) bundled on
+`erlang:29.1.2-alpine` and runs it on `alpine:3.24.4` (the same Alpine
+release, so the bundled ERTS finds the musl, OpenSSL, and ncurses it was built
+against; about 40 MB) as an unprivileged user. When upgrading OTP, move the
+runtime base to the Alpine release of the new `erlang:*-alpine` image:
 
 | Item | Production value | Notes |
 | --- | --- | --- |

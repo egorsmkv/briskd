@@ -3,7 +3,10 @@
 ## Docker development environment
 
 Docker Compose provides OTP 29, Rebar3, and `just`, and mounts the checkout at
-`/workspace`. The container reads its environment from `.dev.env`, which is
+`/workspace`. The development image is Debian-based (`erlang:29.1.2`) because
+Deno and ELP publish glibc Linux builds only; the production, search, and
+browser-test images are Alpine 3.24. The rtpengine image stays on Debian:
+Alpine's rtpengine package fails the DTLS handshake with Chromium. The container reads its environment from `.dev.env`, which is
 not committed; create it once from the example:
 
 ```sh

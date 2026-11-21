@@ -1,19 +1,18 @@
 # Production image: build the web UI assets and the release (ERTS included),
-# and run it on a slim Debian base that matches erlang:29.1.2 (Debian 13
-# "trixie").
+# and run it on Alpine 3.24, the base of erlang:29.1.2-alpine, so the bundled
+# ERTS finds the same musl, OpenSSL, and ncurses it was built against.
 
 # Web UI: TypeScript/TSX bundle and stylesheets into priv/webui/assets. They
 # are generated here and never committed.
-FROM denoland/deno:2.9.8 AS webui
+FROM denoland/deno:alpine-2.9.8 AS webui
 WORKDIR /src/webui
 COPY webui ./
 RUN deno task build
 
-FROM erlang:29.1.2 AS build
+FROM erlang:29.1.2-alpine AS build
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends cmake \
-    && rm -rf /var/lib/apt/lists/*
+# cmake and a C/C++ toolchain build dependency NIFs; curl fetches rebar3.
+RUN apk add --no-cache build-base cmake curl git
 
 ARG REBAR3_VERSION=3.28.0
 RUN curl -fsSL \
@@ -33,21 +32,19 @@ COPY bin bin
 COPY bench/release.json bench/release.json
 RUN rebar3 as prod release
 
-FROM debian:trixie-slim
+FROM alpine:3.24.4
 
 # The ircd user has a fixed UID/GID (10001) so files written for it by other
 # containers (TLS keys from lego, see docker-compose.lego.yml) can be owned by it.
 # Runtime libraries the bundled ERTS and the crypto/ssl NIFs link against.
-# libsctp1: without it every emulator prints an ESOCK warning on stdout,
-# which the release script reads as the node's host name, so `ircd ping`,
-# `eval`, and `remote_console` all report "Node is not running!".
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        bash ca-certificates libsctp1 libssl3t64 libstdc++6 libtinfo6 libzstd1 zlib1g \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system --gid 10001 ircd \
-    && useradd --system --uid 10001 --gid ircd --home-dir /var/lib/ircd \
-        --shell /usr/sbin/nologin ircd \
+# lksctp-tools: without libsctp every emulator prints an ESOCK warning on
+# stdout, which the release script reads as the node's host name, so
+# `ircd ping`, `eval`, and `remote_console` all report "Node is not running!".
+# bash runs the release's start scripts.
+RUN apk add --no-cache \
+        bash ca-certificates libstdc++ lksctp-tools ncurses-libs openssl zlib zstd-libs \
+    && addgroup -S -g 10001 ircd \
+    && adduser -S -D -H -u 10001 -G ircd -h /var/lib/ircd -s /sbin/nologin ircd \
     && mkdir -p /var/lib/ircd/mnesia /etc/ircd \
     && chown -R ircd:ircd /var/lib/ircd
 
