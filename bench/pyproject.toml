@@ -7,6 +7,9 @@ requires-python = ">=3.12"
 dependencies = [
     # Synthetic names and sentences for faker_load.py (FAKER.md).
     "Faker==40.54.0",
+    # Rust asyncio event loop (io_uring on Linux 6.1+) for traffic.py's
+    # high-load runs: thousands of sockets and millions of lines.
+    "rsloop==0.1.68",
 ]
 
 [tool.uv]

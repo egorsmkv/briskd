@@ -38,8 +38,24 @@ its family is reported with the error and the rest as skipped.
 
 1. Sequential `PING`/`PONG` latency and pipelined `PING` throughput.
 2. A registration burst (`NICK`/`USER` to `001`) at the given concurrency.
-3. Channel `PRIVMSG` fan-out between `--members` clients.
-4. The command matrix (`bench/commands.py`): every client command family is
+3. Channel `PRIVMSG` fan-out between `--fanout-members` clients.
+4. High load: `--clients` (default 10,000) clients connect and register
+   (`--load-concurrency` at once, each with `--connect-timeout`), join
+   channels of `--members` (default 50), and stay connected while they send
+   `--messages` (default 100,000) channel messages in total, spread evenly
+   (10 each by default): as one burst per client, or paced at `--rate`
+   messages per second in total. With the defaults that is 4.9 million
+   deliveries. Every client counts the channel messages it receives (and
+   answers server `PING`s); one message in `--sample-every` (100) carries its
+   send time for latency. The report gives connect rate and welcome latency,
+   clients refused (the server's `max_clients` refuses by closing) or failed,
+   deliveries against the expected count (sender excluded), delivery
+   throughput, latency p50/p95/p99/p99.9, disconnects, error numerics, and
+   the load generator's own CPU use. The phase ends when every delivery has
+   arrived or none has for `--load-timeout` seconds. Channel names are unique
+   per run, because the server replays retained history on `JOIN` to clients
+   without `draft/chathistory`. `--clients 0` skips the phase.
+5. The command matrix (`bench/commands.py`): every client command family is
    sent `--commands` times by one client, each followed by `PING <marker>`.
    The latency is the time until that `PONG`, so it covers the server fully
    processing the command and sending all replies, including commands that
@@ -68,11 +84,29 @@ The report ends with the server's own view of the run:
 ## Flags
 
 `--host`, `--port`, `--pings`, `--flood`, `--registrations`, `--concurrency`,
-`--members`, `--each`, `--commands` (iterations per family, 0 skips the
-matrix), `--oper NAME:PASSWORD`, `--timeout`, `--output`, `--json`,
+`--fanout-members`, `--each`, `--clients`, `--messages`, `--members`,
+`--rate`, `--load-concurrency`, `--connect-timeout`, `--load-timeout`,
+`--sample-every`, `--loop rsloop|asyncio`, `--commands` (iterations per
+family, 0 skips the matrix), `--oper NAME:PASSWORD`, `--timeout`, `--output`,
+`--json`,
 `--container`, `--kind development|release|production`, `--warmup`,
 `--pace` (lines per second for the command matrix client; 0, the default,
 does not pace).
+
+## Event loop and limits
+
+`traffic.py` runs on [rsloop](https://github.com/RustedBytes/rsloop), a Rust
+asyncio event loop (io_uring on Linux 6.1+, pinned in `pyproject.toml`);
+`--loop asyncio` uses the standard loop instead, for comparison. One Python
+process drives every client, so the report states the generator's CPU use
+during the high-load phase: near 100% of a core means the generator, not the
+server, set the pace. The script raises its open-file limit to `--clients`
+plus 4096 (up to the hard limit). The server must allow the clients:
+`max_clients` is 10,000 in the shipped configurations, so `bench/prod` runs
+the production configuration with only `max_clients` raised
+(`PROD_BENCH_MAX_CLIENTS`, default 12,000). The development server (debug
+logging of every command, bots) registers clients far more slowly than the
+production image; use `bench/prod` for high-load numbers.
 
 ## Notes
 
