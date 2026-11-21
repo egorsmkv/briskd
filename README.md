@@ -8,6 +8,21 @@ This is an implementation of the RFC 1459 and RFC 2810–2813 behavior listed in
 the [roadmap](ROADMAP.md), plus the IRCv3 specifications on
 <https://ircv3.net/irc/>.
 
+## WebIRC
+
+The development container serves the browser client at
+<http://127.0.0.1:8081/>. These are that client on DevNet, in the light and
+dark themes. How to use it is in [WebIRC](docs/webirc.md).
+
+| View | Light | Dark |
+| --- | --- | --- |
+| Connect | ![Connect form in the light theme](docs/screenshots/connect-light.png) | ![Connect form in the dark theme](docs/screenshots/connect-dark.png) |
+| Sign up | ![Account signup in the light theme](docs/screenshots/signup-light.png) | ![Account signup in the dark theme](docs/screenshots/signup-dark.png) |
+| Channel | ![Channel conversation in the light theme](docs/screenshots/channel-light.png) | ![Channel conversation in the dark theme](docs/screenshots/channel-dark.png) |
+| Members | ![Channel member list in the light theme](docs/screenshots/members-light.png) | ![Channel member list in the dark theme](docs/screenshots/members-dark.png) |
+| Settings | ![Workspace settings in the light theme](docs/screenshots/settings-light.png) | ![Workspace settings in the dark theme](docs/screenshots/settings-dark.png) |
+| Admin | ![Admin overview in the light theme](docs/screenshots/admin-light.png) | ![Admin overview in the dark theme](docs/screenshots/admin-dark.png) |
+
 ## Features
 
 - Supervised TCP, TLS, and WebSocket listeners, client sessions, and server
