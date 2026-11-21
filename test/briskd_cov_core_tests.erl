@@ -1,6 +1,7 @@
 -module(briskd_cov_core_tests).
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("briskd/include/briskd_state.hrl").
+-include_lib("briskd/include/briskd_wire.hrl").
 
 %% Pure coverage for configuration validation (briskd_config), the wire codec
 %% (briskd_wire, RFC 1459 / RFC 2812 2.3 line grammar and IRCv3 message-tags),
@@ -471,10 +472,10 @@ line_length_test() ->
 
 tags_test() ->
     Tag = fun(N) -> <<"@k=", (binary:copy(<<"v">>, N))/binary>> end,
-    %% Tag data (without '@') of exactly 4094 bytes is allowed.
-    Max = <<(Tag(4094 - 2))/binary, " PING x\r\n">>,
+    %% Tag data (without '@') of exactly ?MAX_TAG_DATA bytes is allowed.
+    Max = <<(Tag(?MAX_TAG_DATA - 2))/binary, " PING x\r\n">>,
     ?assertMatch({ok, [{<<"k">>, _}], <<"PING">>, [<<"x">>]}, briskd_wire:parse_client(Max)),
-    Over = <<(Tag(4095 - 2))/binary, " PING x\r\n">>,
+    Over = <<(Tag(?MAX_TAG_DATA - 1))/binary, " PING x\r\n">>,
     ?assertMatch({error, input_too_long, [{<<"k">>, _}]}, briskd_wire:parse_client(Over)),
     ?assertEqual(error, briskd_wire:parse_server(Over)),
     %% Tags alone without a command: oversize is 417, short is malformed.
@@ -548,9 +549,11 @@ partial_and_pending_test() ->
     ?assertEqual(ok, briskd_wire:partial(<<"PING\r">>)),
     ?assertEqual(error, briskd_wire:partial(<<"PI\rNG">>)),
     ?assertEqual(error, briskd_wire:partial(<<"PING\n">>)),
-    ?assertEqual(error, briskd_wire:partial(binary:copy(<<"a">>, 8703))),
+    ?assertEqual(error, briskd_wire:partial(binary:copy(<<"a">>, ?MAX_WIRE_LINE))),
     ?assertEqual({ok, <<"ab">>}, briskd_wire:append_pending(<<"a">>, <<"b">>)),
-    ?assertEqual(error, briskd_wire:append_pending(binary:copy(<<"a">>, 1048576), <<"b">>)).
+    ?assertEqual(
+        error, briskd_wire:append_pending(binary:copy(<<"a">>, ?MAX_PENDING_BYTES), <<"b">>)
+    ).
 
 encode_test() ->
     ?assertEqual(

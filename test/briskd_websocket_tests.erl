@@ -1,5 +1,6 @@
 -module(briskd_websocket_tests).
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("briskd/include/briskd_wire.hrl").
 
 %% RFC 6455 handshake and framing used by the IRCv3 WebSocket transport.
 
@@ -66,29 +67,31 @@ decode_and_fragmentation_test() ->
     Two = <<(masked(1, 1, <<"PING a">>))/binary, (masked(2, 1, <<"PING b">>))/binary>>,
     ?assertEqual(
         {ok, [{text, <<"PING a">>}, {binary, <<"PING b">>}], <<>>},
-        briskd_websocket:decode(Two, 8703)
+        briskd_websocket:decode(Two, ?MAX_WIRE_LINE)
     ),
     First = masked(1, 0, <<"PRIV">>),
     Last = masked(0, 1, <<"MSG x :y">>),
     %% The unfinished message is kept as one frame and completes on a later read.
-    {ok, [], Kept} = briskd_websocket:decode(First, 8703),
+    {ok, [], Kept} = briskd_websocket:decode(First, ?MAX_WIRE_LINE),
     ?assertEqual(
         {ok, [{text, <<"PRIVMSG x :y">>}], <<>>},
-        briskd_websocket:decode(<<Kept/binary, Last/binary>>, 8703)
+        briskd_websocket:decode(<<Kept/binary, Last/binary>>, ?MAX_WIRE_LINE)
     ),
     ?assertEqual(
         {ok, [{text, <<"PRIVMSG x :y">>}], <<>>},
-        briskd_websocket:decode(<<First/binary, Last/binary>>, 8703)
+        briskd_websocket:decode(<<First/binary, Last/binary>>, ?MAX_WIRE_LINE)
     ),
     Partial = binary:part(Last, 0, 3),
-    {ok, [], Kept2} = briskd_websocket:decode(<<First/binary, Partial/binary>>, 8703),
+    {ok, [], Kept2} = briskd_websocket:decode(<<First/binary, Partial/binary>>, ?MAX_WIRE_LINE),
     ?assertEqual(
         {ok, [{text, <<"PRIVMSG x :y">>}], <<>>},
         briskd_websocket:decode(
-            <<Kept2/binary, (binary:part(Last, 3, byte_size(Last) - 3))/binary>>, 8703
+            <<Kept2/binary, (binary:part(Last, 3, byte_size(Last) - 3))/binary>>, ?MAX_WIRE_LINE
         )
     ),
-    ?assertEqual({error, unmasked_frame}, briskd_websocket:decode(<<16#81, 1, $a>>, 8703)),
+    ?assertEqual(
+        {error, unmasked_frame}, briskd_websocket:decode(<<16#81, 1, $a>>, ?MAX_WIRE_LINE)
+    ),
     ?assertEqual({error, too_large}, briskd_websocket:decode(masked(2, 1, <<"abcdef">>), 4)).
 
 encode_and_utf8_test() ->

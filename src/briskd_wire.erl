@@ -56,10 +56,6 @@ the RFC 1459 case mapping.
 
 -include("briskd_wire.hrl").
 
-%% IRCv3 message-tags: the tag section (`@`, the tags, and the separating
-%% space) of a server-sent line is at most 8191 bytes.
--define(MAX_TAG_SECTION, 8191).
-
 -doc """
 Append one socket read to the buffered input that has no line end yet.
 
@@ -224,19 +220,23 @@ split_tags(<<$@, _/binary>> = Body) ->
             TagData = byte_size(TagBin) - 1,
             TagSection = byte_size(TagBin) + 1,
             Tags = decode_tags(binary:part(TagBin, 1, TagData)),
-            case TagData > 4094 orelse TagSection > 8191 orelse byte_size(Rest) + 2 > 512 of
+            case
+                TagData > ?MAX_TAG_DATA orelse TagSection > ?MAX_TAG_SECTION orelse
+                    byte_size(Rest) + 2 > ?MAX_UNTAGGED_LINE
+            of
                 true -> {error, input_too_long, Tags};
                 false -> {ok, Tags, Rest}
             end;
         _ ->
             TagData = byte_size(Body) - 1,
-            case TagData > 4094 orelse byte_size(Body) + 1 > 8191 of
+            %% No separating space was found; count one so the section limit matches.
+            case TagData > ?MAX_TAG_DATA orelse byte_size(Body) + 1 > ?MAX_TAG_SECTION of
                 true -> {error, input_too_long, []};
                 false -> error
             end
     end;
 split_tags(Body) ->
-    case byte_size(Body) + 2 > 512 of
+    case byte_size(Body) + 2 > ?MAX_UNTAGGED_LINE of
         %% A complete line over 512 octets is answered with 417 on a client
         %% socket; parse/1 and parse_server/1 still treat it as an error.
         true -> {error, input_too_long, []};
@@ -438,16 +438,16 @@ line(Prefix, Command, Middle, Trailing) ->
     ]),
     Size = byte_size(Head),
     case Trailing of
-        none when Size =< 510 ->
+        none when Size =< ?MAX_LINE_BEFORE_CRLF ->
             [Head, <<"\r\n">>];
         none ->
             [];
-        Tail when Size =< 508 ->
+        Tail when Size =< ?MAX_LINE_BEFORE_TRAILING ->
             Bytes = iolist_to_binary(Tail),
             [
                 Head,
                 <<" :">>,
-                binary:part(Bytes, 0, min(508 - Size, byte_size(Bytes))),
+                binary:part(Bytes, 0, min(?MAX_LINE_BEFORE_TRAILING - Size, byte_size(Bytes))),
                 <<"\r\n">>
             ];
         _ ->

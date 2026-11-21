@@ -1,15 +1,16 @@
 -module(briskd_wire_tests).
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("briskd/include/briskd_wire.hrl").
 
 append_pending_joins_a_partial_line_test() ->
     ?assertEqual({ok, <<"NICK">>}, briskd_wire:append_pending(<<"NI">>, <<"CK">>)).
 
 append_pending_accepts_the_buffer_ceiling_test() ->
-    Packet = binary:copy(<<$a>>, 1048576),
+    Packet = binary:copy(<<$a>>, ?MAX_PENDING_BYTES),
     ?assertEqual({ok, Packet}, briskd_wire:append_pending(<<>>, Packet)).
 
 append_pending_rejects_oversized_input_test() ->
-    Packet = binary:copy(<<$a>>, 1048577),
+    Packet = binary:copy(<<$a>>, ?MAX_PENDING_BYTES + 1),
     ?assertEqual(error, briskd_wire:append_pending(<<>>, Packet)).
 
 tag_escape_round_trip_test() ->
@@ -75,8 +76,8 @@ tag_prefix_and_size_test() ->
     ?assertMatch(
         {error, input_too_long, [{<<"+a">>, <<"b">>}]}, briskd_wire:parse_client(Tagged)
     ),
-    Within = binary:copy(<<"k">>, 4094),
-    Over = binary:copy(<<"k">>, 4095),
+    Within = binary:copy(<<"k">>, ?MAX_TAG_DATA),
+    Over = binary:copy(<<"k">>, ?MAX_TAG_DATA + 1),
     ?assertMatch(
         {ok, [{Within, undefined}], <<"PRIVMSG">>, [<<"#a">>, <<"z">>]},
         briskd_wire:parse_client(<<"@", Within/binary, " PRIVMSG #a :z\r\n">>)

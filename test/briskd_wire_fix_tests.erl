@@ -1,6 +1,7 @@
 -module(briskd_wire_fix_tests).
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("briskd/include/briskd_account.hrl").
+-include_lib("briskd/include/briskd_wire.hrl").
 
 %% Regression tests for fixes in briskd_wire:message/5 (no tag section without
 %% its line), briskd_websocket:decode/2 (RFC 6455 sections 5.2, 5.4, 5.5), and
@@ -18,15 +19,15 @@ message_drops_tags_when_line_is_dropped_test() ->
     ?assertEqual(<<>>, iolist_to_binary(briskd_wire:message(Tags, Big, <<"X">>, [], none))).
 
 message_tag_section_limit_test() ->
-    %% "@" + "k=" + Value + " " is the tag section; 8191 bytes is the IRCv3 cap.
-    Fits = [{<<"k">>, binary:copy(<<"v">>, 8187)}],
+    %% "@" + "k=" + Value + " " is the tag section; ?MAX_TAG_SECTION is the cap.
+    Fits = [{<<"k">>, binary:copy(<<"v">>, ?MAX_TAG_SECTION - 4)}],
     Line = iolist_to_binary(briskd_wire:message(Fits, <<"srv">>, <<"X">>, [], none)),
     [TagSection, <<":srv X\r\n">>] = binary:split(Line, <<" ">>),
-    ?assertEqual(8191, byte_size(TagSection) + 1),
-    Over = [{<<"k">>, binary:copy(<<"v">>, 8188)}],
+    ?assertEqual(?MAX_TAG_SECTION, byte_size(TagSection) + 1),
+    Over = [{<<"k">>, binary:copy(<<"v">>, ?MAX_TAG_SECTION - 3)}],
     ?assertEqual([], briskd_wire:message(Over, <<"srv">>, <<"X">>, [], none)),
     %% Escaping counts toward the limit: each ";" is written as two bytes.
-    Escaped = [{<<"k">>, binary:copy(<<";">>, 4094)}],
+    Escaped = [{<<"k">>, binary:copy(<<";">>, ?MAX_TAG_DATA)}],
     ?assertEqual([], briskd_wire:message(Escaped, <<"srv">>, <<"X">>, [], none)),
     %% Untagged messages are unchanged.
     ?assertEqual(
@@ -52,38 +53,38 @@ ping_between_fragments_is_returned_test() ->
     %% Same read: the ping comes first and the message still completes.
     ?assertEqual(
         {ok, [{ping, <<"hb">>}, {text, <<"PRIVMSG x :y">>}], <<>>},
-        briskd_websocket:decode(<<First/binary, Ping/binary, Last/binary>>, 8703)
+        briskd_websocket:decode(<<First/binary, Ping/binary, Last/binary>>, ?MAX_WIRE_LINE)
     ),
     %% Split reads: the ping is returned at once and not repeated later.
     {ok, [{ping, <<"hb">>}], Kept} =
-        briskd_websocket:decode(<<First/binary, Ping/binary>>, 8703),
+        briskd_websocket:decode(<<First/binary, Ping/binary>>, ?MAX_WIRE_LINE),
     ?assertEqual(
         {ok, [{text, <<"PRIVMSG x :y">>}], <<>>},
-        briskd_websocket:decode(<<Kept/binary, Last/binary>>, 8703)
+        briskd_websocket:decode(<<Kept/binary, Last/binary>>, ?MAX_WIRE_LINE)
     ),
     %% A partial frame after the ping stays buffered too.
     Head = binary:part(Last, 0, 3),
     Tail = binary:part(Last, 3, byte_size(Last) - 3),
     {ok, [{ping, <<"hb">>}], Kept2} =
-        briskd_websocket:decode(<<First/binary, Ping/binary, Head/binary>>, 8703),
+        briskd_websocket:decode(<<First/binary, Ping/binary, Head/binary>>, ?MAX_WIRE_LINE),
     ?assertEqual(
         {ok, [{text, <<"PRIVMSG x :y">>}], <<>>},
-        briskd_websocket:decode(<<Kept2/binary, Tail/binary>>, 8703)
+        briskd_websocket:decode(<<Kept2/binary, Tail/binary>>, ?MAX_WIRE_LINE)
     ).
 
 close_between_fragments_is_returned_test() ->
     Data = <<(frame(2, 0, <<"ab">>))/binary, (frame(8, 1, <<1000:16>>))/binary>>,
-    ?assertMatch({ok, [{close, <<1000:16>>}], _}, briskd_websocket:decode(Data, 8703)).
+    ?assertMatch({ok, [{close, <<1000:16>>}], _}, briskd_websocket:decode(Data, ?MAX_WIRE_LINE)).
 
 fragmented_control_frame_is_rejected_test() ->
     lists:foreach(
         fun(Opcode) ->
             ?assertEqual(
                 {error, fragmented_control},
-                briskd_websocket:decode(frame(Opcode, 0, <<"x">>), 8703)
+                briskd_websocket:decode(frame(Opcode, 0, <<"x">>), ?MAX_WIRE_LINE)
             ),
             Mid = <<(frame(1, 0, <<"a">>))/binary, (frame(Opcode, 0, <<"x">>))/binary>>,
-            ?assertEqual({error, fragmented_control}, briskd_websocket:decode(Mid, 8703))
+            ?assertEqual({error, fragmented_control}, briskd_websocket:decode(Mid, ?MAX_WIRE_LINE))
         end,
         [8, 9, 10]
     ).
@@ -92,10 +93,11 @@ reserved_opcodes_are_rejected_test() ->
     lists:foreach(
         fun(Opcode) ->
             ?assertEqual(
-                {error, bad_opcode}, briskd_websocket:decode(frame(Opcode, 1, <<"x">>), 8703)
+                {error, bad_opcode},
+                briskd_websocket:decode(frame(Opcode, 1, <<"x">>), ?MAX_WIRE_LINE)
             ),
             Mid = <<(frame(1, 0, <<"a">>))/binary, (frame(Opcode, 1, <<"x">>))/binary>>,
-            ?assertEqual({error, bad_opcode}, briskd_websocket:decode(Mid, 8703))
+            ?assertEqual({error, bad_opcode}, briskd_websocket:decode(Mid, ?MAX_WIRE_LINE))
         end,
         [3, 4, 5, 6, 7, 11, 12, 13, 14, 15]
     ).
@@ -103,12 +105,12 @@ reserved_opcodes_are_rejected_test() ->
 control_payload_limit_test() ->
     ?assertMatch(
         {ok, [{ping, _}], <<>>},
-        briskd_websocket:decode(frame(9, 1, binary:copy(<<"p">>, 125)), 8703)
+        briskd_websocket:decode(frame(9, 1, binary:copy(<<"p">>, 125)), ?MAX_WIRE_LINE)
     ),
     %% 126 bytes needs the 16-bit length form.
     Mask = <<0:32>>,
     Big = <<1:1, 0:3, 9:4, 1:1, 126:7, 126:16, Mask/binary, (binary:copy(<<"p">>, 126))/binary>>,
-    ?assertEqual({error, control_too_large}, briskd_websocket:decode(Big, 8703)).
+    ?assertEqual({error, control_too_large}, briskd_websocket:decode(Big, ?MAX_WIRE_LINE)).
 
 %%% briskd_account:check_password/2
 

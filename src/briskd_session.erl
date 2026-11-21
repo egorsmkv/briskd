@@ -40,16 +40,8 @@ attached to the primary session: its commands run as that client, and it
 receives a copy of every line the primary session receives.
 """.
 -behaviour(gen_server).
-%% Most lines of an authenticated peer sent to briskd_state in one call.
--define(MAX_PEER_BATCH, 2000).
-%% Driver read buffer once a connection authenticates as a server link,
-%% bytes (the listener's is sized for clients): one read carries a whole
-%% batch, which matters while briskd_state is slow to answer.
--define(PEER_BUFFER, 262144).
-%% Lines queued for an authenticated server link before it is dropped, as
-%% briskd_link's limit for outbound links.
--define(PEER_SENDQ, 50000).
 -include("briskd_wire.hrl").
+-include("briskd_link.hrl").
 -export([
     start_link/3,
     init/1,
@@ -185,7 +177,7 @@ handle_info(liveness_ping, {Kind, Socket, _, _, {server, undefined}} = State) ->
     Ping = raw_line(<<"PING">>, [maps:get(name, Config)], none),
     case Module:send(Socket, Ping) of
         ok ->
-            erlang:send_after(30000, self(), {link_ping_timeout, Token}),
+            erlang:send_after(?LINK_PONG_TIMEOUT_MS, self(), {link_ping_timeout, Token}),
             {noreply, set_role(State, {server, Token})};
         {error, Reason} ->
             logger:warning(#{event => link_ping_failed, peer => peer_of(State), reason => Reason}),
@@ -276,9 +268,9 @@ redact_state(State) ->
 %% A client that reads slower than lines arrive builds up this mailbox; past
 %% `max_sendq` queued lines it is disconnected, as IRC servers do for SendQ.
 %% An authenticated server link carries the traffic of every user behind it
-%% and gets ?PEER_SENDQ, the limit m:briskd_link applies to outbound links.
+%% and gets ?LINK_MAX_SENDQ, the same limit briskd_link applies outbound.
 sendq_exceeded({_, _, _, _, {server, _}}) ->
-    queued_over(?PEER_SENDQ);
+    queued_over(?LINK_MAX_SENDQ);
 sendq_exceeded(_State) ->
     queued_over(maps:get(max_sendq, briskd_config:current_or_empty(), 10000)).
 
@@ -569,7 +561,7 @@ consume(Data, State) ->
 %% On an authenticated server link, Pending holds the state-bound lines of
 %% this read, newest first, applied as one briskd_state:server_commands/2
 %% batch before any other line, when the read has no more complete lines, or
-%% at ?MAX_PEER_BATCH lines. It stays empty for clients.
+%% at ?LINK_MAX_BATCH lines. It stays empty for clients.
 consume(Data, Pending, Count, State) ->
     case binary:match(Data, <<"\r\n">>) of
         {Offset, 2} ->
@@ -584,7 +576,7 @@ consume(Data, Pending, Count, State) ->
                         end,
                     Result =
                         case Batched of
-                            true when Count + 1 < ?MAX_PEER_BATCH ->
+                            true when Count + 1 < ?LINK_MAX_BATCH ->
                                 {batched, [{Prefix, Command, Params, Tags} | Pending]};
                             true ->
                                 flush_peer([{Prefix, Command, Params, Tags} | Pending], State);
@@ -640,8 +632,8 @@ line_result(Tags, Prefix, Command, Params, Bytes, State) ->
 peer_buffer(Module, Socket, Name) ->
     Set =
         case Module of
-            gen_tcp -> inet:setopts(Socket, [{buffer, ?PEER_BUFFER}]);
-            ssl -> ssl:setopts(Socket, [{buffer, ?PEER_BUFFER}])
+            gen_tcp -> inet:setopts(Socket, [{buffer, ?LINK_READ_BUFFER}]);
+            ssl -> ssl:setopts(Socket, [{buffer, ?LINK_READ_BUFFER}])
         end,
     case Set of
         ok ->
@@ -796,7 +788,7 @@ process_server_intro(Name, Hop, Token, State) ->
                                     logger:notice(#{
                                         event => inbound_server_link_authenticated, peer => Name
                                     }),
-                                    erlang:send_after(60000, self(), liveness_ping),
+                                    erlang:send_after(?LINK_PING_AFTER_MS, self(), liveness_ping),
                                     peer_buffer(Module, Socket, Name),
                                     {ok, set_peer_and_role(State, Name, {server, undefined})};
                                 {error, _} ->
@@ -832,7 +824,7 @@ process_server_line(
     Config = briskd_config:current(),
     case Responder =:= PeerName andalso Origin =:= maps:get(name, Config) of
         true ->
-            erlang:send_after(60000, self(), liveness_ping),
+            erlang:send_after(?LINK_PING_AFTER_MS, self(), liveness_ping),
             {ok, set_role(State, {server, undefined})};
         false ->
             {ok, State}

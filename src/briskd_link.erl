@@ -38,11 +38,7 @@ retries are logged at `debug`. Timer messages carry a connection generation,
 so a timer from an earlier connection is ignored.
 """.
 -behaviour(gen_server).
-%% Most peer lines sent to briskd_state in one call (see consume/4).
--define(MAX_BATCH, 2000).
-%% Driver read buffer for the link socket, bytes: one read carries a whole
-%% batch of lines, which matters while briskd_state is slow to answer.
--define(LINK_BUFFER, 262144).
+-include("briskd_link.hrl").
 -export([
     start_link/2,
     init/1,
@@ -56,8 +52,6 @@ so a timer from an earlier connection is ignored.
 %% A blocked send to the peer fails after this many milliseconds and closes
 %% the socket; the worker then reconnects with its backoff.
 -define(SEND_TIMEOUT_MS, 30000).
-%% Lines queued for the peer before the link is dropped and reconnected.
--define(MAX_SENDQ, 50000).
 %% Reconnect backoff in milliseconds: first delay and cap. The delay doubles
 %% after each failed attempt.
 -define(BACKOFF_MIN_MS, 5000).
@@ -121,7 +115,7 @@ handle_call(_, _, State) -> {reply, {error, unsupported}, State}.
 handle_cast({send, Line}, #{phase := authenticated, kind := Kind, socket := Socket} = State) ->
     %% A peer that stops reading must not let relayed lines pile up here.
     case process_info(self(), message_queue_len) of
-        {message_queue_len, Queued} when Queued > ?MAX_SENDQ ->
+        {message_queue_len, Queued} when Queued > ?LINK_MAX_SENDQ ->
             retry(State, {sendq_exceeded, Queued});
         _ ->
             case send(Kind, Socket, Line) of
@@ -151,7 +145,7 @@ handle_info(
     case send(maps:get(kind, State), maps:get(socket, State), Ping) of
         ok ->
             cancel_timer(maps:get(ping_timer, State)),
-            Ref = erlang:send_after(30000, self(), {ping_timeout, Gen, Token}),
+            Ref = erlang:send_after(?LINK_PONG_TIMEOUT_MS, self(), {ping_timeout, Gen, Token}),
             {noreply, State#{ping_pending := Token, ping_timer => Ref}};
         {error, Reason} ->
             retry(State, {ping_send_failed, Reason})
@@ -237,7 +231,7 @@ connect(#{peer := #{host := Host, port := Port, tls := true}} = State) ->
         {active, false},
         {send_timeout, ?SEND_TIMEOUT_MS},
         {send_timeout_close, true},
-        {buffer, ?LINK_BUFFER},
+        {buffer, ?LINK_READ_BUFFER},
         {verify, verify_peer},
         {cacerts, public_key:cacerts_get()},
         {server_name_indication, HostName},
@@ -262,7 +256,7 @@ connect(#{peer := #{host := Host, port := Port}} = State) ->
         {packet, raw},
         {active, false},
         {nodelay, true},
-        {buffer, ?LINK_BUFFER},
+        {buffer, ?LINK_READ_BUFFER},
         {keepalive, true},
         {send_timeout, ?SEND_TIMEOUT_MS},
         {send_timeout_close, true}
@@ -285,7 +279,7 @@ consume(Data, State) ->
 %% Pending holds the state-bound lines of this read, newest first, sent to
 %% briskd_state as one batch (briskd_state:server_commands/2) when a line the
 %% worker handles itself arrives, when the read has no more complete lines,
-%% or at ?MAX_BATCH lines.
+%% or at ?LINK_MAX_BATCH lines.
 consume(Data, Pending, Count, State) ->
     case binary:match(Data, <<"\r\n">>) of
         {Offset, 2} ->
@@ -294,7 +288,7 @@ consume(Data, Pending, Count, State) ->
             case briskd_wire:parse_server(Line) of
                 {ok, Tags, Prefix, Command, Params} ->
                     case batched(Command, State) of
-                        true when Count + 1 < ?MAX_BATCH ->
+                        true when Count + 1 < ?LINK_MAX_BATCH ->
                             consume(
                                 Rest, [{Prefix, Command, Params, Tags} | Pending], Count + 1, State
                             );
@@ -516,7 +510,7 @@ arm_liveness(State) ->
     cancel_timer(maps:get(liveness_timer, State, undefined)),
     cancel_timer(maps:get(ping_timer, State, undefined)),
     Gen = maps:get(timer_gen, State),
-    Ref = erlang:send_after(60000, self(), {liveness_ping, Gen}),
+    Ref = erlang:send_after(?LINK_PING_AFTER_MS, self(), {liveness_ping, Gen}),
     State#{liveness_timer => Ref, ping_timer => undefined, ping_pending => undefined}.
 
 cancel_timers(State) ->

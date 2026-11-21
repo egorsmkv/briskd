@@ -333,7 +333,8 @@ caller then drops the link, so the rest are not applied. One call per peer
 line gave a link the same share of this process as one client while it
 carries the traffic of every user behind it, so under load the peer's sender
 blocked until its send timeout dropped the link. Link workers send every
-complete line of a read at once, at most 2000 per call.
+complete line of a read at once, at most `LINK_MAX_BATCH` per call
+(`include/briskd_link.hrl`).
 """.
 -spec server_commands(
     binary(),
