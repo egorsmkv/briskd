@@ -640,10 +640,12 @@ process_line(_Tags, _Command, _Params, _Bytes, {_, _, _, _, {server_pass, _}}) -
 process_line(_Tags, <<"QUIT">>, _Params, _Bytes, {_, _, _, _, {attached, _}}) ->
     %% QUIT on an attached connection closes only that connection.
     quit;
-process_line(Tags, Command, Params, Bytes, {_, _, _, _, {attached, Primary}} = State) ->
-    case ircd_state:command_as(Primary, Command, Params, Bytes, Tags) of
+process_line(Tags, Command, Params, Bytes, {Kind, Socket, _, _, {attached, Primary}} = State) ->
+    try ircd_state:command_as(Primary, Command, Params, Bytes, Tags) of
         quit -> quit;
         _ -> {ok, State}
+    catch
+        exit:{timeout, _} -> overloaded(Kind, Socket, State)
     end;
 process_line(Tags, Command, Params, Bytes, {_, _, _, _, client} = State) ->
     process_client_line(Tags, Command, Params, Bytes, State).
@@ -762,12 +764,23 @@ process_server_line(Tags, Prefix, Command, Params, _Bytes, {_, _, Peer, _, _} = 
 process_server_line(_Tags, _Prefix, _Command, _Params, _Bytes, State) ->
     {ok, State}.
 
-process_client_line(Tags, Command, Params, Bytes, {_, _, _, _, client} = State) ->
-    case ircd_state:command(Command, Params, Bytes, Tags) of
+process_client_line(Tags, Command, Params, Bytes, {Kind, Socket, _, _, client} = State) ->
+    try ircd_state:command(Command, Params, Bytes, Tags) of
         quit -> quit;
         starttls -> {starttls, State};
         ok -> {ok, State}
+    catch
+        exit:{timeout, _} -> overloaded(Kind, Socket, State)
     end.
+
+%% The state process did not apply this client's command within its deadline
+%% (ircd_state's COMMAND_TIMEOUT): the server is overloaded. The client is
+%% told and the session ends normally, rather than crashing; the command may
+%% still be applied later, and its late reply is discarded.
+overloaded(Kind, Socket, State) ->
+    logger:warning(#{event => command_timeout, peer => peer_of(State)}),
+    _ = (transport(Kind)):send(Socket, closing_link(<<"Server overloaded">>)),
+    quit.
 
 %% The first client command turns an awaiting connection into a client.
 promote_client({Kind, Socket, Peer, Buffer, awaiting}) ->

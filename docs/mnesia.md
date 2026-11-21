@@ -19,7 +19,7 @@ decided by the setting loaded at that start.
 | WHOWAS history | Kept | Kept |
 | Safe `!` channels | Kept | Kept |
 | Ordinary `#`, `&`, and `+` channels | Deleted | Kept |
-| Channel `PRIVMSG` / `NOTICE` history | Deleted | Kept, newest `history_limit` lines |
+| Channel history (`channel_message`: one row per message or event) | Deleted | Kept, newest `history_limit` messages and, separately, events |
 | Client sessions, presence, away text, and user modes | Deleted | Deleted |
 | Channel members and pid invitations | Cleared | Cleared |
 | Imported peers, remote users, remote channels, and services | Deleted | Deleted |
@@ -163,8 +163,17 @@ explicit transform and a backup taken before the upgrade. Remote and client
 tables are cleared after migration, so their transforms matter when a running
 node loads a newer module without a restart. WHOWAS and the channel rows kept
 by the active retention policy are what an operator must be able to read after
-the new code starts. `channel_history` is a separate table created empty when
-it is missing.
+the new code starts.
+
+Channel history moved from `channel_history` (one row per channel holding its
+whole list, rewritten for every message) to `channel_message` (an ordered_set,
+one row per entry keyed by `{Channel, Class, Seq}`), so recording a message
+writes one small row instead of the channel's whole history. At startup
+under `channels` retention, every `channel_history` row is converted into
+`channel_message` rows and deleted; `channel_history` stays as an empty table.
+`channel_message` is created empty when it is missing. Rolling back to an
+older release after this conversion needs the backup taken before the
+upgrade: older code reads only `channel_history`.
 
 Roll back by stopping the node and restoring the backup taken before the
 upgrade. Do not mix a newer schema with an older beam without that restore.

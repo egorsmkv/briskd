@@ -3,6 +3,15 @@
 %% Interval of the `sweep_tick` that removes state nothing else removes
 %% (memberless `remote_channel` rows), in milliseconds.
 -define(SWEEP_MS, 60000).
+%% How long a session waits for its command to be applied, in milliseconds.
+%% A session sends one command at a time and stops reading its socket until
+%% the reply, so a slow state process slows clients down (TCP backpressure)
+%% instead of queueing their input. The gen_server default of 5 seconds was
+%% shorter than the queueing delay of a large burst (bench/traffic.py high
+%% load), and every session that waited longer crashed, disconnecting its
+%% client and adding cleanup work to the overloaded process. Past this
+%% deadline the session closes with "Server overloaded" (ircd_session).
+-define(COMMAND_TIMEOUT, 60000).
 -export([
     authenticate_server_link/2,
     command/3,
@@ -183,7 +192,7 @@ that need registration.
 -spec command(binary(), [binary()], non_neg_integer(), [{binary(), undefined | binary()}]) ->
     ok | quit | starttls.
 command(Command, Params, Bytes, Tags) ->
-    gen_server:call(?MODULE, {command, Command, Params, Bytes, Tags}).
+    gen_server:call(?MODULE, {command, Command, Params, Bytes, Tags}, ?COMMAND_TIMEOUT).
 
 -doc """
 Apply a command from a secondary connection attached to `Primary`
@@ -194,7 +203,9 @@ not attached to `Primary` or the primary is gone.
 """.
 -spec command_as(pid(), binary(), [binary()], non_neg_integer(), list()) -> ok | quit.
 command_as(Primary, Command, Params, Bytes, Tags) ->
-    gen_server:call(?MODULE, {command_as, Primary, Command, Params, Bytes, Tags}).
+    gen_server:call(
+        ?MODULE, {command_as, Primary, Command, Params, Bytes, Tags}, ?COMMAND_TIMEOUT
+    ).
 
 -doc """
 Run an administrative control action from `m:ircd_ctl` inside the `ircd_state`
