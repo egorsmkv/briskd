@@ -70,6 +70,42 @@ Deno.test("parseE2eeAttachment validates payloads and rejects traversal IDs", ()
   assert(parseE2eeAttachment("plain text") === null, "ignores normal text");
 });
 
+Deno.test("parseE2eeAttachment normalizes fields a peer controls", () => {
+  const id = "0123456789abcdef0123456789abcdef.bin";
+  const odd = E2EE_ATT_PREFIX + JSON.stringify({
+    v: 1,
+    kind: "file",
+    id,
+    name: { toString: 1 },
+    mime: 42,
+    bytes: "huge",
+    key: "a",
+    iv: "b",
+    sha256: "c",
+  });
+  const p = parseE2eeAttachment(odd);
+  assert(p !== null && p.kind === "file", "still a file");
+  if (p?.kind === "file") {
+    assert(p.name === "file.bin" && p.mime === "" && p.bytes === 0, "defaults");
+  }
+  const album = E2EE_ATT_PREFIX + JSON.stringify({
+    v: 1,
+    kind: "album",
+    items: [{ id, key: "a", iv: "b", sha256: "c", name: null, mime: [] }],
+  });
+  const a = parseE2eeAttachment(album);
+  assert(a?.kind === "album" && a.items[0].name === "file.bin", "album item");
+  assert(parseE2eeAttachment(E2EE_ATT_PREFIX + "null") === null, "null body");
+  assert(parseE2eeAttachment(E2EE_ATT_PREFIX + "{bad") === null, "bad JSON");
+  assert(
+    parseE2eeAttachment(
+      E2EE_ATT_PREFIX +
+        JSON.stringify({ v: 1, kind: "x", id, key: "a", iv: "b", sha256: "c" }),
+    ) === null,
+    "unknown kind",
+  );
+});
+
 Deno.test("sanitizeDisplayName strips paths, control chars, and RLO spoofing", () => {
   assert(
     sanitizeDisplayName("../../invoice\u202Egpj.exe") === "invoicegpj.exe",

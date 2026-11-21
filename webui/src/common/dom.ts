@@ -38,8 +38,12 @@ export async function postJson<T>(
     try {
       data = JSON.parse(text);
     } catch {
-      data = { error: text };
+      // Not JSON (a proxy's error page): report the status, not the page.
+      data = { error: `HTTP ${res.status}` };
     }
   }
+  // Callers read fields of the reply: anything but an object (null, a
+  // number, an array) becomes an empty one, so `data.message` cannot throw.
+  if (!data || typeof data !== "object" || Array.isArray(data)) data = {};
   return { ok: res.ok, status: res.status, data: data as T };
 }

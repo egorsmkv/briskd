@@ -88,7 +88,16 @@ const BLOB_CACHE_MAX_BYTES = 32 * 1024 * 1024;
 const BLOB_CACHE_MAX_ENTRIES = 40;
 let blobCacheBytes = 0;
 
-function cacheDecryptedBlob(id: string, url: string, size: number): void {
+/** Decryptions in progress, so views of one attachment share one fetch. */
+const decrypting = new Map<string, Promise<string>>();
+
+/** Cache `url` for `id`; returns the URL to use (an existing one wins). */
+function cacheDecryptedBlob(id: string, url: string, size: number): string {
+  const existing = decryptedBlobCache.get(id);
+  if (existing) {
+    URL.revokeObjectURL(url);
+    return existing.url;
+  }
   decryptedBlobCache.set(id, { url, size });
   blobCacheBytes += size;
   while (
@@ -101,6 +110,7 @@ function cacheDecryptedBlob(id: string, url: string, size: number): void {
     blobCacheBytes -= old.size;
     decryptedBlobCache.delete(oldId);
   }
+  return url;
 }
 const SAFE_E2EE_ID_RE = /^[0-9a-f]{32}\.[a-z0-9]{1,8}$/;
 const SAFE_IMAGE_MIMES = new Set([
@@ -131,50 +141,99 @@ export function sanitizeDisplayName(raw: string): string {
   return trimmed || "file.bin";
 }
 
+/** A string field from a peer's payload, or `fallback`. */
+function str(v: unknown, fallback = ""): string {
+  return typeof v === "string" ? v.slice(0, 256) : fallback;
+}
+
+/** A non-negative finite number from a peer's payload, or 0. */
+function num(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
+}
+
+/** The id and key material every attachment must carry, checked. */
+function crypt(o: Record<string, unknown>) {
+  if (
+    typeof o.id !== "string" || !SAFE_E2EE_ID_RE.test(o.id) ||
+    typeof o.key !== "string" || typeof o.iv !== "string" ||
+    typeof o.sha256 !== "string"
+  ) {
+    return null;
+  }
+  return { id: o.id, key: o.key, iv: o.iv, sha256: o.sha256 };
+}
+
+/**
+ * Parse an encrypted attachment message. Every field comes from the sending
+ * peer: the id and key material are required, and the rest (name, type,
+ * sizes, titles) is normalized to the declared types, so a malformed value
+ * cannot break rendering.
+ */
 export function parseE2eeAttachment(
   text: string,
 ): E2eeAttachmentPayload | null {
   if (!text.startsWith(E2EE_ATT_PREFIX)) return null;
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(text.slice(E2EE_ATT_PREFIX.length)) as Partial<
-      E2eeAttachmentPayload
-    >;
-    if (parsed.v !== 1) return null;
-    if (
-      parsed.kind === "voice" && typeof parsed.id === "string" &&
-      SAFE_E2EE_ID_RE.test(parsed.id) && typeof parsed.key === "string" &&
-      typeof parsed.iv === "string" && typeof parsed.sha256 === "string"
-    ) {
-      return parsed as E2eeAttachmentPayload;
-    }
-    if (
-      parsed.kind === "file" && typeof parsed.id === "string" &&
-      SAFE_E2EE_ID_RE.test(parsed.id) && typeof parsed.key === "string" &&
-      typeof parsed.iv === "string" && typeof parsed.sha256 === "string"
-    ) {
-      return parsed as E2eeAttachmentPayload;
-    }
-    if (
-      parsed.kind === "album" && Array.isArray(parsed.items) &&
-      parsed.items.length > 0 && parsed.items.length <= 10 &&
-      parsed.items.every((it) =>
-        it && typeof it.id === "string" && SAFE_E2EE_ID_RE.test(it.id) &&
-        typeof it.key === "string" && typeof it.iv === "string" &&
-        typeof it.sha256 === "string"
-      )
-    ) {
-      return parsed as E2eeAttachmentPayload;
-    }
-    if (
-      parsed.kind === "paste" && typeof parsed.id === "string" &&
-      SAFE_E2EE_ID_RE.test(parsed.id) && typeof parsed.key === "string" &&
-      typeof parsed.iv === "string" && typeof parsed.sha256 === "string"
-    ) {
-      return parsed as E2eeAttachmentPayload;
-    }
-    return null;
+    parsed = JSON.parse(text.slice(E2EE_ATT_PREFIX.length));
   } catch {
     return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const o = parsed as Record<string, unknown>;
+  if (o.v !== 1) return null;
+  if (o.kind === "album") {
+    if (
+      !Array.isArray(o.items) || o.items.length === 0 || o.items.length > 10
+    ) {
+      return null;
+    }
+    const items: E2eeAttachmentItem[] = [];
+    for (const it of o.items) {
+      if (!it || typeof it !== "object") return null;
+      const item = it as Record<string, unknown>;
+      const c = crypt(item);
+      if (!c) return null;
+      items.push({
+        ...c,
+        name: str(item.name, "file.bin"),
+        mime: str(item.mime),
+        bytes: num(item.bytes),
+      });
+    }
+    return { v: 1, kind: "album", items };
+  }
+  const c = crypt(o);
+  if (!c) return null;
+  switch (o.kind) {
+    case "voice":
+      return {
+        v: 1,
+        kind: "voice",
+        ...c,
+        mime: str(o.mime),
+        dur: num(o.dur),
+        bytes: num(o.bytes),
+      };
+    case "file":
+      return {
+        v: 1,
+        kind: "file",
+        ...c,
+        name: str(o.name, "file.bin"),
+        mime: str(o.mime),
+        bytes: num(o.bytes),
+      };
+    case "paste":
+      return {
+        v: 1,
+        kind: "paste",
+        ...c,
+        lang: str(o.lang),
+        title: str(o.title),
+      };
+    default:
+      return null;
   }
 }
 
@@ -393,6 +452,24 @@ async function fetchAndDecryptBlobUrl(
 ): Promise<string> {
   const cached = decryptedBlobCache.get(id)?.url;
   if (cached) return cached;
+  const pending = decrypting.get(id);
+  if (pending) return pending;
+  const job = decryptToBlobUrl(id, mime, key, iv, sha256);
+  decrypting.set(id, job);
+  try {
+    return await job;
+  } finally {
+    decrypting.delete(id);
+  }
+}
+
+async function decryptToBlobUrl(
+  id: string,
+  mime: string,
+  key: string,
+  iv: string,
+  sha256: string,
+): Promise<string> {
   const resp = await fetch(`/api/files/${id}`);
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const ct = new Uint8Array(await resp.arrayBuffer());
@@ -403,9 +480,7 @@ async function fetchAndDecryptBlobUrl(
       ? baseMime
       : "application/octet-stream";
   const blob = new Blob([pt as BlobPart], { type: safeMime });
-  const url = URL.createObjectURL(blob);
-  cacheDecryptedBlob(id, url, blob.size);
-  return url;
+  return cacheDecryptedBlob(id, URL.createObjectURL(blob), blob.size);
 }
 
 export function createEncryptedAttachmentView(

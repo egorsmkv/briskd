@@ -110,6 +110,8 @@ const DICT: Record<Lang, Record<string, string>> = {
     "settings.title": "Workspace Settings",
     "settings.tab.general": "General",
     "settings.tab.e2ee": "E2EE Keys",
+    "discover.more":
+      "Showing {{shown}} of {{total}} channels. Type to narrow the list.",
     "settings.tab.data": "My Data",
     "data.browser.title": "Data in this browser",
     "data.browser.text":
@@ -421,6 +423,8 @@ const DICT: Record<Lang, Record<string, string>> = {
     "settings.title": "הגדרות סביבת העבודה",
     "settings.tab.general": "כללי",
     "settings.tab.e2ee": "מפתחות E2EE",
+    "discover.more":
+      "מוצגים {{shown}} מתוך {{total}} ערוצים. הקלד כדי לצמצם את הרשימה.",
     "settings.tab.data": "הנתונים שלי",
     "data.browser.title": "נתונים בדפדפן זה",
     "data.browser.text":

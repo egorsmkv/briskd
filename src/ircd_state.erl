@@ -1,5 +1,8 @@
 -module(ircd_state).
 -behaviour(gen_server).
+%% Interval of the `sweep_tick` that removes state nothing else removes
+%% (memberless `remote_channel` rows), in milliseconds.
+-define(SWEEP_MS, 60000).
 -export([
     authenticate_server_link/2,
     command/3,
@@ -451,6 +454,7 @@ init(#{name := Name} = Config) ->
     {atomic, ok} = mnesia:clear_table(known_server),
     {atomic, ok} = mnesia:clear_table(service),
     erlang:send_after(1000, self(), reop_tick),
+    erlang:send_after(?SWEEP_MS, self(), sweep_tick),
     {ok, Name}.
 
 table(Table, Fields, Options) ->
@@ -810,6 +814,9 @@ handle_call({register_adjacent, Name, Token, Kind}, {Pid, _}, Server) ->
     %% Both inbound sessions and outbound link workers register here, and
     %% ircd_state_net:register_adjacent/4 records the caller as {Pid, Name}.
     Result = ircd_state_net:register_adjacent(Name, Token, Kind, Pid),
+    %% A link process that dies without its own cleanup (killed, or a crash
+    %% outside its callbacks) still splits the peer: see peer_down/2.
+    _ = erlang:monitor(process, Pid),
     {reply, Result, Server};
 handle_call({ctl, Action}, _From, Server) ->
     {reply, ircd_ctl:handle_state_action(Action, Server), Server};
@@ -1072,9 +1079,7 @@ other_call({request_password_reset, Email, RecoveryUrl, PeerIP}, _, Server) ->
 other_call({complete_password_reset, Email, Code, NewPassword, PeerIP}, _, Server) ->
     {reply, ircd_state_v3:complete_password_reset_web(Email, Code, NewPassword, PeerIP), Server};
 other_call({server_disconnect, Peer}, _, Server) ->
-    ircd_state_link:flush_netjoin(Peer),
-    ircd_state_link:forget_peer_batches(Peer),
-    ircd_state_net:split(Peer, <<"Netsplit ", Peer/binary>>, Peer),
+    disconnect_peer(Peer),
     {reply, ok, Server};
 other_call({input_too_long, Tags}, {Pid, _}, Server) ->
     Client = ircd_state_client:client(Pid),
@@ -1222,13 +1227,20 @@ handle_info(reop_tick, Server) ->
     ok = ircd_state_link:expire_peer_batches(),
     erlang:send_after(1000, self(), reop_tick),
     {noreply, Server};
-%% Ignore unknown messages. Session and worker DOWN, `reop_tick`, and
+handle_info(sweep_tick, Server) ->
+    %% State nothing else removes, swept once a minute.
+    _ = ircd_state_link:sweep_remote_channels(),
+    ok = ircd_state_v3:expire_password_resets(),
+    erlang:send_after(?SWEEP_MS, self(), sweep_tick),
+    {noreply, Server};
+%% Ignore unknown messages. Session and worker DOWN, `reop_tick`, `sweep_tick`, and
 %% `flush_netjoin` are the only expected info events.
 handle_info(_, State) ->
     {noreply, State}.
 
 %% A session process ended: drop its attachment and client state.
 session_down(Pid, State) ->
+    peer_down(Pid),
     ets:delete(ircd_attached, Pid),
     ok = ircd_e2ee:session_down(Pid),
     case mnesia:dirty_read(client, Pid) of
@@ -1238,6 +1250,28 @@ session_down(Pid, State) ->
             ok
     end,
     {noreply, State}.
+
+%% Netsplit cleanup for the peer `Peer`: users, servers, and channels reached
+%% only through it are removed and the other peers are told.
+disconnect_peer(Peer) ->
+    ircd_state_link:flush_netjoin(Peer),
+    ircd_state_link:forget_peer_batches(Peer),
+    ircd_state_net:split(Peer, <<"Netsplit ", Peer/binary>>, Peer).
+
+%% A registered link process went away. A link that ends normally calls
+%% server_disconnect/1 first, which removes its registration, so this only
+%% acts for one that died without it.
+peer_down(Pid) ->
+    Peers =
+        [Name || {_, {P, Name}} <- ets:tab2list(ircd_inbound_peers), P =:= Pid] ++
+            [Name || {_, {P, Name}} <- ets:tab2list(ircd_outbound_ready), P =:= Pid],
+    lists:foreach(
+        fun(Peer) ->
+            logger:warning(#{event => link_process_down, peer => Peer}),
+            disconnect_peer(Peer)
+        end,
+        Peers
+    ).
 
 -doc """
 Redact secrets from status and crash reports.

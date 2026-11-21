@@ -295,7 +295,21 @@ export function connectSocket(url: string): void {
   };
   sock.onmessage = (e) => {
     if (S.ws !== sock) return;
-    if (typeof e.data === "string") handleMessage(e.data);
+    if (typeof e.data !== "string") return;
+    try {
+      handleMessage(e.data);
+    } catch (err) {
+      // One line the client cannot handle must not break the connection's
+      // message loop. The command is logged, not the line (it may hold
+      // message text).
+      console.error(
+        "IRC line not handled:",
+        e.data.split(" ", 3).find((w) =>
+          !w.startsWith("@") && !w.startsWith(":")
+        ),
+        err,
+      );
+    }
   };
   sock.onerror = () => {
     if (S.ws !== sock) return;

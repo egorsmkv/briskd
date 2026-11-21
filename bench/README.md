@@ -83,3 +83,18 @@ does not pace).
   Compare runs on the same machine with the same flags.
 - `bench/faker_load.py` is a separate paced multi-client load test; see
   `FAKER.md`.
+
+## Memory
+
+`bench/memory-prod` builds the production image (or measures
+`MEMORY_BENCH_IMAGE`) and runs `bench/memory.py` against it: idle, N
+registered clients in channels, after channel traffic, after everyone quits,
+and churn rounds of connect/join/message/quit. Each sample is the node's own
+view (`erlang:memory/0`, session processes and the binaries they reference,
+the largest ETS tables and registered processes), read with `erl_call` after a
+full garbage collection, once the sessions' mailboxes are empty. Process
+memory that does not return to idle after churn points at a leak; ETS growth
+across rounds is retained history and WHOWAS, which are capped. Defaults:
+1000 clients, channels of 50, 10 messages each at 0.5 per second (a sustained
+load, about 25,000 deliveries a second), 3 rounds of 500. Reports go to
+`bench/results/<date>-memory.md` and `.json`.

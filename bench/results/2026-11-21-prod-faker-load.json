@@ -1,0 +1,468 @@
+{
+  "when": "2026-11-21T10:26:05.622325+00:00",
+  "target": "127.0.0.1:16667",
+  "python": "3.14.3",
+  "host": "Linux-7.0.0-43-generic-x86_64-with-glibc2.39",
+  "faker": "40.54.0",
+  "seed": 20261118,
+  "duration_s": 5,
+  "messages_per_client_s": 10,
+  "tls_fraction": 0,
+  "warmup": "registration and JOIN; no traffic warmup",
+  "environment": "linux x86_64 CPUs=8 Memory=33562640384",
+  "kind": "production",
+  "otp": "ERTS 17.1.1, release 0.1.0",
+  "limitations": [
+    "Production server; host generator shares resources with Docker.",
+    "Scheduler utilization, Erlang mailbox lengths, GC and kernel socket drops were not instrumented.",
+    "No code/configuration changes or before/after optimization comparison; repeated identical workloads only.",
+    "Delivery latency is per recipient, from writer enqueue to reader processing; includes generator scheduling.",
+    "Docker CPU/memory are coarse container samples; no capacity or saturation claim."
+  ],
+  "runs": [
+    {
+      "clients": 10,
+      "repeat": 1,
+      "channel": "#load604210r1",
+      "sent": 500,
+      "expected_deliveries": 4500,
+      "received_deliveries": 4500,
+      "missing_deliveries": 0,
+      "duplicates": 0,
+      "unexpected": 0,
+      "disconnects": 0,
+      "errors": [],
+      "error_numerics": {},
+      "elapsed_s": 4.992217893945053,
+      "send_elapsed_s": 4.990971532999538,
+      "messages_per_s": 100.1808959826913,
+      "deliveries_per_s": 901.4029626907806,
+      "latency_samples": 4500,
+      "delivery_latency": {
+        "p50_ms": 1.241,
+        "p95_ms": 1.738,
+        "p99_ms": 2.157,
+        "p99.9_ms": 2.612
+      },
+      "registration_latency": {
+        "p50_ms": 1.645,
+        "p95_ms": 1.747,
+        "p99_ms": 1.747,
+        "p99.9_ms": 1.747
+      },
+      "client_wire_bytes": {
+        "min": 88,
+        "max": 213,
+        "mean": 146.172
+      },
+      "resource_samples": [
+        {
+          "elapsed_s": 1.566,
+          "BlockIO": "0B / 63.7MB",
+          "CPUPerc": "26.75%",
+          "Container": "ircd-prod-bench",
+          "ID": "d3f01a98e71d",
+          "MemPerc": "0.39%",
+          "MemUsage": "124.8MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "1.11MB / 2.75MB",
+          "PIDs": "35"
+        },
+        {
+          "elapsed_s": 3.574,
+          "BlockIO": "0B / 82MB",
+          "CPUPerc": "77.47%",
+          "Container": "ircd-prod-bench",
+          "ID": "d3f01a98e71d",
+          "MemPerc": "0.39%",
+          "MemUsage": "126.3MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "1.2MB / 3.19MB",
+          "PIDs": "35"
+        },
+        {
+          "elapsed_s": 5.58,
+          "BlockIO": "0B / 100MB",
+          "CPUPerc": "22.27%",
+          "Container": "ircd-prod-bench",
+          "ID": "d3f01a98e71d",
+          "MemPerc": "0.39%",
+          "MemUsage": "126.3MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "1.27MB / 3.51MB",
+          "PIDs": "35"
+        }
+      ]
+    },
+    {
+      "clients": 10,
+      "repeat": 2,
+      "channel": "#load0d8310r2",
+      "sent": 500,
+      "expected_deliveries": 4500,
+      "received_deliveries": 4500,
+      "missing_deliveries": 0,
+      "duplicates": 0,
+      "unexpected": 0,
+      "disconnects": 0,
+      "errors": [],
+      "error_numerics": {},
+      "elapsed_s": 4.991760909033474,
+      "send_elapsed_s": 4.990548484027386,
+      "messages_per_s": 100.1893883208001,
+      "deliveries_per_s": 901.4854841818354,
+      "latency_samples": 4500,
+      "delivery_latency": {
+        "p50_ms": 1.304,
+        "p95_ms": 1.67,
+        "p99_ms": 2.078,
+        "p99.9_ms": 2.324
+      },
+      "registration_latency": {
+        "p50_ms": 3.286,
+        "p95_ms": 3.513,
+        "p99_ms": 3.513,
+        "p99.9_ms": 3.513
+      },
+      "client_wire_bytes": {
+        "min": 88,
+        "max": 213,
+        "mean": 146.172
+      },
+      "resource_samples": [
+        {
+          "elapsed_s": 1.933,
+          "BlockIO": "0B / 100MB",
+          "CPUPerc": "26.48%",
+          "Container": "ircd-prod-bench",
+          "ID": "d3f01a98e71d",
+          "MemPerc": "0.40%",
+          "MemUsage": "126.7MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "1.38MB / 3.98MB",
+          "PIDs": "35"
+        },
+        {
+          "elapsed_s": 3.94,
+          "BlockIO": "0B / 129MB",
+          "CPUPerc": "45.35%",
+          "Container": "ircd-prod-bench",
+          "ID": "d3f01a98e71d",
+          "MemPerc": "0.40%",
+          "MemUsage": "127.3MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "1.47MB / 4.42MB",
+          "PIDs": "35"
+        },
+        {
+          "elapsed_s": 5.945,
+          "BlockIO": "0B / 129MB",
+          "CPUPerc": "3.39%",
+          "Container": "ircd-prod-bench",
+          "ID": "d3f01a98e71d",
+          "MemPerc": "0.40%",
+          "MemUsage": "127.2MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "1.52MB / 4.65MB",
+          "PIDs": "35"
+        }
+      ]
+    },
+    {
+      "clients": 25,
+      "repeat": 1,
+      "channel": "#load86eb25r1",
+      "sent": 1250,
+      "expected_deliveries": 30000,
+      "received_deliveries": 30000,
+      "missing_deliveries": 0,
+      "duplicates": 0,
+      "unexpected": 0,
+      "disconnects": 0,
+      "errors": [],
+      "error_numerics": {},
+      "elapsed_s": 4.998186060984153,
+      "send_elapsed_s": 4.996777565975208,
+      "messages_per_s": 250.16122560901724,
+      "deliveries_per_s": 6002.17751679555,
+      "latency_samples": 30000,
+      "delivery_latency": {
+        "p50_ms": 1.743,
+        "p95_ms": 2.383,
+        "p99_ms": 2.762,
+        "p99.9_ms": 3.316
+      },
+      "registration_latency": {
+        "p50_ms": 2.87,
+        "p95_ms": 3.436,
+        "p99_ms": 3.46,
+        "p99.9_ms": 3.46
+      },
+      "client_wire_bytes": {
+        "min": 83,
+        "max": 220,
+        "mean": 145.2456
+      },
+      "resource_samples": [
+        {
+          "elapsed_s": 1.818,
+          "BlockIO": "0B / 187MB",
+          "CPUPerc": "177.26%",
+          "Container": "ircd-prod-bench",
+          "ID": "d3f01a98e71d",
+          "MemPerc": "0.42%",
+          "MemUsage": "133.8MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "2.02MB / 7.43MB",
+          "PIDs": "35"
+        },
+        {
+          "elapsed_s": 3.827,
+          "BlockIO": "0B / 232MB",
+          "CPUPerc": "215.30%",
+          "Container": "ircd-prod-bench",
+          "ID": "d3f01a98e71d",
+          "MemPerc": "0.44%",
+          "MemUsage": "140.2MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "2.53MB / 10.4MB",
+          "PIDs": "35"
+        },
+        {
+          "elapsed_s": 5.834,
+          "BlockIO": "0B / 376MB",
+          "CPUPerc": "89.53%",
+          "Container": "ircd-prod-bench",
+          "ID": "d3f01a98e71d",
+          "MemPerc": "0.44%",
+          "MemUsage": "139.5MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "2.82MB / 12.1MB",
+          "PIDs": "35"
+        }
+      ]
+    },
+    {
+      "clients": 25,
+      "repeat": 2,
+      "channel": "#load2bf125r2",
+      "sent": 1250,
+      "expected_deliveries": 30000,
+      "received_deliveries": 30000,
+      "missing_deliveries": 0,
+      "duplicates": 0,
+      "unexpected": 0,
+      "disconnects": 0,
+      "errors": [],
+      "error_numerics": {},
+      "elapsed_s": 4.99938272201689,
+      "send_elapsed_s": 4.996513677004259,
+      "messages_per_s": 250.17443777907516,
+      "deliveries_per_s": 6000.74082503873,
+      "latency_samples": 30000,
+      "delivery_latency": {
+        "p50_ms": 1.751,
+        "p95_ms": 2.392,
+        "p99_ms": 2.628,
+        "p99.9_ms": 3.275
+      },
+      "registration_latency": {
+        "p50_ms": 2.158,
+        "p95_ms": 3.049,
+        "p99_ms": 3.06,
+        "p99.9_ms": 3.06
+      },
+      "client_wire_bytes": {
+        "min": 83,
+        "max": 220,
+        "mean": 145.2456
+      },
+      "resource_samples": [
+        {
+          "elapsed_s": 1.865,
+          "BlockIO": "0B / 406MB",
+          "CPUPerc": "191.84%",
+          "Container": "ircd-prod-bench",
+          "ID": "d3f01a98e71d",
+          "MemPerc": "0.43%",
+          "MemUsage": "139.2MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "3.34MB / 14.9MB",
+          "PIDs": "35"
+        },
+        {
+          "elapsed_s": 3.872,
+          "BlockIO": "0B / 507MB",
+          "CPUPerc": "253.55%",
+          "Container": "ircd-prod-bench",
+          "ID": "d3f01a98e71d",
+          "MemPerc": "0.45%",
+          "MemUsage": "143.7MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "3.84MB / 17.8MB",
+          "PIDs": "35"
+        },
+        {
+          "elapsed_s": 5.878,
+          "BlockIO": "0B / 580MB",
+          "CPUPerc": "77.42%",
+          "Container": "ircd-prod-bench",
+          "ID": "d3f01a98e71d",
+          "MemPerc": "0.45%",
+          "MemUsage": "143.7MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "4.12MB / 19.5MB",
+          "PIDs": "35"
+        }
+      ]
+    },
+    {
+      "clients": 50,
+      "repeat": 1,
+      "channel": "#load0c1650r1",
+      "sent": 2500,
+      "expected_deliveries": 122500,
+      "received_deliveries": 122500,
+      "missing_deliveries": 0,
+      "duplicates": 0,
+      "unexpected": 0,
+      "disconnects": 0,
+      "errors": [],
+      "error_numerics": {},
+      "elapsed_s": 5.0000926239881665,
+      "send_elapsed_s": 4.998981115990318,
+      "messages_per_s": 500.10190916769244,
+      "deliveries_per_s": 24499.546150865448,
+      "latency_samples": 122500,
+      "delivery_latency": {
+        "p50_ms": 1.185,
+        "p95_ms": 1.741,
+        "p99_ms": 2.626,
+        "p99.9_ms": 4.542
+      },
+      "registration_latency": {
+        "p50_ms": 2.533,
+        "p95_ms": 3.171,
+        "p99_ms": 9.171,
+        "p99.9_ms": 9.171
+      },
+      "client_wire_bytes": {
+        "min": 82,
+        "max": 222,
+        "mean": 145.4084
+      },
+      "resource_samples": [
+        {
+          "elapsed_s": 1.658,
+          "BlockIO": "0B / 663MB",
+          "CPUPerc": "299.78%",
+          "Container": "ircd-prod-bench",
+          "ID": "d3f01a98e71d",
+          "MemPerc": "0.48%",
+          "MemUsage": "153.8MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "5.72MB / 29.7MB",
+          "PIDs": "35"
+        },
+        {
+          "elapsed_s": 3.663,
+          "BlockIO": "0B / 890MB",
+          "CPUPerc": "331.59%",
+          "Container": "ircd-prod-bench",
+          "ID": "d3f01a98e71d",
+          "MemPerc": "0.49%",
+          "MemUsage": "158.1MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "7.52MB / 41.7MB",
+          "PIDs": "35"
+        },
+        {
+          "elapsed_s": 5.669,
+          "BlockIO": "0B / 1.04GB",
+          "CPUPerc": "128.27%",
+          "Container": "ircd-prod-bench",
+          "ID": "d3f01a98e71d",
+          "MemPerc": "0.49%",
+          "MemUsage": "155.9MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "8.72MB / 49.7MB",
+          "PIDs": "35"
+        }
+      ]
+    },
+    {
+      "clients": 50,
+      "repeat": 2,
+      "channel": "#load3a6450r2",
+      "sent": 2500,
+      "expected_deliveries": 122500,
+      "received_deliveries": 122500,
+      "missing_deliveries": 0,
+      "duplicates": 0,
+      "unexpected": 0,
+      "disconnects": 0,
+      "errors": [],
+      "error_numerics": {},
+      "elapsed_s": 5.000304376997519,
+      "send_elapsed_s": 4.998938429984264,
+      "messages_per_s": 500.10617954497786,
+      "deliveries_per_s": 24498.508643499077,
+      "latency_samples": 122500,
+      "delivery_latency": {
+        "p50_ms": 1.18,
+        "p95_ms": 1.699,
+        "p99_ms": 2.869,
+        "p99.9_ms": 4.809
+      },
+      "registration_latency": {
+        "p50_ms": 1.405,
+        "p95_ms": 2.391,
+        "p99_ms": 4.653,
+        "p99.9_ms": 4.653
+      },
+      "client_wire_bytes": {
+        "min": 82,
+        "max": 222,
+        "mean": 145.4084
+      },
+      "resource_samples": [
+        {
+          "elapsed_s": 1.783,
+          "BlockIO": "0B / 1.21GB",
+          "CPUPerc": "280.84%",
+          "Container": "ircd-prod-bench",
+          "ID": "d3f01a98e71d",
+          "MemPerc": "0.51%",
+          "MemUsage": "162.5MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "10.4MB / 60.6MB",
+          "PIDs": "35"
+        },
+        {
+          "elapsed_s": 3.786,
+          "BlockIO": "0B / 1.4GB",
+          "CPUPerc": "335.95%",
+          "Container": "ircd-prod-bench",
+          "ID": "d3f01a98e71d",
+          "MemPerc": "0.51%",
+          "MemUsage": "162.7MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "12.2MB / 72.6MB",
+          "PIDs": "35"
+        },
+        {
+          "elapsed_s": 5.793,
+          "BlockIO": "0B / 1.59GB",
+          "CPUPerc": "160.73%",
+          "Container": "ircd-prod-bench",
+          "ID": "d3f01a98e71d",
+          "MemPerc": "0.50%",
+          "MemUsage": "158.6MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "13.3MB / 79.8MB",
+          "PIDs": "35"
+        }
+      ]
+    }
+  ]
+}

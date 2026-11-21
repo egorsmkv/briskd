@@ -18,6 +18,8 @@ session takes over, `nodelay` (Nagle's algorithm delays multi-line replies),
 and a 5-second send timeout.
 """.
 -behaviour(gen_server).
+%% Per-socket driver read buffer, bytes (see the listen options).
+-define(RECV_BUFFER, 2048).
 -export([start_link/3, port/1, init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -doc """
@@ -67,6 +69,13 @@ init({Kind, Port, #{ip := IP, tls_options := TLSOptions}}) ->
         %% measured median p50 41.98 ms without it and 0.85 ms with it
         %% (bench/results/2026-11-19-commands.md).
         {nodelay, true},
+        %% The driver keeps a read buffer of this size for every socket.
+        %% The default (9216 bytes here) was over half of each idle
+        %% client's memory (bench/results/2026-11-21-memory-before.md: 16.6
+        %% KiB per client, ~9 KiB of it this buffer). An IRC line is at most
+        %% 512 bytes plus an optional tag section, and longer input is read
+        %% in several pieces and joined by the session's line buffer.
+        {buffer, ?RECV_BUFFER},
         {send_timeout, 5000}
     ],
     case listen(Kind, Port, Options, TLSOptions) of

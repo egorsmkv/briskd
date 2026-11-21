@@ -8,7 +8,7 @@
 // out.
 import { ensureBuf } from "./buffers.ts";
 import { buffers } from "./state.ts";
-import { MAX_LINES, snapshot, type Stored } from "./history_snapshot.ts";
+import { restoredConversations, snapshot } from "./history_snapshot.ts";
 
 const KEY = "ircd-webirc-history";
 /** Earlier releases kept private conversations only, under this key. */
@@ -41,28 +41,16 @@ export function scheduleHistorySave(): void {
  * later only adds what is new). Lines are read already.
  */
 export function restoreHistory(): void {
-  let stored: Stored;
+  let raw: string | null;
   try {
-    stored = JSON.parse(
-      sessionStorage.getItem(KEY) || sessionStorage.getItem(OLD_KEY) || "{}",
-    );
+    raw = sessionStorage.getItem(KEY) || sessionStorage.getItem(OLD_KEY);
   } catch {
     return;
   }
-  for (const { name, lines } of Object.values(stored)) {
-    if (
-      typeof name !== "string" || name === "*status" || name === "" ||
-      !Array.isArray(lines)
-    ) {
-      continue;
-    }
+  if (!raw) return;
+  for (const { name, lines } of restoredConversations(raw)) {
     const buf = ensureBuf(name);
-    if (buf.lines.length > 0) continue;
-    buf.lines = lines
-      .filter((l) =>
-        l && typeof l.text === "string" && Number.isFinite(l.epochMs)
-      )
-      .slice(-MAX_LINES);
+    if (buf.lines.length === 0) buf.lines = lines;
   }
 }
 

@@ -101,6 +101,21 @@ export function closeModModal(): void {
   $("mod-modal").classList.remove("open");
 }
 
+/** Channels kept from one LIST reply (a large network lists many more). */
+export const MAX_DISCOVER_CHANNELS = 5000;
+/** Rows drawn at once; the filter narrows the rest. */
+const MAX_DISCOVER_ROWS = 300;
+let discoverFrame = 0;
+
+/** Redraw the list at most once per frame while LIST replies stream in. */
+export function scheduleDiscoverRender(): void {
+  if (discoverFrame) return;
+  discoverFrame = requestAnimationFrame(() => {
+    discoverFrame = 0;
+    renderDiscoverList();
+  });
+}
+
 export function renderDiscoverList(): void {
   const wrap = $("discover-list");
   wrap.textContent = "";
@@ -128,7 +143,7 @@ export function renderDiscoverList(): void {
     return;
   }
 
-  for (const ch of filtered) {
+  for (const ch of filtered.slice(0, MAX_DISCOVER_ROWS)) {
     const row = document.createElement("div");
     row.className = "discover-row";
 
@@ -173,6 +188,15 @@ export function renderDiscoverList(): void {
     row.appendChild(btn);
     wrap.appendChild(row);
   }
+  if (filtered.length > MAX_DISCOVER_ROWS) {
+    const more = document.createElement("div");
+    more.className = "muted discover-empty";
+    more.textContent = t("discover.more", {
+      shown: MAX_DISCOVER_ROWS,
+      total: filtered.length,
+    });
+    wrap.appendChild(more);
+  }
 }
 
 export function requestDiscoverList(): void {
@@ -192,6 +216,8 @@ export function openDiscoverModal(): void {
 export function closeDiscoverModal(): void {
   $("discover-modal").classList.remove("open");
   S.discoverLoading = false;
+  S.discoverChannels = [];
+  $("discover-list").textContent = "";
 }
 
 /** Wire this module's DOM listeners and initial state. */

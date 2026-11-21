@@ -52,8 +52,12 @@ Expose only the listeners enabled in your JSON configuration:
 > [!IMPORTANT]
 > Never expose the Erlang distribution port (`epmd` / dynamic distribution
 > port) outside the host. `config/vm.prod.args.src` binds distribution to
-> `{127,0,0,1}` so `/opt/ircd/bin/ircd ping` and `remote_console` work locally
-> inside the container or host without listening on public interfaces.
+> `{127,0,0,1}` and names the node `ircd@localhost`, so `/opt/ircd/bin/ircd
+> ping`, `eval`, and `remote_console` work locally inside the container or host
+> without listening on public interfaces. (Earlier images named the node after
+> the container hostname, which resolves to the container's external address,
+> and lacked `libsctp1`, whose warning corrupted the node name the release
+> script reads: these commands then reported "Node is not running!".)
 
 ### WebSocket and WebIRC gateways
 

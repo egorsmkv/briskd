@@ -22,6 +22,7 @@ SSRF defenses:
 -export([
     enabled/0,
     fetch/1,
+    init_cache/0,
     validate_url/1,
     is_private_ip/1,
     extract_metadata/2,
@@ -418,32 +419,38 @@ unescape_html(Bin) ->
     B5 = binary:replace(B4, <<"&#39;">>, <<"'">>, [global]),
     binary:replace(B5, <<"&#x27;">>, <<"'">>, [global]).
 
+-doc """
+Create the preview cache table. Call from the long-lived process that owns
+it (`ircd_webui`'s `init/1`): a table created by a request handler would be
+deleted when that handler exits. Without the table, previews are fetched
+uncached. A second call is a no-op.
+""".
+-spec init_cache() -> ok.
+init_cache() ->
+    _ =
+        case ets:whereis(?CACHE_TABLE) of
+            undefined -> ets:new(?CACHE_TABLE, [named_table, public, set]);
+            Tab -> Tab
+        end,
+    ok.
+
 cache_get(Url) ->
-    Tab = ensure_cache_table(),
     Now = erlang:monotonic_time(second),
-    case ets:lookup(Tab, Url) of
+    case ets:whereis(?CACHE_TABLE) =/= undefined andalso ets:lookup(?CACHE_TABLE, Url) of
         [{Url, Exp, Result}] when Exp > Now -> Result;
         _ -> miss
     end.
 
 cache_put(Url, Result, Ttl) ->
-    Tab = ensure_cache_table(),
-    case ets:info(Tab, size) >= ?MAX_CACHE_ENTRIES of
-        true -> ets:delete_all_objects(Tab);
-        false -> ok
-    end,
-    Exp = erlang:monotonic_time(second) + Ttl,
-    ets:insert(Tab, {Url, Exp, Result}),
-    ok.
-
-ensure_cache_table() ->
-    case ets:whereis(?CACHE_TABLE) of
+    case ets:info(?CACHE_TABLE, size) of
         undefined ->
-            try
-                ets:new(?CACHE_TABLE, [named_table, public, set])
-            catch
-                error:badarg -> ?CACHE_TABLE
-            end;
-        Tab ->
-            Tab
+            ok;
+        Size ->
+            case Size >= ?MAX_CACHE_ENTRIES of
+                true -> ets:delete_all_objects(?CACHE_TABLE);
+                false -> ok
+            end,
+            Exp = erlang:monotonic_time(second) + Ttl,
+            ets:insert(?CACHE_TABLE, {Url, Exp, Result}),
+            ok
     end.

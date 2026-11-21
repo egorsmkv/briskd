@@ -62,6 +62,7 @@ have members in the channel. The burst for a new peer is built by
     remove_remote_nick/3,
     rename_remote_nick/3,
     server_broadcast/1,
+    sweep_remote_channels/0,
     server_burst_lines/1,
     set_remote_away/3,
     update_remote_modes/5,
@@ -2149,8 +2150,7 @@ receive_remote_invite(Peer, Prefix, Nick, Name) ->
                     ok;
                 undefined ->
                     case mnesia:dirty_read(remote_client, ircd_wire:fold(Nick)) of
-                        [#remote_client{peer = Dest, nick = RemoteNick, key = NickKey}] ->
-                            remember_remote_invite_link(NickKey, Name),
+                        [#remote_client{peer = Dest, nick = RemoteNick}] ->
                             case ircd_route:should_forward(Peer, Dest) of
                                 true ->
                                     Line = ircd_wire:line(
@@ -2178,17 +2178,31 @@ remember_local_invite(Pid, Name) ->
             ok
     end.
 
-remember_remote_invite_link(NickKey, Name) ->
-    Key = ircd_wire:fold(Name),
-    Channel =
-        case mnesia:dirty_read(remote_channel, Key) of
-            [#remote_channel{} = Existing] -> Existing;
-            [] -> #remote_channel{key = Key, name = Name}
+-doc """
+Delete `remote_channel` rows that have no members, and empty the unused
+`invited` maps that earlier releases recorded. A row describes a channel as
+peers report it and is removed when its last remote member leaves; rows
+created by a peer's TOPIC or MODE, or by an INVITE, for a channel with no
+remote members were never removed, and each kept its local channel from
+being pruned as empty. Called every minute by `m:ircd_state`.
+""".
+-spec sweep_remote_channels() -> non_neg_integer().
+sweep_remote_channels() ->
+    lists:foldl(
+        fun(Key, Removed) ->
+            case mnesia:dirty_read(remote_channel, Key) of
+                [#remote_channel{members = Members}] when map_size(Members) =:= 0 ->
+                    mnesia:dirty_delete(remote_channel, Key),
+                    Removed + 1;
+                [#remote_channel{invited = Invited} = Row] when map_size(Invited) > 0 ->
+                    mnesia:dirty_write(Row#remote_channel{invited = #{}}),
+                    Removed;
+                _ ->
+                    Removed
+            end
         end,
-    mnesia:dirty_write(
-        ircd_wire:retain_fields(Channel#remote_channel{
-            invited = (Channel#remote_channel.invited)#{NickKey => true}
-        })
+        0,
+        mnesia:dirty_all_keys(remote_channel)
     ).
 
 -doc """

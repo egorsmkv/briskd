@@ -84,15 +84,22 @@ export function loadSession(): SavedSession | null {
   try {
     const raw = sessionStorage.getItem(SESSION_KEY);
     if (!raw) return null;
-    const p = JSON.parse(raw) as Partial<SavedSession>;
-    if (!p.nick || !p.wsUrl) return null;
+    const p: unknown = JSON.parse(raw);
+    if (!p || typeof p !== "object") return null;
+    const o = p as Record<string, unknown>;
+    const str = (v: unknown) => typeof v === "string" ? v : "";
+    if (!str(o.nick) || !str(o.wsUrl)) return null;
     return {
-      nick: p.nick,
-      acct: p.acct || "",
-      pass: p.pass || "",
-      channels: Array.isArray(p.channels) ? p.channels.filter(Boolean) : [],
-      wsUrl: p.wsUrl,
-      activeBuf: p.activeBuf || "*status",
+      nick: str(o.nick),
+      acct: str(o.acct),
+      pass: str(o.pass),
+      channels: Array.isArray(o.channels)
+        ? o.channels.filter((c): c is string =>
+          typeof c === "string" && c !== ""
+        )
+        : [],
+      wsUrl: str(o.wsUrl),
+      activeBuf: str(o.activeBuf) || "*status",
     };
   } catch {
     return null;

@@ -1894,7 +1894,7 @@ invite(Nick, Name, #client{pid = Pid} = Client, Server) ->
     end.
 
 invite_remote(
-    #remote_client{key = NickKey, nick = RemoteNick, peer = Dest},
+    #remote_client{nick = RemoteNick, peer = Dest},
     Name,
     #client{pid = Pid} = Client,
     Server
@@ -1915,23 +1915,12 @@ invite_remote(
                         Client, Server, <<"482">>, [Canonical], <<"You're not channel operator">>
                     );
                 {true, false} ->
-                    remember_remote_invite(NickKey, Canonical),
                     ircd_state_send:numeric(
                         Client, Server, <<"341">>, [RemoteNick, Canonical], none
                     ),
                     ircd_state_link:propagate_invite(Client, RemoteNick, Canonical, Dest)
             end
     end.
-
-remember_remote_invite(NickKey, Name) ->
-    Key = ircd_wire:fold(Name),
-    Channel =
-        case mnesia:dirty_read(remote_channel, Key) of
-            [#remote_channel{} = Existing] -> Existing;
-            [] -> #remote_channel{key = Key, name = Name}
-        end,
-    Invited = Channel#remote_channel.invited,
-    mnesia:dirty_write(Channel#remote_channel{invited = Invited#{NickKey => true}}).
 
 notify_invite(
     #client{pid = TargetPid, nick = TargetNick, away = Away},

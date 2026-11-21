@@ -28,7 +28,9 @@
 }.
 
 %% `members` maps a folded nick to {AdjacentPeer, Roles}; `flags` is what
-%% peers reported about the channel.
+%% peers reported about the channel. A row with no members is deleted
+%% (ircd_state_link:sweep_remote_channels/0). `invited` is no longer used
+%% (kept so the record keeps its shape) and is always empty.
 -record(remote_channel, {
     key :: binary(),
     name :: binary(),

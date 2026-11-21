@@ -40,6 +40,9 @@ export function updateRemoteTyping(
   const key = ircFold(bufName);
   let map = typingTimers.get(key);
   if (!map) {
+    // Every message reports "done" for its sender; only a conversation with
+    // someone typing gets an entry, and it goes when the last one stops.
+    if (state !== "active") return;
     map = new Map();
     typingTimers.set(key, map);
   }
@@ -49,11 +52,13 @@ export function updateRemoteTyping(
     if (!map.has(sender) && map.size >= MAX_TYPERS_PER_BUF) return;
     const tid = globalThis.setTimeout(() => {
       map?.delete(sender);
+      if (map?.size === 0) typingTimers.delete(key);
       if (S.activeBuf === key) renderTypingBar();
     }, 6000);
     map.set(sender, tid);
   } else {
     map.delete(sender);
+    if (map.size === 0) typingTimers.delete(key);
   }
   if (S.activeBuf === key) renderTypingBar();
 }

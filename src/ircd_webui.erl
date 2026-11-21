@@ -126,6 +126,7 @@ init(#{webui := #{ip := IP, port := Port}}) ->
             %% Tables shared by the request handlers, owned by this
             %% long-lived process (a handler's own table would die with it).
             ok = ircd_webui_auth:init_tables(),
+            ok = ircd_link_preview:init_cache(),
             _ = ensure_upload_rate_table(),
             Assets = #{
                 app => load_asset("app.html", <<"ircd web UI asset missing">>),
@@ -1219,6 +1220,9 @@ require_altcha(Req) ->
                 {error, replayed} ->
                     {error, <<"altcha_replayed">>,
                         <<"ALTCHA challenge already used. Please verify again.">>};
+                {error, busy} ->
+                    {error, <<"altcha_busy">>,
+                        <<"Too many verifications right now. Please try again in a few minutes.">>};
                 {error, invalid} ->
                     {error, <<"altcha_invalid">>, <<"Invalid ALTCHA verification.">>}
             end;

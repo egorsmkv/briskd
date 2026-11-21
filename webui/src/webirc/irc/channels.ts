@@ -1,4 +1,5 @@
 // Channel membership, nick changes, topics, modes, invites, and LIST.
+import { forgetBuffer } from "../forget.ts";
 import { byId as $ } from "../../common/dom.ts";
 import { showMyNick } from "../sidebar.ts";
 import {
@@ -12,7 +13,12 @@ import { refreshIntro } from "../chat/list.ts";
 import { capOn, isupport } from "../caps.ts";
 import { catchUp, historyAfter, sendRaw } from "../connection.ts";
 import { e2ee } from "../e2ee_ui.ts";
-import { renderDiscoverList, renderModModal } from "../modals.ts";
+import {
+  MAX_DISCOVER_CHANNELS,
+  renderDiscoverList,
+  renderModModal,
+  scheduleDiscoverRender,
+} from "../modals.ts";
 import { saveSession } from "../session.ts";
 import { settings } from "../settings.ts";
 import {
@@ -32,6 +38,16 @@ import {
 } from "../users.ts";
 import { isChan } from "../util.ts";
 
+/** Index of the last parameter each command cannot do without. */
+const REQUIRED_PARAM: Record<string, number> = {
+  JOIN: 0,
+  PART: 0,
+  TOPIC: 0,
+  KICK: 1,
+  "332": 1,
+  "353": 2,
+};
+
 /**
  * Channel membership, nick changes, topics, modes, invites, and LIST.
  * Returns true when the line was handled.
@@ -41,6 +57,10 @@ export function handleChannels(
   time: string | undefined,
 ): boolean {
   const { command, params, nick } = msg;
+  // A line without the channel (or kicked nick) it needs is malformed:
+  // handled (ignored) here rather than creating a buffer named "undefined".
+  const needed = REQUIRED_PARAM[command];
+  if (needed !== undefined && !params[needed]) return true;
 
   if (command === "JOIN") {
     const chan = params[0];
@@ -97,6 +117,7 @@ export function handleChannels(
       buf.members.delete(nick);
       if (ircFold(nick) === ircFold(S.myNick)) {
         buffers.delete(ircFold(chan));
+        forgetBuffer(ircFold(chan));
         if (S.activeBuf === ircFold(chan)) switchBuf("*status");
         else renderBuffers();
       } else {
@@ -343,9 +364,9 @@ export function handleChannels(
     const users = parseInt(params[2] || "0", 10) || 0;
     const topic = params[3] || "";
     if (S.discoverLoading || $("discover-modal").classList.contains("open")) {
-      if (chan) {
+      if (chan && S.discoverChannels.length < MAX_DISCOVER_CHANNELS) {
         S.discoverChannels.push({ name: chan, users, topic });
-        renderDiscoverList();
+        scheduleDiscoverRender();
       }
       return true;
     }

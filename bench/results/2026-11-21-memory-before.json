@@ -1,0 +1,1115 @@
+{
+  "idle": {
+    "memory": {
+      "atom": 1304822,
+      "atom_used": 1304822,
+      "binary": 788896,
+      "code": 33423767,
+      "ets": 1603448,
+      "processes": 13847800,
+      "processes_used": 13703528,
+      "system": 61045960,
+      "total": 74893760
+    },
+    "ports": 8,
+    "processes": 165,
+    "sessions": 0,
+    "session_memory": 0,
+    "session_binaries": 0,
+    "session_queue": 0,
+    "top_processes": [
+      {
+        "memory": 34408,
+        "name": "code_server",
+        "queue": 0
+      },
+      {
+        "memory": 34384,
+        "name": "release_handler",
+        "queue": 0
+      },
+      {
+        "memory": 21616,
+        "name": "erl_prim_loader",
+        "queue": 0
+      },
+      {
+        "memory": 14072,
+        "name": "ircd_sup",
+        "queue": 0
+      },
+      {
+        "memory": 9248,
+        "name": "livery_sup",
+        "queue": 0
+      },
+      {
+        "memory": 9184,
+        "name": "instrument_sup",
+        "queue": 0
+      },
+      {
+        "memory": 9008,
+        "name": "ircd_webui",
+        "queue": 0
+      },
+      {
+        "memory": 8800,
+        "name": "ircd_links",
+        "queue": 0
+      },
+      {
+        "memory": 6568,
+        "name": "application_controller",
+        "queue": 0
+      },
+      {
+        "memory": 6456,
+        "name": "kernel_sup",
+        "queue": 0
+      },
+      {
+        "memory": 6216,
+        "name": "mnesia_kernel_sup",
+        "queue": 0
+      },
+      {
+        "memory": 6184,
+        "name": "quic_sup",
+        "queue": 0
+      }
+    ],
+    "top_tables": [
+      {
+        "name": "code_server",
+        "size": 888,
+        "bytes": 760840
+      },
+      {
+        "name": "mnesia_gvar",
+        "size": 701,
+        "bytes": 100000
+      },
+      {
+        "name": "logger",
+        "size": 4,
+        "bytes": 54408
+      },
+      {
+        "name": "instrument_series",
+        "size": 0,
+        "bytes": 52896
+      },
+      {
+        "name": "livery_ratelimit",
+        "size": 0,
+        "bytes": 52240
+      },
+      {
+        "name": "instrument_span_exporters",
+        "size": 0,
+        "bytes": 52240
+      },
+      {
+        "name": "hackney_host_limits",
+        "size": 0,
+        "bytes": 52240
+      },
+      {
+        "name": "ac_tab",
+        "size": 59,
+        "bytes": 46160
+      },
+      {
+        "name": "code_names",
+        "size": 25,
+        "bytes": 22104
+      },
+      {
+        "name": "schema",
+        "size": 18,
+        "bytes": 20584
+      },
+      {
+        "name": "livery_client_circuit_store",
+        "size": 0,
+        "bytes": 11280
+      },
+      {
+        "name": "livery_client_balance_store",
+        "size": 0,
+        "bytes": 11280
+      },
+      {
+        "name": "livery_auth_dpop_proofs",
+        "size": 0,
+        "bytes": 11280
+      },
+      {
+        "name": "ircd_connection_stats",
+        "size": 0,
+        "bytes": 11280
+      },
+      {
+        "name": "ircd_command_stats",
+        "size": 0,
+        "bytes": 11280
+      }
+    ],
+    "settled": true
+  },
+  "1000 connected": {
+    "memory": {
+      "atom": 1304874,
+      "atom_used": 1304874,
+      "binary": 10230808,
+      "code": 33423975,
+      "ets": 3621904,
+      "processes": 17540240,
+      "processes_used": 17522256,
+      "system": 74332064,
+      "total": 91872304
+    },
+    "ports": 1008,
+    "processes": 1165,
+    "sessions": 1000,
+    "session_memory": 2888000,
+    "session_binaries": 0,
+    "session_queue": 0,
+    "top_processes": [
+      {
+        "memory": 507944,
+        "name": "ircd_sessions",
+        "queue": 0
+      },
+      {
+        "memory": 74880,
+        "name": "ircd_state",
+        "queue": 0
+      },
+      {
+        "memory": 21616,
+        "name": "erl_prim_loader",
+        "queue": 0
+      },
+      {
+        "memory": 21616,
+        "name": "code_server",
+        "queue": 0
+      },
+      {
+        "memory": 13688,
+        "name": "release_handler",
+        "queue": 0
+      },
+      {
+        "memory": 7192,
+        "name": "ircd_sup",
+        "queue": 0
+      },
+      {
+        "memory": 6136,
+        "name": "net_kernel",
+        "queue": 0
+      },
+      {
+        "memory": 5992,
+        "name": "ircd_webui",
+        "queue": 0
+      },
+      {
+        "memory": 5368,
+        "name": "ircd_links",
+        "queue": 0
+      },
+      {
+        "memory": 4696,
+        "name": "application_controller",
+        "queue": 0
+      },
+      {
+        "memory": 4032,
+        "name": "logger_std_h_default",
+        "queue": 0
+      },
+      {
+        "memory": 3960,
+        "name": "user_drv",
+        "queue": 0
+      }
+    ],
+    "top_tables": [
+      {
+        "name": "code_server",
+        "size": 888,
+        "bytes": 760840
+      },
+      {
+        "name": "client",
+        "size": 1000,
+        "bytes": 324936
+      },
+      {
+        "name": "channel_history",
+        "size": 20,
+        "bytes": 309008
+      },
+      {
+        "name": "ircd_flood",
+        "size": 1000,
+        "bytes": 292936
+      },
+      {
+        "name": "ircd_caps",
+        "size": 1000,
+        "bytes": 276936
+      },
+      {
+        "name": "ircd_nicks",
+        "size": 1000,
+        "bytes": 140936
+      },
+      {
+        "name": "ircd_conn",
+        "size": 1000,
+        "bytes": 124936
+      },
+      {
+        "name": "ircd_connection_stats",
+        "size": 1000,
+        "bytes": 117768
+      },
+      {
+        "name": "user_modes",
+        "size": 1000,
+        "bytes": 108936
+      },
+      {
+        "name": "mnesia_index",
+        "size": 1000,
+        "bytes": 105120
+      },
+      {
+        "name": "mnesia_gvar",
+        "size": 702,
+        "bytes": 100120
+      },
+      {
+        "name": "activity",
+        "size": 1000,
+        "bytes": 84936
+      },
+      {
+        "name": "channel",
+        "size": 21,
+        "bytes": 55200
+      },
+      {
+        "name": "logger",
+        "size": 4,
+        "bytes": 54408
+      },
+      {
+        "name": "instrument_series",
+        "size": 0,
+        "bytes": 52896
+      }
+    ],
+    "settled": true
+  },
+  "after traffic": {
+    "memory": {
+      "atom": 1304874,
+      "atom_used": 1304874,
+      "binary": 10139296,
+      "code": 33423975,
+      "ets": 6902088,
+      "processes": 18128544,
+      "processes_used": 17550304,
+      "system": 77830104,
+      "total": 95958648
+    },
+    "ports": 1008,
+    "processes": 1165,
+    "sessions": 1000,
+    "session_memory": 2888000,
+    "session_binaries": 0,
+    "session_queue": 0,
+    "top_processes": [
+      {
+        "memory": 507944,
+        "name": "ircd_sessions",
+        "queue": 0
+      },
+      {
+        "memory": 74880,
+        "name": "ircd_state",
+        "queue": 0
+      },
+      {
+        "memory": 21616,
+        "name": "erl_prim_loader",
+        "queue": 0
+      },
+      {
+        "memory": 21616,
+        "name": "code_server",
+        "queue": 0
+      },
+      {
+        "memory": 21592,
+        "name": "release_handler",
+        "queue": 0
+      },
+      {
+        "memory": 7192,
+        "name": "ircd_sup",
+        "queue": 0
+      },
+      {
+        "memory": 6568,
+        "name": "application_controller",
+        "queue": 0
+      },
+      {
+        "memory": 5792,
+        "name": "init",
+        "queue": 0
+      },
+      {
+        "memory": 5368,
+        "name": "ircd_links",
+        "queue": 0
+      },
+      {
+        "memory": 5336,
+        "name": "ircd_webui",
+        "queue": 0
+      },
+      {
+        "memory": 4264,
+        "name": "net_kernel",
+        "queue": 0
+      },
+      {
+        "memory": 3960,
+        "name": "user_drv",
+        "queue": 0
+      }
+    ],
+    "top_tables": [
+      {
+        "name": "channel_history",
+        "size": 20,
+        "bytes": 3589008
+      },
+      {
+        "name": "code_server",
+        "size": 888,
+        "bytes": 760840
+      },
+      {
+        "name": "client",
+        "size": 1000,
+        "bytes": 324936
+      },
+      {
+        "name": "ircd_flood",
+        "size": 1000,
+        "bytes": 292936
+      },
+      {
+        "name": "ircd_caps",
+        "size": 1000,
+        "bytes": 276936
+      },
+      {
+        "name": "ircd_nicks",
+        "size": 1000,
+        "bytes": 140936
+      },
+      {
+        "name": "ircd_conn",
+        "size": 1000,
+        "bytes": 124936
+      },
+      {
+        "name": "ircd_connection_stats",
+        "size": 1000,
+        "bytes": 117768
+      },
+      {
+        "name": "user_modes",
+        "size": 1000,
+        "bytes": 108936
+      },
+      {
+        "name": "mnesia_index",
+        "size": 1000,
+        "bytes": 105120
+      },
+      {
+        "name": "mnesia_gvar",
+        "size": 703,
+        "bytes": 100200
+      },
+      {
+        "name": "activity",
+        "size": 1000,
+        "bytes": 84936
+      },
+      {
+        "name": "channel",
+        "size": 21,
+        "bytes": 55200
+      },
+      {
+        "name": "logger",
+        "size": 4,
+        "bytes": 54408
+      },
+      {
+        "name": "instrument_series",
+        "size": 0,
+        "bytes": 52896
+      }
+    ],
+    "settled": true
+  },
+  "all quit": {
+    "memory": {
+      "atom": 1304874,
+      "atom_used": 1304874,
+      "binary": 1838608,
+      "code": 33423975,
+      "ets": 6235968,
+      "processes": 15472976,
+      "processes_used": 13544896,
+      "system": 67247400,
+      "total": 82720376
+    },
+    "ports": 8,
+    "processes": 166,
+    "sessions": 0,
+    "session_memory": 0,
+    "session_binaries": 0,
+    "session_queue": 0,
+    "top_processes": [
+      {
+        "memory": 21616,
+        "name": "erl_prim_loader",
+        "queue": 0
+      },
+      {
+        "memory": 21616,
+        "name": "code_server",
+        "queue": 0
+      },
+      {
+        "memory": 13688,
+        "name": "release_handler",
+        "queue": 0
+      },
+      {
+        "memory": 8976,
+        "name": "file_server_2",
+        "queue": 0
+      },
+      {
+        "memory": 7192,
+        "name": "ircd_sup",
+        "queue": 0
+      },
+      {
+        "memory": 6136,
+        "name": "net_kernel",
+        "queue": 0
+      },
+      {
+        "memory": 5368,
+        "name": "ircd_links",
+        "queue": 0
+      },
+      {
+        "memory": 5336,
+        "name": "ircd_webui",
+        "queue": 0
+      },
+      {
+        "memory": 4696,
+        "name": "application_controller",
+        "queue": 0
+      },
+      {
+        "memory": 4032,
+        "name": "logger_std_h_default",
+        "queue": 0
+      },
+      {
+        "memory": 4024,
+        "name": "disk_log_sup",
+        "queue": 0
+      },
+      {
+        "memory": 3960,
+        "name": "user_drv",
+        "queue": 0
+      }
+    ],
+    "top_tables": [
+      {
+        "name": "channel_history",
+        "size": 20,
+        "bytes": 3925008
+      },
+      {
+        "name": "code_server",
+        "size": 888,
+        "bytes": 760840
+      },
+      {
+        "name": "whowas",
+        "size": 1000,
+        "bytes": 364936
+      },
+      {
+        "name": "ircd_holds",
+        "size": 1000,
+        "bytes": 164936
+      },
+      {
+        "name": "mnesia_gvar",
+        "size": 703,
+        "bytes": 100200
+      },
+      {
+        "name": "logger",
+        "size": 4,
+        "bytes": 54408
+      },
+      {
+        "name": "instrument_series",
+        "size": 0,
+        "bytes": 52896
+      },
+      {
+        "name": "livery_ratelimit",
+        "size": 0,
+        "bytes": 52240
+      },
+      {
+        "name": "instrument_span_exporters",
+        "size": 0,
+        "bytes": 52240
+      },
+      {
+        "name": "hackney_host_limits",
+        "size": 0,
+        "bytes": 52240
+      },
+      {
+        "name": "ac_tab",
+        "size": 59,
+        "bytes": 46160
+      },
+      {
+        "name": "ircd_connection_stats",
+        "size": 0,
+        "bytes": 29768
+      },
+      {
+        "name": "code_names",
+        "size": 25,
+        "bytes": 22104
+      },
+      {
+        "name": "user_modes",
+        "size": 0,
+        "bytes": 20936
+      },
+      {
+        "name": "ircd_nicks",
+        "size": 0,
+        "bytes": 20936
+      }
+    ],
+    "settled": true
+  },
+  "churn round 1": {
+    "memory": {
+      "atom": 1304874,
+      "atom_used": 1304874,
+      "binary": 2035176,
+      "code": 33423975,
+      "ets": 7640840,
+      "processes": 15387416,
+      "processes_used": 13546208,
+      "system": 68816456,
+      "total": 84203872
+    },
+    "ports": 8,
+    "processes": 165,
+    "sessions": 0,
+    "session_memory": 0,
+    "session_binaries": 0,
+    "session_queue": 0,
+    "top_processes": [
+      {
+        "memory": 21616,
+        "name": "erl_prim_loader",
+        "queue": 0
+      },
+      {
+        "memory": 21616,
+        "name": "code_server",
+        "queue": 0
+      },
+      {
+        "memory": 21592,
+        "name": "release_handler",
+        "queue": 0
+      },
+      {
+        "memory": 7192,
+        "name": "ircd_sup",
+        "queue": 0
+      },
+      {
+        "memory": 6568,
+        "name": "application_controller",
+        "queue": 0
+      },
+      {
+        "memory": 5792,
+        "name": "init",
+        "queue": 0
+      },
+      {
+        "memory": 5368,
+        "name": "ircd_links",
+        "queue": 0
+      },
+      {
+        "memory": 5336,
+        "name": "ircd_webui",
+        "queue": 0
+      },
+      {
+        "memory": 4264,
+        "name": "net_kernel",
+        "queue": 0
+      },
+      {
+        "memory": 4032,
+        "name": "logger_std_h_default",
+        "queue": 0
+      },
+      {
+        "memory": 3960,
+        "name": "user_drv",
+        "queue": 0
+      },
+      {
+        "memory": 3776,
+        "name": "kernel_sup",
+        "queue": 0
+      }
+    ],
+    "top_tables": [
+      {
+        "name": "channel_history",
+        "size": 30,
+        "bytes": 5066288
+      },
+      {
+        "name": "code_server",
+        "size": 888,
+        "bytes": 760840
+      },
+      {
+        "name": "whowas",
+        "size": 1500,
+        "bytes": 536936
+      },
+      {
+        "name": "ircd_holds",
+        "size": 1500,
+        "bytes": 236936
+      },
+      {
+        "name": "mnesia_gvar",
+        "size": 703,
+        "bytes": 100200
+      },
+      {
+        "name": "logger",
+        "size": 4,
+        "bytes": 54408
+      },
+      {
+        "name": "instrument_series",
+        "size": 0,
+        "bytes": 52896
+      },
+      {
+        "name": "livery_ratelimit",
+        "size": 0,
+        "bytes": 52240
+      },
+      {
+        "name": "instrument_span_exporters",
+        "size": 0,
+        "bytes": 52240
+      },
+      {
+        "name": "hackney_host_limits",
+        "size": 0,
+        "bytes": 52240
+      },
+      {
+        "name": "ac_tab",
+        "size": 59,
+        "bytes": 46160
+      },
+      {
+        "name": "ircd_connection_stats",
+        "size": 0,
+        "bytes": 29768
+      },
+      {
+        "name": "code_names",
+        "size": 25,
+        "bytes": 22104
+      },
+      {
+        "name": "user_modes",
+        "size": 0,
+        "bytes": 20936
+      },
+      {
+        "name": "ircd_nicks",
+        "size": 0,
+        "bytes": 20936
+      }
+    ],
+    "settled": true
+  },
+  "churn round 2": {
+    "memory": {
+      "atom": 1304874,
+      "atom_used": 1304874,
+      "binary": 2113000,
+      "code": 33423975,
+      "ets": 9044832,
+      "processes": 15318656,
+      "processes_used": 13582672,
+      "system": 70293920,
+      "total": 85612576
+    },
+    "ports": 8,
+    "processes": 165,
+    "sessions": 0,
+    "session_memory": 0,
+    "session_binaries": 0,
+    "session_queue": 0,
+    "top_processes": [
+      {
+        "memory": 21616,
+        "name": "erl_prim_loader",
+        "queue": 0
+      },
+      {
+        "memory": 21616,
+        "name": "code_server",
+        "queue": 0
+      },
+      {
+        "memory": 13688,
+        "name": "release_handler",
+        "queue": 0
+      },
+      {
+        "memory": 7192,
+        "name": "ircd_sup",
+        "queue": 0
+      },
+      {
+        "memory": 6136,
+        "name": "net_kernel",
+        "queue": 0
+      },
+      {
+        "memory": 5368,
+        "name": "ircd_links",
+        "queue": 0
+      },
+      {
+        "memory": 5336,
+        "name": "ircd_webui",
+        "queue": 0
+      },
+      {
+        "memory": 4696,
+        "name": "application_controller",
+        "queue": 0
+      },
+      {
+        "memory": 4032,
+        "name": "logger_std_h_default",
+        "queue": 0
+      },
+      {
+        "memory": 3960,
+        "name": "user_drv",
+        "queue": 0
+      },
+      {
+        "memory": 3920,
+        "name": "init",
+        "queue": 0
+      },
+      {
+        "memory": 3776,
+        "name": "kernel_sup",
+        "queue": 0
+      }
+    ],
+    "top_tables": [
+      {
+        "name": "channel_history",
+        "size": 40,
+        "bytes": 6207568
+      },
+      {
+        "name": "code_server",
+        "size": 888,
+        "bytes": 760840
+      },
+      {
+        "name": "whowas",
+        "size": 2000,
+        "bytes": 708936
+      },
+      {
+        "name": "ircd_holds",
+        "size": 2000,
+        "bytes": 308936
+      },
+      {
+        "name": "mnesia_gvar",
+        "size": 703,
+        "bytes": 100200
+      },
+      {
+        "name": "logger",
+        "size": 4,
+        "bytes": 54408
+      },
+      {
+        "name": "instrument_series",
+        "size": 0,
+        "bytes": 52896
+      },
+      {
+        "name": "livery_ratelimit",
+        "size": 0,
+        "bytes": 52240
+      },
+      {
+        "name": "instrument_span_exporters",
+        "size": 0,
+        "bytes": 52240
+      },
+      {
+        "name": "hackney_host_limits",
+        "size": 0,
+        "bytes": 52240
+      },
+      {
+        "name": "ac_tab",
+        "size": 59,
+        "bytes": 46160
+      },
+      {
+        "name": "ircd_connection_stats",
+        "size": 0,
+        "bytes": 29768
+      },
+      {
+        "name": "code_names",
+        "size": 25,
+        "bytes": 22104
+      },
+      {
+        "name": "user_modes",
+        "size": 0,
+        "bytes": 20936
+      },
+      {
+        "name": "ircd_nicks",
+        "size": 0,
+        "bytes": 20936
+      }
+    ],
+    "settled": true
+  },
+  "churn round 3": {
+    "memory": {
+      "atom": 1304874,
+      "atom_used": 1304874,
+      "binary": 2200736,
+      "code": 33423975,
+      "ets": 10482704,
+      "processes": 15299208,
+      "processes_used": 13597280,
+      "system": 71810400,
+      "total": 87109608
+    },
+    "ports": 8,
+    "processes": 165,
+    "sessions": 0,
+    "session_memory": 0,
+    "session_binaries": 0,
+    "session_queue": 0,
+    "top_processes": [
+      {
+        "memory": 21616,
+        "name": "erl_prim_loader",
+        "queue": 0
+      },
+      {
+        "memory": 21616,
+        "name": "code_server",
+        "queue": 0
+      },
+      {
+        "memory": 21592,
+        "name": "release_handler",
+        "queue": 0
+      },
+      {
+        "memory": 7192,
+        "name": "ircd_sup",
+        "queue": 0
+      },
+      {
+        "memory": 6568,
+        "name": "application_controller",
+        "queue": 0
+      },
+      {
+        "memory": 5792,
+        "name": "init",
+        "queue": 0
+      },
+      {
+        "memory": 5368,
+        "name": "ircd_links",
+        "queue": 0
+      },
+      {
+        "memory": 5336,
+        "name": "ircd_webui",
+        "queue": 0
+      },
+      {
+        "memory": 4264,
+        "name": "net_kernel",
+        "queue": 0
+      },
+      {
+        "memory": 4032,
+        "name": "logger_std_h_default",
+        "queue": 0
+      },
+      {
+        "memory": 3960,
+        "name": "user_drv",
+        "queue": 0
+      },
+      {
+        "memory": 3776,
+        "name": "kernel_sup",
+        "queue": 0
+      }
+    ],
+    "top_tables": [
+      {
+        "name": "channel_history",
+        "size": 50,
+        "bytes": 7348848
+      },
+      {
+        "name": "whowas",
+        "size": 2500,
+        "bytes": 897320
+      },
+      {
+        "name": "code_server",
+        "size": 888,
+        "bytes": 760840
+      },
+      {
+        "name": "ircd_holds",
+        "size": 2500,
+        "bytes": 397320
+      },
+      {
+        "name": "mnesia_gvar",
+        "size": 703,
+        "bytes": 100200
+      },
+      {
+        "name": "logger",
+        "size": 4,
+        "bytes": 54408
+      },
+      {
+        "name": "instrument_series",
+        "size": 0,
+        "bytes": 52896
+      },
+      {
+        "name": "livery_ratelimit",
+        "size": 0,
+        "bytes": 52240
+      },
+      {
+        "name": "instrument_span_exporters",
+        "size": 0,
+        "bytes": 52240
+      },
+      {
+        "name": "hackney_host_limits",
+        "size": 0,
+        "bytes": 52240
+      },
+      {
+        "name": "ac_tab",
+        "size": 59,
+        "bytes": 46160
+      },
+      {
+        "name": "ircd_connection_stats",
+        "size": 0,
+        "bytes": 29768
+      },
+      {
+        "name": "code_names",
+        "size": 25,
+        "bytes": 22104
+      },
+      {
+        "name": "user_modes",
+        "size": 0,
+        "bytes": 20936
+      },
+      {
+        "name": "ircd_nicks",
+        "size": 0,
+        "bytes": 20936
+      }
+    ],
+    "settled": true
+  }
+}

@@ -38,9 +38,12 @@ FROM debian:trixie-slim
 # The ircd user has a fixed UID/GID (10001) so files written for it by other
 # containers (TLS keys from lego, see docker-compose.lego.yml) can be owned by it.
 # Runtime libraries the bundled ERTS and the crypto/ssl NIFs link against.
+# libsctp1: without it every emulator prints an ESOCK warning on stdout,
+# which the release script reads as the node's host name, so `ircd ping`,
+# `eval`, and `remote_console` all report "Node is not running!".
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        bash ca-certificates libssl3t64 libstdc++6 libtinfo6 libzstd1 zlib1g \
+        bash ca-certificates libsctp1 libssl3t64 libstdc++6 libtinfo6 libzstd1 zlib1g \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 ircd \
     && useradd --system --uid 10001 --gid ircd --home-dir /var/lib/ircd \

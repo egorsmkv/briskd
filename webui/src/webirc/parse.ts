@@ -3,7 +3,8 @@ import { type IrcMessage } from "./types.ts";
 
 export function parseIrc(raw: string): IrcMessage | null {
   let idx = 0;
-  const tags: Record<string, string> = {};
+  // No prototype: a tag named "__proto__" or "constructor" is just a key.
+  const tags: Record<string, string> = Object.create(null);
   if (raw[0] === "@") {
     const sp = raw.indexOf(" ");
     if (sp === -1) return null;

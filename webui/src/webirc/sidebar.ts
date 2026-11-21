@@ -1,4 +1,5 @@
 // Switching conversations, the conversation list, members list, and drawers.
+import { forgetBuffer } from "./forget.ts";
 import { byId as $ } from "../common/dom.ts";
 import { t } from "../common/i18n.ts";
 import { ircFold } from "../common/ircv3.ts";
@@ -199,6 +200,7 @@ export function buildBufRow(buf: BufferState, key: string): HTMLElement {
         sendRaw(`PART ${buf.name}`);
       } else {
         buffers.delete(key);
+        forgetBuffer(key);
         scheduleHistorySave();
         monitorRemove(buf.name);
         if (S.activeBuf === key) switchBuf("*status");

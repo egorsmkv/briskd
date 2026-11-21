@@ -1,4 +1,5 @@
 // Conversations: creation, adding lines, mentions, page title and unread counters.
+import { forgetBuffer } from "./forget.ts";
 import { updateDynamicFavicon } from "../common/favicon.ts";
 import { scheduleHistorySave } from "./history_cache.ts";
 import { ircFold } from "../common/ircv3.ts";
@@ -53,6 +54,7 @@ export function ensureBuf(name: string): BufferState {
       for (const [k, existing] of buffers.entries()) {
         if (k !== "*status" && k !== S.activeBuf && !isChan(existing.name)) {
           buffers.delete(k);
+          forgetBuffer(k);
           monitorRemove(existing.name);
           break;
         }

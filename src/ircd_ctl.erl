@@ -544,6 +544,11 @@ handle_state_action({delete_account, Name}, Server) ->
                 mnesia:dirty_all_keys(e2ee_queue)
             ),
             mnesia:dirty_delete(account, Key),
+            %% Channels saved for rejoin at its next login (account_rejoin).
+            case ets:whereis(ircd_account_channels) of
+                undefined -> ok;
+                _ -> ets:delete(ircd_account_channels, Key)
+            end,
             logger:notice(#{event => ctl_account_deleted, account => Actual}),
             {ok, #{status => <<"deleted">>, account => Actual}}
     end;

@@ -87,7 +87,7 @@ build_challenge(Key, Number, Expires) when
 Verify a base64-encoded ALTCHA JSON payload against the active server HMAC key
 and enforce single-use replay protection.
 """.
--spec verify_payload(binary()) -> ok | {error, invalid | expired | replayed}.
+-spec verify_payload(binary()) -> ok | {error, invalid | expired | replayed | busy}.
 verify_payload(PayloadBin) when is_binary(PayloadBin) ->
     verify_payload(PayloadBin, hmac_key());
 verify_payload(_) ->
@@ -96,7 +96,7 @@ verify_payload(_) ->
 -doc """
 Verify a base64-encoded ALTCHA JSON payload against an explicit `Key`.
 """.
--spec verify_payload(binary(), binary()) -> ok | {error, invalid | expired | replayed}.
+-spec verify_payload(binary(), binary()) -> ok | {error, invalid | expired | replayed | busy}.
 verify_payload(PayloadBin, Key) when
     is_binary(PayloadBin), byte_size(PayloadBin) =< 4096, is_binary(Key)
 ->
@@ -178,9 +178,17 @@ claim_once(Challenge, Expires) ->
             ok;
         _ ->
             maybe_prune(),
-            case ets:insert_new(?TABLE, {Challenge, Expires}) of
-                true -> ok;
-                false -> {error, replayed}
+            %% A hard cap: past it (more than ?MAX_USED unexpired solutions,
+            %% a flood) new solutions are refused rather than recorded, so
+            %% the table never grows beyond it and replay stays impossible.
+            case ets:info(?TABLE, size) >= ?MAX_USED of
+                true ->
+                    {error, busy};
+                false ->
+                    case ets:insert_new(?TABLE, {Challenge, Expires}) of
+                        true -> ok;
+                        false -> {error, replayed}
+                    end
             end
     end.
 

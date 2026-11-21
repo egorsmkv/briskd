@@ -117,6 +117,19 @@ export interface E2eeStatus {
   trustedPeers: TrustedPeerInfo[];
 }
 
+/** Nicks whose account is remembered (as the users table, webirc/users.ts). */
+const MAX_NICK_ACCOUNTS = 5000;
+
+/** Limits on encrypted multiline batches, as in common/multiline.ts. */
+const MAX_OPEN_BATCHES = 16;
+const MAX_BATCH_LINES = 500;
+const MAX_BATCH_CHARS = 64 * 1024;
+
+/** Channel sender keys kept per peer device (one per channel shared). */
+const MAX_KEYS_PER_PEER = 64;
+/** Channel sender keys kept in total. */
+const MAX_RECEIVED_KEYS = 2000;
+
 interface PersistedState {
   deviceId: number;
   identity: SerializedIdentity;
@@ -182,9 +195,23 @@ export class E2eeManager {
   private sharedWith = new Map<string, Set<string>>();
   private needsRotation = new Set<string>();
   private enabledBuffers = new Set<string>();
+  /** Folded nick → folded account, most recently learned last; capped. */
   private nickToAccount = new Map<string, string>();
 
-  private batches = new Map<string, { start: IrcMsgLike; lines: string[] }>();
+  private rememberAccount(nick: string, account: string): void {
+    this.nickToAccount.delete(nick);
+    this.nickToAccount.set(nick, account);
+    if (this.nickToAccount.size > MAX_NICK_ACCOUNTS) {
+      const oldest = this.nickToAccount.keys().next().value;
+      if (oldest !== undefined) this.nickToAccount.delete(oldest);
+    }
+  }
+
+  /** Open encrypted multiline batches (bounded like common/multiline.ts). */
+  private batches = new Map<
+    string,
+    { start: IrcMsgLike; lines: string[]; chars: number }
+  >();
   private fetchQueue: Array<{
     target: string;
     resolve: (b: PreKeyBundle[]) => void;
@@ -424,40 +451,119 @@ export class E2eeManager {
     this.needsRotation.clear();
     this.enabledBuffers.clear();
 
+    let raw: string | null = null;
     try {
-      const raw = localStorage.getItem(storageKey(account)) ??
+      raw = localStorage.getItem(storageKey(account)) ??
         localStorage.getItem(legacyStorageKey(account));
-      if (raw) {
-        const d = JSON.parse(raw) as PersistedState;
-        this.deviceId = d.deviceId;
-        this.identity = Identity.fromJSON(d.identity);
-        this.prekeys = PreKeys.fromJSON(d.prekeys);
-        this.prekeysUploaded = !!d.prekeysUploaded;
-        for (const [k, v] of refold(d.sessions)) {
-          this.sessions.set(k, DoubleRatchet.fromJSON(v));
-        }
-        for (const [k, v] of refold(d.awaitingReply)) {
-          this.awaitingReply.set(k, fromB64(v));
-        }
-        for (const [k, v] of refold(d.trusted)) this.trusted.set(k, fromB64(v));
-        for (const [k, v] of refold(d.senderKeys)) {
-          this.senderKeys.set(k, SenderKey.fromJSON(v));
-        }
-        for (const [k, v] of refold(d.receivedKeys)) {
-          this.receivedKeys.set(k, SenderKey.fromJSON(v));
-        }
-        for (const [k, list] of refold(d.sharedWith)) {
-          this.sharedWith.set(k, new Set(list.map(ircFold)));
-        }
-        for (const b of d.enabledBuffers || []) {
-          this.enabledBuffers.add(ircFold(b));
-        }
-        return;
-      }
     } catch {
-      // fall through to fresh state
+      raw = null;
+    }
+    if (raw && this.loadState(raw)) return;
+    if (raw) {
+      // The identity could not be read. New keys are made (peers will see
+      // a changed identity), but the old text is kept aside first instead
+      // of being overwritten, so it can still be recovered.
+      try {
+        localStorage.setItem(`${storageKey(account)}:unreadable`, raw);
+      } catch {
+        // storage full: nothing more can be done
+      }
+      this.cb.onNotice(
+        "*status",
+        "E2EE: the saved keys for this account could not be read; new keys were created. " +
+          "The old data was kept in this browser's storage.",
+        "err",
+      );
     }
     this.createFreshState();
+  }
+
+  /**
+   * Keep a peer's sender key for a channel. A peer chooses the channel
+   * name, and every key is saved on every message, so the keys are capped:
+   * per peer device and in total, the oldest stored first going.
+   */
+  private storeReceivedKey(id: string, peer: string, sk: SenderKey): void {
+    this.receivedKeys.delete(id);
+    this.receivedKeys.set(id, sk);
+    const suffix = `|${peer}`;
+    const mine = [...this.receivedKeys.keys()].filter((k) =>
+      k.endsWith(suffix)
+    );
+    for (
+      const k of mine.slice(0, Math.max(0, mine.length - MAX_KEYS_PER_PEER))
+    ) {
+      this.receivedKeys.delete(k);
+    }
+    while (this.receivedKeys.size > MAX_RECEIVED_KEYS) {
+      const oldest = this.receivedKeys.keys().next().value;
+      if (oldest === undefined) break;
+      this.receivedKeys.delete(oldest);
+    }
+  }
+
+  /**
+   * Load saved state. The identity and prekeys are required: false (state
+   * left empty) when they cannot be read. A session, key, or list entry that
+   * cannot be read is skipped, so one bad entry does not cost the identity.
+   */
+  private loadState(raw: string): boolean {
+    let d: Partial<PersistedState>;
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return false;
+      d = parsed as Partial<PersistedState>;
+      if (typeof d.deviceId !== "number" || !Number.isInteger(d.deviceId)) {
+        return false;
+      }
+      this.identity = Identity.fromJSON(
+        d.identity as PersistedState["identity"],
+      );
+      this.prekeys = PreKeys.fromJSON(d.prekeys as PersistedState["prekeys"]);
+      this.deviceId = d.deviceId;
+    } catch {
+      this.identity = null;
+      this.prekeys = null;
+      return false;
+    }
+    this.prekeysUploaded = !!d.prekeysUploaded;
+    const each = <T>(
+      entries: Array<[string, T]> | undefined,
+      apply: (key: string, value: T) => void,
+    ) => {
+      if (!Array.isArray(entries)) return;
+      const pairs = entries.filter((e): e is [string, T] =>
+        Array.isArray(e) && typeof e[0] === "string"
+      );
+      for (const [k, v] of refold(pairs)) {
+        try {
+          apply(k, v);
+        } catch {
+          // one unreadable entry: skip it
+        }
+      }
+    };
+    each(d.sessions, (k, v) => this.sessions.set(k, DoubleRatchet.fromJSON(v)));
+    each(d.awaitingReply, (k, v) => this.awaitingReply.set(k, fromB64(v)));
+    each(d.trusted, (k, v) => this.trusted.set(k, fromB64(v)));
+    each(d.senderKeys, (k, v) => this.senderKeys.set(k, SenderKey.fromJSON(v)));
+    each(
+      d.receivedKeys,
+      (k, v) => this.receivedKeys.set(k, SenderKey.fromJSON(v)),
+    );
+    each(d.sharedWith, (k, list) => {
+      if (!Array.isArray(list)) return;
+      this.sharedWith.set(
+        k,
+        new Set(list.filter((n) => typeof n === "string").map(ircFold)),
+      );
+    });
+    if (Array.isArray(d.enabledBuffers)) {
+      for (const b of d.enabledBuffers) {
+        if (typeof b === "string") this.enabledBuffers.add(ircFold(b));
+      }
+    }
+    return true;
   }
 
   exportBackup(passphrase: string): { filename: string; content: string } {
@@ -658,7 +764,7 @@ export class E2eeManager {
         const nick = params[2];
         const acct = params[3];
         if (acct && acct !== "0") {
-          this.nickToAccount.set(ircFold(nick), ircFold(acct));
+          this.rememberAccount(ircFold(nick), ircFold(acct));
           req.found.push({ nick, account: ircFold(acct) });
         }
         return true;
@@ -681,7 +787,11 @@ export class E2eeManager {
         params[0].startsWith("+") && params[1] === "draft/multiline" &&
         tags[TAG_TYPE]
       ) {
-        this.batches.set(ref, { start: msg, lines: [] });
+        if (this.batches.size >= MAX_OPEN_BATCHES) {
+          const oldest = this.batches.keys().next().value;
+          if (oldest !== undefined) this.batches.delete(oldest);
+        }
+        this.batches.set(ref, { start: msg, lines: [], chars: 0 });
         return true;
       }
       if (params[0].startsWith("-") && this.batches.has(ref)) {
@@ -702,7 +812,14 @@ export class E2eeManager {
       (command === "PRIVMSG" || command === "NOTICE") && tags.batch &&
       this.batches.has(tags.batch)
     ) {
-      this.batches.get(tags.batch)!.lines.push(params[params.length - 1] || "");
+      const open = this.batches.get(tags.batch)!;
+      const line = params[params.length - 1] || "";
+      open.lines.push(line);
+      open.chars += line.length;
+      // Too large for an envelope: drop the batch (its end is then ignored).
+      if (open.lines.length > MAX_BATCH_LINES || open.chars > MAX_BATCH_CHARS) {
+        this.batches.delete(tags.batch);
+      }
       return true;
     }
     if (command === "PRIVMSG" && tags[TAG_TYPE]) {
@@ -852,7 +969,7 @@ export class E2eeManager {
       return;
     }
     if (senderNick) {
-      this.nickToAccount.set(ircFold(senderNick), srcAccount);
+      this.rememberAccount(ircFold(senderNick), srcAccount);
     }
 
     try {
@@ -957,10 +1074,14 @@ export class E2eeManager {
       t?: string;
       skd?: SenderKeyDistribution;
     };
-    if (payload.skd && payload.skd.channel && isChan(payload.skd.channel)) {
+    if (
+      payload.skd && typeof payload.skd.channel === "string" &&
+      isChan(payload.skd.channel)
+    ) {
       const chanKey = ircFold(payload.skd.channel);
-      this.receivedKeys.set(
+      this.storeReceivedKey(
         `${chanKey}|${key}`,
+        key,
         SenderKey.fromDistribution(payload.skd),
       );
       this.saveState();
@@ -1049,7 +1170,14 @@ export class E2eeManager {
       this.needsRotation.delete(chanKey);
     }
     await this.distributeSenderKey(channel);
-    const sk = this.senderKeys.get(chanKey)!;
+    // The keys may have been replaced while waiting (account switch, backup
+    // import): then this send is abandoned rather than using a stale key.
+    const sk = this.senderKeys.get(chanKey);
+    if (!sk) {
+      throw new CryptoError(
+        "The channel key changed while sending; send again",
+      );
+    }
     const ct = sk.encrypt(enc.encode(JSON.stringify({ t: text })), channel);
     this.saveState();
     this.sendEnvelope(channel, null, ct, "sk");
@@ -1099,7 +1227,7 @@ export class E2eeManager {
         throw new Error(`No E2EE devices published for ${targetNick}`);
       }
       account = bundles[0].account;
-      this.nickToAccount.set(ircFold(targetNick), account);
+      this.rememberAccount(ircFold(targetNick), account);
       for (const b of bundles) {
         this.pinIdentity(b.account, b.device, b.identity);
         const key = `${b.account}:${b.device}`;
@@ -1115,7 +1243,9 @@ export class E2eeManager {
     const ptBytes = enc.encode(JSON.stringify(payload));
     for (const dev of devices) {
       const key = `${account}:${dev}`;
-      const ratchet = this.sessions.get(key)!;
+      const ratchet = this.sessions.get(key);
+      // Sessions replaced while waiting for bundles: skip this device.
+      if (!ratchet) continue;
       const msg = ratchet.encrypt(ptBytes);
       const preHeader = this.awaitingReply.get(key);
       if (preHeader) {

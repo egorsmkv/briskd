@@ -39,12 +39,19 @@ const DEFAULTS: AppConfig = {
 export function parseConfig(text: string | null | undefined): AppConfig {
   let raw: Partial<AppConfig> = {};
   try {
-    raw = text ? JSON.parse(text) as Partial<AppConfig> : {};
+    const parsed: unknown = text ? JSON.parse(text) : {};
+    // "null", a number, or an array is not a config: use the defaults.
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      raw = parsed as Partial<AppConfig>;
+    }
   } catch {
     raw = {};
   }
   const str = (v: unknown, d: string) => typeof v === "string" ? v : d;
-  const f = (raw.features ?? {}) as Partial<AppConfig["features"]>;
+  const f =
+    (raw.features && typeof raw.features === "object"
+      ? raw.features
+      : {}) as Partial<AppConfig["features"]>;
   return {
     network: str(raw.network, DEFAULTS.network),
     wsPort: str(raw.wsPort, ""),

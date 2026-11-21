@@ -1,5 +1,6 @@
 -module(ircd_state_v3).
 -export([
+    expire_password_resets/0,
     account/1,
     attachable/2,
     finish_attach/2,
@@ -873,6 +874,24 @@ maybe_send_reset(Verification, Ttl, Email, RecoveryUrl) ->
                 Verification, AccountName, StoredEmail, Code, RecoveryUrl
             );
         error ->
+            ok
+    end.
+
+-doc """
+Delete expired password-reset codes. A code is otherwise removed only when
+its email address is used again, so codes nobody completes would stay.
+Called every minute by `m:ircd_state`.
+""".
+-spec expire_password_resets() -> ok.
+expire_password_resets() ->
+    case ets:whereis(ircd_password_reset) of
+        undefined ->
+            ok;
+        _ ->
+            Now = erlang:system_time(millisecond),
+            _ = ets:select_delete(ircd_password_reset, [
+                {{'_', '_', '_', '_', '$1'}, [{'<', '$1', Now}], [true]}
+            ]),
             ok
     end.
 

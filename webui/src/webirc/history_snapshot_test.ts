@@ -1,5 +1,11 @@
 /// <reference lib="deno.ns" />
-import { MAX_CONVERSATIONS, MAX_LINES, snapshot } from "./history_snapshot.ts";
+import {
+  MAX_CONVERSATIONS,
+  MAX_LINES,
+  restoredConversations,
+  restoredLine,
+  snapshot,
+} from "./history_snapshot.ts";
 import type { ChatLine } from "./types.ts";
 
 function assert(cond: boolean, msg: string): void {
@@ -42,4 +48,42 @@ Deno.test("snapshot keeps the most recently active conversations", () => {
   assert(keys.length === MAX_CONVERSATIONS, `kept ${keys.length}`);
   assert(keys[0] === `u${MAX_CONVERSATIONS + 4}`, "newest first");
   assert(!keys.includes("u0"), "the least recent are dropped");
+});
+
+Deno.test("restoredLine keeps only well-typed fields", () => {
+  const ok = restoredLine({
+    time: "12:00",
+    epochMs: 5,
+    nick: "bob",
+    text: "hi",
+    kind: "",
+    msgid: "m1",
+    fileSize: "big",
+    albumIds: ["a", 2],
+    evil: "x",
+  });
+  assert(ok !== null && ok.msgid === "m1", "valid line kept");
+  assert(ok !== null && !("fileSize" in ok), "bad number dropped");
+  assert(ok !== null && !("albumIds" in ok), "bad array dropped");
+  assert(ok !== null && !("evil" in ok), "unknown field dropped");
+  assert(restoredLine({ ...ok, epochMs: 1e20 }) === null, "time out of range");
+  assert(restoredLine({ ...ok, nick: 7 }) === null, "nick must be a string");
+  assert(restoredLine({ ...ok, kind: "boom" }) === null, "unknown kind");
+  assert(restoredLine(null) === null, "null");
+});
+
+Deno.test("restoredConversations survives corrupt storage", () => {
+  assert(restoredConversations("null").length === 0, "null");
+  assert(restoredConversations("[1,2]").length === 0, "array");
+  assert(restoredConversations("{bad").length === 0, "bad JSON");
+  const good = { time: "1", epochMs: 1, nick: "a", text: "t", kind: "" };
+  const out = restoredConversations(JSON.stringify({
+    a: null,
+    b: { name: 5, lines: [] },
+    c: { name: "#x", lines: "no" },
+    d: { name: "#lobby", lines: [good, { text: 1 }, null] },
+    e: { name: "*status", lines: [good] },
+  }));
+  assert(out.length === 1 && out[0].name === "#lobby", JSON.stringify(out));
+  assert(out[0].lines.length === 1, "invalid lines dropped");
 });

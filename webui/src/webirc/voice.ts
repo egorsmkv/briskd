@@ -131,6 +131,13 @@ export async function uploadAndSendVoice(
   }
 }
 
+/**
+ * True while the microphone is being opened (the permission prompt may be
+ * showing): a second click then would start a second recording and leave
+ * the first stream and its timer running.
+ */
+let starting = false;
+
 /** Wire this module's DOM listeners and initial state. */
 export function init(): void {
   $("btn-voice").addEventListener("click", () => {
@@ -139,6 +146,7 @@ export function init(): void {
       S.voiceRecorder.stop();
       return;
     }
+    if (starting) return;
     const buf = buffers.get(S.activeBuf);
     if (!buf || buf.name === "*status") {
       addLine("*status", { text: t("voice.err.target"), kind: "err" });
@@ -146,7 +154,9 @@ export function init(): void {
     }
     S.voiceTarget = buf.name;
     S.voiceCancelled = false;
+    starting = true;
     void navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+      starting = false;
       S.voiceStream = stream;
       S.voiceChunks = [];
       const mime = pickOpusMime();
@@ -195,6 +205,7 @@ export function init(): void {
         }
       }, 250);
     }).catch(() => {
+      starting = false;
       resetVoiceUi();
       addLine(S.voiceTarget || "*status", {
         text: t("voice.err.mic"),
