@@ -1,5 +1,5 @@
 """Voice calls end to end: two WebRTC clients (aiortc) call each other over
-IRC `CALL` signalling; ircd passes the session descriptions through a real
+IRC `CALL` signalling; briskd passes the session descriptions through a real
 rtpengine, and audio must arrive in both directions through the relay."""
 
 import asyncio

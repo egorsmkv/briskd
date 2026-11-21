@@ -3,7 +3,7 @@
   "host": "127.0.0.1",
   "port": 6667,
   "welcome": ":irc.dev 001 b25104434 :Welcome to IRC b25104434!b25104434@172.20.0.1",
-  "stats": "irc-server_ircd-dev_1 cpu=3.96% mem=82.12MiB / 31.26GiB",
+  "stats": "irc-server_briskd-dev_1 cpu=3.96% mem=82.12MiB / 31.26GiB",
   "otp": "29 17.1.1",
   "kind": "development",
   "warmup": 0,

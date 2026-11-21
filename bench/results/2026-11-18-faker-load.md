@@ -3,7 +3,7 @@
 Measured 2026-11-18T19:19:02.742018+00:00 against `127.0.0.1:6667`; all six runs passed.
 
 Environment: OTP 29.1.2; linux aarch64 CPUs=2 Memory=4195151872; host macOS-26.6.2-arm64-arm-64bit-Mach-O; Python 3.15.2; Faker 40.54.0.
-Development server using `config/ircd.dev.json`; plaintext TCP only, default transient retention. No server code, configuration, or wire behavior changed.
+Development server using `config/briskd.dev.json`; plaintext TCP only, default transient retention. No server code, configuration, or wire behavior changed.
 
 Two repetitions at each size, five seconds each, ten messages per client per second. Fixed Faker seed 20261118; synthetic names and sentences generated before timing. Independent channels prevent traffic in #lobby. The same size uses identical message text in both repetitions, with fresh nicks/channels. Registration and JOIN precede timing; no traffic warmup.
 
@@ -39,11 +39,11 @@ Scheduler utilization, Erlang mailbox growth, GC, and kernel socket drops were n
 Executed commands:
 
 ```sh
-/tmp/ircd-faker-venv/bin/pip install Faker
-/tmp/ircd-faker-venv/bin/python bench/faker_load.py --output bench/results/2026-11-18-faker-load.json
-docker compose -f docker-compose.dev.yml exec -T ircd-dev just build
-docker compose -f docker-compose.dev.yml exec -T ircd-dev just format-check
-docker compose -f docker-compose.dev.yml exec -T ircd-dev just test
+/tmp/briskd-faker-venv/bin/pip install Faker
+/tmp/briskd-faker-venv/bin/python bench/faker_load.py --output bench/results/2026-11-18-faker-load.json
+docker compose -f docker-compose.dev.yml exec -T briskd-dev just build
+docker compose -f docker-compose.dev.yml exec -T briskd-dev just format-check
+docker compose -f docker-compose.dev.yml exec -T briskd-dev just test
 git diff --check
 ```
 

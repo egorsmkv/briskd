@@ -34,34 +34,34 @@ RUN rebar3 as prod release
 
 FROM alpine:3.24.4
 
-# The ircd user has a fixed UID/GID (10001) so files written for it by other
+# The briskd user has a fixed UID/GID (10001) so files written for it by other
 # containers (TLS keys from lego, see docker-compose.lego.yml) can be owned by it.
 # Runtime libraries the bundled ERTS and the crypto/ssl NIFs link against.
 # lksctp-tools: without libsctp every emulator prints an ESOCK warning on
 # stdout, which the release script reads as the node's host name, so
-# `ircd ping`, `eval`, and `remote_console` all report "Node is not running!".
+# `briskd ping`, `eval`, and `remote_console` all report "Node is not running!".
 # bash runs the release's start scripts.
 RUN apk add --no-cache \
         bash ca-certificates libstdc++ lksctp-tools ncurses-libs openssl zlib zstd-libs \
-    && addgroup -S -g 10001 ircd \
-    && adduser -S -D -H -u 10001 -G ircd -h /var/lib/ircd -s /sbin/nologin ircd \
-    && mkdir -p /var/lib/ircd/mnesia /etc/ircd \
-    && chown -R ircd:ircd /var/lib/ircd
+    && addgroup -S -g 10001 briskd \
+    && adduser -S -D -H -u 10001 -G briskd -h /var/lib/briskd -s /sbin/nologin briskd \
+    && mkdir -p /var/lib/briskd/mnesia /etc/briskd \
+    && chown -R briskd:briskd /var/lib/briskd
 
-COPY --from=build --chown=ircd:ircd /build/_build/prod/rel/ircd /opt/ircd
-RUN ln -sf /opt/ircd/bin/ircdctl /usr/local/bin/ircdctl
-COPY config/ircd.prod.json /etc/ircd/ircd.json
-COPY config/motd.txt /etc/ircd/motd.txt
+COPY --from=build --chown=briskd:briskd /build/_build/prod/rel/briskd /opt/briskd
+RUN ln -sf /opt/briskd/bin/briskdctl /usr/local/bin/briskdctl
+COPY config/briskd.prod.json /etc/briskd/briskd.json
+COPY config/motd.txt /etc/briskd/motd.txt
 
-ENV IRCD_CONFIG=/etc/ircd/ircd.json \
-    HOME=/var/lib/ircd
+ENV BRISKD_CONFIG=/etc/briskd/briskd.json \
+    HOME=/var/lib/briskd
 
-USER ircd
-WORKDIR /var/lib/ircd
+USER briskd
+WORKDIR /var/lib/briskd
 EXPOSE 6667 6697 8080 8081 8443
 
 # SIGTERM makes the runtime call init:stop/0, which runs the graceful drain
-# (ircd_shutdown) before the application stops.
+# (briskd_shutdown) before the application stops.
 STOPSIGNAL SIGTERM
-ENTRYPOINT ["/opt/ircd/bin/ircd"]
+ENTRYPOINT ["/opt/briskd/bin/briskd"]
 CMD ["foreground"]

@@ -1,4 +1,4 @@
-# ircd
+# briskd
 
 [![CI](https://github.com/egorsmkv/irc-server/actions/workflows/ci.yml/badge.svg)](https://github.com/egorsmkv/irc-server/actions/workflows/ci.yml)
 
@@ -68,10 +68,10 @@ client or a TCP client such as `nc`:
 nc 127.0.0.1 6667
 ```
 
-To start with another JSON configuration file, set `IRCD_CONFIG`:
+To start with another JSON configuration file, set `BRISKD_CONFIG`:
 
 ```sh
-IRCD_CONFIG=config/ircd.json rebar3 shell
+BRISKD_CONFIG=config/briskd.json rebar3 shell
 ```
 
 For the Docker development environment, project commands, and CI, see
@@ -85,7 +85,7 @@ For the Docker development environment, project commands, and CI, see
 | [IRC support](docs/irc-support.md) | Implemented commands, implementation policies, limits, and server links |
 | [IRCv3](docs/ircv3.md) | Capabilities, tags, accounts, history, metadata, and WebSocket support |
 | [WebIRC](docs/webirc.md) | Browser client: accounts, chat, files, calls, and encryption |
-| [Message search](docs/search.md) | Optional Tantivy search over stored history: `SEARCH`, the ircd-search service, and WebIRC |
+| [Message search](docs/search.md) | Optional Tantivy search over stored history: `SEARCH`, the briskd-search service, and WebIRC |
 | [End-to-end encryption](docs/e2ee.md) | Optional blind broker for Double Ratchet / OMEMO clients: key directory and offline queue |
 | [Deployment](docs/deployment.md) | Production image and Compose file, and graceful shutdown |
 | [Development](docs/development.md) | Docker environment, `just` commands, CI, and building these docs |

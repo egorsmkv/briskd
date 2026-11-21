@@ -4,17 +4,17 @@
 # across connect/quit churn rounds. Report: bench/results/<date>-memory.md
 # (and .json). Extra arguments go to memory.py.
 #
-# Runs like docker-compose.prod.yml (same image, config/ircd.prod.json
+# Runs like docker-compose.prod.yml (same image, config/briskd.prod.json
 # unchanged, init, nofile 65536) on 127.0.0.1:${MEMORY_BENCH_PORT:-16668}
 # with a fresh data volume that is deleted afterwards.
 #
 # MEMORY_BENCH_IMAGE measures an already built image instead of building
-# ircd:latest from this tree (for a before/after comparison).
+# briskd:latest from this tree (for a before/after comparison).
 set -eu
 cd "$(dirname "$0")/.."
 
-NAME=ircd-memory-bench
-VOLUME=ircd-memory-bench-data
+NAME=briskd-memory-bench
+VOLUME=briskd-memory-bench-data
 PORT=${MEMORY_BENCH_PORT:-16668}
 COOKIE=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
 
@@ -26,8 +26,8 @@ trap cleanup EXIT
 
 IMAGE=${MEMORY_BENCH_IMAGE:-}
 if [ -z "$IMAGE" ]; then
-    IRCD_COOKIE=bench-build docker-compose -f docker-compose.prod.yml build ircd
-    IMAGE=ircd:latest
+    BRISKD_COOKIE=bench-build docker-compose -f docker-compose.prod.yml build briskd
+    IMAGE=briskd:latest
 fi
 
 cleanup
@@ -35,20 +35,20 @@ docker volume create "$VOLUME" >/dev/null
 docker run -d --name "$NAME" \
     --init \
     --ulimit nofile=65536:65536 \
-    -e IRCD_CONFIG=/etc/ircd/ircd.json \
-    -e "IRCD_COOKIE=$COOKIE" \
+    -e BRISKD_CONFIG=/etc/briskd/briskd.json \
+    -e "BRISKD_COOKIE=$COOKIE" \
     -p "127.0.0.1:${PORT}:6667" \
-    -v "${VOLUME}:/var/lib/ircd" \
-    -v "$(pwd)/config/ircd.prod.json:/etc/ircd/ircd.json:ro" \
-    -v "$(pwd)/config/motd.txt:/etc/ircd/motd.txt:ro" \
+    -v "${VOLUME}:/var/lib/briskd" \
+    -v "$(pwd)/config/briskd.prod.json:/etc/briskd/briskd.json:ro" \
+    -v "$(pwd)/config/motd.txt:/etc/briskd/motd.txt:ro" \
     "$IMAGE" >/dev/null
 
 # The release's own liveness check (also verifies remote access works).
 i=0
-until docker exec "$NAME" /opt/ircd/bin/ircd ping >/dev/null 2>&1; do
+until docker exec "$NAME" /opt/briskd/bin/briskd ping >/dev/null 2>&1; do
     i=$((i + 1))
     if [ "$i" -ge 60 ]; then
-        echo "production image did not answer 'ircd ping'" >&2
+        echo "production image did not answer 'briskd ping'" >&2
         docker logs "$NAME" >&2 || true
         exit 1
     fi
@@ -60,6 +60,6 @@ uv run --project bench --locked python bench/memory.py \
     --port "$PORT" \
     --container "$NAME" \
     --cookie "$COOKIE" \
-    --note "Production image \`$IMAGE\` (Dockerfile.prod, config/ircd.prod.json), started by bench/memory-prod." \
+    --note "Production image \`$IMAGE\` (Dockerfile.prod, config/briskd.prod.json), started by bench/memory-prod." \
     --output "bench/results/${stamp}-memory.md" \
     --json "bench/results/${stamp}-memory.json" "$@"

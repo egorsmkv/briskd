@@ -8,7 +8,7 @@ x-server: &server
   build:
     context: ../..
     dockerfile: Dockerfile
-  image: ircd-e2ee-server
+  image: briskd-e2ee-server
   working_dir: /workspace
   volumes:
     - ../..:/workspace:ro

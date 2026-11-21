@@ -10,9 +10,9 @@ import { ensureBuf } from "./buffers.ts";
 import { buffers } from "./state.ts";
 import { restoredConversations, snapshot } from "./history_snapshot.ts";
 
-const KEY = "ircd-webirc-history";
+const KEY = "briskd-webirc-history";
 /** Earlier releases kept private conversations only, under this key. */
-const OLD_KEY = "ircd-webirc-dms";
+const OLD_KEY = "briskd-webirc-dms";
 const SAVE_DELAY_MS = 1000;
 
 let timer: ReturnType<typeof setTimeout> | null = null;

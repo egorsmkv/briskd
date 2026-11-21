@@ -9,7 +9,7 @@ in the referenced RFC.
 
 - [x] Erlang/OTP application with supervised state, listener, session, and link
   processes.
-- [x] JSON configuration loading and validation through `IRCD_CONFIG`.
+- [x] JSON configuration loading and validation through `BRISKD_CONFIG`.
 - [x] Configurable server name, bind address, TCP/TLS ports, TLS certificate and
   key, log level and format, client limit, operator accounts, client password,
   MOTD, admin replies, reop delay, Mnesia directory, and peer links.
@@ -45,7 +45,7 @@ in the referenced RFC.
   clients receive numeric 481. IRCv3 support is listed below.
 - [x] Graceful shutdown on SIGTERM, `DIE`, `RESTART`, and application stop:
   listeners close, peers get `SQUIT`, clients get a NOTICE and `ERROR`, and the
-  server waits up to `shutdown_grace` seconds (`ircd_shutdown`).
+  server waits up to `shutdown_grace` seconds (`briskd_shutdown`).
 - [x] Audit parameter limits, error numerics, visibility, and command edge cases
   against the RFCs.
 - [x] Nickname hold after a quit, lost connection, or nick change
@@ -67,7 +67,7 @@ in the referenced RFC.
 - [x] List visibility policy: ban list public, exception and invite lists for
   channel operators; bare `MODE #chan b|e|I` lists.
 - [x] `KNOCK` numerics 713 (open channel) and 714 (already on channel), common
-  ircd extensions rather than RFC numerics.
+  briskd extensions rather than RFC numerics.
 - [x] Complete RFC 2811 channel creation and abuse-window rules, nickname
   collision handling, and channel lifecycle edge cases.
 - [x] Expand mode behavior and numeric coverage for all supported channel types
@@ -87,7 +87,7 @@ in the referenced RFC.
   to persist.
 - [x] ACME certificates with lego (`docker-compose.lego.yml`,
   `deploy/lego/lego.sh`): issuance and renewal by HTTP-01, TLS-ALPN-01, or
-  DNS-01, and live reload of renewed certificates (`ircd_certs`,
+  DNS-01, and live reload of renewed certificates (`briskd_certs`,
   `tls_reload_interval`) without dropping connections.
 - [x] Resource bounds (implementation policy):
   - A client whose outgoing queue passes `max_sendq` lines is disconnected
@@ -103,12 +103,12 @@ in the referenced RFC.
   - `MARKREAD` targets must be a channel or a nickname.
   - Mask matching is linear in mask times value length.
   - PBKDF2 for SASL `PLAIN` and `REGISTER` runs in bounded worker processes
-    (`ircd_deferred`, at most 32 at once; over that the attempt fails fast
-    with 904 or `FAIL REGISTER TEMPORARILY_UNAVAILABLE`), so `ircd_state`
+    (`briskd_deferred`, at most 32 at once; over that the attempt fails fast
+    with 904 or `FAIL REGISTER TEMPORARILY_UNAVAILABLE`), so `briskd_state`
     keeps serving other clients while a password is checked.
   - Peer-supplied identities, topics, keys, and masks are copied before they
     are stored, so they do not keep receive buffers alive.
-  - Client flood and spam control (`ircd_flood`, `flood` setting): per-client
+  - Client flood and spam control (`briskd_flood`, `flood` setting): per-client
     token buckets for lines (`lines_burst`, `lines_per_second`), messages
     (`messages_burst`, `messages_per_second`), channel joins (`join_burst`,
     `join_per_minute`), and nickname changes (`nick_burst`,
@@ -117,7 +117,7 @@ in the referenced RFC.
     (`register_per_minute`).
 - [x] Remaining bounds from the memory audit: an expiry (`empty_channel_ttl`)
   and cap (`max_empty_channels`) for empty safe and retained channels (with the
-  `ircd_safe_channels` ETS short-name index for safe `JOIN`), `REGISTER` rate
+  `briskd_safe_channels` ETS short-name index for safe `JOIN`), `REGISTER` rate
   limits and an account cap (`max_accounts`), a per-account read-marker cap
   (`max_read_markers`), pruning of disconnected pids from `invited`, a cap,
   byte/target validation, and TTL cleanup for open peer batches, per-account
@@ -256,10 +256,10 @@ Across server links:
   wins), user and channel metadata (`METADATA`), read markers (`MARKREAD`),
   `ACCOUNT`, `SETNAME`, `CHGHOST`, `REDACT`, user mode `B`, and each message's
   `msgid` and `time` cross links in the burst and as live updates.
-- [x] Interoperability gate: `test/ircd_interop_tests.erl` runs two separate
-  ircd OS processes linked over RFC 2813 TCP and checks these paths.
+- [x] Interoperability gate: `test/briskd_interop_tests.erl` runs two separate
+  briskd OS processes linked over RFC 2813 TCP and checks these paths.
 
-Conformance: irctest (`test/irctest/ircd_controller.py`, one fresh server
+Conformance: irctest (`test/irctest/briskd_controller.py`, one fresh server
 per test) with irctest's standard selection for a server,
 `-m "not implementation-specific and not deprecated"`: 491 passed, 0 failed
 (IRCv3 and RFC 1459/2812/Modern together).
@@ -282,7 +282,7 @@ always-on bouncer details, and Sable's PostgreSQL history server.
 ## End-to-end encryption (server-specific extension)
 
 - [x] Optional blind broker for Signal-style clients (`e2ee` configuration,
-  `ircd_e2ee`, [guide](docs/e2ee.md)): vendor capability
+  `briskd_e2ee`, [guide](docs/e2ee.md)): vendor capability
   `egorsmkv.github.io/e2ee`, X3DH prekey directory bound to SASL accounts
   (`E2EE PUBLISH`, `PREKEYS`, `DEVICES`, `FETCH`, `REMOVE`), device binding
   (`BIND`), per-device offline queue with acknowledgement (`ACK`), and limits
@@ -302,8 +302,8 @@ always-on bouncer details, and Sable's PostgreSQL history server.
 - [x] `calls` configuration and vendor capability `egorsmkv.github.io/calls`
   ([guide](docs/calls.md)): one-to-one audio calls between local users.
 - [x] `CALL OFFER|ANSWER|RINGING|REJECT|HANGUP` signalling with chunked
-  base64 SDP (`ircd_call_proto`), relayed through rtpengine's NG protocol
-  (`ircd_calls`, `ircd_bencode`) so peers never see each other's address.
+  base64 SDP (`briskd_call_proto`), relayed through rtpengine's NG protocol
+  (`briskd_calls`, `briskd_bencode`) so peers never see each other's address.
 - [x] Ring timeout, maximum duration, per-user and server limits, busy
   handling, and cleanup on disconnect.
 - [x] WebIRC call button, incoming-call dialog, call dock with mute and
@@ -313,7 +313,7 @@ always-on bouncer details, and Sable's PostgreSQL history server.
 - [x] Calls to users on linked servers: `CALL` over RFC 2813 links with the
   user's prefix, routed hop by hop; the caller's server anchors the media
   in its rtpengine and the callee's server relays; quits, kills, and
-  netsplits end the call and nick changes keep it (`ircd_call_link_tests`,
+  netsplits end the call and nick changes keep it (`briskd_call_link_tests`,
   two linked server processes).
 - [x] One-to-one video calls (`calls.video`, `video` in the capability value):
   one video section next to the audio, 24 KiB descriptions, relayed by
@@ -330,9 +330,9 @@ always-on bouncer details, and Sable's PostgreSQL history server.
   ([guide](docs/search.md)): `SEARCH <target> <limit> [timestamp=] :<query>`
   over a channel, a direct conversation, or `*`, with `CHATHISTORY` access
   rules, results as a batch of stored messages, and `FAIL SEARCH` replies.
-- [x] ircd-search (`search/`, Rust, Tantivy): an HTTP/JSON index service
-  that stores no readable text and filters by the conversations ircd allows.
-- [x] The index mirrors stored history (`ircd_search`): adds, `history_limit`
+- [x] briskd-search (`search/`, Rust, Tantivy): an HTTP/JSON index service
+  that stores no readable text and filters by the conversations briskd allows.
+- [x] The index mirrors stored history (`briskd_search`): adds, `history_limit`
   trimming, redaction, edits, account erasure, and destroyed channels; full
   rebuild from Mnesia at start and after an outage; E2EE messages are never
   indexed.
@@ -342,29 +342,29 @@ always-on bouncer details, and Sable's PostgreSQL history server.
 
 ## AI assistant bots (server-specific extension)
 
-- [x] `ai_providers` and `bots` configuration (`ircd_config`,
+- [x] `ai_providers` and `bots` configuration (`briskd_config`,
   [guide](docs/bots.md)): OpenAI-compatible `chat/completions` endpoints with
   `api_key` or `api_key_env`, per-bot model, system prompt (inline or file),
   channels, and limits.
-- [x] Bots as socketless local clients (`ircd_bot`, `ircd_bots`): `+B` bot
+- [x] Bots as socketless local clients (`briskd_bot`, `briskd_bots`): `+B` bot
   mode, channel joins, answers to mentions, `+draft/reply` replies to its own
   messages (threaded answers), and private messages, typing
   indicators, conversation or channel context, per-target and per-minute
   limits, reconnect after `KILL`, rejoin after `KICK`.
 - [x] Reply lines sized for the 512-octet limit without splitting UTF-8
-  (`ircd_bot_ai`); no answers to `NOTICE`, CTCP, or `bot`-tagged messages.
+  (`briskd_bot_ai`); no answers to `NOTICE`, CTCP, or `bot`-tagged messages.
 - [ ] Apply `bots` changes on `REHASH` (today a restart is required).
 - [ ] Bots on remote servers do not exist; a bot answers only from the
   server that configures it (remote users can still address it).
 
 ## Administration
 
-- [x] WebUI admin panel feature controls (`ircd_overrides`): chat features,
+- [x] WebUI admin panel feature controls (`briskd_overrides`): chat features,
   history, account options, the E2EE, calls, voice, and files subsystems,
   DroneBL, UTF-8 only, and limits, changed live with `CAP NEW`/`DEL`, kept in
   Mnesia across `REHASH` and restarts, and reset to the configuration file's
   value.
-- [x] Admin sign-in page (`/admin/login`, `ircd_webui_auth`) instead of the
+- [x] Admin sign-in page (`/admin/login`, `briskd_webui_auth`) instead of the
   browser's HTTP Basic dialog: a 12-hour `HttpOnly`/`SameSite=Strict`
   session cookie (only its SHA-256 is stored, in memory; sessions end on
   restart, on sign-out, and when the `webui` credentials change), a return
@@ -380,14 +380,14 @@ always-on bouncer details, and Sable's PostgreSQL history server.
   messages sent while not logged in, uploaded files and voice messages (not
   linked to an account), WHOWAS entries, and copies held by linked servers
   (account deletion is not propagated).
-- [x] Channel management from the admin panel and `ircdctl`
+- [x] Channel management from the admin panel and `briskdctl`
   (`create-channel`, `set-channel-modes`, `delete-channel`): create an empty
   `#`, `&`, or `+` channel; change modes, key, limit, and the `b`/`e`/`I`
   lists as the server (the `MODE` is shown to members and sent to peers,
   except for `&` channels); delete a channel by kicking its local members as
   the server. Channels from the configuration file cannot be deleted. Safe
   `!` channels cannot be created this way (they need a creator).
-- [x] Account editing from the admin panel and `ircdctl`: `set-email`
+- [x] Account editing from the admin panel and `briskdctl`: `set-email`
   (refuses an address another account uses) and `add-certfp` /
   `remove-certfp` for SASL EXTERNAL (SHA-256, at most 16 per account, one
   account per fingerprint). These changes stay on this server; peers keep

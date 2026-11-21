@@ -209,7 +209,7 @@ def otp_version(args):
     """OTP of the dev image, or the release's bundled ERTS in the production image."""
     if args.kind == 'production':
         return command('docker', 'exec', args.container, 'sh', '-c',
-                       'set -- $(cat /opt/ircd/releases/start_erl.data); echo "ERTS $1, release $2"')
+                       'set -- $(cat /opt/briskd/releases/start_erl.data); echo "ERTS $1, release $2"')
     return command('docker', 'exec', args.container, 'cat', '/usr/local/lib/erlang/releases/29/OTP_VERSION')
 
 
@@ -246,7 +246,7 @@ if __name__ == '__main__':
     parser.add_argument('--rate', type=float, default=10)
     parser.add_argument('--repeats', type=int, default=2)
     parser.add_argument('--seed', type=int, default=20261118)
-    parser.add_argument('--container', default='irc-server_ircd-dev_1')
+    parser.add_argument('--container', default='irc-server_briskd-dev_1')
     parser.add_argument('--kind', choices=('development', 'production'), default='development',
                         help='what --container runs: the dev server or the production image')
     parser.add_argument('--output', default='bench/results/faker-load.json')

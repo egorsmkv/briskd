@@ -22,7 +22,7 @@ import { type FeatureKey, type WebircSettings } from "./types.ts";
 import { renderTypingBar } from "./typing.ts";
 import { isChan } from "./util.ts";
 
-export const SETTINGS_KEY = "ircd-webirc-settings";
+export const SETTINGS_KEY = "briskd-webirc-settings";
 
 export function loadSettings(): WebircSettings {
   const defaults: WebircSettings = {
@@ -206,7 +206,7 @@ export function closeSettings(): void {
 export function init(): void {
   initTheme([], {
     defaultTheme: "hacker",
-    storageKey: "ircd-webirc-theme",
+    storageKey: "briskd-webirc-theme",
   });
 
   initLang();

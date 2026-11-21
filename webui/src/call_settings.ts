@@ -20,7 +20,7 @@ export interface CallAudioSettings {
   cameraId: string;
 }
 
-export const CALL_SETTINGS_KEY = "ircd-webirc-call-settings";
+export const CALL_SETTINGS_KEY = "briskd-webirc-call-settings";
 
 /** Offered send bitrates (kbit/s); 0 means the browser's default (auto). */
 export const BITRATES = [0, 16, 32, 64, 128] as const;

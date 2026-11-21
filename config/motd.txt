@@ -1,4 +1,4 @@
-Welcome to ircd, an IRC server written in Erlang/OTP.
+Welcome to briskd, an IRC server written in Erlang/OTP.
 
 This server speaks RFC 1459/2812 and the IRCv3 extensions, including
 SASL accounts, message tags, server-time, echo-message, chat history,

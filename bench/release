@@ -4,25 +4,25 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-NAME=ircd-release-bench
+NAME=briskd-release-bench
 PORT=6668
-REL=/workspace/_build/prod/rel/ircd
-CONFIG="${REL}/etc/ircd.release.json"
+REL=/workspace/_build/prod/rel/briskd
+CONFIG="${REL}/etc/briskd.release.json"
 
 cleanup() {
     docker rm -f "$NAME" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
-docker-compose -f docker-compose.dev.yml exec -T ircd-dev just release
+docker-compose -f docker-compose.dev.yml exec -T briskd-dev just release
 
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker-compose -f docker-compose.dev.yml run -d --name "$NAME" --no-deps -T \
     -p "${PORT}:6668" \
-    -e "IRCD_CONFIG=${CONFIG}" \
-    -e "IRCD_COOKIE=bench" \
-    ircd-dev \
-    "${REL}/bin/ircd" foreground
+    -e "BRISKD_CONFIG=${CONFIG}" \
+    -e "BRISKD_COOKIE=bench" \
+    briskd-dev \
+    "${REL}/bin/briskd" foreground
 
 ready=0
 i=0

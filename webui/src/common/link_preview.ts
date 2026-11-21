@@ -92,7 +92,7 @@ export function loadLinkPreview(
   const pending = inFlight.get(url);
   if (pending) return pending;
   const request = fetchFn(`/api/link-preview?url=${encodeURIComponent(url)}`, {
-    headers: { "X-Requested-With": "ircd-webui" },
+    headers: { "X-Requested-With": "briskd-webui" },
   }).then(async (resp): Promise<LinkPreviewData | null> => {
     // 204: the page has no usable preview.
     if (resp.status === 204 || !resp.ok) return null;

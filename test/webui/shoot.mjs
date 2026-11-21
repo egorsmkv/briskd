@@ -10,7 +10,7 @@
 import puppeteer from "puppeteer-core";
 import net from "node:net";
 
-const HOST = process.env.WEBUI_HOST || "ircd";
+const HOST = process.env.WEBUI_HOST || "briskd";
 const OUT = `/out/${process.argv[2] || "webirc"}`;
 const THEMES = (process.env.THEMES || "light,dark").split(",");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -51,8 +51,8 @@ async function open(theme, viewport, path, session) {
   });
   await page.setViewport(viewport);
   await page.evaluateOnNewDocument((theme, session) => {
-    localStorage.setItem("ircd-webirc-theme", theme);
-    if (session) sessionStorage.setItem("ircd-webirc-session", JSON.stringify(session));
+    localStorage.setItem("briskd-webirc-theme", theme);
+    if (session) sessionStorage.setItem("briskd-webirc-session", JSON.stringify(session));
   }, theme, session);
   await page.emulateMediaFeatures([
     { name: "prefers-color-scheme", value: theme === "light" ? "light" : "dark" },

@@ -1,21 +1,21 @@
 # Video calls in real browsers: WebIRC in two headless Chromium tabs with fake
-# cameras and microphones calls itself through ircd and a real rtpengine
+# cameras and microphones calls itself through briskd and a real rtpengine
 # (test/calls/browser/run). Screenshots land in test/calls/browser/shots/.
 #
 #   docker compose -f test/calls/browser/docker-compose.yml up --build \
 #       --abort-on-container-exit --exit-code-from browser
 
 services:
-  ircd:
+  briskd:
     build:
       context: ../../..
       dockerfile: Dockerfile
-    image: ircd-calls-server
+    image: briskd-calls-server
     working_dir: /workspace
     volumes:
       - ../../..:/workspace:ro
     # Builds the WebIRC assets from a private copy of the checkout first.
-    command: ["sh", "/workspace/test/webui/server.sh", "/workspace/test/calls/browser/ircd.json"]
+    command: ["sh", "/workspace/test/webui/server.sh", "/workspace/test/calls/browser/briskd.json"]
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081"]
       interval: 3s
@@ -26,14 +26,14 @@ services:
   rtpengine:
     build:
       context: ../../../docker/rtpengine
-    image: ircd-rtpengine
+    image: briskd-rtpengine
   browser:
     build: ../../webui
-    image: ircd-webui-browser
+    image: briskd-webui-browser
     volumes:
       - ./video_call.mjs:/m/video_call.mjs:ro
       - ./shots:/out
     command: ["node", "video_call.mjs"]
     depends_on:
-      ircd:
+      briskd:
         condition: service_healthy

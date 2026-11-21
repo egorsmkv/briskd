@@ -30,13 +30,13 @@ format:
 format-check:
     rebar3 fmt --check
 
-# Start the server with config/ircd.json or the IRCD_CONFIG override.
+# Start the server with config/briskd.json or the BRISKD_CONFIG override.
 run:
     rebar3 shell
 
 # Start the server with a selected JSON configuration file.
 run-config config:
-    IRCD_CONFIG={{config}} rebar3 shell
+    BRISKD_CONFIG={{config}} rebar3 shell
 
 # Check for undefined and deprecated calls with xref.
 xref:

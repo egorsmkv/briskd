@@ -15,7 +15,7 @@ the Double Ratchet for direct messages, OMEMO-style devices per account, and
 Sender Keys for channels. Clients do that cryptography. The server stores
 device public keys and forwards and queues ciphertext. It does not decrypt
 message bodies, and it does not log them (a published or removed device is
-logged by account and device id only). The implementation is `ircd_e2ee`.
+logged by account and device id only). The implementation is `briskd_e2ee`.
 
 Turn it on with an `e2ee` object (all keys optional):
 
@@ -203,7 +203,7 @@ consistent:
   same account and owns the device. Publish the device (`E2EE PUBLISH`, which
   the server replicates as `E2EE DEVICE`) before a peer binds it. A remote
   `BIND` for a device this server has no row for is rejected
-  (`e2ee_unknown_device` from `ircd_e2ee:receive_link/4`) and drops the link.
+  (`e2ee_unknown_device` from `briskd_e2ee:receive_link/4`) and drops the link.
   A remote `BIND` cannot take over a device this server has already bound to
   a local connection (`e2ee_device_bound_locally`, also a link drop); the
   local binding is left in place. A binding follows nickname changes and is

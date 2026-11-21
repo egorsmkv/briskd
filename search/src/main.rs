@@ -1,7 +1,7 @@
-//! ircd-search: the message search service behind ircd's
+//! briskd-search: the message search service behind briskd's
 //! `egorsmkv.github.io/search` extension.
 //!
-//! An HTTP/JSON service over a Tantivy index (see `index.rs`). ircd mirrors
+//! An HTTP/JSON service over a Tantivy index (see `index.rs`). briskd mirrors
 //! its stored history into it with `POST /index` and runs searches with
 //! `POST /search`, naming the conversations the searching user may read;
 //! the service never decides access. `GET /health` reports readiness, the

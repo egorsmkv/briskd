@@ -64,7 +64,7 @@ export async function uploadBinaryFile(
   const resp = await fetch("/api/files", {
     method: "POST",
     headers: {
-      "X-Requested-With": "ircd-webui",
+      "X-Requested-With": "briskd-webui",
       "Content-Type": "application/octet-stream",
       "X-File-Name": encodeURIComponent(filename || "file.bin"),
     },

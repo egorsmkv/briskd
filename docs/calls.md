@@ -14,7 +14,7 @@ NG control socket. With `calls` set at startup, the server advertises
 rtpengine address or the process limits needs a restart (see
 [Setup](#setup)).
 
-The ircd carries signalling only. It forwards `CALL` lines between the two
+The briskd carries signalling only. It forwards `CALL` lines between the two
 users (and across server links) and sends NG control messages to rtpengine.
 It does not relay RTP or other media. Each browser talks WebRTC (ICE,
 DTLS-SRTP, Opus audio, VP8/H.264 video) to rtpengine, and rtpengine forwards
@@ -232,7 +232,7 @@ private message:
 
 ## Server behavior
 
-`ircd_calls` owns the call table and a UDP socket to rtpengine. For each call
+`briskd_calls` owns the call table and a UDP socket to rtpengine. For each call
 it sends an NG `offer` (with `ICE=force`, `UDP/TLS/RTP/SAVPF`, `rtcp-mux`
 required, SDES off) and later an `answer`, and a `delete` when the call ends.
 NG requests are retried twice, one second apart; after that the call fails
@@ -264,7 +264,7 @@ lines are not included in command logging.
 
 ## Testing
 
-`test/calls/run` starts ircd, the rtpengine image, and two Python WebRTC
+`test/calls/run` starts briskd, the rtpengine image, and two Python WebRTC
 clients (aiortc) on a Docker network. The clients call each other over IRC,
 check that neither sees the other's address, and require two seconds of audio
 to arrive in each direction through rtpengine; a second test makes a video
@@ -272,9 +272,9 @@ call and requires audio and video frames in both directions. WebIRC's call
 manager is unit-tested with fake devices (`webui/src/calls_lifecycle_test.ts`:
 camera on, off, hold, missing camera, answering with or without video, device
 changes, and release on every way a call ends). CI runs it. The unit and
-protocol tests (`test/ircd_call_tests.erl`) use a fake rtpengine.
+protocol tests (`test/briskd_call_tests.erl`) use a fake rtpengine.
 
-`test/calls/browser/run` makes a real WebIRC video call: ircd (with the
+`test/calls/browser/run` makes a real WebIRC video call: briskd (with the
 assets built from the checkout), rtpengine, and two headless Chromium tabs
 with fake cameras and microphones on one Docker network. alice starts the
 call with `/videocall`, bob answers with video, and the test requires each
@@ -284,7 +284,7 @@ both stages and recording the call, with no page or console errors. It keeps
 screenshots in `test/calls/browser/shots/`. CI runs it.
 
 The development compose file includes rtpengine, advertising `127.0.0.1` with
-UDP ports 30000–30100 published, and `config/ircd.dev.json` enables calls, so
+UDP ports 30000–30100 published, and `config/briskd.dev.json` enables calls, so
 two browser windows on the same machine can call each other. For calls from
 other devices (HTTPS and a reachable media address), see "Using the
 development server from other devices" in [Development](development.md).

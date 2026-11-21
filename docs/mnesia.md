@@ -1,11 +1,15 @@
 # Mnesia backup, restore, and schema migration
 
 This page is for an operator deciding what a restart keeps and how to copy
-`mnesia_dir` before a release change. `ircd_state` owns the Mnesia schema;
-`ircd_app` creates the directory named by `mnesia_dir`
+`mnesia_dir` before a release change. `briskd_state` owns the Mnesia schema;
+`briskd_app` creates the directory named by `mnesia_dir`
 ([Configuration](configuration.md)) and the schema before it starts Mnesia.
 The table below is what survives; backup and restore copy that directory and
-do not bypass the retention policy of the next start.
+do not bypass the retention policy of the next start. Table names did not
+change in the rename from ircd to briskd. A development or production volume
+that still holds the old directory (`/var/lib/ircd/mnesia`, or the
+`ircd-mnesia` Docker volume) is not mounted at the new `mnesia_dir`; point
+the setting at that directory to keep the schema.
 
 ## What survives a restart
 
@@ -31,7 +35,7 @@ survive a restart is decided by the setting loaded at that start.
 | Read markers (`read_marker`, per account and target) | Kept | Kept |
 | End-to-end encryption device bundles (`e2ee_device`, public keys only) | Kept | Kept |
 | End-to-end encryption offline queue (`e2ee_queue`, ciphertext until acknowledged or `queue_ttl`) | Kept | Kept |
-| Channel metadata (`channel_meta`, synced with `ircd_chan_meta`) | Kept for safe `!` channels; deleted for ordinary channels | Kept |
+| Channel metadata (`channel_meta`, synced with `briskd_chan_meta`) | Kept for safe `!` channels; deleted for ordinary channels | Kept |
 | IRCv3 connection state: capabilities, MONITOR lists, user metadata, SASL progress | Deleted | Deleted |
 | Direct-message history between accounts (`direct_message`: one row per message) | Deleted | Kept, newest `history_limit` entries per pair |
 | Admin feature overrides (`setting`: control key and value, set in the admin panel) | Kept | Kept |
@@ -62,7 +66,7 @@ advertising `draft/chathistory`, `draft/event-playback`, and the
 `CHATHISTORY` ISUPPORT token.
 
 The `setting` table holds the admin panel's feature overrides
-(`ircd_overrides`): one row per changed control, `{setting, Key, Value}`
+(`briskd_overrides`): one row per changed control, `{setting, Key, Value}`
 with a boolean or an integer. It is created on first start and survives both
 retention policies; deleting a row (or the table) returns those settings to
 the configuration file's values.
@@ -100,13 +104,13 @@ before copying data.
 
 ### Online backup via the release CLI (Docker Compose or systemd)
 
-To write a consistent Mnesia backup file inside the `/var/lib/ircd` volume while
+To write a consistent Mnesia backup file inside the `/var/lib/briskd` volume while
 the production container is running:
 
 ```sh
-docker-compose -f docker-compose.prod.yml exec -T ircd \
-  /opt/ircd/bin/ircd eval 'ok = mnesia:backup("/var/lib/ircd/backup.bup").'
-docker-compose -f docker-compose.prod.yml cp ircd:/var/lib/ircd/backup.bup ./backup-$(date -u +%Y%m%dT%H%M%SZ).bup
+docker-compose -f docker-compose.prod.yml exec -T briskd \
+  /opt/briskd/bin/briskd eval 'ok = mnesia:backup("/var/lib/briskd/backup.bup").'
+docker-compose -f docker-compose.prod.yml cp briskd:/var/lib/briskd/backup.bup ./backup-$(date -u +%Y%m%dT%H%M%SZ).bup
 ```
 
 Or from an Erlang shell on the node that owns the tables:
@@ -116,8 +120,8 @@ ok = mnesia:backup(BackupFile).
 ```
 
 `BackupFile` is a path outside `mnesia_dir`. A raw filesystem or volume copy of
-`mnesia_dir` is a valid backup **only when `ircd` is stopped** (`docker-compose
--f docker-compose.prod.yml stop ircd`). Copying `mnesia_dir` while the server is
+`mnesia_dir` is a valid backup **only when `briskd` is stopped** (`docker-compose
+-f docker-compose.prod.yml stop briskd`). Copying `mnesia_dir` while the server is
 writing can produce a corrupt schema that will not start.
 
 Keep backups of `mnesia_dir` with the same access controls as the host. WHOWAS
@@ -126,7 +130,7 @@ contain SCRAM-SHA-256 verifiers and optional email addresses.
 
 ## Restore
 
-1. Stop ircd.
+1. Stop briskd.
 2. Move the current `mnesia_dir` aside.
 3. Install the backup into an empty directory and point `mnesia_dir` at it, or
    restore on a stopped node:
@@ -135,29 +139,29 @@ contain SCRAM-SHA-256 verifiers and optional email addresses.
 ok = mnesia:restore(BackupFile, [{default_op, recreate_tables}]).
 ```
 
-4. Start ircd against that directory.
+4. Start briskd against that directory.
 
-Startup applies the `retention` policy of the configuration that starts ircd.
+Startup applies the `retention` policy of the configuration that starts briskd.
 A restored directory does not bypass that policy: `transient` still drops
 ordinary channels and channel history, and `channels` keeps them. Both
 policies clear client sessions and peer-imported rows. Do not restore a
 backup onto a node that is already serving traffic.
 
 `mnesia:install_fallback/1` is the alternative when the node must load the
-backup at the next start. Use it only while ircd and Mnesia are stopped.
+backup at the next start. Use it only while briskd and Mnesia are stopped.
 
 ## Schema migration
 
 A restart is the supported upgrade. The server ships no `.appup` and its
 modules do not implement `code_change`, so do not hot-load a new release
-into a running node. Stop ircd, install the new release, and start it
+into a running node. Stop briskd, install the new release, and start it
 again. That start clears client sessions, user modes, nick occupancy, and
 imported peer state, then applies the `retention` policy of the
 configuration that starts. WHOWAS, accounts, read markers, the `setting`
 table, E2EE device and queue rows, safe `!` channels, and the ordinary
 channel state and history that policy keeps are what must still be readable.
 
-Records live in `include/`. On startup, `ircd_state` compares each table's
+Records live in `include/`. On startup, `briskd_state` compares each table's
 stored attributes with `record_info(fields, ...)`.
 
 - A missing table is created.

@@ -1,5 +1,5 @@
 // A WebIRC video call between two headless Chromium tabs (fake camera and
-// microphone) through ircd and a real rtpengine (test/calls/browser/run).
+// microphone) through briskd and a real rtpengine (test/calls/browser/run).
 //
 // alice starts it with /videocall; bob answers with video. Checks, each
 // failing the run:
@@ -12,7 +12,7 @@
 // Screenshots go to /out (test/calls/browser/shots).
 import puppeteer from "puppeteer-core";
 
-const ORIGIN = "http://ircd:8081";
+const ORIGIN = "http://briskd:8081";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const failures = [];
 const check = async (what, promise) => {
@@ -45,14 +45,14 @@ async function open(nick, theme) {
   });
   await page.setViewport({ width: 1280, height: 800 });
   await page.evaluateOnNewDocument((session, theme) => {
-    localStorage.setItem("ircd-webirc-theme", theme);
-    sessionStorage.setItem("ircd-webirc-session", JSON.stringify(session));
+    localStorage.setItem("briskd-webirc-theme", theme);
+    sessionStorage.setItem("briskd-webirc-session", JSON.stringify(session));
   }, {
     nick,
     acct: "",
     pass: "",
     channels: [],
-    wsUrl: "ws://ircd:8080/",
+    wsUrl: "ws://briskd:8080/",
     activeBuf: "*status",
   }, theme);
   await page.goto(`${ORIGIN}/`, { waitUntil: "load" });

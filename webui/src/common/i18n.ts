@@ -1,6 +1,6 @@
 export type Lang = "en" | "he";
 
-const STORAGE_KEY = "ircd-webirc-lang";
+const STORAGE_KEY = "briskd-webirc-lang";
 
 const DICT: Record<Lang, Record<string, string>> = {
   en: {

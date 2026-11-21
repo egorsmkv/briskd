@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run the voice-call end-to-end test: ircd, rtpengine, and two WebRTC clients.
+# Run the voice-call end-to-end test: briskd, rtpengine, and two WebRTC clients.
 set -eu
 cd "$(dirname "$0")"
 if docker compose version >/dev/null 2>&1; then
@@ -8,7 +8,7 @@ else
     compose="docker-compose"
 fi
 status=0
-$compose -p ircd-calls -f docker-compose.yml up --build --abort-on-container-exit \
+$compose -p briskd-calls -f docker-compose.yml up --build --abort-on-container-exit \
     --exit-code-from tests || status=$?
-$compose -p ircd-calls -f docker-compose.yml down -v >/dev/null 2>&1 || true
+$compose -p briskd-calls -f docker-compose.yml down -v >/dev/null 2>&1 || true
 exit $status

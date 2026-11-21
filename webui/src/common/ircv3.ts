@@ -176,7 +176,7 @@ export function formatStandardReply(kind: string, params: string[]): string {
 /**
  * Fold an IRC identity (nickname, channel name, or account name) with the
  * RFC 1459 case mapping the server advertises as `CASEMAPPING=rfc1459` and
- * applies in `ircd_wire:fold/1`: ASCII `A`-`Z` become `a`-`z`, and `[`, `]`,
+ * applies in `briskd_wire:fold/1`: ASCII `A`-`Z` become `a`-`z`, and `[`, `]`,
  * `\`, `^` become `{`, `}`, `|`, `~`. Every other code unit (including
  * non-ASCII) is left unchanged. Use it for identity keys and comparisons,
  * not for display text or substring search.

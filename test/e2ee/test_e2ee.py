@@ -1,4 +1,4 @@
-"""End-to-end tests for the ircd E2EE broker with real Signal-style clients.
+"""End-to-end tests for the briskd E2EE broker with real Signal-style clients.
 
 Two linked servers (`hub` and `leaf`, see docker-compose.yml) and Python
 devices that do X3DH, the Double Ratchet, and Sender Keys. The servers only

@@ -93,7 +93,7 @@ export async function uploadAndSendVoice(
     const resp = await fetch("/api/voice", {
       method: "POST",
       headers: {
-        "X-Requested-With": "ircd-webui",
+        "X-Requested-With": "briskd-webui",
         "Content-Type": blob.type || "audio/ogg",
         "X-Voice-Duration": String(durSec),
       },

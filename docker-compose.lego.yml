@@ -5,10 +5,10 @@
 #   docker compose -f docker-compose.prod.yml -f docker-compose.lego.yml up -d --build
 #
 # The lego service obtains the certificate for LEGO_DOMAINS, renews it when
-# it is due, and writes fullchain.pem and privkey.pem to the ircd-certs
-# volume (deploy/lego/lego.sh). ircd waits until the first certificate exists,
-# serves TLS on 6697 with config/ircd.prod.tls.json, and reloads a renewed
-# certificate without a restart (ircd_certs, tls_reload_interval).
+# it is due, and writes fullchain.pem and privkey.pem to the briskd-certs
+# volume (deploy/lego/lego.sh). briskd waits until the first certificate exists,
+# serves TLS on 6697 with config/briskd.prod.tls.json, and reloads a renewed
+# certificate without a restart (briskd_certs, tls_reload_interval).
 
 services:
   lego:
@@ -22,7 +22,7 @@ services:
       - "80:80"
     volumes:
       - lego-data:/data
-      - ircd-certs:/certs
+      - briskd-certs:/certs
       - ./deploy/lego/lego.sh:/deploy/lego.sh:ro
     healthcheck:
       test: ["CMD", "test", "-s", "/certs/fullchain.pem"]
@@ -36,7 +36,7 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  ircd:
+  briskd:
     depends_on:
       lego:
         condition: service_healthy
@@ -44,11 +44,11 @@ services:
       - "6697:6697"
       - "8443:8443"
     volumes:
-      - ./config/ircd.prod.tls.json:/etc/ircd/ircd.json:ro
-      - ircd-certs:/etc/ircd/certs:ro
+      - ./config/briskd.prod.tls.json:/etc/briskd/briskd.json:ro
+      - briskd-certs:/etc/briskd/certs:ro
 
 volumes:
   # ACME account key and certificates (lego's own storage).
   lego-data:
-  # Published certificate and key, read-only for ircd.
-  ircd-certs:
+  # Published certificate and key, read-only for briskd.
+  briskd-certs:

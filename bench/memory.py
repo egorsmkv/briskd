@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # is written as JSON inside the container and read back with `cat`.
 PROBE = r"""
 [erlang:garbage_collect(P) || P <- erlang:processes()],
-Sess = [P || {_, P, _, _} <- supervisor:which_children(ircd_sessions), is_pid(P)],
+Sess = [P || {_, P, _, _} <- supervisor:which_children(briskd_sessions), is_pid(P)],
 Info = fun(P, K) -> case erlang:process_info(P, K) of {K, V} -> V; _ -> undefined end end,
 SessMem = [M || P <- Sess, M <- [Info(P, memory)], is_integer(M)],
 SessBin = [lists:sum([S || {_, S, _} <- B]) || P <- Sess, B <- [Info(P, binary)], is_list(B)],
@@ -57,21 +57,21 @@ R = #{memory => maps:from_list(erlang:memory()),
       session_queue => SessQueue,
       top_processes => [X || {_, X} <- Top],
       top_tables => [X || {_, X} <- TopTabs]},
-ok = file:write_file("/tmp/ircd-memprobe.json", json:encode(R)).
+ok = file:write_file("/tmp/briskd-memprobe.json", json:encode(R)).
 """
 
 
 def probe(container, cookie):
     erts = subprocess.check_output(
-        ["docker", "exec", container, "sh", "-c", "ls -d /opt/ircd/erts-*"], text=True
+        ["docker", "exec", container, "sh", "-c", "ls -d /opt/briskd/erts-*"], text=True
     ).strip()
     subprocess.run(
-        ["docker", "exec", "-i", container, f"{erts}/bin/erl_call", "-sname", "ircd@localhost",
+        ["docker", "exec", "-i", container, f"{erts}/bin/erl_call", "-sname", "briskd@localhost",
          "-c", cookie, "-e"],
         input=PROBE, text=True, check=True, capture_output=True, timeout=120,
     )
     out = subprocess.check_output(
-        ["docker", "exec", container, "cat", "/tmp/ircd-memprobe.json"], timeout=30
+        ["docker", "exec", container, "cat", "/tmp/briskd-memprobe.json"], timeout=30
     )
     return json.loads(out)
 
@@ -170,7 +170,7 @@ def report(args, samples, started):
     held = samples[1][1]
     n = args.clients
     lines = [
-        "# ircd memory",
+        "# briskd memory",
         "",
         f"Measured {started} against `{args.host}:{args.port}` (container `{args.container}`).",
         f"{args.note}",
@@ -269,8 +269,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=16668)
-    parser.add_argument("--container", default="ircd-memory-bench")
-    parser.add_argument("--cookie", required=True, help="the node's IRCD_COOKIE")
+    parser.add_argument("--container", default="briskd-memory-bench")
+    parser.add_argument("--cookie", required=True, help="the node's BRISKD_COOKIE")
     parser.add_argument("--clients", type=int, default=1000)
     parser.add_argument("--members", type=int, default=50)
     parser.add_argument("--messages", type=int, default=10)

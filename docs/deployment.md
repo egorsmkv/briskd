@@ -1,8 +1,8 @@
 # Production deployment and DevOps runbook
 
-This page is for an operator deploying one ircd process and deciding whether
+This page is for an operator deploying one briskd process and deciding whether
 it is listening, and whether a change needs a restart. Section 2 is that
-path: the configuration file, `IRCD_CONFIG`, ports, TLS files, logs, and the
+path: the configuration file, `BRISKD_CONFIG`, ports, TLS files, logs, and the
 listening check. Setting keys are in [Configuration](configuration.md); what
 the data directory keeps across a restart is in [Mnesia](mnesia.md).
 
@@ -17,45 +17,45 @@ runtime base to the Alpine release of the new `erlang:*-alpine` image:
 
 | Item | Production value | Notes |
 | --- | --- | --- |
-| User / group | `ircd:ircd` (`UID 10001`, `GID 10001`) | Fixed UID/GID so sidecars (`lego`) can write readable TLS keys |
-| Release root | `/opt/ircd` | Entrypoint `/opt/ircd/bin/ircd foreground` |
-| Configuration path | `IRCD_CONFIG=/etc/ircd/ircd.json` | Mounted read-only in `docker-compose.prod.yml` |
-| Working / Mnesia directory | `/var/lib/ircd` (`/var/lib/ircd/mnesia`) | Persisted in the `ircd-data` volume |
-| Distribution cookie | `IRCD_COOKIE` (required in prod release) | Substituted into `config/vm.prod.args.src` at boot |
+| User / group | `briskd:briskd` (`UID 10001`, `GID 10001`) | Fixed UID/GID so sidecars (`lego`) can write readable TLS keys |
+| Release root | `/opt/briskd` | Entrypoint `/opt/briskd/bin/briskd foreground` |
+| Configuration path | `BRISKD_CONFIG=/etc/briskd/briskd.json` | Mounted read-only in `docker-compose.prod.yml` |
+| Working / Mnesia directory | `/var/lib/briskd` (`/var/lib/briskd/mnesia`) | Persisted in the `briskd-data` volume |
+| Distribution cookie | `BRISKD_COOKIE` (required in prod release) | Substituted into `config/vm.prod.args.src` at boot |
 | Distribution bind | `127.0.0.1` (`inet_dist_use_interface`) | Loopback only; never exposed on external interfaces |
-| Stop signal | `SIGTERM` | Triggers `init:stop/0` and `ircd_shutdown` drain |
+| Stop signal | `SIGTERM` | Triggers `init:stop/0` and `briskd_shutdown` drain |
 
 ## 2. Run one server
 
-One process reads one JSON file. `IRCD_CONFIG` selects it. When the variable
-is unset, `ircd_app` loads `config/ircd.json`. Paths in the file are relative
+One process reads one JSON file. `BRISKD_CONFIG` selects it. When the variable
+is unset, `briskd_app` loads `config/briskd.json`. Paths in the file are relative
 to the working directory unless they are absolute. In the production image
-and the systemd unit that directory is `/var/lib/ircd`.
+and the systemd unit that directory is `/var/lib/briskd`.
 
 `docker-compose.prod.yml` is the supported single-server container path. It
-builds `Dockerfile.prod`, sets `IRCD_CONFIG=/etc/ircd/ircd.json`, and mounts
-`config/ircd.prod.json` read-only at that path and `config/motd.txt` at
-`/etc/ircd/motd.txt`. Mnesia data is the `ircd-data` volume, mounted at
-`/var/lib/ircd`. `config/ircd.prod.json` sets `mnesia_dir` to
-`/var/lib/ircd/mnesia`. Edit that JSON file (`name`, `network`, `operators`,
+builds `Dockerfile.prod`, sets `BRISKD_CONFIG=/etc/briskd/briskd.json`, and mounts
+`config/briskd.prod.json` read-only at that path and `config/motd.txt` at
+`/etc/briskd/motd.txt`. Mnesia data is the `briskd-data` volume, mounted at
+`/var/lib/briskd`. `config/briskd.prod.json` sets `mnesia_dir` to
+`/var/lib/briskd/mnesia`. Edit that JSON file (`name`, `network`, `operators`,
 `administrators`, `channels`, `flood`, and TLS or peer settings) and
 `config/motd.txt` before the first start. The distribution cookie is
 required and stays on loopback (section 1):
 
 ```sh
-echo "IRCD_COOKIE=$(openssl rand -hex 24)" > .env
+echo "BRISKD_COOKIE=$(openssl rand -hex 24)" > .env
 docker-compose -f docker-compose.prod.yml up --build -d
 ```
 
-`config/ircd.prod.json` binds `0.0.0.0` and enables `tcp_port` 6667,
+`config/briskd.prod.json` binds `0.0.0.0` and enables `tcp_port` 6667,
 `ws_port` 8080, and the admin WebUI on 8081. The compose file publishes
 `6667`, `8080`, and `127.0.0.1:8081`. `tls_port` and `wss_port` are `null`,
 and `certfile` and `keyfile` are `null`, so this path does not open TLS and
 does not need certificate files. `6697` and `8443` are commented out in the
 compose file. To serve TLS, use the lego overlay in section 4
-(`config/ircd.prod.tls.json`, `certfile` `/etc/ircd/certs/fullchain.pem`,
-`keyfile` `/etc/ircd/certs/privkey.pem`) or uncomment those ports and the
-`./certs:/etc/ircd/certs:ro` mount and point `certfile` and `keyfile` at
+(`config/briskd.prod.tls.json`, `certfile` `/etc/briskd/certs/fullchain.pem`,
+`keyfile` `/etc/briskd/certs/privkey.pem`) or uncomment those ports and the
+`./certs:/etc/briskd/certs:ro` mount and point `certfile` and `keyfile` at
 files on that mount. A `null` port starts no listener for that transport.
 
 The release writes the OTP logger to standard output. The default
@@ -64,24 +64,24 @@ stream with the json-file driver (`max-size` 10m, `max-file` 3). The JSON
 configuration has no log-file path. Read the lines with:
 
 ```sh
-docker-compose -f docker-compose.prod.yml logs ircd
+docker-compose -f docker-compose.prod.yml logs briskd
 ```
 
 The process is listening when each bound listener logs `event` `listening`
 at `notice`, with `transport`, `ip`, and `port`, and the application logs
 `event` `started` with the server `name`. The container healthcheck connects
 to `127.0.0.1:6667`, sends `QUIT`, and expects `ERROR`. The same process
-answers `docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl status`.
+answers `docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl status`.
 The healthcheck does not look at server links.
 
-`server_links` is empty in `config/ircd.prod.json`. A peer you add later is
-one worker under `ircd_links`. If that peer is down, the worker logs
-`server_link_retry` and connects again; the ircd process stays up. That is a
+`server_links` is empty in `config/briskd.prod.json`. A peer you add later is
+one worker under `briskd_links`. If that peer is down, the worker logs
+`server_link_retry` and connects again; the briskd process stays up. That is a
 degraded link, not a failed server. Readiness is initialized state and the
 listeners that the configuration actually enables.
 
 Without Docker, build the release (`rebar3 as prod release` or `just release`)
-and install it as in section 5, with `IRCD_CONFIG` set to your JSON file.
+and install it as in section 5, with `BRISKD_CONFIG` set to your JSON file.
 The same standard-output log lines are what the service writes; the unit
 does not configure a separate log file. `docker-compose.dev.yml` is the
 source-tree environment, not this production layout.
@@ -103,7 +103,7 @@ Expose only the listeners enabled in your JSON configuration:
 > [!IMPORTANT]
 > Never expose the Erlang distribution port (`epmd` / dynamic distribution
 > port) outside the host. `config/vm.prod.args.src` binds distribution to
-> `{127,0,0,1}` and names the node `ircd@localhost`, so `/opt/ircd/bin/ircd
+> `{127,0,0,1}` and names the node `briskd@localhost`, so `/opt/briskd/bin/briskd
 > ping`, `eval`, and `remote_console` work locally inside the container or host
 > without listening on public interfaces. (Earlier images named the node after
 > the container hostname, which resolves to the container's external address,
@@ -136,15 +136,15 @@ docker-compose -f docker-compose.prod.yml -f docker-compose.lego.yml up -d --bui
 - The `lego` service (`goacme/lego:v5.6.0`) runs `deploy/lego/lego.sh`. Every
   `CHECK_INTERVAL` seconds (12 hours) it runs `lego run`, which obtains the
   certificate the first time and renews it when it is due. The certificate and
-  key are then written to the `ircd-certs` volume as `fullchain.pem` (mode
+  key are then written to the `briskd-certs` volume as `fullchain.pem` (mode
   `0644`) and `privkey.pem` (mode `0640`, owned by `UID 10001`). Each file is
-  written under a temporary name and renamed atomically, so `ircd` never reads a
+  written under a temporary name and renamed atomically, so `briskd` never reads a
   partially written file. The ACME account and lego's own copies stay in the
   `lego-data` volume.
-- `ircd` starts after the first certificate exists, uses
-  `config/ircd.prod.tls.json` (TLS on 6697), and mounts the volume read-only at
-  `/etc/ircd/certs`.
-- **Zero-downtime certificate reload:** `ircd_certs` polls `certfile`,
+- `briskd` starts after the first certificate exists, uses
+  `config/briskd.prod.tls.json` (TLS on 6697), and mounts the volume read-only at
+  `/etc/briskd/certs`.
+- **Zero-downtime certificate reload:** `briskd_certs` polls `certfile`,
   `keyfile`, and every `sni` pair every `tls_reload_interval` seconds (default
   60), verifies that the private key matches the certificate, and restarts only
   the TLS listeners. Existing client and server-link TLS sessions stay connected;
@@ -174,34 +174,34 @@ the TLS port (see [Configuration](configuration.md)).
 To deploy the release on a Linux host without Docker:
 
 1. Build the release on an OTP 29.x build host (`rebar3 as prod release`) and
-   install `_build/prod/rel/ircd` to `/opt/ircd`.
+   install `_build/prod/rel/briskd` to `/opt/briskd`.
 2. Create the system account and directories:
    ```sh
-   groupadd --system --gid 10001 ircd
-   useradd --system --uid 10001 --gid ircd --home-dir /var/lib/ircd --shell /usr/sbin/nologin ircd
-   install -d -o ircd -g ircd -m 0750 /var/lib/ircd /var/lib/ircd/mnesia /etc/ircd
+   groupadd --system --gid 10001 briskd
+   useradd --system --uid 10001 --gid briskd --home-dir /var/lib/briskd --shell /usr/sbin/nologin briskd
+   install -d -o briskd -g briskd -m 0750 /var/lib/briskd /var/lib/briskd/mnesia /etc/briskd
    ```
-3. Place the configuration in `/etc/ircd/ircd.json` and the cookie in
-   `/etc/ircd/ircd.env` (mode `0600`, owned by `ircd:ircd`):
+3. Place the configuration in `/etc/briskd/briskd.json` and the cookie in
+   `/etc/briskd/briskd.env` (mode `0600`, owned by `briskd:briskd`):
    ```ini
-   IRCD_CONFIG=/etc/ircd/ircd.json
-   IRCD_COOKIE=<48-hex-char-random-cookie>
+   BRISKD_CONFIG=/etc/briskd/briskd.json
+   BRISKD_COOKIE=<48-hex-char-random-cookie>
    ```
-4. Install `/etc/systemd/system/ircd.service`:
+4. Install `/etc/systemd/system/briskd.service`:
    ```ini
    [Unit]
-   Description=Erlang/OTP IRC Server (ircd)
+   Description=Erlang/OTP IRC Server (briskd)
    After=network-online.target
    Wants=network-online.target
 
    [Service]
    Type=simple
-   User=ircd
-   Group=ircd
-   WorkingDirectory=/var/lib/ircd
-   EnvironmentFile=/etc/ircd/ircd.env
-   ExecStart=/opt/ircd/bin/ircd foreground
-   ExecStop=/opt/ircd/bin/ircd stop
+   User=briskd
+   Group=briskd
+   WorkingDirectory=/var/lib/briskd
+   EnvironmentFile=/etc/briskd/briskd.env
+   ExecStart=/opt/briskd/bin/briskd foreground
+   ExecStop=/opt/briskd/bin/briskd stop
    KillMode=process
    TimeoutStopSec=30
    Restart=on-failure
@@ -211,8 +211,8 @@ To deploy the release on a Linux host without Docker:
    PrivateTmp=true
    ProtectSystem=strict
    ProtectHome=true
-   ReadWritePaths=/var/lib/ircd
-   ReadOnlyPaths=/etc/ircd
+   ReadWritePaths=/var/lib/briskd
+   ReadOnlyPaths=/etc/briskd
 
    [Install]
    WantedBy=multi-user.target
@@ -220,7 +220,7 @@ To deploy the release on a Linux host without Docker:
 
 ## 6. Live configuration reload (`REHASH`) vs. restart
 
-An authenticated IRC operator (`+o`) can reload `IRCD_CONFIG` without dropping
+An authenticated IRC operator (`+o`) can reload `BRISKD_CONFIG` without dropping
 connections by sending `REHASH`. Validation runs before any change is applied:
 if the JSON file has a syntax error or an out-of-range setting, `REHASH` returns
 numeric `400`, logs `rehash_failed`, and keeps the running configuration.
@@ -267,35 +267,35 @@ Key operational and security events to index and alert on:
 
 ### Healthchecks and runtime inspection
 
-- **DevOps CLI (`ircdctl`):**
-  The packaged release installs `/opt/ircd/bin/ircdctl` (also symlinked to
-  `/usr/local/bin/ircdctl` in `Dockerfile.prod` and available at `bin/ircdctl`
+- **DevOps CLI (`briskdctl`):**
+  The packaged release installs `/opt/briskd/bin/briskdctl` (also symlinked to
+  `/usr/local/bin/briskdctl` in `Dockerfile.prod` and available at `bin/briskdctl`
   in the repository). It communicates with the running server over the local
-  Unix domain control socket (`$IRCD_CTL_SOCKET` or `<mnesia_dir>/ircdctl.sock`,
+  Unix domain control socket (`$BRISKD_CTL_SOCKET` or `<mnesia_dir>/briskdctl.sock`,
   mode `0600`, owner-only) and supports `--json` on every command:
   ```sh
-  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl status
-  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl status --json
-  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl ping
-  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl check-config /etc/ircd/ircd.json
-  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl rehash
-  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl reload-certs
-  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl log-level debug
-  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl clients
-  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl kick-client spammer "Excess spam"
-  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl channels
-  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl links
-  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl accounts
-  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl create-account ops strongpass ops@example.org
-  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl delete-account olduser
-  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl set-email ops new@example.org
-  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl add-certfp ops <sha256-fingerprint>
-  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl create-channel '#help' "Ask here"
-  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl set-channel-modes '#help' +nt
-  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl set-channel-modes '#help' +b '*!*@203.0.113.*'
-  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl delete-channel '#old' "Channel closed"
-  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl backup /var/lib/ircd/backup.bup
-  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl drain "Maintenance"
+  docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl status
+  docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl status --json
+  docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl ping
+  docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl check-config /etc/briskd/briskd.json
+  docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl rehash
+  docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl reload-certs
+  docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl log-level debug
+  docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl clients
+  docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl kick-client spammer "Excess spam"
+  docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl channels
+  docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl links
+  docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl accounts
+  docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl create-account ops strongpass ops@example.org
+  docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl delete-account olduser
+  docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl set-email ops new@example.org
+  docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl add-certfp ops <sha256-fingerprint>
+  docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl create-channel '#help' "Ask here"
+  docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl set-channel-modes '#help' +nt
+  docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl set-channel-modes '#help' +b '*!*@203.0.113.*'
+  docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl delete-channel '#old' "Channel closed"
+  docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl backup /var/lib/briskd/backup.bup
+  docker-compose -f docker-compose.prod.yml exec -T briskd briskdctl drain "Maintenance"
   ```
 - **Container TCP probe (`docker-compose.prod.yml`):**
   ```sh
@@ -303,7 +303,7 @@ Key operational and security events to index and alert on:
   ```
 - **Release node liveness check:**
   ```sh
-  docker-compose -f docker-compose.prod.yml exec -T ircd /opt/ircd/bin/ircd ping
+  docker-compose -f docker-compose.prod.yml exec -T briskd /opt/briskd/bin/briskd ping
   ```
 - **In-band IRC statistics:**
   - `LUSERS`: local/global users, invisible users, operators, services,servers, channels, and peak connection counts.
@@ -348,12 +348,12 @@ Key operational and security events to index and alert on:
     with no disconnects; delivery latency grows to tens of seconds during such
     a burst, and new clients register again about 12 seconds after it.
 - **CPU and spam protection:**
-  - `flood` token buckets (`ircd_flood`) cap per-client line rate, message
+  - `flood` token buckets (`briskd_flood`) cap per-client line rate, message
     fan-out, channel joins, and nickname changes, and rate-limit `REGISTER`
     per client IP/host.
-  - `ircd_deferred` bounds concurrent PBKDF2 password hashing workers (SASL
+  - `briskd_deferred` bounds concurrent PBKDF2 password hashing workers (SASL
     `PLAIN` and `REGISTER`) to 32 so CPU-intensive hashing never blocks the
-    `ircd_state` command loop.
+    `briskd_state` command loop.
 - **Storage and table bounds:**
   - WHOWAS is capped at 10 entries per nickname and 10,000 total.
   - Channel access lists (`+b`, `+e`, `+I`) are capped at 100 masks each.
@@ -365,8 +365,8 @@ Key operational and security events to index and alert on:
 ## 9. Graceful shutdown
 
 SIGTERM (`docker-compose stop`, `systemctl stop`), operator `DIE` and
-`RESTART`, and `application:stop(ircd)` all drain the server before it stops
-(`ircd_shutdown`, called from `ircd_app:prep_stop/1`):
+`RESTART`, and `application:stop(briskd)` all drain the server before it stops
+(`briskd_shutdown`, called from `briskd_app:prep_stop/1`):
 
 1. Every listener closes, so no new connection is accepted.
 2. Directly linked servers receive `SQUIT <this server>` (RFC 2813 4.1.6).

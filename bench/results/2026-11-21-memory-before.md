@@ -1,7 +1,7 @@
-# ircd memory
+# briskd memory
 
-Measured 2026-11-21 10:06:05 UTC against `127.0.0.1:16668` (container `ircd-memory-bench`).
-Production image `ircd:baseline` (Dockerfile.prod, config/ircd.prod.json), started by bench/memory-prod.
+Measured 2026-11-21 10:06:05 UTC against `127.0.0.1:16668` (container `briskd-memory-bench`).
+Production image `briskd:baseline` (Dockerfile.prod, config/briskd.prod.json), started by bench/memory-prod.
 
 Workload: 1000 clients in channels of 50, 10 channel messages each at 0.5/s per client, then 3 churn rounds of 500 clients (connect, register, join, message, quit). Every sample follows a full garbage collection of all processes, taken once every session's mailbox is empty and the expected sessions remain (at most 60 s; otherwise marked not settled).
 
@@ -24,7 +24,7 @@ Largest ETS tables at the last sample:
 | `channel_history` | 50 | 7176.6 KiB |
 | `whowas` | 2500 | 876.3 KiB |
 | `code_server` | 888 | 743.0 KiB |
-| `ircd_holds` | 2500 | 388.0 KiB |
+| `briskd_holds` | 2500 | 388.0 KiB |
 | `mnesia_gvar` | 703 | 97.9 KiB |
 | `logger` | 4 | 53.1 KiB |
 | `instrument_series` | 0 | 51.7 KiB |
@@ -32,10 +32,10 @@ Largest ETS tables at the last sample:
 | `instrument_span_exporters` | 0 | 51.0 KiB |
 | `hackney_host_limits` | 0 | 51.0 KiB |
 | `ac_tab` | 59 | 45.1 KiB |
-| `ircd_connection_stats` | 0 | 29.1 KiB |
+| `briskd_connection_stats` | 0 | 29.1 KiB |
 | `code_names` | 25 | 21.6 KiB |
 | `user_modes` | 0 | 20.4 KiB |
-| `ircd_nicks` | 0 | 20.4 KiB |
+| `briskd_nicks` | 0 | 20.4 KiB |
 
 Largest registered processes at the last sample:
 
@@ -44,11 +44,11 @@ Largest registered processes at the last sample:
 | `erl_prim_loader` | 21.1 KiB | 0 |
 | `code_server` | 21.1 KiB | 0 |
 | `release_handler` | 21.1 KiB | 0 |
-| `ircd_sup` | 7.0 KiB | 0 |
+| `briskd_sup` | 7.0 KiB | 0 |
 | `application_controller` | 6.4 KiB | 0 |
 | `init` | 5.7 KiB | 0 |
-| `ircd_links` | 5.2 KiB | 0 |
-| `ircd_webui` | 5.2 KiB | 0 |
+| `briskd_links` | 5.2 KiB | 0 |
+| `briskd_webui` | 5.2 KiB | 0 |
 | `net_kernel` | 4.2 KiB | 0 |
 | `logger_std_h_default` | 3.9 KiB | 0 |
 | `user_drv` | 3.9 KiB | 0 |

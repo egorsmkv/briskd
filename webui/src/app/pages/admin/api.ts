@@ -133,7 +133,7 @@ export interface MediaPayload {
   };
 }
 
-/** `ircdctl search`: the message search indexer and its service. */
+/** `briskdctl search`: the message search indexer and its service. */
 export interface SearchInfo {
   enabled?: boolean;
   /** starting, ready, down, disabled, not_configured, or busy. */

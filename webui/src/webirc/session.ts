@@ -14,7 +14,7 @@ export const WSS_PORT = config().wssPort;
 
 export const BASE_TITLE = `${config().network} - WebIRC`;
 
-export const SESSION_KEY = "ircd-webirc-session";
+export const SESSION_KEY = "briskd-webirc-session";
 
 export function bufferToPath(name: string): string {
   if (name === "*status") return "/status";
@@ -118,7 +118,7 @@ export function clearSession(): void {
   clearHistory();
 }
 
-const RECLAIM_KEY = "ircd-webirc-reclaim";
+const RECLAIM_KEY = "briskd-webirc-reclaim";
 let memorySecret: string | null = null;
 
 /**

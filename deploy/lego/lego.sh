@@ -1,6 +1,6 @@
 #!/bin/sh
 # Obtain and renew the IRC server's TLS certificate with lego (ACME), and
-# publish it for ircd. Runs in the goacme/lego image (docker-compose.lego.yml).
+# publish it for briskd. Runs in the goacme/lego image (docker-compose.lego.yml).
 #
 # lego reads its own settings from the environment (lego.env):
 #   LEGO_DOMAINS, LEGO_EMAIL, LEGO_ACCEPT_TOS=true      required
@@ -12,14 +12,14 @@
 # and this script's:
 #   CHECK_INTERVAL      seconds between renewal checks (default 43200, 12 h)
 #   RETRY_INTERVAL      seconds before retrying a failed run (default 3600)
-#   IRCD_UID, IRCD_GID  owner of the published key (default 10001, Dockerfile.prod)
+#   BRISKD_UID, BRISKD_GID  owner of the published key (default 10001, Dockerfile.prod)
 #
 # `lego run` obtains the certificate the first time and renews it when it is
 # due (ARI or one third of its lifetime left); otherwise it changes nothing.
 # After each successful run the certificate and key are copied to /certs as
-# fullchain.pem (0644) and privkey.pem (0640, owned by ircd). Each file is
-# written to a temporary name and renamed, so ircd never reads half a file;
-# ircd_certs reloads them within tls_reload_interval seconds.
+# fullchain.pem (0644) and privkey.pem (0640, owned by briskd). Each file is
+# written to a temporary name and renamed, so briskd never reads half a file;
+# briskd_certs reloads them within tls_reload_interval seconds.
 set -eu
 
 : "${LEGO_DOMAINS:?set LEGO_DOMAINS in lego.env}"
@@ -33,18 +33,18 @@ if [ -z "${LEGO_HTTP:-}${LEGO_TLS:-}${LEGO_DNS:-}" ]; then
 fi
 
 export LEGO_PATH=/data
-export LEGO_CERT_NAME=ircd
-CERT="$LEGO_PATH/certificates/ircd.crt"
-KEY="$LEGO_PATH/certificates/ircd.key"
+export LEGO_CERT_NAME=briskd
+CERT="$LEGO_PATH/certificates/briskd.crt"
+KEY="$LEGO_PATH/certificates/briskd.key"
 OUT=/certs
 CHECK_INTERVAL="${CHECK_INTERVAL:-43200}"
 RETRY_INTERVAL="${RETRY_INTERVAL:-3600}"
-IRCD_UID="${IRCD_UID:-10001}"
-IRCD_GID="${IRCD_GID:-10001}"
+BRISKD_UID="${BRISKD_UID:-10001}"
+BRISKD_GID="${BRISKD_GID:-10001}"
 
 publish() {
-    install -m 0640 -o "$IRCD_UID" -g "$IRCD_GID" "$KEY" "$OUT/.privkey.pem.tmp"
-    install -m 0644 -o "$IRCD_UID" -g "$IRCD_GID" "$CERT" "$OUT/.fullchain.pem.tmp"
+    install -m 0640 -o "$BRISKD_UID" -g "$BRISKD_GID" "$KEY" "$OUT/.privkey.pem.tmp"
+    install -m 0644 -o "$BRISKD_UID" -g "$BRISKD_GID" "$CERT" "$OUT/.fullchain.pem.tmp"
     mv -f "$OUT/.privkey.pem.tmp" "$OUT/privkey.pem"
     mv -f "$OUT/.fullchain.pem.tmp" "$OUT/fullchain.pem"
 }

@@ -41,7 +41,7 @@ function VoiceSection() {
   const objs = voice?.objects ?? [];
   const heading = voice?.enabled
     ? `Voice Messages — ${
-      voice.bucket || "ircd-voice"
+      voice.bucket || "briskd-voice"
     } (${objs.length} objects, ${fmtBytes(totalSize(objs))}, max ${
       fmtBytes(voice.max_bytes ?? 0)
     } / ${voice.max_duration ?? 120}s)`
@@ -102,7 +102,7 @@ function FilesSection() {
   const objs = files?.objects ?? [];
   const heading = files?.enabled
     ? `Shared Files — ${
-      files.bucket || "ircd-files"
+      files.bucket || "briskd-files"
     } (${objs.length} objects, ${fmtBytes(totalSize(objs))}, max ${
       fmtBytes(files.max_bytes ?? 0)
     })`

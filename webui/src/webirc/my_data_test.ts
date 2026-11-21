@@ -7,14 +7,14 @@ function assert(cond: boolean, msg: string): void {
 
 Deno.test("appKeys keeps only this app's storage keys", () => {
   const keys = appKeys([
-    "ircd-webirc-settings",
+    "briskd-webirc-settings",
     "ircd-e2ee-v1:alice",
-    "ircd-webirc-dms",
+    "briskd-webirc-dms",
     "other-site-key",
-    "xircd-webirc",
+    "xbriskd-webirc",
   ]);
   assert(
-    keys.join() === "ircd-webirc-settings,ircd-e2ee-v1:alice,ircd-webirc-dms",
+    keys.join() === "briskd-webirc-settings,ircd-e2ee-v1:alice,briskd-webirc-dms",
     keys.join(),
   );
 });

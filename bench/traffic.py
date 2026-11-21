@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive a running ircd with real TCP clients and write a short result note.
+"""Drive a running briskd with real TCP clients and write a short result note.
 
 Usage, from the repository root, while the server is listening:
 
@@ -595,7 +595,7 @@ def otp_command(kind, container):
         "erlang:system_info(version)]), halt()."
     )
     if kind == "production":
-        # The production image runs the release from /opt/ircd; its
+        # The production image runs the release from /opt/briskd; its
         # start_erl.data names the bundled ERTS and the release version.
         return [
             "docker",
@@ -603,7 +603,7 @@ def otp_command(kind, container):
             container,
             "sh",
             "-c",
-            'set -- $(cat /opt/ircd/releases/start_erl.data); echo "ERTS $1, release $2"',
+            'set -- $(cat /opt/briskd/releases/start_erl.data); echo "ERTS $1, release $2"',
         ]
     if kind == "release":
         # A second emulator in the release container. halt/0 stops only that one.
@@ -615,8 +615,8 @@ def otp_command(kind, container):
             container,
             "sh",
             "-c",
-            "BINDIR=$(echo /workspace/_build/prod/rel/ircd/erts-*/bin); "
-            "ROOTDIR=/workspace/_build/prod/rel/ircd; "
+            "BINDIR=$(echo /workspace/_build/prod/rel/briskd/erts-*/bin); "
+            "ROOTDIR=/workspace/_build/prod/rel/briskd; "
             "export ROOTDIR BINDIR EMU=beam PROGNAME=erl; "
             '"$BINDIR/erlexec" -noshell -boot /usr/local/lib/erlang/bin/start_clean '
             "-eval 'io:format(\"~s ~s~n\",[erlang:system_info(otp_release), "
@@ -628,7 +628,7 @@ def otp_command(kind, container):
         "docker-compose.dev.yml",
         "exec",
         "-T",
-        "ircd-dev",
+        "briskd-dev",
         "erl",
         "-noshell",
         "-eval",
@@ -657,7 +657,7 @@ def preamble(report):
         lines = [
             "This is the production image (`Dockerfile.prod`: the release with",
             "ERTS included, on Debian slim) run as `docker-compose.prod.yml` runs it:",
-            "`config/ircd.prod.json` (flood limits, DroneBL, `channels` retention,",
+            "`config/briskd.prod.json` (flood limits, DroneBL, `channels` retention,",
             "JSON info logging) with only `max_clients` raised so the high-load",
             "clients fit, `ulimit -n` 65536, `init`, and a fresh data volume, on",
             "another host port (`bench/prod`).",
@@ -673,9 +673,9 @@ def preamble(report):
     if report["kind"] == "release":
         lines = [
             "This is a packaged release (`rebar3 as prod release`, ERTS included),",
-            "started with `_build/prod/rel/ircd/bin/ircd foreground`.",
-            "`IRCD_CONFIG` is the release copy of `bench/release.json` (port 6668,",
-            "Mnesia directory `/tmp/ircd-release-mnesia`).",
+            "started with `_build/prod/rel/briskd/bin/briskd foreground`.",
+            "`BRISKD_CONFIG` is the release copy of `bench/release.json` (port 6668,",
+            "Mnesia directory `/tmp/briskd-release-mnesia`).",
             "Load generator: host CPython asyncio through the published port.",
             stats,
             otp,
@@ -699,7 +699,7 @@ def write_report(path, report):
     regs = report["regs"]
     channel = report["channel"]
     lines = [
-        "# ircd bench",
+        "# briskd bench",
         "",
         f"Measured {report['when']} against `{report['host']}:{report['port']}`.",
         f"Welcome numeric: `{report['welcome'].strip()}`.",
@@ -936,7 +936,7 @@ async def main_async(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Measure a running ircd")
+    parser = argparse.ArgumentParser(description="Measure a running briskd")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=6667)
     parser.add_argument("--pings", type=int, default=100)
@@ -997,7 +997,7 @@ def main():
     )
     parser.add_argument("--timeout", type=float, default=8)
     parser.add_argument("--output", default="")
-    parser.add_argument("--container", default="irc-server_ircd-dev_1")
+    parser.add_argument("--container", default="irc-server_briskd-dev_1")
     parser.add_argument(
         "--kind", choices=("development", "release", "production"), default="development"
     )

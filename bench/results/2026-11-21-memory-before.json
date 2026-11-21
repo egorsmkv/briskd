@@ -35,7 +35,7 @@
       },
       {
         "memory": 14072,
-        "name": "ircd_sup",
+        "name": "briskd_sup",
         "queue": 0
       },
       {
@@ -50,12 +50,12 @@
       },
       {
         "memory": 9008,
-        "name": "ircd_webui",
+        "name": "briskd_webui",
         "queue": 0
       },
       {
         "memory": 8800,
-        "name": "ircd_links",
+        "name": "briskd_links",
         "queue": 0
       },
       {
@@ -146,12 +146,12 @@
         "bytes": 11280
       },
       {
-        "name": "ircd_connection_stats",
+        "name": "briskd_connection_stats",
         "size": 0,
         "bytes": 11280
       },
       {
-        "name": "ircd_command_stats",
+        "name": "briskd_command_stats",
         "size": 0,
         "bytes": 11280
       }
@@ -179,12 +179,12 @@
     "top_processes": [
       {
         "memory": 507944,
-        "name": "ircd_sessions",
+        "name": "briskd_sessions",
         "queue": 0
       },
       {
         "memory": 74880,
-        "name": "ircd_state",
+        "name": "briskd_state",
         "queue": 0
       },
       {
@@ -204,7 +204,7 @@
       },
       {
         "memory": 7192,
-        "name": "ircd_sup",
+        "name": "briskd_sup",
         "queue": 0
       },
       {
@@ -214,12 +214,12 @@
       },
       {
         "memory": 5992,
-        "name": "ircd_webui",
+        "name": "briskd_webui",
         "queue": 0
       },
       {
         "memory": 5368,
-        "name": "ircd_links",
+        "name": "briskd_links",
         "queue": 0
       },
       {
@@ -255,27 +255,27 @@
         "bytes": 309008
       },
       {
-        "name": "ircd_flood",
+        "name": "briskd_flood",
         "size": 1000,
         "bytes": 292936
       },
       {
-        "name": "ircd_caps",
+        "name": "briskd_caps",
         "size": 1000,
         "bytes": 276936
       },
       {
-        "name": "ircd_nicks",
+        "name": "briskd_nicks",
         "size": 1000,
         "bytes": 140936
       },
       {
-        "name": "ircd_conn",
+        "name": "briskd_conn",
         "size": 1000,
         "bytes": 124936
       },
       {
-        "name": "ircd_connection_stats",
+        "name": "briskd_connection_stats",
         "size": 1000,
         "bytes": 117768
       },
@@ -338,12 +338,12 @@
     "top_processes": [
       {
         "memory": 507944,
-        "name": "ircd_sessions",
+        "name": "briskd_sessions",
         "queue": 0
       },
       {
         "memory": 74880,
-        "name": "ircd_state",
+        "name": "briskd_state",
         "queue": 0
       },
       {
@@ -363,7 +363,7 @@
       },
       {
         "memory": 7192,
-        "name": "ircd_sup",
+        "name": "briskd_sup",
         "queue": 0
       },
       {
@@ -378,12 +378,12 @@
       },
       {
         "memory": 5368,
-        "name": "ircd_links",
+        "name": "briskd_links",
         "queue": 0
       },
       {
         "memory": 5336,
-        "name": "ircd_webui",
+        "name": "briskd_webui",
         "queue": 0
       },
       {
@@ -414,27 +414,27 @@
         "bytes": 324936
       },
       {
-        "name": "ircd_flood",
+        "name": "briskd_flood",
         "size": 1000,
         "bytes": 292936
       },
       {
-        "name": "ircd_caps",
+        "name": "briskd_caps",
         "size": 1000,
         "bytes": 276936
       },
       {
-        "name": "ircd_nicks",
+        "name": "briskd_nicks",
         "size": 1000,
         "bytes": 140936
       },
       {
-        "name": "ircd_conn",
+        "name": "briskd_conn",
         "size": 1000,
         "bytes": 124936
       },
       {
-        "name": "ircd_connection_stats",
+        "name": "briskd_connection_stats",
         "size": 1000,
         "bytes": 117768
       },
@@ -517,7 +517,7 @@
       },
       {
         "memory": 7192,
-        "name": "ircd_sup",
+        "name": "briskd_sup",
         "queue": 0
       },
       {
@@ -527,12 +527,12 @@
       },
       {
         "memory": 5368,
-        "name": "ircd_links",
+        "name": "briskd_links",
         "queue": 0
       },
       {
         "memory": 5336,
-        "name": "ircd_webui",
+        "name": "briskd_webui",
         "queue": 0
       },
       {
@@ -573,7 +573,7 @@
         "bytes": 364936
       },
       {
-        "name": "ircd_holds",
+        "name": "briskd_holds",
         "size": 1000,
         "bytes": 164936
       },
@@ -613,7 +613,7 @@
         "bytes": 46160
       },
       {
-        "name": "ircd_connection_stats",
+        "name": "briskd_connection_stats",
         "size": 0,
         "bytes": 29768
       },
@@ -628,7 +628,7 @@
         "bytes": 20936
       },
       {
-        "name": "ircd_nicks",
+        "name": "briskd_nicks",
         "size": 0,
         "bytes": 20936
       }
@@ -671,7 +671,7 @@
       },
       {
         "memory": 7192,
-        "name": "ircd_sup",
+        "name": "briskd_sup",
         "queue": 0
       },
       {
@@ -686,12 +686,12 @@
       },
       {
         "memory": 5368,
-        "name": "ircd_links",
+        "name": "briskd_links",
         "queue": 0
       },
       {
         "memory": 5336,
-        "name": "ircd_webui",
+        "name": "briskd_webui",
         "queue": 0
       },
       {
@@ -732,7 +732,7 @@
         "bytes": 536936
       },
       {
-        "name": "ircd_holds",
+        "name": "briskd_holds",
         "size": 1500,
         "bytes": 236936
       },
@@ -772,7 +772,7 @@
         "bytes": 46160
       },
       {
-        "name": "ircd_connection_stats",
+        "name": "briskd_connection_stats",
         "size": 0,
         "bytes": 29768
       },
@@ -787,7 +787,7 @@
         "bytes": 20936
       },
       {
-        "name": "ircd_nicks",
+        "name": "briskd_nicks",
         "size": 0,
         "bytes": 20936
       }
@@ -830,7 +830,7 @@
       },
       {
         "memory": 7192,
-        "name": "ircd_sup",
+        "name": "briskd_sup",
         "queue": 0
       },
       {
@@ -840,12 +840,12 @@
       },
       {
         "memory": 5368,
-        "name": "ircd_links",
+        "name": "briskd_links",
         "queue": 0
       },
       {
         "memory": 5336,
-        "name": "ircd_webui",
+        "name": "briskd_webui",
         "queue": 0
       },
       {
@@ -891,7 +891,7 @@
         "bytes": 708936
       },
       {
-        "name": "ircd_holds",
+        "name": "briskd_holds",
         "size": 2000,
         "bytes": 308936
       },
@@ -931,7 +931,7 @@
         "bytes": 46160
       },
       {
-        "name": "ircd_connection_stats",
+        "name": "briskd_connection_stats",
         "size": 0,
         "bytes": 29768
       },
@@ -946,7 +946,7 @@
         "bytes": 20936
       },
       {
-        "name": "ircd_nicks",
+        "name": "briskd_nicks",
         "size": 0,
         "bytes": 20936
       }
@@ -989,7 +989,7 @@
       },
       {
         "memory": 7192,
-        "name": "ircd_sup",
+        "name": "briskd_sup",
         "queue": 0
       },
       {
@@ -1004,12 +1004,12 @@
       },
       {
         "memory": 5368,
-        "name": "ircd_links",
+        "name": "briskd_links",
         "queue": 0
       },
       {
         "memory": 5336,
-        "name": "ircd_webui",
+        "name": "briskd_webui",
         "queue": 0
       },
       {
@@ -1050,7 +1050,7 @@
         "bytes": 760840
       },
       {
-        "name": "ircd_holds",
+        "name": "briskd_holds",
         "size": 2500,
         "bytes": 397320
       },
@@ -1090,7 +1090,7 @@
         "bytes": 46160
       },
       {
-        "name": "ircd_connection_stats",
+        "name": "briskd_connection_stats",
         "size": 0,
         "bytes": 29768
       },
@@ -1105,7 +1105,7 @@
         "bytes": 20936
       },
       {
-        "name": "ircd_nicks",
+        "name": "briskd_nicks",
         "size": 0,
         "bytes": 20936
       }

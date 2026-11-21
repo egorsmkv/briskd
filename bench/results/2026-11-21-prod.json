@@ -3,7 +3,7 @@
   "host": "127.0.0.1",
   "port": 16667,
   "welcome": ":irc.example.org 001 b25284455 :Welcome to IRC b25284455!b25284455@172.17.0.1",
-  "stats": "ircd-prod-bench cpu=0.76% mem=136.5MiB / 31.26GiB",
+  "stats": "briskd-prod-bench cpu=0.76% mem=136.5MiB / 31.26GiB",
   "otp": "ERTS 17.1.1, release 0.1.0",
   "kind": "production",
   "warmup": 50,

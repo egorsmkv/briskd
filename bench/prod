@@ -3,29 +3,29 @@
 # it the way that compose file does, and benchmark it: bench/traffic.py, then
 # bench/faker_load.py. Reports go to bench/results/<date>-prod*.
 #
-# Same image, config/ircd.prod.json (read-only; only max_clients raised, see
+# Same image, config/briskd.prod.json (read-only; only max_clients raised, see
 # below), motd, init, and
 # nofile ulimit as docker-compose.prod.yml. Differences, so a running dev
 # server (ports 6667/8080/8081) is not disturbed: the IRC port is published
 # on PROD_BENCH_PORT (default 16667), the web ports are not published, and
 # the data volume is a fresh one that is deleted afterwards.
 #
-# config/ircd.prod.json limits each client to 50 lines per second with a
+# config/briskd.prod.json limits each client to 50 lines per second with a
 # 500-line burst. The command matrix is therefore paced at 40 lines per
 # second and the pipelined PING phase sends 400; extra arguments override
 # these (for example --pace 0 to see the limit disconnect the client).
 set -eu
 cd "$(dirname "$0")/.."
 
-NAME=ircd-prod-bench
-VOLUME=ircd-prod-bench-data
+NAME=briskd-prod-bench
+VOLUME=briskd-prod-bench-data
 PORT=${PROD_BENCH_PORT:-16667}
 
 # The high-load phase holds 10,000 clients (traffic.py --clients), plus the
-# bench's own connections; config/ircd.prod.json allows 10,000 in total. The
+# bench's own connections; config/briskd.prod.json allows 10,000 in total. The
 # run uses a copy with only max_clients raised (PROD_BENCH_MAX_CLIENTS).
 MAX_CLIENTS=${PROD_BENCH_MAX_CLIENTS:-12000}
-CONFIG=$(mktemp "${TMPDIR:-/tmp}/ircd-prod-bench.XXXXXX.json")
+CONFIG=$(mktemp "${TMPDIR:-/tmp}/briskd-prod-bench.XXXXXX.json")
 
 cleanup() {
     docker rm -f "$NAME" >/dev/null 2>&1 || true
@@ -34,14 +34,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The compose file requires IRCD_COOKIE; the build does not use it.
-IRCD_COOKIE=bench-build docker-compose -f docker-compose.prod.yml build ircd
+# The compose file requires BRISKD_COOKIE; the build does not use it.
+BRISKD_COOKIE=bench-build docker-compose -f docker-compose.prod.yml build briskd
 
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker volume rm "$VOLUME" >/dev/null 2>&1 || true
 uv run --project bench --locked python - "$CONFIG" "$MAX_CLIENTS" <<'PY'
 import json, sys
-config = json.load(open("config/ircd.prod.json"))
+config = json.load(open("config/briskd.prod.json"))
 config["max_clients"] = int(sys.argv[2])
 json.dump(config, open(sys.argv[1], "w"), indent=2)
 PY
@@ -50,13 +50,13 @@ docker volume create "$VOLUME" >/dev/null
 docker run -d --name "$NAME" \
     --init \
     --ulimit nofile=65536:65536 \
-    -e IRCD_CONFIG=/etc/ircd/ircd.json \
-    -e "IRCD_COOKIE=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')" \
+    -e BRISKD_CONFIG=/etc/briskd/briskd.json \
+    -e "BRISKD_COOKIE=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')" \
     -p "127.0.0.1:${PORT}:6667" \
-    -v "${VOLUME}:/var/lib/ircd" \
-    -v "$CONFIG:/etc/ircd/ircd.json:ro" \
-    -v "$(pwd)/config/motd.txt:/etc/ircd/motd.txt:ro" \
-    ircd:latest >/dev/null
+    -v "${VOLUME}:/var/lib/briskd" \
+    -v "$CONFIG:/etc/briskd/briskd.json:ro" \
+    -v "$(pwd)/config/motd.txt:/etc/briskd/motd.txt:ro" \
+    briskd:latest >/dev/null
 
 ready=0
 i=0

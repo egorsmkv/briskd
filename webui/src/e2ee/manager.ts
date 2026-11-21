@@ -37,6 +37,7 @@ export const TAG_QID = `${E2EE_VENDOR}/e2ee-qid`;
 
 const CHUNK = 400;
 const INITIAL_PREKEYS = 20;
+// Kept across the briskd rename so an enrolled browser still finds its device keys.
 const STORAGE_PREFIX = "ircd-e2ee-v1:";
 
 // localStorage key for an account's state. Keys (account, channel, and
@@ -577,7 +578,7 @@ export class E2eeManager {
     const content = encryptKeyBackup(payload, passphrase);
     const safeAcct = this.account.replace(/[^a-zA-Z0-9._-]/g, "_");
     return {
-      filename: `ircd-e2ee-${safeAcct}-${this.deviceId}.json`,
+      filename: `briskd-e2ee-${safeAcct}-${this.deviceId}.json`,
       content,
     };
   }

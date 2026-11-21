@@ -1,5 +1,5 @@
 // Server feature controls: what this server offers, changed live and kept
-// across REHASH and restarts (ircd_overrides on the server). Each control
+// across REHASH and restarts (briskd_overrides on the server). Each control
 // shows its value, marks a change made here (differing from the
 // configuration file), and resets to the file's value.
 import { useState } from "preact/hooks";
@@ -90,7 +90,7 @@ const META: Record<string, Meta> = {
   },
   search: {
     title: "Message search",
-    desc: "SEARCH and WebIRC search through ircd-search.",
+    desc: "SEARCH and WebIRC search through briskd-search.",
   },
   dronebl: {
     title: "DroneBL checks",

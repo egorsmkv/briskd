@@ -30,6 +30,7 @@ export interface FileCardOptions {
   downloadLabel?: string;
 }
 
+// Stored on attachment captions. The prefix stays so older messages still open.
 export const E2EE_ATT_PREFIX = "__ircd_e2ee_att__:";
 
 export interface E2eeAttachmentItem {

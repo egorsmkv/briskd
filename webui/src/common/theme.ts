@@ -52,7 +52,7 @@ export const THEMES: ThemeMeta[] = [
 ];
 
 const VALID_THEMES = new Set<string>(THEMES.map((t) => t.id));
-let activeStorageKey = "ircd-webui-theme";
+let activeStorageKey = "briskd-webui-theme";
 let activeDarkFallback: Theme = "dark";
 
 export interface ThemeInitOptions {
@@ -95,7 +95,7 @@ export function initTheme(
   buttons: Array<HTMLElement | null> = [],
   opts: ThemeInitOptions = {},
 ): () => void {
-  activeStorageKey = opts.storageKey || "ircd-webui-theme";
+  activeStorageKey = opts.storageKey || "briskd-webui-theme";
   activeDarkFallback = opts.defaultTheme === "hacker" ? "hacker" : "dark";
 
   let saved: string | null = null;
@@ -104,7 +104,7 @@ export function initTheme(
   } catch {
     // Ignore storage errors in restricted contexts.
   }
-  const allowed = opts.storageKey === "ircd-webirc-theme"
+  const allowed = opts.storageKey === "briskd-webirc-theme"
     ? VALID_THEMES
     : new Set<string>(["light", "dark"]);
   const prefersDark = typeof globalThis.matchMedia === "function" &&

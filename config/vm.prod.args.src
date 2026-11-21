@@ -1,8 +1,8 @@
 ## Production node. Distribution listens on loopback only and the cookie comes
-## from the IRCD_COOKIE environment variable (relx substitutes ${...} at start).
+## from the BRISKD_COOKIE environment variable (relx substitutes ${...} at start).
 ## The host is localhost: distribution listens on 127.0.0.1 only, and a
 ## container's own hostname resolves to its external address, where nothing
-## listens, so `ircd ping`, `eval`, and `remote_console` could not connect.
--sname ircd@localhost
--setcookie ${IRCD_COOKIE}
+## listens, so `briskd ping`, `eval`, and `remote_console` could not connect.
+-sname briskd@localhost
+-setcookie ${BRISKD_COOKIE}
 -kernel inet_dist_use_interface {127,0,0,1}

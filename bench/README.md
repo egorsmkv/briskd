@@ -19,7 +19,7 @@ uv run --project bench python bench/faker_load.py          # paced load test (FA
 
 `bench/prod` builds the production image from `docker-compose.prod.yml`
 (`Dockerfile.prod`) and runs it as that compose file does: the same image,
-`config/ircd.prod.json` unchanged and read-only, the MOTD, `init`, and a
+`config/briskd.prod.json` unchanged and read-only, the MOTD, `init`, and a
 65536 `nofile` limit. The only differences keep a running dev server
 undisturbed: the IRC port is published on `127.0.0.1:16667`
 (`PROD_BENCH_PORT`), the web ports are not published, and the data volume is
@@ -79,7 +79,7 @@ The report ends with the server's own view of the run:
   and global current and maximum users).
 - Container CPU, memory, processes, and network I/O from `docker stats`,
   sampled once per second for the whole run (`--container`, default
-  `irc-server_ircd-dev_1`).
+  `irc-server_briskd-dev_1`).
 
 ## Flags
 
@@ -103,7 +103,7 @@ high-load clients over both servers:
 
 ```sh
 uv run --project bench python bench/traffic.py --port 6667 \
-  --targets 127.0.0.1:6667,127.0.0.1:6668 --container irc-server_ircd-dev_1 \
+  --targets 127.0.0.1:6667,127.0.0.1:6668 --container irc-server_briskd-dev_1 \
   --kind development
 ```
 

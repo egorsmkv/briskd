@@ -1,4 +1,4 @@
-"""Signal-style end-to-end encryption for the ircd E2EE test clients.
+"""Signal-style end-to-end encryption for the briskd E2EE test clients.
 
 Everything here runs in the client; the server only stores public keys and
 routes ciphertext. The constructions follow the Signal specifications:
@@ -52,6 +52,7 @@ def hkdf(ikm, salt, info, length):
 
 
 def aead_encrypt(message_key, plaintext, ad):
+    # The info string stays `ircd-e2ee` so ciphertext written before the rename decrypts.
     material = hkdf(message_key, b"\0" * 32, b"ircd-e2ee message keys", 44)
     return AESGCM(material[:32]).encrypt(material[32:], plaintext, ad)
 

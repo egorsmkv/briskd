@@ -34,7 +34,7 @@ Docker CPU is reported relative to one core and can exceed 100%.
 
 Optional flags include `--clients 10 25 50`, `--duration 5`, `--rate 10`,
 `--repeats 2`, `--seed 20261118`, `--host`, `--port`, `--container`
-(default `irc-server_ircd-dev_1`), and `--kind development|production`.
+(default `irc-server_briskd-dev_1`), and `--kind development|production`.
 This runner targets plaintext client sessions only; TLS, direct server links,
 malformed input, saturation, and prolonged soak behavior are outside its scope.
 Scheduler utilization, mailbox lengths, GC, and kernel socket drops are not

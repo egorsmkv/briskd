@@ -3,7 +3,7 @@
 Measured 2026-11-20T20:32:51.855554+00:00 against `127.0.0.1:16667` with `bench/prod`; all 6 runs passed.
 
 Environment: ERTS 17.1.1, release 0.1.0; Docker host linux x86_64 CPUs=8 Memory=33562640384; Python 3.14.3 (uv, `bench/uv.lock`); Faker 40.54.0.
-Production image (`Dockerfile.prod`) with `config/ircd.prod.json` unchanged (flood limits, DroneBL,
+Production image (`Dockerfile.prod`) with `config/briskd.prod.json` unchanged (flood limits, DroneBL,
 `channels` retention, JSON info logging) and a fresh data volume; plaintext TCP only.
 
 2 repetitions at each size, 5 seconds each, 10 messages per client per second

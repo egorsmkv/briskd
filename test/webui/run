@@ -11,7 +11,7 @@ else
     compose="docker-compose"
 fi
 status=0
-$compose -p ircd-webui -f docker-compose.yml up --build --abort-on-container-exit \
+$compose -p briskd-webui -f docker-compose.yml up --build --abort-on-container-exit \
     --exit-code-from tests || status=$?
-$compose -p ircd-webui -f docker-compose.yml down -v >/dev/null 2>&1 || true
+$compose -p briskd-webui -f docker-compose.yml down -v >/dev/null 2>&1 || true
 exit $status

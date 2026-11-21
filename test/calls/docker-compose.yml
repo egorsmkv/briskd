@@ -1,4 +1,4 @@
-# End-to-end test for voice calls: ircd, a real rtpengine, and two Python
+# End-to-end test for voice calls: briskd, a real rtpengine, and two Python
 # WebRTC clients (aiortc) that call each other over IRC and check that audio
 # flows both ways through rtpengine (test/calls/run).
 #
@@ -6,15 +6,15 @@
 #       --abort-on-container-exit --exit-code-from tests
 
 services:
-  ircd:
+  briskd:
     build:
       context: ../..
       dockerfile: Dockerfile
-    image: ircd-calls-server
+    image: briskd-calls-server
     working_dir: /workspace
     volumes:
       - ../..:/workspace:ro
-    command: ["sh", "/workspace/test/e2ee/server.sh", "/workspace/test/calls/ircd.json"]
+    command: ["sh", "/workspace/test/e2ee/server.sh", "/workspace/test/calls/briskd.json"]
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6667"]
       interval: 3s
@@ -25,7 +25,7 @@ services:
   rtpengine:
     build:
       context: ../../docker/rtpengine
-    image: ircd-rtpengine
+    image: briskd-rtpengine
     environment:
       RTPENGINE_LOG_LEVEL: "6"
   tests:
@@ -34,7 +34,7 @@ services:
     volumes:
       - .:/tests:ro
     environment:
-      CALLS_IRC: ircd:6667
+      CALLS_IRC: briskd:6667
       CALLS_NG: rtpengine:2223
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PYTHONDONTWRITEBYTECODE: "1"
@@ -43,5 +43,5 @@ services:
       - -c
       - pip install --quiet -r requirements.txt && python -m pytest -v -p no:cacheprovider test_calls.py
     depends_on:
-      ircd:
+      briskd:
         condition: service_healthy

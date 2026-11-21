@@ -43,4 +43,4 @@ RUN set -eux; \
 
 WORKDIR /workspace
 
-CMD ["just", "run-config", "config/ircd.dev.json"]
+CMD ["just", "run-config", "config/briskd.dev.json"]

@@ -4,15 +4,15 @@
 # (WCAG AA) against its background (test/webui/run).
 
 services:
-  ircd:
+  briskd:
     build:
       context: ../..
       dockerfile: Dockerfile
-    image: ircd-webui-server
+    image: briskd-webui-server
     working_dir: /workspace
     volumes:
       - ../..:/workspace:ro
-    command: ["sh", "/workspace/test/webui/server.sh", "/workspace/test/webui/ircd.json"]
+    command: ["sh", "/workspace/test/webui/server.sh", "/workspace/test/webui/briskd.json"]
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081"]
       interval: 3s
@@ -20,13 +20,13 @@ services:
       retries: 100
   tests:
     build: .
-    image: ircd-webui-browser
+    image: briskd-webui-browser
     environment:
-      WEBUI_HOST: ircd
+      WEBUI_HOST: briskd
     volumes:
       - ./shoot.mjs:/m/shoot.mjs:ro
       - ./shots:/out
     command: ["node", "shoot.mjs", "webirc"]
     depends_on:
-      ircd:
+      briskd:
         condition: service_healthy

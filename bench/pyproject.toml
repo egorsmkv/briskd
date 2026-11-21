@@ -1,7 +1,7 @@
 [project]
-name = "ircd-bench"
+name = "briskd-bench"
 version = "0.1.0"
-description = "Traffic and load benchmarks for ircd (bench/README.md)"
+description = "Traffic and load benchmarks for briskd (bench/README.md)"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

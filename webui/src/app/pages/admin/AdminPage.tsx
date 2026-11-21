@@ -1,4 +1,4 @@
-// The ircd admin panel (/admin, /admin/<tab>): server overview, stats charts
+// The briskd admin panel (/admin, /admin/<tab>): server overview, stats charts
 // (GET /api/stats, fetched while that tab is shown), clients,
 // channels, links, accounts, DroneBL bans, media and feature toggles, and
 // operations. Data comes from GET /api/overview (auto-refreshed every 5 s)

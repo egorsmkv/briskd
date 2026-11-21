@@ -83,7 +83,7 @@ export function Header() {
   return (
     <header>
       <div class="brand">
-        <h1 id="srv-name">{data ? st?.name || "ircd" : "ircd"}</h1>
+        <h1 id="srv-name">{data ? st?.name || "briskd" : "briskd"}</h1>
         <span id="srv-status" class={badgeClass}>{badgeText}</span>
         <span id="srv-meta" class="muted">{meta}</span>
       </div>

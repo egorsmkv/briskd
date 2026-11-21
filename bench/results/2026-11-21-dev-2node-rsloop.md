@@ -1,4 +1,4 @@
-# ircd bench
+# briskd bench
 
 Measured 2026-11-21 14:56:54 UTC against `127.0.0.1:6667`.
 Welcome numeric: `:irc.dev 001 b98007712 :Welcome to IRC b98007712!b98007712@172.20.0.1`.
@@ -6,11 +6,11 @@ Load generator event loop: `rsloop`.
 
 This is the development server (`rebar3 shell` in the OTP 29 container),
 not a packaged release. One container sample taken during registration:
-`irc-server_ircd-dev_1 cpu=1.68% mem=328.5MiB / 31.26GiB`. OTP: `29 17.1.1`.
+`irc-server_briskd-dev_1 cpu=1.68% mem=328.5MiB / 31.26GiB`. OTP: `29 17.1.1`.
 
 Same setup as `2026-11-21-dev-2node.md` (two linked development servers,
 both switched from `trace` to `info` logging at runtime; container samples
-cover `irc-server_ircd-dev_1` only), with the load generator on rsloop
+cover `irc-server_briskd-dev_1` only), with the load generator on rsloop
 0.1.69.
 
 ## Traffic

@@ -25,13 +25,13 @@ Implementation policies on queries and channel lists:
   operator status (482). Each list holds 100 masks (`MAXLIST=beI:100`, 478).
 - A non-member asking for the `TOPIC` of a `+s` or `+p` channel gets 403.
 - `KNOCK` answers 714 when the sender is already on the channel, 713 when the
-  channel is open, and 480 for other refusals. These are the common ircd
+  channel is open, and 480 for other refusals. These are the common briskd
   extension numerics; RFC 2812 does not define `KNOCK`.
 - A channel operator may change `+o`/`+v` on, and `KICK`, members who are on
   another server; the change is propagated to the peers.
 - Successful `KILL` and `REHASH` are logged as `oper_kill` and `oper_rehash`
   audit events (actor and target, never the reason text or secrets).
-- Client flood and spam control (`ircd_flood`) enforces per-connection token
+- Client flood and spam control (`briskd_flood`) enforces per-connection token
   buckets for lines, messages (counting multi-target fan-out), channel joins,
   and nickname changes, disconnecting offending non-operator clients with
   `ERROR :Closing Link: <host> (Excess Flood)`, and rate-limits `REGISTER`

@@ -1,39 +1,39 @@
 # Production deployment.
 #
-#   echo "IRCD_COOKIE=$(openssl rand -hex 24)" > .env
+#   echo "BRISKD_COOKIE=$(openssl rand -hex 24)" > .env
 #   docker compose -f docker-compose.prod.yml up --build -d
 #
-# Edit config/ircd.prod.json (server name, operators, channels) and
+# Edit config/briskd.prod.json (server name, operators, channels) and
 # config/motd.txt before the first start; both are mounted read-only. Mnesia
 # data (WHOWAS, accounts, read markers, retained channels and history) lives in
-# the ircd-data volume. `docker compose stop` sends SIGTERM: the server stops
+# the briskd-data volume. `docker compose stop` sends SIGTERM: the server stops
 # accepting connections, tells clients and linked servers, and waits up to
-# `shutdown_grace` seconds (10 in ircd.prod.json) before it exits, well inside
+# `shutdown_grace` seconds (10 in briskd.prod.json) before it exits, well inside
 # the 30-second stop_grace_period below.
 
 services:
-  ircd:
+  briskd:
     build:
       context: .
       dockerfile: Dockerfile.prod
-    image: ircd:latest
+    image: briskd:latest
     restart: unless-stopped
     init: true
     environment:
-      IRCD_CONFIG: /etc/ircd/ircd.json
-      IRCD_COOKIE: ${IRCD_COOKIE:?set IRCD_COOKIE in .env (any long random string)}
+      BRISKD_CONFIG: /etc/briskd/briskd.json
+      BRISKD_COOKIE: ${BRISKD_COOKIE:?set BRISKD_COOKIE in .env (any long random string)}
     ports:
       - "6667:6667"
       - "8080:8080"
       - "127.0.0.1:8081:8081"
-      # Uncomment with tls_port/wss_port and certificates in ircd.prod.json:
+      # Uncomment with tls_port/wss_port and certificates in briskd.prod.json:
       # - "6697:6697"
       # - "8443:8443"
     volumes:
-      - ircd-data:/var/lib/ircd
-      - ./config/ircd.prod.json:/etc/ircd/ircd.json:ro
-      - ./config/motd.txt:/etc/ircd/motd.txt:ro
-      # - ./certs:/etc/ircd/certs:ro
+      - briskd-data:/var/lib/briskd
+      - ./config/briskd.prod.json:/etc/briskd/briskd.json:ro
+      - ./config/motd.txt:/etc/briskd/motd.txt:ro
+      # - ./certs:/etc/briskd/certs:ro
     stop_signal: SIGTERM
     stop_grace_period: 30s
     ulimits:
@@ -58,4 +58,4 @@ services:
         max-file: "3"
 
 volumes:
-  ircd-data:
+  briskd-data:

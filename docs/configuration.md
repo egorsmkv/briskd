@@ -1,7 +1,7 @@
 # Configuration
 
-The default configuration is [`config/ircd.json`](https://github.com/egorsmkv/irc-server/blob/main/config/ircd.json). Set
-`IRCD_CONFIG` to select another file. Paths in the file are resolved relative
+The default configuration is [`config/briskd.json`](https://github.com/egorsmkv/irc-server/blob/main/config/briskd.json). Set
+`BRISKD_CONFIG` to select another file. Paths in the file are resolved relative
 to the process working directory unless they are absolute. The server reads
 that file at startup and again on `REHASH`.
 
@@ -23,7 +23,7 @@ that file at startup and again on `REHASH`.
    the channels in `channels`.
 5. List in `channels` the channels you want created at startup when no row
    exists yet. Each entry needs `name` (`#`, `&`, or `+`).
-6. Set `server_links` only when this process should link to another ircd.
+6. Set `server_links` only when this process should link to another briskd.
    Leave it `[]` otherwise.
 7. Set `webui` only when you want the browser client (the same HTTP listener
    also serves the admin pages). Leave it `null` otherwise. How to use the
@@ -93,7 +93,7 @@ link and session status output drops the link password.
 | `retention` | `channels` | `channels` or `transient`. See [Retention](#retention) and [Mnesia](mnesia.md) |
 | `history_limit` | `100` | Channel `PRIVMSG`/`NOTICE` lines kept per channel when `retention` is `channels` (1..10000) |
 | `server_links` | `[]` | Direct peers this process dials. See [Server links](#server-links) and [Deployment](deployment.md) |
-| `search` | `null` | Message search through ircd-search: `{"url": "http://ircd-search:7700", "token" or "token_env": ..., "timeout": 3000, "max_results": 50}`. See [Message search](search.md) |
+| `search` | `null` | Message search through briskd-search: `{"url": "http://briskd-search:7700", "token" or "token_env": ..., "timeout": 3000, "max_results": 50}`. See [Message search](search.md) |
 | `ws_port`, `wss_port` | `null` | IRCv3 WebSocket listeners over TCP and TLS; `null` disables |
 | `ws_origins` | `null` | Allowed WebSocket `Origin` values; `null` allows any origin |
 | `network` | value of `name` | `NETWORK` ISUPPORT token |
@@ -255,7 +255,7 @@ bytes with no NUL, CR, or LF.
 | `access_key_id` | none | required |
 | `secret_access_key` | none | required |
 | `region` | `us-east-1` | 1 to 64 bytes, `[A-Za-z0-9._-]` |
-| `bucket` | `ircd-voice` | 3 to 63 bytes, lowercase DNS-style name |
+| `bucket` | `briskd-voice` | 3 to 63 bytes, lowercase DNS-style name |
 | `max_bytes` | `1048576` | 1024 to 20971520 |
 | `max_duration` | `120` | 1 to 600 seconds |
 
@@ -263,14 +263,14 @@ bytes with no NUL, CR, or LF.
 
 `files` set to `null` or `false` disables file uploads. The object has the
 same required fields and the same `region` and credential rules as `voice`.
-`bucket` defaults to `ircd-files`. `max_bytes` defaults to `10485760` and
+`bucket` defaults to `briskd-files`. `max_bytes` defaults to `10485760` and
 must be from 1024 to 104857600. There is no `max_duration`.
 
 ```json
 "files": {
   "endpoint": "https://s3.example",
   "region": "us-east-1",
-  "bucket": "ircd-files",
+  "bucket": "briskd-files",
   "access_key_id": "key-id",
   "secret_access_key": "key-secret",
   "max_bytes": 10485760
@@ -347,8 +347,8 @@ these are ignored.
 
 The WebUI admin panel's **Stats** tab charts the last 15 minutes or hour of
 the server: local sessions, registered and remote users, messages and bytes
-per second, accepted and refused connections, the `ircd_state` message
-queue, scheduler utilization, the run queue, and VM memory. `ircd_stats`
+per second, accepted and refused connections, the `briskd_state` message
+queue, scheduler utilization, the run queue, and VM memory. `briskd_stats`
 samples every 5 seconds and keeps 720 samples (one hour) in memory, so the
 history starts empty after a restart; `GET /api/stats` returns it for
 signed-in administrators. Sampling reads table sizes and VM statistics only,
@@ -418,7 +418,7 @@ Backup, restore, and schema migration are described in
 [docs/mnesia.md](mnesia.md). A restored directory follows the same
 retention policy as a normal start.
 
-`flood` configures client flood and spam protection (`ircd_flood`). Set `"flood": null` to disable all flood limits, or pass an object overriding any of these integer fields (unknown keys are rejected):
+`flood` configures client flood and spam protection (`briskd_flood`). Set `"flood": null` to disable all flood limits, or pass an object overriding any of these integer fields (unknown keys are rejected):
 
 | `flood` key | Default | Range | Description |
 | --- | --- | --- | --- |

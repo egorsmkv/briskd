@@ -15,7 +15,7 @@ docker compose -f docker-compose.dev.yml up --build
 ```
 
 Set `OPENAI_API_KEY` in `.dev.env` to enable the DevNet assistants in
-`config/ircd.dev.json` (`guide`, `helpdesk`, `coder`, `reviewer`, `oncall`,
+`config/briskd.dev.json` (`guide`, `helpdesk`, `coder`, `reviewer`, `oncall`,
 `sysadm`, `netops`, `secop`, `dbadmin`, and `scribe`). Their prompts are
 `config/prompts/*.txt`. When the variable is empty the server starts without
 those bots (see [AI assistant bots](bots.md)). The development message of the
@@ -26,8 +26,8 @@ WebSocket at `ws://localhost:8080`. To run the container
 in the background, add `-d`; then run project commands inside it, for example:
 
 ```sh
-docker compose -f docker-compose.dev.yml exec -T ircd-dev just build
-docker compose -f docker-compose.dev.yml exec -T ircd-dev just format-check
+docker compose -f docker-compose.dev.yml exec -T briskd-dev just build
+docker compose -f docker-compose.dev.yml exec -T briskd-dev just format-check
 ```
 
 Stop the container with `docker compose -f docker-compose.dev.yml down`. The
@@ -41,24 +41,24 @@ propagation, netsplits, and cross-server delivery can be tried locally:
 
 | Server | Service | IRC | WebSocket | Web UI | Configuration |
 | --- | --- | --- | --- | --- | --- |
-| `irc.dev` | `ircd-dev` | 6667 | 8080 | 8081 | `config/ircd.dev.json` |
-| `irc2.dev` | `ircd-dev2` | 6668 | 8082 | 8083 | `config/ircd.dev2.json` |
+| `irc.dev` | `briskd-dev` | 6667 | 8080 | 8081 | `config/briskd.dev.json` |
+| `irc2.dev` | `briskd-dev2` | 6668 | 8082 | 8083 | `config/briskd.dev2.json` |
 
 Each lists the other in `server_links` (password `devnet-link`, plain TCP on
 the compose network), so they link whichever starts first; `LINKS` on either
 shows the other as a direct peer. `irc2.dev` has its own Mnesia volume and
 its own build directory (`REBAR_BASE_DIR=/build`), waits for the web assets
-that `ircd-dev` builds, and runs no AI bots, since the same bot nicknames on
+that `briskd-dev` builds, and runs no AI bots, since the same bot nicknames on
 both servers would collide. Both containers raise the open-file limit to
 65536, as the production compose file does; Docker's default of 1024 runs out
 at about a thousand clients. Stop one with
-`docker compose -f docker-compose.dev.yml stop ircd-dev2` to see a netsplit,
+`docker compose -f docker-compose.dev.yml stop briskd-dev2` to see a netsplit,
 and start it again to see the burst. Run commands for the second server in
 its own container, for example
-`docker compose -f docker-compose.dev.yml exec -T ircd-dev2 just build`.
+`docker compose -f docker-compose.dev.yml exec -T briskd-dev2 just build`.
 
-Each server also has its own message search service (`ircd-search` and
-`ircd-search2`, built from `search/`, token `dev-search-token`; see
+Each server also has its own message search service (`briskd-search` and
+`briskd-search2`, built from `search/`, token `dev-search-token`; see
 [Message search](search.md)). Run the service's checks with
 `cargo test` and `cargo clippy --all-targets -- -D warnings` in `search/`.
 
@@ -83,7 +83,7 @@ rtpengine must announce an address that device can reach. With
    ```
 
    WebIRC loaded over HTTPS without a `wss_port` connects to
-   `wss://<page host>/ws`, which the second line forwards to ircd's
+   `wss://<page host>/ws`, which the second line forwards to briskd's
    WebSocket port.
 3. Announce the host's Tailscale address for media, in `.env` next to the
    compose file (gitignored), and recreate rtpengine:
@@ -112,7 +112,7 @@ If `just` is installed, `just --list` shows the available commands:
 | --- | --- |
 | `just build` | Compile the application and dependencies |
 | `just release` | Build a packaged production release with ERTS included |
-| `just run` | Start with `config/ircd.json` |
+| `just run` | Start with `config/briskd.json` |
 | `just run-config path/to/file.json` | Start with a selected configuration |
 | `just format` | Format Erlang source with erlfmt |
 | `just format-check` | Check Erlang formatting |
@@ -150,7 +150,7 @@ the eqWAlizer type checker, and a language server for editors.
   `record_info/2`, and removing them breaks the build.
 
   ```sh
-  docker compose -f docker-compose.dev.yml exec -T ircd-dev \
+  docker compose -f docker-compose.dev.yml exec -T briskd-dev \
       elp lint --no-connect --path src --diagnostic-filter W0032 --apply-fix --one-shot
   ```
 
@@ -162,18 +162,18 @@ the eqWAlizer type checker, and a language server for editors.
   (for example `{0, 0, 0, 0, 0, 0, 0, -1}` as an address), or calls a
   function whose spec accepts `term()` because it rejects anything else.
 - Keep the code typed rather than suppressed:
-  - Read the running configuration with `ircd_config:current/0` (typed as
-    `ircd_config:config()`), or `current_or_empty/0` where code also runs
-    before the server starts; write it only with `ircd_config:store/1`.
-  - Per-connection state goes through `ircd_conn:get/2,3` and `put/3`, whose
-    specs give each key its value type; add a new key to `ircd_conn:key()`
+  - Read the running configuration with `briskd_config:current/0` (typed as
+    `briskd_config:config()`), or `current_or_empty/0` where code also runs
+    before the server starts; write it only with `briskd_config:store/1`.
+  - Per-connection state goes through `briskd_conn:get/2,3` and `put/3`, whose
+    specs give each key its value type; add a new key to `briskd_conn:key()`
     and to those specs.
   - Bind a Mnesia row as `[#client{} = Client]`, not `[Client]`, and list a
-    table's keys with `ircd_state:table_keys/1`.
+    table's keys with `briskd_state:table_keys/1`.
   - Narrow untyped input (decoded JSON, `gen_tcp:recv/3` data, ETS rows)
     with a guard (`is_binary/1`, `is_integer/1`) where it enters.
 - An `% eqwalizer:ignore` needs a reason and, since ELP flags it (W0074), an
-  `% elp:ignore W0074 (reason)` above it. Two remain: `ircd_wire:retain/1`
+  `% elp:ignore W0074 (reason)` above it. Two remain: `briskd_wire:retain/1`
   (a generic identity eqWAlizer cannot express) and the STARTTLS
   `ssl:handshake/3` call (its option types are not exported by `ssl`).
 

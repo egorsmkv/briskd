@@ -150,7 +150,7 @@ export function renderCall(view: CallView = calls.state): void {
         view.video ? t("call.incoming_video") : t("call.incoming"),
         {
           body: displayNameOf(view.peer),
-          tag: "ircd-call",
+          tag: "briskd-call",
           requireInteraction: true,
         },
       );

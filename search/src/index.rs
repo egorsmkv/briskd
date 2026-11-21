@@ -1,11 +1,11 @@
-//! The message index: a Tantivy index of the messages ircd keeps in its
+//! The message index: a Tantivy index of the messages briskd keeps in its
 //! stored history, one document per message.
 //!
-//! A document holds the message id ircd assigned (`id`, a conversation and a
+//! A document holds the message id briskd assigned (`id`, a conversation and a
 //! sequence number), its conversation (`conv`), its time in milliseconds
 //! since the epoch (`time`), and its text, tokenized for search. The text is
 //! indexed but not stored: the index can match words but cannot return a
-//! message's content. ircd loads matching messages from its own history.
+//! message's content. briskd loads matching messages from its own history.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -40,7 +40,7 @@ pub enum Op {
     Delete { id: String },
     /// Remove every message of a conversation.
     DeleteConv { conv: String },
-    /// Remove everything (ircd is about to send its whole history).
+    /// Remove everything (briskd is about to send its whole history).
     Clear,
 }
 
@@ -385,7 +385,7 @@ mod tests {
 
     #[test]
     fn reports_its_size_on_disk() {
-        let dir = std::env::temp_dir().join(format!("ircd-search-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("briskd-search-test-{}", std::process::id()));
         let ix = MessageIndex::open(&dir).unwrap();
         assert_eq!(ix.segments(), 0);
         ix.apply(vec![add("c #a 1", "c #a", 1, "hello world")])

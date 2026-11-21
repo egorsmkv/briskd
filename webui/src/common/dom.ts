@@ -28,7 +28,7 @@ export async function postJson<T>(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Requested-With": "ircd-webui",
+      "X-Requested-With": "briskd-webui",
     },
     body: JSON.stringify(payload),
   });

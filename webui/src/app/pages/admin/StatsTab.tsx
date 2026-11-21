@@ -1,5 +1,5 @@
 // Stats: the server over the last 15 minutes or hour, from GET /api/stats
-// (ircd_stats samples every 5 s and keeps one hour in memory). Fetched only
+// (briskd_stats samples every 5 s and keeps one hour in memory). Fetched only
 // while this tab is shown; a refetch keeps the previous charts until the new
 // data arrives.
 import { useEffect, useState } from "preact/hooks";
@@ -18,7 +18,7 @@ const RANGES = [
   { minutes: 15, label: "15 min" },
   { minutes: 60, label: "1 hour" },
 ] as const;
-const RANGE_KEY = "ircd-admin-stats-range";
+const RANGE_KEY = "briskd-admin-stats-range";
 const REFRESH_MS = 5000;
 
 function savedRange(): number {
@@ -106,7 +106,7 @@ export function StatsTab({ active }: { active: boolean }) {
       now("state_queue") === null
         ? "–"
         : fmtCount(now("state_queue") as number),
-      "messages waiting for ircd_state",
+      "messages waiting for briskd_state",
     ],
     [
       "Schedulers",
@@ -203,7 +203,7 @@ export function StatsTab({ active }: { active: boolean }) {
         <LineChart
           id="chart-queue"
           title="State process queue"
-          sub="Messages waiting for ircd_state, the single writer of protocol state. Sustained growth means it is saturated."
+          sub="Messages waiting for briskd_state, the single writer of protocol state. Sustained growth means it is saturated."
           times={times}
           series={[s("Queued messages", "state_queue")]}
           fmt={fmtCount}

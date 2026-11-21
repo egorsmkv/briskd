@@ -42,7 +42,7 @@ export const logLevelChoice = signal("");
 export const LOG_LEVEL_SELECT_ID = "sel-log-level";
 
 export function serverName(): string {
-  return overview.value?.status?.name || "ircd";
+  return overview.value?.status?.name || "briskd";
 }
 
 // ---------------------------------------------------------------------------
@@ -164,7 +164,7 @@ export function confirmDelete(
 // ---------------------------------------------------------------------------
 // Tables: per-table filter text and page, shared rows-per-page.
 
-const PAGE_SIZE_KEY = "ircd-admin-page-size";
+const PAGE_SIZE_KEY = "briskd-admin-page-size";
 export const PAGE_SIZES = [10, 25, 50, 100];
 
 function savedPageSize(): number {
@@ -218,7 +218,7 @@ export function clearFilter(key: string): void {
 // ---------------------------------------------------------------------------
 // Auto-refresh preference.
 
-const AUTO_REFRESH_KEY = "ircd-admin-auto-refresh";
+const AUTO_REFRESH_KEY = "briskd-admin-auto-refresh";
 
 function savedAutoRefresh(): boolean {
   try {

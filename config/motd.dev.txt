@@ -1,6 +1,6 @@
 Welcome to DevNet, an IRC network for developers and IT staff.
 The server is irc.dev. It speaks RFC 1459/2812 and the IRCv3
-extensions this ircd implements. Read /ADMIN for the operators.
+extensions this briskd implements. Read /ADMIN for the operators.
 
 Where to talk:
   #lobby           introductions and "where do I ask?"

@@ -5,7 +5,7 @@
   "tls_port": null,
   "log_level": "warning",
   "log_format": "text",
-  "mnesia_dir": "/tmp/ircd-leaf/mnesia",
+  "mnesia_dir": "/tmp/briskd-leaf/mnesia",
   "nicklen": 30,
   "resource_delay": 0,
   "e2ee": {"max_devices": 4, "max_prekeys": 100, "queue_limit": 100, "fetch_rate": 1000},

@@ -1,4 +1,4 @@
-// The settings of one channel, edited as the server (ircdctl
+// The settings of one channel, edited as the server (briskdctl
 // set-channel-modes): mode switches, key, user limit, and the ban,
 // exception, and invite-exception lists. Every change is one MODE from the
 // server, seen by members and sent to peers (not for local & channels).

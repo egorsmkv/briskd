@@ -15,6 +15,7 @@ export const MAX_SKIP = 1000;
 const enc = new TextEncoder();
 const ZEROS_32 = new Uint8Array(32);
 const FF_32 = new Uint8Array(32).fill(0xff);
+// Domain labels stay `ircd-e2ee` so existing ciphertext and backups still decrypt.
 const INFO_MSG = enc.encode("ircd-e2ee message keys");
 const INFO_X3DH = enc.encode("ircd-e2ee X3DH");
 const INFO_RATCHET = enc.encode("ircd-e2ee ratchet");

@@ -15,7 +15,7 @@ wheels = [
 ]
 
 [[package]]
-name = "ircd-bench"
+name = "briskd-bench"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
