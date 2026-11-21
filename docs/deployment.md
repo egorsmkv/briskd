@@ -1,8 +1,10 @@
 # Production deployment and DevOps runbook
 
-This guide covers container and bare-metal deployment, network and firewall
-planning, TLS and ACME automation, live configuration reload (`REHASH`),
-structured logging and alerting, capacity tuning, and graceful shutdown.
+This page is for an operator deploying one ircd process and deciding whether
+it is listening, and whether a change needs a restart. Section 2 is that
+path: the configuration file, `IRCD_CONFIG`, ports, TLS files, logs, and the
+listening check. Setting keys are in [Configuration](configuration.md); what
+the data directory keeps across a restart is in [Mnesia](mnesia.md).
 
 ## 1. Runtime architecture and release layout
 
@@ -23,20 +25,66 @@ runtime base to the Alpine release of the new `erlang:*-alpine` image:
 | Distribution bind | `127.0.0.1` (`inet_dist_use_interface`) | Loopback only; never exposed on external interfaces |
 | Stop signal | `SIGTERM` | Triggers `init:stop/0` and `ircd_shutdown` drain |
 
-## 2. Quick start with Docker Compose
+## 2. Run one server
 
-`docker-compose.prod.yml` runs the production image with `config/ircd.prod.json`
-and `config/motd.txt` mounted read-only and Mnesia data in the `ircd-data`
-volume:
+One process reads one JSON file. `IRCD_CONFIG` selects it. When the variable
+is unset, `ircd_app` loads `config/ircd.json`. Paths in the file are relative
+to the working directory unless they are absolute. In the production image
+and the systemd unit that directory is `/var/lib/ircd`.
+
+`docker-compose.prod.yml` is the supported single-server container path. It
+builds `Dockerfile.prod`, sets `IRCD_CONFIG=/etc/ircd/ircd.json`, and mounts
+`config/ircd.prod.json` read-only at that path and `config/motd.txt` at
+`/etc/ircd/motd.txt`. Mnesia data is the `ircd-data` volume, mounted at
+`/var/lib/ircd`. `config/ircd.prod.json` sets `mnesia_dir` to
+`/var/lib/ircd/mnesia`. Edit that JSON file (`name`, `network`, `operators`,
+`administrators`, `channels`, `flood`, and TLS or peer settings) and
+`config/motd.txt` before the first start. The distribution cookie is
+required and stays on loopback (section 1):
 
 ```sh
-echo "IRCD_COOKIE=$(openssl rand -hex 24)" > .env    # distribution cookie, loopback only
-docker compose -f docker-compose.prod.yml up --build -d
+echo "IRCD_COOKIE=$(openssl rand -hex 24)" > .env
+docker-compose -f docker-compose.prod.yml up --build -d
 ```
 
-Edit `config/ircd.prod.json` (`name`, `network`, `operators`, `administrators`,
-`channels`, `flood`, and TLS or peer settings) and `config/motd.txt` before the
-first start.
+`config/ircd.prod.json` binds `0.0.0.0` and enables `tcp_port` 6667,
+`ws_port` 8080, and the admin WebUI on 8081. The compose file publishes
+`6667`, `8080`, and `127.0.0.1:8081`. `tls_port` and `wss_port` are `null`,
+and `certfile` and `keyfile` are `null`, so this path does not open TLS and
+does not need certificate files. `6697` and `8443` are commented out in the
+compose file. To serve TLS, use the lego overlay in section 4
+(`config/ircd.prod.tls.json`, `certfile` `/etc/ircd/certs/fullchain.pem`,
+`keyfile` `/etc/ircd/certs/privkey.pem`) or uncomment those ports and the
+`./certs:/etc/ircd/certs:ro` mount and point `certfile` and `keyfile` at
+files on that mount. A `null` port starts no listener for that transport.
+
+The release writes the OTP logger to standard output. The default
+`log_format` is one JSON object per line. The compose file stores that
+stream with the json-file driver (`max-size` 10m, `max-file` 3). The JSON
+configuration has no log-file path. Read the lines with:
+
+```sh
+docker-compose -f docker-compose.prod.yml logs ircd
+```
+
+The process is listening when each bound listener logs `event` `listening`
+at `notice`, with `transport`, `ip`, and `port`, and the application logs
+`event` `started` with the server `name`. The container healthcheck connects
+to `127.0.0.1:6667`, sends `QUIT`, and expects `ERROR`. The same process
+answers `docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl status`.
+The healthcheck does not look at server links.
+
+`server_links` is empty in `config/ircd.prod.json`. A peer you add later is
+one worker under `ircd_links`. If that peer is down, the worker logs
+`server_link_retry` and connects again; the ircd process stays up. That is a
+degraded link, not a failed server. Readiness is initialized state and the
+listeners that the configuration actually enables.
+
+Without Docker, build the release (`rebar3 as prod release` or `just release`)
+and install it as in section 5, with `IRCD_CONFIG` set to your JSON file.
+The same standard-output log lines are what the service writes; the unit
+does not configure a separate log file. `docker-compose.dev.yml` is the
+source-tree environment, not this production layout.
 
 ## 3. Network ports, firewalls, and gateways
 
@@ -82,7 +130,7 @@ the production stack:
 
 ```sh
 cp deploy/lego/lego.env.example lego.env    # set LEGO_DOMAINS, LEGO_EMAIL, the challenge
-docker compose -f docker-compose.prod.yml -f docker-compose.lego.yml up -d --build
+docker-compose -f docker-compose.prod.yml -f docker-compose.lego.yml up -d --build
 ```
 
 - The `lego` service (`goacme/lego:v5.6.0`) runs `deploy/lego/lego.sh`. Every
@@ -199,7 +247,7 @@ Key operational and security events to index and alert on:
 
 | `event` | Severity | Meaning and operator action |
 | --- | --- | --- |
-| `listener_started` | `info` | TCP/TLS/WS/WSS listener bound (`transport`, `ip`, `port`) |
+| `listening` | `notice` | TCP/TLS/WS/WSS listener bound (`transport`, `ip`, `port`) |
 | `accept_failed` | `error` | Listener socket accept error; the listener restarts |
 | `accept_exhausted` | `warning` | Accept failed for lack of descriptors or memory (`reason` such as `emfile`, `failures` since the last report, at most every 10 s). The listener retries every 100 ms and new connections wait in the backlog; raise `ulimit -n` / `nofile` or lower `max_clients` |
 | `session_rejected` | `warning` | Connection refused because `max_clients` was reached (`reason: max_clients`) |
@@ -226,28 +274,28 @@ Key operational and security events to index and alert on:
   Unix domain control socket (`$IRCD_CTL_SOCKET` or `<mnesia_dir>/ircdctl.sock`,
   mode `0600`, owner-only) and supports `--json` on every command:
   ```sh
-  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl status
-  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl status --json
-  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl ping
-  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl check-config /etc/ircd/ircd.json
-  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl rehash
-  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl reload-certs
-  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl log-level debug
-  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl clients
-  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl kick-client spammer "Excess spam"
-  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl channels
-  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl links
-  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl accounts
-  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl create-account ops strongpass ops@example.org
-  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl delete-account olduser
-  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl set-email ops new@example.org
-  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl add-certfp ops <sha256-fingerprint>
-  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl create-channel '#help' "Ask here"
-  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl set-channel-modes '#help' +nt
-  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl set-channel-modes '#help' +b '*!*@203.0.113.*'
-  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl delete-channel '#old' "Channel closed"
-  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl backup /var/lib/ircd/backup.bup
-  docker compose -f docker-compose.prod.yml exec -T ircd ircdctl drain "Maintenance"
+  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl status
+  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl status --json
+  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl ping
+  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl check-config /etc/ircd/ircd.json
+  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl rehash
+  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl reload-certs
+  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl log-level debug
+  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl clients
+  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl kick-client spammer "Excess spam"
+  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl channels
+  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl links
+  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl accounts
+  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl create-account ops strongpass ops@example.org
+  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl delete-account olduser
+  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl set-email ops new@example.org
+  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl add-certfp ops <sha256-fingerprint>
+  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl create-channel '#help' "Ask here"
+  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl set-channel-modes '#help' +nt
+  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl set-channel-modes '#help' +b '*!*@203.0.113.*'
+  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl delete-channel '#old' "Channel closed"
+  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl backup /var/lib/ircd/backup.bup
+  docker-compose -f docker-compose.prod.yml exec -T ircd ircdctl drain "Maintenance"
   ```
 - **Container TCP probe (`docker-compose.prod.yml`):**
   ```sh
@@ -255,7 +303,7 @@ Key operational and security events to index and alert on:
   ```
 - **Release node liveness check:**
   ```sh
-  docker compose -f docker-compose.prod.yml exec -T ircd /opt/ircd/bin/ircd ping
+  docker-compose -f docker-compose.prod.yml exec -T ircd /opt/ircd/bin/ircd ping
   ```
 - **In-band IRC statistics:**
   - `LUSERS`: local/global users, invisible users, operators, services,servers, channels, and peak connection counts.
@@ -316,7 +364,7 @@ Key operational and security events to index and alert on:
 
 ## 9. Graceful shutdown
 
-SIGTERM (`docker compose stop`, `systemctl stop`), operator `DIE` and
+SIGTERM (`docker-compose stop`, `systemctl stop`), operator `DIE` and
 `RESTART`, and `application:stop(ircd)` all drain the server before it stops
 (`ircd_shutdown`, called from `ircd_app:prep_stop/1`):
 

@@ -1,15 +1,23 @@
 # End-to-end encryption
 
-The server can act as a blind broker for Signal-style end-to-end encryption:
-X3DH key agreement and the Double Ratchet for direct messages, with
-OMEMO-style multiple devices per account, and Sender Keys for channels. All
-cryptography happens in the clients. The server stores public keys, routes
-ciphertext it cannot read, and queues it for devices that are offline. It never
-parses, logs, or changes message bodies. The implementation is in
-`ircd_e2ee`.
+This page is for an operator deciding whether to offer end-to-end encryption,
+and for a client author implementing the `E2EE` commands and envelope tags
+below.
 
-The feature is off by default. Turn it on with an `e2ee` object in the
-configuration (all keys optional):
+The feature is off unless the configuration has an `e2ee` object. The default
+is `null`, which does not offer the capability and treats `E2EE` as an unknown
+command (421). Keys and their ranges are in
+[Configuration](configuration.md); every key in the object is optional, and an
+empty object turns the broker on with the defaults below.
+
+With `e2ee` set, the server is a broker for Signal-style encryption: X3DH and
+the Double Ratchet for direct messages, OMEMO-style devices per account, and
+Sender Keys for channels. Clients do that cryptography. The server stores
+device public keys and forwards and queues ciphertext. It does not decrypt
+message bodies, and it does not log them (a published or removed device is
+logged by account and device id only). The implementation is `ircd_e2ee`.
+
+Turn it on with an `e2ee` object (all keys optional):
 
 ```json
 "e2ee": {
@@ -192,8 +200,14 @@ consistent:
 - **Splits:** two servers that are split can still hand out the same prekey.
   The second X3DH session then fails, and that client fetches again.
 - **Bindings:** a `BIND` is valid while that user is still logged into the
-  same account and owns the device. It follows nickname changes and is cleared
-  when the user logs out, switches accounts, or quits.
+  same account and owns the device. Publish the device (`E2EE PUBLISH`, which
+  the server replicates as `E2EE DEVICE`) before a peer binds it. A remote
+  `BIND` for a device this server has no row for is rejected
+  (`e2ee_unknown_device` from `ircd_e2ee:receive_link/4`) and drops the link.
+  A remote `BIND` cannot take over a device this server has already bound to
+  a local connection (`e2ee_device_bound_locally`, also a link drop); the
+  local binding is left in place. A binding follows nickname changes and is
+  cleared when the user logs out, switches accounts, or quits.
 - **Link ingress validation:** a peer's `E2EE` lines must carry a trusted
   server prefix (or a verified remote user prefix for `BIND`), and `E2EE QUEUE`
   verifies that the envelope sender is a remote user behind that peer.

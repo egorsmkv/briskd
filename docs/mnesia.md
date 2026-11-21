@@ -1,8 +1,11 @@
 # Mnesia backup, restore, and schema migration
 
-The state process owns the Mnesia schema. Tables are `disc_copies` on the local
-node. The directory is the `mnesia_dir` JSON setting. The application creates
-that directory and the schema before it starts Mnesia.
+This page is for an operator deciding what a restart keeps and how to copy
+`mnesia_dir` before a release change. `ircd_state` owns the Mnesia schema;
+`ircd_app` creates the directory named by `mnesia_dir`
+([Configuration](configuration.md)) and the schema before it starts Mnesia.
+The table below is what survives; backup and restore copy that directory and
+do not bypass the retention policy of the next start.
 
 ## What survives a restart
 
@@ -10,11 +13,12 @@ that directory and the schema before it starts Mnesia.
 `channels`. `history_limit` (default 100, maximum 10000) is the number of
 channel `PRIVMSG` and `NOTICE` bodies kept per channel when retention is
 `channels`. Any other `retention` string, or a `history_limit` outside
-1..10000, is rejected at startup. `REHASH` accepts a new limit and retention
-value for messages sent after the reload. Which rows survive a restart is
-decided by the setting loaded at that start.
+1..10000, is rejected at startup. `REHASH` accepts a new `history_limit`,
+and messages stored after that reload use it. A new `retention` value is
+accepted at the same time; the next start is what applies it. Which rows
+survive a restart is decided by the setting loaded at that start.
 
-| Data | `transient` (default) | `channels` |
+| Data | `transient` | `channels` (default) |
 | --- | --- | --- |
 | WHOWAS history | Kept | Kept |
 | Safe `!` channels | Kept | Kept |
@@ -100,9 +104,9 @@ To write a consistent Mnesia backup file inside the `/var/lib/ircd` volume while
 the production container is running:
 
 ```sh
-docker compose -f docker-compose.prod.yml exec -T ircd \
+docker-compose -f docker-compose.prod.yml exec -T ircd \
   /opt/ircd/bin/ircd eval 'ok = mnesia:backup("/var/lib/ircd/backup.bup").'
-docker compose -f docker-compose.prod.yml cp ircd:/var/lib/ircd/backup.bup ./backup-$(date -u +%Y%m%dT%H%M%SZ).bup
+docker-compose -f docker-compose.prod.yml cp ircd:/var/lib/ircd/backup.bup ./backup-$(date -u +%Y%m%dT%H%M%SZ).bup
 ```
 
 Or from an Erlang shell on the node that owns the tables:
@@ -112,7 +116,7 @@ ok = mnesia:backup(BackupFile).
 ```
 
 `BackupFile` is a path outside `mnesia_dir`. A raw filesystem or volume copy of
-`mnesia_dir` is a valid backup **only when `ircd` is stopped** (`docker compose
+`mnesia_dir` is a valid backup **only when `ircd` is stopped** (`docker-compose
 -f docker-compose.prod.yml stop ircd`). Copying `mnesia_dir` while the server is
 writing can produce a corrupt schema that will not start.
 
@@ -143,6 +147,15 @@ backup onto a node that is already serving traffic.
 backup at the next start. Use it only while ircd and Mnesia are stopped.
 
 ## Schema migration
+
+A restart is the supported upgrade. The server ships no `.appup` and its
+modules do not implement `code_change`, so do not hot-load a new release
+into a running node. Stop ircd, install the new release, and start it
+again. That start clears client sessions, user modes, nick occupancy, and
+imported peer state, then applies the `retention` policy of the
+configuration that starts. WHOWAS, accounts, read markers, the `setting`
+table, E2EE device and queue rows, safe `!` channels, and the ordinary
+channel state and history that policy keeps are what must still be readable.
 
 Records live in `include/`. On startup, `ircd_state` compares each table's
 stored attributes with `record_info(fields, ...)`.

@@ -1,9 +1,24 @@
 # Message search
 
-Optional full-text search over the messages the server keeps in its stored
-history, offered to clients as the vendor capability
-`egorsmkv.github.io/search` and used by WebIRC's search dialog. No IRCv3
-specification for search exists; this is a server-specific extension.
+This page is for an operator deciding whether to index stored history, and
+for a client author implementing the `SEARCH` command below. No IRCv3
+specification for search exists; this is a server-specific extension
+(`egorsmkv.github.io/search`), also used by WebIRC's search dialog.
+
+Search is off unless the configuration has a `search` object. The default is
+`null`, which does not offer the capability and makes `SEARCH` an unknown
+command (421). The keys are in [Configuration](configuration.md). Adding or
+removing `search` takes a restart; once it is configured, the admin panel can
+switch it off and on without one (see
+[Admin panel and ircdctl](#admin-panel-and-ircdctl)).
+
+What is indexed is the stored history this server already keeps, and only
+part of that is sent to ircd-search. A stored plain `PRIVMSG` or `NOTICE` is
+sent, body included, so the service can match on its words. End-to-end
+encrypted envelopes, `TAGMSG`, history events, and anything history does not
+keep are not sent. A query sends the search text and the conversation ids
+the user may read, not who is searching. The service returns message ids;
+ircd loads the text from its own history.
 
 ## How it works
 

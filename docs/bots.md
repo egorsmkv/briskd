@@ -1,15 +1,28 @@
 # AI assistant bots
 
-The server can run AI assistant bots defined in the configuration file. Each
-bot is an ordinary IRC user (nick, `+B` bot mode, channel membership) that
-answers questions through an **OpenAI-compatible** chat completions API:
-OpenAI, OpenRouter, Groq, Together, Mistral, vLLM, llama.cpp server, Ollama
-(`/v1`), LM Studio, LiteLLM, and similar.
+This page is for an operator deciding whether to run assistants. There is no
+separate bot protocol, and nothing here for a client to implement beyond
+ordinary IRC.
 
-Bots are a server extension, not part of RFC 1459/2812 or IRCv3. On the wire
-they behave like local clients: they register with `NICK`/`USER`, set user
-mode `+B` (advertised as `BOT=B`, so their messages carry the IRCv3 `bot`
-tag), `JOIN` their channels, and reply with `PRIVMSG`.
+Bots are off unless the configuration lists them. The defaults are
+`"ai_providers": {}` and `"bots": []` (see
+[Configuration](configuration.md)). A non-empty `bots` list starts one local
+client per entry. On the wire that client is an ordinary user: it registers
+with `NICK`/`USER`, sets user mode `+B` (advertised as `BOT=B`, so its
+messages carry the IRCv3 `bot` tag), joins the channels named in its entry,
+and replies with `PRIVMSG`. It is not an IRC service and it does not speak a
+bot command of its own.
+
+Each bot calls an **OpenAI-compatible** chat completions API named by
+`ai_providers`: OpenAI, OpenRouter, Groq, Together, Mistral, vLLM, llama.cpp
+server, Ollama (`/v1`), LM Studio, LiteLLM, and similar. The provider
+credential lives in that configuration, either as `api_key` or as
+`api_key_env` (an environment variable read when the configuration loads).
+The key is not logged and is redacted from process status. The server has no
+model of its own: the bot sends the selected message text to that endpoint
+and posts the reply. What is sent, and what is not logged, is under
+[Privacy and data handling](#privacy-and-data-handling). `REHASH` does not
+add, remove, or change bots.
 
 ## Configuration
 

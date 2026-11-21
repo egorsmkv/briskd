@@ -35,7 +35,11 @@ Implementation policies on queries and channel lists:
   buckets for lines, messages (counting multi-target fan-out), channel joins,
   and nickname changes, disconnecting offending non-operator clients with
   `ERROR :Closing Link: <host> (Excess Flood)`, and rate-limits `REGISTER`
-  attempts per client host.
+  attempts per client host. `QUIT` is always accepted. For a non-operator,
+  `PONG` costs one line token like any other line, and an overlong line
+  costs one line token and no message or join token. If that token is
+  already spent, the connection gets the same excess-flood quit instead of
+  numeric 417. `PONG` does not refresh the idle time shown by WHOIS and WHOX.
 
 A client may join at most ten channels (numeric 405). A nickname or channel
 released by a quit or a netsplit stays unavailable for `resource_delay`
@@ -50,9 +54,10 @@ the secret's SHA-256 for the connection; a malformed secret gets
 per browser tab in `sessionStorage`. Holds without a secret or account, and
 netsplit and `KILL` holds, block everyone. A nickname introduced for an existing local or remote user kills both
 sides, and both peers are sent `KILL` and `QUIT`. `WHO` and `WHOIS` name a
-remote user's home server. Invisible users are hidden from `WHO`, `WHOIS`, and
-`NAMES` unless the requester shares a channel, including when the other user
-is on another server.
+remote user's home server. Invisible users (`+i`) are hidden from `WHO` mask
+searches, `WHOIS`, and `NAMES` unless the requester shares a channel,
+including when the other user is on another server. `WHO` of an exact local
+nickname, and `USERHOST` and `ISON`, still name a `+i` user.
 
 Server links speak the RFC 2813 `PASS` / `SERVER` handshake and accept further
 `SERVER` introductions in hop order. Nick introductions, channel membership
@@ -62,6 +67,43 @@ the known servers, local and remote users, and channel state. `SQUIT` and a
 lost link remove the users, services, and channels that were reachable only
 through the lost server and tell the remaining peers. Channel invitations are
 stored and forwarded after the burst.
+
+`&` channels are local (RFC 2811). They are left out of the peer burst, and
+joins, modes, topics, kicks, invitations, and messages on them are not sent
+to peers. A local `PART` of an `&` channel is still sent to those peers. A remote
+`INVITE` to an `&` channel is ignored. A peer `JOIN`, `NJOIN`, `PART`,
+`MODE`, `TOPIC`, `KICK`, or channel message that names an `&` channel is a
+link error and drops the link.
+
+A peer `MODE` on a shared channel is applied to that channel's remote mode
+map and then copied onto the local channel: mode flags, key, limit, and the
+ban, exception, and invite lists. Membership is left in place, and `MODE`
+does not replace the topic. After a local mode or topic change, the local
+channel is copied onto the remote row so the next peer `MODE` edits that
+map. On a safe `!` channel a peer may add `+a` but not remove it, and may
+add or remove `+r`; those letters are rejected on `#` and `+`. Mode `O`
+(channel creator) is accepted on a shared channel, including `#`, and sets
+or clears that member's creator status.
+
+The first local user to join a channel that already exists on the network
+takes its modes, key, limit, lists, and topic from that remote channel and
+joins as a member, not as an operator. An administrator joining a configured
+channel is still given operator.
+
+A second session that authenticates as an adjacent server name already in
+use (RFC 1459 case mapping) is refused. It does not replace the live link
+and does not receive the burst.
+
+A `KILL` from a peer is accepted from a server that peer may speak for, or
+from a remote user on that link whose modes include `o`. A known user
+without `o` is rejected and the link is dropped, as is a prefix that is
+neither such a server nor a known user on that link. An accepted `KILL`
+disconnects a local nick or removes a remote one, holds the nickname, and
+is relayed with this server as the prefix.
+
+A remote `INVITE` is ignored when the sender is not a member of the shared
+channel, or the channel is invite-only and the sender is not an operator or
+creator. The invite is not recorded and the link stays up.
 
 Voice-call signalling (`CALL`, a server extension) also crosses links,
 routed toward the other user's server; see

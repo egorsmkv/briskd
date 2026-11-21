@@ -10,12 +10,13 @@ TCP when TLS is configured), and the drafts
 `draft/event-playback`, `draft/extended-isupport`, `draft/message-redaction`,
 `draft/metadata-2`,
 `draft/multiline`, `draft/oper-tag`, `draft/pre-away`, and
-`draft/read-marker` (plus the vendor capability `egorsmkv.github.io/calls`
-when `calls` is configured, see [Voice and video calls](calls.md), and
-`egorsmkv.github.io/e2ee` when
-`e2ee` is configured; see [End-to-end encryption](e2ee.md); and
-`egorsmkv.github.io/search` when `search` is configured; see
-[Message search](search.md)). `CAP LS 302` shows values (`sasl` mechanisms, multiline
+`draft/read-marker` (plus the vendor capabilities
+`egorsmkv.github.io/calls` when `calls` is configured, see
+[Voice and video calls](calls.md); `egorsmkv.github.io/e2ee` when `e2ee` is
+configured, see [End-to-end encryption](e2ee.md); `egorsmkv.github.io/search`
+when `search` is configured, see [Message search](search.md);
+`egorsmkv.github.io/features`; and `egorsmkv.github.io/files` and
+`egorsmkv.github.io/voice` when `files` or `voice` is configured). `CAP LS 302` shows values (`sasl` mechanisms, multiline
 and metadata limits, the STS policy) and uses `*` continuation lines. Version
 302 makes `cap-notify` implicit. `CAP REQ` is atomic; an unknown or
 unrequestable name (`sts`) is `NAK`, and an unknown subcommand is numeric 410.
@@ -104,5 +105,9 @@ Over server links, accounts (SCRAM verifiers, not email addresses), user and
 channel metadata, read markers, `ACCOUNT`, `SETNAME`, `CHGHOST`, `REDACT`,
 user mode `B`, and the `msgid` and `time` of messages are propagated in the
 burst and as they change. When two servers hold the same account name, the
-one created first wins. `STARTTLS` (deprecated by IRCv3) upgrades a plaintext
+one created first wins. An `ACCOUNTSYNC` verifier is kept only when the
+decoded StoredKey and ServerKey are each exactly 32 bytes and the salt is 1
+to 64 bytes (iteration count 4096 to 1000000); otherwise the line is
+rejected and the link is dropped. A verifier created on this server uses a
+16-byte salt. `STARTTLS` (deprecated by IRCv3) upgrades a plaintext
 TCP connection before registration; prefer `tls_port` and STS.

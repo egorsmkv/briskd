@@ -1,15 +1,26 @@
 # Voice and video calls
 
-The server can relay one-to-one voice and video calls between WebIRC users
-(or any client that implements the protocol below). Media goes through
-[rtpengine](https://github.com/sipwise/rtpengine): each browser talks WebRTC
-(ICE, DTLS-SRTP, Opus audio, VP8/H.264 video) to rtpengine, and rtpengine
-forwards the media to the other side without transcoding. Neither user
-learns the other's IP address.
-
+This page is for an operator deciding whether to offer one-to-one voice and
+video calls, and for a client author implementing the `CALL` protocol below.
 Calls are a server extension, not part of RFC 1459/2812 or IRCv3. They are
-user-to-user only (no group calls). Users on linked servers
-can call each other (see [Calls across linked servers](#calls-across-linked-servers)).
+user-to-user only (no group calls). Users on linked servers can call each
+other (see [Calls across linked servers](#calls-across-linked-servers)).
+
+Calls are off unless the configuration has a `calls` object. The default is
+`null` (see [Configuration](configuration.md)). The required key is
+`rtpengine`, the `host:port` of [rtpengine](https://github.com/sipwise/rtpengine)'s
+NG control socket. With `calls` set at startup, the server advertises
+`egorsmkv.github.io/calls` and starts the call process. Changing the
+rtpengine address or the process limits needs a restart (see
+[Setup](#setup)).
+
+The ircd carries signalling only. It forwards `CALL` lines between the two
+users (and across server links) and sends NG control messages to rtpengine.
+It does not relay RTP or other media. Each browser talks WebRTC (ICE,
+DTLS-SRTP, Opus audio, VP8/H.264 video) to rtpengine, and rtpengine forwards
+the media to the other side without transcoding. Neither user learns the
+other's IP address. On a call between servers, only the caller's server
+talks to rtpengine; the callee's server relays the `CALL` lines.
 
 ## Setup
 
@@ -46,7 +57,12 @@ can call each other (see [Calls across linked servers](#calls-across-linked-serv
 
 With `calls` set, the server advertises the capability
 `egorsmkv.github.io/calls=v=1,ring=<ring_timeout>,hold,video` (`video` only
-when `video` is on). Changes need a restart (`REHASH` does not apply them).
+when `video` is on). The call process keeps the rtpengine address,
+`ring_timeout`, `max_duration`, `max_calls`, and `calls_per_minute` from
+startup, so changing those needs a restart. `require_account` and `video`
+are read from the current configuration: a `REHASH` changes those checks and
+the advertised capability value, but not a ring or duration timer the
+process already took from its startup limits.
 
 Video goes through rtpengine like audio: budget about 1 to 2.5 Mbit/s in each
 direction per video call on the rtpengine host (the browsers adapt to the
