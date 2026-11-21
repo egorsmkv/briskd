@@ -38,6 +38,8 @@
     server_burst/0,
     server_command/4,
     server_command/5,
+    server_commands/2,
+    peer_command/1,
     server_disconnect/1,
     start_link/1,
     user_modes/1,
@@ -308,6 +310,104 @@ server_command(Peer, Prefix, Command, Params, Tags) ->
     ).
 
 -doc """
+Apply consecutive messages from the authenticated peer `Peer` in one
+request, in order, as `server_command/5` applies each.
+
+The request is a priority message (EEP 76) to an alias of this process, so
+it is handled before queued client commands. A link carries the traffic of
+every user behind it; queued behind thousands of client calls, a batch per
+pass was not enough to drain it, and the peer's sender dropped the link at its
+send timeout. Each link has at most one batch outstanding, so clients are
+served while it reads the next. The caller waits up to the command deadline
+(60 seconds by default) and exits like a timed-out `gen_server:call/3`.
+
+Each element is `{Prefix, Command, Params, Tags}`. The first message that
+breaks link rules stops the batch and its `{error, Reason}` is returned; the
+caller then drops the link, so the rest are not applied. One call per peer
+line gave a link the same share of this process as one client while it
+carries the traffic of every user behind it, so under load the peer's sender
+blocked until its send timeout dropped the link. Link workers send every
+complete line of a read at once, at most 2000 per call.
+""".
+-spec server_commands(
+    binary(),
+    [{undefined | binary(), binary(), [binary()], [{binary(), undefined | binary()}]}]
+) -> ok | {error, term()}.
+server_commands(Peer, Lines) ->
+    lists:foreach(
+        fun({_Prefix, Command, Params, _Tags}) ->
+            ircd_log:server_command(Peer, Command, Params)
+        end,
+        Lines
+    ),
+    Alias = peer_alias(),
+    Mref = erlang:monitor(process, ?MODULE),
+    erlang:send(Alias, {peer_lines, {self(), Mref}, Peer, Lines}, [priority]),
+    receive
+        {Mref, Reply} ->
+            erlang:demonitor(Mref, [flush]),
+            Reply;
+        {'DOWN', Mref, process, _, Reason} ->
+            exit({Reason, {?MODULE, server_commands, [Peer]}})
+    after command_timeout() ->
+        erlang:demonitor(Mref, [flush]),
+        exit({timeout, {?MODULE, server_commands, [Peer]}})
+    end.
+
+%% The state process's priority alias (EEP 76, OTP 28+), cached by the
+%% caller together with the state pid it belongs to, so a caller that
+%% outlives a restarted state process asks again.
+peer_alias() ->
+    State = whereis(?MODULE),
+    case get(ircd_peer_alias) of
+        {State, Alias} when is_pid(State), is_reference(Alias) ->
+            Alias;
+        _ ->
+            Alias = gen_server:call(?MODULE, peer_alias, command_timeout()),
+            true = is_reference(Alias),
+            put(ircd_peer_alias, {whereis(?MODULE), Alias}),
+            Alias
+    end.
+
+-doc """
+Whether a command from an authenticated peer is applied by this process
+(through `server_command/5` or `server_commands/2`). Link workers handle
+`PING`, `PONG`, and `ERROR` themselves and ignore other commands.
+""".
+-spec peer_command(binary()) -> boolean().
+peer_command(Command) ->
+    lists:member(Command, [
+        <<"NICK">>,
+        <<"QUIT">>,
+        <<"AWAY">>,
+        <<"NJOIN">>,
+        <<"JOIN">>,
+        <<"PART">>,
+        <<"TOPIC">>,
+        <<"KICK">>,
+        <<"MODE">>,
+        <<"PRIVMSG">>,
+        <<"NOTICE">>,
+        <<"TAGMSG">>,
+        <<"SERVER">>,
+        <<"SQUIT">>,
+        <<"INVITE">>,
+        <<"SERVICE">>,
+        <<"SQUERY">>,
+        <<"KILL">>,
+        <<"ACCOUNT">>,
+        <<"SETNAME">>,
+        <<"CHGHOST">>,
+        <<"REDACT">>,
+        <<"ACCOUNTSYNC">>,
+        <<"METADATA">>,
+        <<"MARKREAD">>,
+        <<"E2EE">>,
+        <<"CALL">>,
+        <<"BATCH">>
+    ]).
+
+-doc """
 Treat the loss of the link to `Peer` as a netsplit: remove the users,
 services, servers, and channel memberships reachable only through it and tell
 the remaining peers.
@@ -316,7 +416,7 @@ A missing state process during shutdown is ignored. Other failures propagate.
 """.
 -spec server_disconnect(binary()) -> ok.
 server_disconnect(Peer) ->
-    try gen_server:call(?MODULE, {server_disconnect, Peer}) of
+    try gen_server:call(?MODULE, {server_disconnect, Peer}, command_timeout()) of
         ok -> ok
     catch
         exit:{noproc, _} -> ok;
@@ -388,6 +488,8 @@ authenticate_server_link(Name, Password) ->
 -doc false.
 -spec init(map()) -> {ok, binary()}.
 init(#{name := Name} = Config) ->
+    %% Priority alias for batches of server-link input (server_commands/2).
+    put(ircd_peer_alias, erlang:alias([priority])),
     Started = calendar:system_time_to_rfc3339(erlang:system_time(second), [{unit, second}]),
     persistent_term:put({?MODULE, started}, Started),
     persistent_term:put({?MODULE, started_at}, erlang:monotonic_time(second)),
@@ -905,6 +1007,8 @@ handle_call({reset_control, Key}, _From, Server) ->
                 {error, unknown_control}
         end,
     {reply, Reply, Server};
+handle_call(peer_alias, _From, Server) ->
+    {reply, get(ircd_peer_alias), Server};
 handle_call({server_command, Peer, Prefix0, Command, Params, Tags}, From, Server) ->
     case burst_command(Command) of
         true -> ok;
@@ -949,6 +1053,15 @@ apply_overrides(Key, Value, Server) ->
         [<<"Admin panel set ">>, Key, <<" to ">>, Shown],
         Server
     ).
+
+%% Apply a peer's lines in order until one fails (see server_commands/2).
+apply_server_lines(_Peer, [], _From, Server) ->
+    {reply, ok, Server};
+apply_server_lines(Peer, [{Prefix, Command, Params, Tags} | Rest], From, Server0) ->
+    case handle_call({server_command, Peer, Prefix, Command, Params, Tags}, From, Server0) of
+        {reply, ok, Server} -> apply_server_lines(Peer, Rest, From, Server);
+        {reply, Error, Server} -> {reply, Error, Server}
+    end.
 
 %% Commands that may appear inside a peer's burst between NJOIN lines.
 burst_command(Command) ->
@@ -1274,6 +1387,12 @@ handle_info({'DOWN', Ref, process, Pid, Reason}, State) ->
         handled -> {noreply, State};
         not_ours -> session_down(Pid, State)
     end;
+handle_info({peer_lines, {Pid, Ref} = From, Peer, Lines}, Server0) when
+    is_pid(Pid), is_reference(Ref), is_binary(Peer), is_list(Lines)
+->
+    {reply, Reply, Server} = apply_server_lines(Peer, Lines, From, Server0),
+    Pid ! {Ref, Reply},
+    {noreply, Server};
 handle_info({flush_netjoin, Peer}, Server) ->
     ircd_state_link:flush_netjoin(Peer),
     {noreply, Server};

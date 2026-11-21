@@ -32,6 +32,11 @@ services:
     ports:
       - "30000-30100:30000-30100/udp"
 
+  # Two linked servers of one network (RFC 2813 over the compose network):
+  # irc.dev (ircd-dev, config/ircd.dev.json) and irc2.dev (ircd-dev2,
+  # config/ircd.dev2.json). Each lists the other in `server_links`, so they
+  # link whichever starts first. Clients on either see the same channels and
+  # users, which exercises bursts, propagation, and cross-server delivery.
   ircd-dev:
     build:
       context: .
@@ -54,6 +59,52 @@ services:
       - rebar3-cache:/root/.cache/rebar3
       - deno-cache:/root/.cache/deno
       - ircd-mnesia:/var/lib/ircd/mnesia
+    # As docker-compose.prod.yml: the default 1024 descriptors run out at
+    # about a thousand clients.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    stdin_open: true
+    tty: true
+
+  # The second node: IRC on 6668, WebSocket on 8082, web UI on 8083 (the same
+  # numbers inside the container, so its web pages point browsers at its own
+  # WebSocket port). It has its own Mnesia volume and its own build directory
+  # (REBAR_BASE_DIR), so the two `rebar3 shell`s never compile into the same
+  # _build. It waits for the web assets ircd-dev builds instead of building
+  # them a second time, and runs no AI bots (the same bot nicknames on both
+  # servers would collide across the link).
+  ircd-dev2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /workspace
+    command:
+      - sh
+      - -c
+      - until [ -f priv/webui/assets/app.js ]; do sleep 2; done; just run-config config/ircd.dev2.json
+    depends_on:
+      - ircd-dev
+    env_file:
+      - .dev.env
+    environment:
+      REBAR_BASE_DIR: /build
+    ports:
+      - "6668:6668"
+      - "8082:8082"
+      - "8083:8083"
+    volumes:
+      - .:/workspace
+      - rebar3-cache:/root/.cache/rebar3
+      - ircd2-build:/build
+      - ircd2-mnesia:/var/lib/ircd/mnesia
+    # As docker-compose.prod.yml: the default 1024 descriptors run out at
+    # about a thousand clients.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     stdin_open: true
     tty: true
 
@@ -61,4 +112,6 @@ volumes:
   rebar3-cache:
   deno-cache:
   ircd-mnesia:
+  ircd2-mnesia:
+  ircd2-build:
   rustfs-data:

@@ -9,7 +9,7 @@ dependencies = [
     "Faker==40.54.0",
     # Rust asyncio event loop (io_uring on Linux 6.1+) for traffic.py's
     # high-load runs: thousands of sockets and millions of lines.
-    "rsloop==0.1.68",
+    "rsloop==0.1.69",
 ]
 
 [tool.uv]

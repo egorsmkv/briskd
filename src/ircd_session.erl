@@ -23,7 +23,8 @@ Lifecycle and bounds:
   connection.
 - When more than `max_sendq` lines (configuration, default 10000) are queued
   for a slow reader, the session sends `ERROR :Closing Link` with
-  `Max SendQ exceeded` and closes.
+  `Max SendQ exceeded` and closes. An authenticated server link allows 50000,
+  as `m:ircd_link` does for outbound links.
 - `STARTTLS` (IRCv3 `tls`) sends the queued 670 reply in plaintext, then
   upgrades the same TCP socket with the listener's TLS options.
 - WebSocket connections run the RFC 6455 upgrade with `m:ircd_websocket`
@@ -39,6 +40,15 @@ attached to the primary session: its commands run as that client, and it
 receives a copy of every line the primary session receives.
 """.
 -behaviour(gen_server).
+%% Most lines of an authenticated peer sent to ircd_state in one call.
+-define(MAX_PEER_BATCH, 2000).
+%% Driver read buffer once a connection authenticates as a server link,
+%% bytes (the listener's is sized for clients): one read carries a whole
+%% batch, which matters while ircd_state is slow to answer.
+-define(PEER_BUFFER, 262144).
+%% Lines queued for an authenticated server link before it is dropped, as
+%% ircd_link's limit for outbound links.
+-define(PEER_SENDQ, 50000).
 -include("ircd_wire.hrl").
 -export([
     start_link/3,
@@ -109,7 +119,7 @@ handle_info({dronebl_banned, Reason}, {Kind, Socket, Peer, _, _} = State) ->
     {stop, normal, State};
 handle_info({irc, Line}, {Kind, Socket, _, _, _} = State) ->
     Module = transport(Kind),
-    case sendq_exceeded() of
+    case sendq_exceeded(State) of
         {true, Queued} ->
             logger:warning(#{event => sendq_exceeded, peer => peer_of(State), queued => Queued}),
             _ = Module:send(Socket, closing_link(<<"Max SendQ exceeded">>)),
@@ -209,7 +219,7 @@ handle_info({attached_session, Pid}, State) ->
     {noreply, State};
 handle_info({irc_mirror, Line}, {Kind, Socket, _, _, _} = State) ->
     Module = transport(Kind),
-    case sendq_exceeded() of
+    case sendq_exceeded(State) of
         {true, Queued} ->
             logger:warning(#{
                 event => sendq_exceeded, peer => peer_of(State), queued => Queued
@@ -261,8 +271,14 @@ redact_state(State) ->
 
 %% A client that reads slower than lines arrive builds up this mailbox; past
 %% `max_sendq` queued lines it is disconnected, as IRC servers do for SendQ.
-sendq_exceeded() ->
-    Limit = maps:get(max_sendq, ircd_config:current_or_empty(), 10000),
+%% An authenticated server link carries the traffic of every user behind it
+%% and gets ?PEER_SENDQ, the limit m:ircd_link applies to outbound links.
+sendq_exceeded({_, _, _, _, {server, _}}) ->
+    queued_over(?PEER_SENDQ);
+sendq_exceeded(_State) ->
+    queued_over(maps:get(max_sendq, ircd_config:current_or_empty(), 10000)).
+
+queued_over(Limit) ->
     case process_info(self(), message_queue_len) of
         {message_queue_len, Queued} when Queued > Limit -> {true, Queued};
         _ -> false
@@ -542,23 +558,43 @@ connection_info(Kind, Socket) ->
     end.
 
 consume(Data, State) ->
+    consume(Data, [], 0, State).
+
+%% On an authenticated server link, Pending holds the state-bound lines of
+%% this read, newest first, applied as one ircd_state:server_commands/2
+%% batch before any other line, when the read has no more complete lines, or
+%% at ?MAX_PEER_BATCH lines. It stays empty for clients.
+consume(Data, Pending, Count, State) ->
     case binary:match(Data, <<"\r\n">>) of
         {Offset, 2} ->
             Line = binary:part(Data, 0, Offset + 2),
             Rest = binary:part(Data, Offset + 2, byte_size(Data) - Offset - 2),
             case parse_line(Line, State) of
                 {ok, Tags, Prefix, Command, Params} ->
-                    Result =
+                    Batched =
                         case element(5, State) of
-                            {server, _} ->
-                                process_server_line(
-                                    Tags, Prefix, Command, Params, byte_size(Line), State
-                                );
-                            _ ->
-                                process_line(Tags, Command, Params, byte_size(Line), State)
+                            {server, _} -> ircd_state:peer_command(Command);
+                            _ -> false
+                        end,
+                    Result =
+                        case Batched of
+                            true when Count + 1 < ?MAX_PEER_BATCH ->
+                                {batched, [{Prefix, Command, Params, Tags} | Pending]};
+                            true ->
+                                flush_peer([{Prefix, Command, Params, Tags} | Pending], State);
+                            false ->
+                                case flush_peer(Pending, State) of
+                                    {ok, Flushed} ->
+                                        line_result(
+                                            Tags, Prefix, Command, Params, byte_size(Line), Flushed
+                                        );
+                                    error ->
+                                        error
+                                end
                         end,
                     case Result of
-                        {ok, Updated} -> consume(Rest, Updated);
+                        {batched, More} -> consume(Rest, More, Count + 1, State);
+                        {ok, Updated} -> consume(Rest, [], 0, Updated);
                         %% The client must wait for 670 before the handshake,
                         %% so nothing may follow STARTTLS in the same read.
                         {starttls, Updated} when Rest =:= <<>> -> {starttls, Updated};
@@ -568,19 +604,54 @@ consume(Data, State) ->
                     end;
                 {error, input_too_long, Tags} ->
                     case reject_long_line(Tags, State) of
-                        {ok, Updated} -> consume(Rest, Updated);
+                        {ok, Updated} -> consume(Rest, Pending, Count, Updated);
                         error -> error
                     end;
                 empty ->
-                    consume(Rest, State);
+                    consume(Rest, Pending, Count, State);
                 error ->
                     error
             end;
         nomatch ->
-            case ircd_wire:partial(Data) of
-                ok -> {ok, set_buffer(State, Data)};
-                error -> overlong(Data, State)
+            case flush_peer(Pending, State) of
+                {ok, Flushed} ->
+                    case ircd_wire:partial(Data) of
+                        ok -> {ok, set_buffer(Flushed, Data)};
+                        error -> overlong(Data, Flushed)
+                    end;
+                error ->
+                    error
             end
+    end.
+
+line_result(Tags, Prefix, Command, Params, Bytes, State) ->
+    case element(5, State) of
+        {server, _} -> process_server_line(Tags, Prefix, Command, Params, Bytes, State);
+        _ -> process_line(Tags, Command, Params, Bytes, State)
+    end.
+
+peer_buffer(Module, Socket, Name) ->
+    Set =
+        case Module of
+            gen_tcp -> inet:setopts(Socket, [{buffer, ?PEER_BUFFER}]);
+            ssl -> ssl:setopts(Socket, [{buffer, ?PEER_BUFFER}])
+        end,
+    case Set of
+        ok ->
+            ok;
+        {error, Reason} ->
+            logger:warning(#{event => peer_buffer_failed, peer => Name, reason => Reason})
+    end.
+
+flush_peer([], State) ->
+    {ok, State};
+flush_peer(Pending, {_, _, Peer, _, _} = State) ->
+    case ircd_state:server_commands(Peer, lists:reverse(Pending)) of
+        ok ->
+            {ok, State};
+        {error, Reason} ->
+            logger:warning(#{event => invalid_remote_state, peer => Peer, reason => Reason}),
+            error
     end.
 
 parse_line(Line, {_, _, _, _, {server, _}}) ->
@@ -705,6 +776,7 @@ process_server_intro(Name, Hop, Token, State) ->
                                 event => inbound_server_link_authenticated, peer => Name
                             }),
                             erlang:send_after(60000, self(), liveness_ping),
+                            peer_buffer(Module, Socket, Name),
                             {ok, set_peer_and_role(State, Name, {server, undefined})};
                         {error, _} ->
                             error
@@ -745,43 +817,6 @@ process_server_line(
 process_server_line(_Tags, _Prefix, <<"ERROR">>, [Reason | _], _Bytes, _State) ->
     logger:warning(#{event => inbound_server_link_error, reason => Reason}),
     quit;
-process_server_line(Tags, Prefix, Command, Params, _Bytes, {_, _, Peer, _, _} = State) when
-    Command =:= <<"NICK">>;
-    Command =:= <<"QUIT">>;
-    Command =:= <<"AWAY">>;
-    Command =:= <<"NJOIN">>;
-    Command =:= <<"JOIN">>;
-    Command =:= <<"PART">>;
-    Command =:= <<"TOPIC">>;
-    Command =:= <<"KICK">>;
-    Command =:= <<"MODE">>;
-    Command =:= <<"PRIVMSG">>;
-    Command =:= <<"NOTICE">>;
-    Command =:= <<"TAGMSG">>;
-    Command =:= <<"SERVER">>;
-    Command =:= <<"SQUIT">>;
-    Command =:= <<"INVITE">>;
-    Command =:= <<"SERVICE">>;
-    Command =:= <<"SQUERY">>;
-    Command =:= <<"KILL">>;
-    Command =:= <<"ACCOUNT">>;
-    Command =:= <<"SETNAME">>;
-    Command =:= <<"CHGHOST">>;
-    Command =:= <<"REDACT">>;
-    Command =:= <<"ACCOUNTSYNC">>;
-    Command =:= <<"METADATA">>;
-    Command =:= <<"MARKREAD">>;
-    Command =:= <<"E2EE">>;
-    Command =:= <<"CALL">>;
-    Command =:= <<"BATCH">>
-->
-    case ircd_state:server_command(Peer, Prefix, Command, Params, Tags) of
-        ok ->
-            {ok, State};
-        {error, Reason} ->
-            logger:warning(#{event => invalid_remote_state, peer => Peer, reason => Reason}),
-            error
-    end;
 process_server_line(_Tags, _Prefix, _Command, _Params, _Bytes, State) ->
     {ok, State}.
 

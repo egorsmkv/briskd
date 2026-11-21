@@ -31,6 +31,38 @@ Stop the container with `docker compose -f docker-compose.dev.yml down`. The
 Rebar3 cache and development database persist in named volumes. Use `down -v`
 to remove those volumes and their contents.
 
+### Two linked servers
+
+The development network has two servers linked over RFC 2813, so bursts,
+propagation, netsplits, and cross-server delivery can be tried locally:
+
+| Server | Service | IRC | WebSocket | Web UI | Configuration |
+| --- | --- | --- | --- | --- | --- |
+| `irc.dev` | `ircd-dev` | 6667 | 8080 | 8081 | `config/ircd.dev.json` |
+| `irc2.dev` | `ircd-dev2` | 6668 | 8082 | 8083 | `config/ircd.dev2.json` |
+
+Each lists the other in `server_links` (password `devnet-link`, plain TCP on
+the compose network), so they link whichever starts first; `LINKS` on either
+shows the other as a direct peer. `irc2.dev` has its own Mnesia volume and
+its own build directory (`REBAR_BASE_DIR=/build`), waits for the web assets
+that `ircd-dev` builds, and runs no AI bots, since the same bot nicknames on
+both servers would collide. Both containers raise the open-file limit to
+65536, as the production compose file does; Docker's default of 1024 runs out
+at about a thousand clients. Stop one with
+`docker compose -f docker-compose.dev.yml stop ircd-dev2` to see a netsplit,
+and start it again to see the burst. Run commands for the second server in
+its own container, for example
+`docker compose -f docker-compose.dev.yml exec -T ircd-dev2 just build`.
+
+`bench/traffic.py --targets 127.0.0.1:6667,127.0.0.1:6668` spreads its
+high-load clients over both servers, so every channel spans the link (see
+[Benchmarks](../bench/README.md)).
+
+With docker-compose 1.x on a recent Docker Engine, recreating a changed
+service can fail with `KeyError: 'ContainerConfig'` and leave the old
+container renamed with an ID prefix; remove that container (`docker rm -f`)
+and run `up -d` again, or use Compose v2 (`docker compose`).
+
 ## Project commands
 
 If `just` is installed, `just --list` shows the available commands:

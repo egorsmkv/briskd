@@ -1,0 +1,178 @@
+{
+  "name": "irc2.dev",
+  "log_level": "trace",
+  "bind": "0.0.0.0",
+  "tcp_port": 6668,
+  "tls_port": null,
+  "ws_port": 8082,
+  "network": "DevNet",
+  "server_info": "DevNet IRC for developers and IT staff",
+  "admin_name": "DevNet operators",
+  "admin_location1": "Development network",
+  "admin_location2": "irc2.dev",
+  "admin_email": "ops@irc.dev",
+  "motd_file": "config/motd.dev.txt",
+  "account_password_min": 4,
+  "mnesia_dir": "/var/lib/ircd/mnesia",
+  "retention": "channels",
+  "history_limit": 100,
+  "e2ee": {},
+  "voice": {
+    "endpoint": "http://rustfs:9000",
+    "region": "us-east-1",
+    "bucket": "ircd-voice",
+    "access_key_id": "rustfsadmin",
+    "secret_access_key": "rustfsadmin",
+    "max_bytes": 1048576,
+    "max_duration": 120
+  },
+  "files": {
+    "endpoint": "http://rustfs:9000",
+    "region": "us-east-1",
+    "bucket": "ircd-files",
+    "access_key_id": "rustfsadmin",
+    "secret_access_key": "rustfsadmin",
+    "max_bytes": 10485760
+  },
+  "calls": {
+    "rtpengine": "rtpengine:2223"
+  },
+  "features": {
+    "reactions": true,
+    "replies": true,
+    "typing": true,
+    "editing": true,
+    "redaction": true,
+    "link_previews": true
+  },
+  "administrators": [
+    {
+      "nick": "yehor",
+      "password": "devpass"
+    },
+    {
+      "nick": "admin",
+      "password": "devpass"
+    },
+    {
+      "nick": "ops",
+      "password": "devpass"
+    }
+  ],
+  "channels": [
+    {
+      "name": "#lobby",
+      "topic": "Welcome to DevNet. Introductions and where to ask. Mention guide.",
+      "modes": "nt"
+    },
+    {
+      "name": "#announcements",
+      "topic": "Staff announcements. Moderated: only operators and voiced users speak.",
+      "modes": "ntm"
+    },
+    {
+      "name": "#helpdesk",
+      "topic": "IT support: access, devices, mail, VPN. Mention helpdesk. Do not paste passwords or tokens.",
+      "modes": "nt"
+    },
+    {
+      "name": "#dev",
+      "topic": "Software design, debugging, and implementation. Mention coder.",
+      "modes": "nt"
+    },
+    {
+      "name": "#review",
+      "topic": "Code review. Mention reviewer. Recent lines are sent to the model when reviewer answers.",
+      "modes": "nt"
+    },
+    {
+      "name": "#ops",
+      "topic": "Deploys, changes, and reliability. Mention oncall. Recent lines are sent to the model when oncall answers. No secrets.",
+      "modes": "nt"
+    },
+    {
+      "name": "#incident",
+      "topic": "Active incidents. Mention oncall. Recent lines are sent to the model when oncall answers. Keep secrets out.",
+      "modes": "nt"
+    },
+    {
+      "name": "#infra",
+      "topic": "Hosts, containers, storage, and platform. Mention sysadm.",
+      "modes": "nt"
+    },
+    {
+      "name": "#net",
+      "topic": "DNS, routing, firewalls, and TLS. Mention netops.",
+      "modes": "nt"
+    },
+    {
+      "name": "#security",
+      "topic": "Defensive security and reviews. Mention secop. Do not paste secrets or exploit material.",
+      "modes": "nt"
+    },
+    {
+      "name": "#data",
+      "topic": "Schemas, queries, migrations, and backups. Mention dbadmin. Do not paste production data.",
+      "modes": "nt"
+    },
+    {
+      "name": "#docs",
+      "topic": "Runbooks, decision notes, and status updates. Mention scribe. Recent lines are sent to the model when scribe answers.",
+      "modes": "nt"
+    },
+    {
+      "name": "#random",
+      "topic": "Off topic. Keep it kind.",
+      "modes": "n"
+    }
+  ],
+  "flood": {
+    "lines_burst": 500,
+    "lines_per_second": 50,
+    "messages_burst": 200,
+    "messages_per_second": 20,
+    "join_burst": 50,
+    "join_per_minute": 60,
+    "nick_burst": 50,
+    "nick_per_minute": 60,
+    "register_per_minute": 30
+  },
+  "dronebl": {
+    "enabled": true,
+    "zone": "dnsbl.dronebl.org",
+    "timeout_ms": 3000,
+    "ban_ttl": 3600,
+    "cache_ttl": 300,
+    "types": "all",
+    "skip_private": true,
+    "max_entries": 10000,
+    "max_in_flight": 64
+  },
+  "webui": {
+    "bind": "0.0.0.0",
+    "port": 8083,
+    "username": "admin",
+    "password": "change-me-strong-password",
+    "terms_url": "https://example.com/terms",
+    "privacy_url": "https://example.com/privacy"
+  },
+  "account_verification": {
+    "ttl": 900,
+    "verify_url": "http://localhost:8083/verify",
+    "smtp": {
+      "relay": "inbucket",
+      "port": 2500,
+      "from": "noreply@irc2.dev",
+      "tls": "never"
+    }
+  },
+  "server_links": [
+    {
+      "name": "irc.dev",
+      "host": "ircd-dev",
+      "port": 6667,
+      "password": "devnet-link",
+      "tls": false
+    }
+  ]
+}

@@ -16,8 +16,9 @@ by this module.
 
 After authentication, input is framed on CRLF with `{active, once}` and parsed
 by `ircd_wire:parse_server/1`. Nick, channel, message, server, and IRCv3
-synchronisation commands go to `ircd_state:server_command/5`; an error reply
-drops the link. `PING` is answered with `PONG`, and other commands are
+synchronisation commands go to `ircd_state:server_commands/2`, every complete
+line of a read in one call (at most 2000, with a 256 KiB read buffer), so a busy state process drains a
+link as fast as it carries traffic; an error reply drops the link. `PING` is answered with `PONG`, and other commands are
 ignored. Liveness follows RFC 2813 section 5.1: 60 seconds after
 authentication or after the last matching `PONG` the worker sends `PING`, and
 it drops the link if no `PONG` arrives within 30 seconds.
@@ -37,6 +38,11 @@ retries are logged at `debug`. Timer messages carry a connection generation,
 so a timer from an earlier connection is ignored.
 """.
 -behaviour(gen_server).
+%% Most peer lines sent to ircd_state in one call (see consume/4).
+-define(MAX_BATCH, 2000).
+%% Driver read buffer for the link socket, bytes: one read carries a whole
+%% batch of lines, which matters while ircd_state is slow to answer.
+-define(LINK_BUFFER, 262144).
 -export([
     start_link/2,
     init/1,
@@ -227,6 +233,7 @@ connect(#{peer := #{host := Host, port := Port, tls := true}} = State) ->
         {active, false},
         {send_timeout, ?SEND_TIMEOUT_MS},
         {send_timeout_close, true},
+        {buffer, ?LINK_BUFFER},
         {verify, verify_peer},
         {cacerts, public_key:cacerts_get()},
         {server_name_indication, HostName},
@@ -251,6 +258,7 @@ connect(#{peer := #{host := Host, port := Port}} = State) ->
         {packet, raw},
         {active, false},
         {nodelay, true},
+        {buffer, ?LINK_BUFFER},
         {keepalive, true},
         {send_timeout, ?SEND_TIMEOUT_MS},
         {send_timeout_close, true}
@@ -268,26 +276,68 @@ send_handshake(#{kind := Kind, socket := Socket, peer := #{password := Password}
     send(Kind, Socket, <<PassLine/binary, ServerLine/binary>>).
 
 consume(Data, State) ->
+    consume(Data, [], 0, State).
+
+%% Pending holds the state-bound lines of this read, newest first, sent to
+%% ircd_state as one batch (ircd_state:server_commands/2) when a line the
+%% worker handles itself arrives, when the read has no more complete lines,
+%% or at ?MAX_BATCH lines.
+consume(Data, Pending, Count, State) ->
     case binary:match(Data, <<"\r\n">>) of
         {Offset, 2} ->
             Line = binary:part(Data, 0, Offset + 2),
             Rest = binary:part(Data, Offset + 2, byte_size(Data) - Offset - 2),
             case ircd_wire:parse_server(Line) of
                 {ok, Tags, Prefix, Command, Params} ->
-                    case handle_server_line(Tags, Prefix, Command, Params, State) of
-                        {ok, Updated} -> consume(Rest, Updated);
-                        {error, Reason, Updated} -> {error, Reason, Updated}
+                    case batched(Command, State) of
+                        true when Count + 1 < ?MAX_BATCH ->
+                            consume(
+                                Rest, [{Prefix, Command, Params, Tags} | Pending], Count + 1, State
+                            );
+                        true ->
+                            case flush([{Prefix, Command, Params, Tags} | Pending], State) of
+                                {ok, Updated} -> consume(Rest, [], 0, Updated);
+                                {error, Reason, Updated} -> {error, Reason, Updated}
+                            end;
+                        false ->
+                            case flush(Pending, State) of
+                                {ok, Flushed} ->
+                                    case
+                                        handle_server_line(Tags, Prefix, Command, Params, Flushed)
+                                    of
+                                        {ok, Updated} -> consume(Rest, [], 0, Updated);
+                                        {error, Reason, Updated} -> {error, Reason, Updated}
+                                    end;
+                                {error, Reason, Updated} ->
+                                    {error, Reason, Updated}
+                            end
                     end;
                 empty ->
-                    consume(Rest, State);
+                    consume(Rest, Pending, Count, State);
                 error ->
                     {error, malformed_server_message, State}
             end;
         nomatch ->
             case ircd_wire:partial(Data) of
-                ok -> {ok, State#{buffer := Data}};
-                error -> {error, malformed_server_frame, State}
+                ok ->
+                    case flush(Pending, State) of
+                        {ok, Updated} -> {ok, Updated#{buffer := Data}};
+                        {error, Reason, Updated} -> {error, Reason, Updated}
+                    end;
+                error ->
+                    {error, malformed_server_frame, State}
             end
+    end.
+
+batched(Command, #{phase := authenticated}) -> ircd_state:peer_command(Command);
+batched(_Command, _State) -> false.
+
+flush([], State) ->
+    {ok, State};
+flush(Pending, #{peer := #{name := PeerName}} = State) ->
+    case ircd_state:server_commands(PeerName, lists:reverse(Pending)) of
+        ok -> {ok, State};
+        {error, Reason} -> {error, {invalid_remote_state, Reason}, State}
     end.
 
 handle_server_line(
@@ -340,46 +390,6 @@ handle_server_line(_Tags, _Prefix, <<"PING">>, [Origin | _], #{phase := authenti
     case send(maps:get(kind, State), maps:get(socket, State), Reply) of
         ok -> {ok, State};
         {error, Reason} -> {error, {pong_send_failed, Reason}, State}
-    end;
-handle_server_line(
-    Tags,
-    Prefix,
-    Command,
-    Params,
-    #{phase := authenticated, peer := #{name := PeerName}} = State
-) when
-    Command =:= <<"NICK">>;
-    Command =:= <<"QUIT">>;
-    Command =:= <<"AWAY">>;
-    Command =:= <<"NJOIN">>;
-    Command =:= <<"JOIN">>;
-    Command =:= <<"PART">>;
-    Command =:= <<"TOPIC">>;
-    Command =:= <<"KICK">>;
-    Command =:= <<"MODE">>;
-    Command =:= <<"PRIVMSG">>;
-    Command =:= <<"NOTICE">>;
-    Command =:= <<"TAGMSG">>;
-    Command =:= <<"SERVER">>;
-    Command =:= <<"SQUIT">>;
-    Command =:= <<"INVITE">>;
-    Command =:= <<"SERVICE">>;
-    Command =:= <<"SQUERY">>;
-    Command =:= <<"KILL">>;
-    Command =:= <<"ACCOUNT">>;
-    Command =:= <<"SETNAME">>;
-    Command =:= <<"CHGHOST">>;
-    Command =:= <<"REDACT">>;
-    Command =:= <<"ACCOUNTSYNC">>;
-    Command =:= <<"METADATA">>;
-    Command =:= <<"MARKREAD">>;
-    Command =:= <<"E2EE">>;
-    Command =:= <<"CALL">>;
-    Command =:= <<"BATCH">>
-->
-    case ircd_state:server_command(PeerName, Prefix, Command, Params, Tags) of
-        ok -> {ok, State};
-        {error, Reason} -> {error, {invalid_remote_state, Reason}, State}
     end;
 handle_server_line(
     _Tags,

@@ -197,7 +197,8 @@ Key operational and security events to index and alert on:
 | `event` | Severity | Meaning and operator action |
 | --- | --- | --- |
 | `listener_started` | `info` | TCP/TLS/WS/WSS listener bound (`transport`, `ip`, `port`) |
-| `accept_failed` | `error` | Listener socket accept error (check `ulimit -n` / `nofile` if `emfile`) |
+| `accept_failed` | `error` | Listener socket accept error; the listener restarts |
+| `accept_exhausted` | `warning` | Accept failed for lack of descriptors or memory (`reason` such as `emfile`, `failures` since the last report, at most every 10 s). The listener retries every 100 ms and new connections wait in the backlog; raise `ulimit -n` / `nofile` or lower `max_clients` |
 | `session_rejected` | `warning` | Connection refused because `max_clients` was reached (`reason: max_clients`) |
 | `sendq_exceeded` | `warning` | Slow client disconnected after exceeding `max_sendq` queued lines |
 | `flood_exceeded` | `warning` | Client disconnected for exceeding `flood` token buckets (`category`: `lines`, `messages`, `join`, or `nick`) |
@@ -265,7 +266,9 @@ Key operational and security events to index and alert on:
 - **File descriptors (`nofile`):** Size `ulimit -n` to at least
   `max_clients + 2048` to cover client sockets, listeners, peer links, Mnesia
   table files, and transient DNS/TLS sockets (`docker-compose.prod.yml` sets
-  `65536`).
+  `65536`). When the limit is reached the listeners log `accept_exhausted` and
+  keep retrying rather than exiting, so the server stays up and admits
+  clients again as others disconnect.
 - **Connection and queue bounds:**
   - `max_clients` (default `10000`) rejects excess connections before allocating
     session state.

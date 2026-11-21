@@ -31,6 +31,7 @@ import asyncio
 import json
 import re
 import resource
+import secrets
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -164,14 +165,18 @@ async def registration_burst(host, port, base, count, concurrency, timeout, inde
 
 
 async def channel_fanout(host, port, base, members, each, timeout):
+    # A channel of this run only: a server that keeps channel history
+    # (`retention: channels`) replays a reused channel's earlier messages on
+    # JOIN, which would count as deliveries.
+    chan = f"#bench{base % 1_000_000}".encode()
     clients = []
     try:
         for index in range(members):
             nick = nick_for(base, 50_000_000 + index)
             reader, writer, _delay, _buf = await register(host, port, nick, timeout)
-            writer.write(b"JOIN #bench\r\n")
+            writer.write(b"JOIN " + chan + b"\r\n")
             await writer.drain()
-            await read_until(reader, b"JOIN #bench", timeout)
+            await read_until(reader, b" 366 ", timeout)
             clients.append((reader, writer))
         received = 0
         lock = asyncio.Lock()
@@ -188,14 +193,14 @@ async def channel_fanout(host, port, base, members, each, timeout):
                 if not chunk:
                     return
                 buf += chunk
-                found = buf.count(b"PRIVMSG #bench")
+                found = buf.count(b"PRIVMSG " + chan + b" ")
                 if found:
                     async with lock:
                         received += found
                     buf = b""
 
         tasks = [asyncio.create_task(collect(reader)) for reader, _writer in clients]
-        payload = b"".join(b"PRIVMSG #bench :x\r\n" for _ in range(each))
+        payload = b"".join(b"PRIVMSG " + chan + b" :x\r\n" for _ in range(each))
         started = time.perf_counter()
         for _reader, writer in clients:
             writer.write(payload)
@@ -225,6 +230,26 @@ SAMPLE = re.compile(rb" PRIVMSG #ld\S* :L(\d+)")
 ERROR_NUMERIC = re.compile(rb"^:\S+ ([45]\d\d) ", re.M)
 
 
+async def welcome_or_retry(reader, writer, timeout):
+    """Wait for 001. A nick still held from an earlier run (the server keeps a
+    quit user's nick for `resource_delay`, 60 s by default) gets 433: take a
+    random one instead of waiting for the registration timeout to close us."""
+    buf = b""
+    deadline = time.perf_counter() + timeout
+    while b" 001 " not in buf:
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            raise TimeoutError("no welcome")
+        chunk = await asyncio.wait_for(reader.read(65536), remaining)
+        if not chunk:
+            raise EOFError("closed before the welcome")
+        buf += chunk
+        if b" 433 " in buf or b" 437 " in buf:
+            writer.write(f"NICK r{secrets.randbelow(10**8):08d}\r\n".encode())
+            await writer.drain()
+            buf = buf.replace(b" 433 ", b" ").replace(b" 437 ", b" ")
+
+
 async def high_load(args, base):
     """10k-scale load: hold `clients` registered connections in channels of
     `members`, send `messages` channel messages, and count every delivery.
@@ -236,6 +261,7 @@ async def high_load(args, base):
     share at once (a burst), otherwise `rate` messages per second in total.
     """
     n, members = args.clients, args.members
+    targets = args.target_list
     # Channel names unique to this run: with `channels` retention the server
     # keeps history and replays it on JOIN to clients without
     # draft/chathistory, which would count an earlier run's messages here.
@@ -244,6 +270,7 @@ async def high_load(args, base):
     welcome = []
     refused = 0
     failures = {}
+    per_target = {}
     sem = asyncio.Semaphore(args.load_concurrency)
 
     async def connect(i):
@@ -252,13 +279,17 @@ async def high_load(args, base):
             nick = nick_for(base, 60_000_000 + i)
             writer = None
             started = time.perf_counter()
+            # Round-robin over the targets: consecutive clients share a
+            # channel, so with two linked servers every channel has members on
+            # both and each message crosses the link.
+            host, port = targets[i % len(targets)]
             try:
                 reader, writer = await asyncio.wait_for(
-                    open_client(args.host, args.port), args.connect_timeout
+                    open_client(host, port), args.connect_timeout
                 )
                 writer.write(f"NICK {nick}\r\nUSER {nick} 0 * :bench\r\n".encode())
                 await writer.drain()
-                await read_until(reader, b" 001 ", args.connect_timeout)
+                await welcome_or_retry(reader, writer, args.connect_timeout)
                 welcome.append(time.perf_counter() - started)
                 writer.write(f"JOIN {prefix}{i // members}\r\n".encode())
                 await writer.drain()
@@ -267,6 +298,7 @@ async def high_load(args, base):
                 # go out would miss them without any error.
                 await read_until(reader, b" 366 ", args.connect_timeout)
                 conns[i] = (reader, writer)
+                per_target[f"{host}:{port}"] = per_target.get(f"{host}:{port}", 0) + 1
             except Exception as exc:  # noqa: BLE001 - counted by kind
                 if isinstance(exc, EOFError):
                     refused += 1
@@ -288,6 +320,51 @@ async def high_load(args, base):
     for i in live:
         group_size[i // members] = group_size.get(i // members, 0) + 1
     expected = sum(share[i] * (group_size[i // members] - 1) for i in live)
+
+    # With linked servers, a JOIN confirmed by the client's own server may not
+    # have reached the others yet, and a server forwards a channel message
+    # only to servers it knows have members there. Wait until every server
+    # lists every member of every channel, so the phase counts delivery, not
+    # this propagation race.
+    propagation = None
+    if len(targets) > 1:
+        t_prop = time.perf_counter()
+        holders = {}
+        for i in live:
+            holders.setdefault((i // members, targets[i % len(targets)]), i)
+
+        async def visible(group, i):
+            chan = f"{prefix}{group}"
+            reader, writer = conns[i]
+            deadline = time.perf_counter() + args.connect_timeout * 4
+            while time.perf_counter() < deadline:
+                writer.write(f"NAMES {chan}\r\n".encode())
+                await writer.drain()
+                end = re.compile(rb" 366 \S+ " + re.escape(chan.encode()) + rb" ")
+                buf = b""
+                stop_at = time.perf_counter() + args.connect_timeout
+                while not end.search(buf):
+                    left = stop_at - time.perf_counter()
+                    if left <= 0:
+                        raise TimeoutError(f"no NAMES end for {chan}")
+                    chunk = await asyncio.wait_for(reader.read(65536), left)
+                    if not chunk:
+                        raise EOFError("closed during NAMES")
+                    buf += chunk
+                names = 0
+                for line in buf.split(b"\r\n"):
+                    if b" 353 " in line and f" {chan} :".encode() in line:
+                        names += len(line.split(b" :", 1)[1].split())
+                if names >= group_size[group]:
+                    return True
+                await asyncio.sleep(0.5)
+            return False
+
+        seen = await asyncio.gather(*(visible(g, i) for (g, _t), i in holders.items()))
+        propagation = {
+            "seconds": round(time.perf_counter() - t_prop, 2),
+            "incomplete": sum(1 for ok in seen if not ok),
+        }
 
     received = 0
     latencies = []
@@ -393,6 +470,8 @@ async def high_load(args, base):
     return {
         "clients": n,
         "connected": len(live),
+        "per_target": per_target,
+        "propagation": propagation,
         "refused": refused,
         "failures": failures,
         "connect_elapsed": connect_elapsed,
@@ -444,6 +523,20 @@ def load_section(load):
         f"{load['connect_elapsed']:.1f} s ({fmt_rate(load['connected'], load['connect_elapsed'])}); "
         f"welcome p50 {fmt_ms(percentile(welcome, 50))}, p99 {fmt_ms(percentile(welcome, 99))}.",
     ]
+    if len(load.get("per_target", {})) > 1:
+        lines.append(
+            "Clients per server (round-robin, so channels span the servers and every "
+            "message crosses the link): "
+            + ", ".join(f"`{t}` {c}" for t, c in sorted(load["per_target"].items()))
+            + "."
+        )
+    if load.get("propagation"):
+        prop = load["propagation"]
+        lines.append(
+            f"Every server listed every channel member {prop['seconds']} s after the joins "
+            "(the send phase waits for this)"
+            + (f"; **{prop['incomplete']} channel views incomplete** at the timeout." if prop["incomplete"] else ".")
+        )
     if load["refused"] or load["failures"]:
         lines.append(
             f"Not connected: {load['refused']} closed before the welcome (the server's "
@@ -730,8 +823,10 @@ def server_section(report):
 
 
 async def main_async(args):
-    # Step well clear of nicks a previous run may still be holding.
-    base = (int(time.time()) + 20_000) % 40_000_000
+    # A random base: a time-based one made back-to-back runs reuse each
+    # other's nicks, which the server still holds for `resource_delay` (60 s)
+    # after a quit, so their clients never registered.
+    base = secrets.randbelow(40_000_000)
     oper = tuple(args.oper.split(":", 1)) if args.oper else None
     sampler = bench_commands.Sampler(args.container).start()
     stats_before = await bench_commands.server_stats(
@@ -888,6 +983,12 @@ def main():
         "--sample-every", type=int, default=100, help="one high-load message in N carries a timestamp"
     )
     parser.add_argument(
+        "--targets",
+        default="",
+        help="comma-separated host:port servers for the high-load clients, round-robin "
+        "(default: --host:--port); with linked servers, channels span them",
+    )
+    parser.add_argument(
         "--loop",
         choices=("asyncio", "rsloop"),
         default="asyncio",
@@ -920,6 +1021,13 @@ def main():
     )
     parser.add_argument("--json", default="", help="also write the full report as JSON")
     args = parser.parse_args()
+    try:
+        args.target_list = [
+            (host, int(port))
+            for host, port in (t.strip().rsplit(":", 1) for t in args.targets.split(",") if t.strip())
+        ] or [(args.host, args.port)]
+    except ValueError:
+        parser.error("--targets takes host:port[,host:port...]")
     if args.clients < 0 or args.messages < 0 or args.members < 2 or args.sample_every < 1:
         parser.error("--clients/--messages must be >= 0, --members >= 2, --sample-every >= 1")
     # One descriptor per client socket, plus the other phases'.

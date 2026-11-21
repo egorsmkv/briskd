@@ -690,6 +690,53 @@ cmd(Prefix, Command, Params) ->
 cmd(Peer, Prefix, Command, Params) ->
     ircd_state:server_command(Peer, Prefix, Command, Params).
 
+%%% Batched peer input
+
+batch_test_() ->
+    {timeout, 60, fun batch/0}.
+
+%% A link applies the complete lines of a read in one ircd_state call:
+%% in order, stopping at the first line that breaks link rules, and a large
+%% read from an inbound peer reaches local members whole and in order.
+batch() ->
+    Port = start("batch"),
+    try
+        Alice = client(Port, <<"alice">>),
+        send(Alice, <<"JOIN #both">>),
+        sync(Alice),
+        Peer = handshake(Port, ?PEER),
+        sync(Peer),
+        ?assertEqual(
+            {error, invalid_nickname},
+            ircd_state:server_commands(?PEER, [
+                {?PEER, <<"NICK">>, nick(<<"bat1">>, <<"1">>, <<"+">>), []},
+                {<<"bat1!u@h.test">>, <<"JOIN">>, [<<"#both">>], []},
+                {?PEER, <<"NICK">>, nick(<<"1bad">>, <<"1">>, <<"+">>), []},
+                {?PEER, <<"NICK">>, nick(<<"bat2">>, <<"1">>, <<"+">>), []}
+            ])
+        ),
+        ?assertMatch([_], mnesia:dirty_read(remote_client, <<"bat1">>)),
+        ?assertEqual([], mnesia:dirty_read(remote_client, <<"bat2">>)),
+        ?assert(has(recv_until(Alice, <<"JOIN #both">>), <<":bat1!u@h.test JOIN #both">>)),
+        %% 300 messages in one write: more than one read, several batches.
+        Count = 300,
+        Lines = [
+            [<<":bat1!u@h.test PRIVMSG #both :m">>, integer_to_binary(N), <<"\r\n">>]
+         || N <- lists:seq(1, Count)
+        ],
+        ok = gen_tcp:send(Peer, Lines),
+        Last = <<"m", (integer_to_binary(Count))/binary>>,
+        Got = recv_until(Alice, <<":", Last/binary>>, 10000, true),
+        Texts = [
+            T
+         || L <- binary:split(Got, <<"\r\n">>, [global]),
+            [_, T] <- [binary:split(L, <<"PRIVMSG #both :">>)]
+        ],
+        ?assertEqual([<<"m", (integer_to_binary(N))/binary>> || N <- lists:seq(1, Count)], Texts)
+    after
+        stop()
+    end.
+
 %%% Anonymous channels, channel lifetime edges, and multiline routing
 
 edge_test_() ->

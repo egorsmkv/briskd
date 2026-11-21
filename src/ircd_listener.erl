@@ -12,8 +12,16 @@ the new `m:ircd_session` the socket's controlling process, and sends it
 block the accept loop.
 
 A connection refused by `max_clients` is logged as `session_rejected` and
-closed. An accept error ends the accept loop and, through the link, the
-listener, which `m:ircd_sup` restarts. Sockets use `{active, false}` until the
+closed. When the process runs out of file descriptors or ports (`emfile`,
+`enfile`, `system_limit`, `enobufs`, `enomem`), or a peer aborts before the
+accept completes (`econnaborted`), the loop waits 100 milliseconds and accepts
+again: pending connections stay in the kernel backlog and are taken once
+sessions close. This is logged as `accept_exhausted` at `warning`, at most once
+every 10 seconds with the number of failures since. Exiting instead made
+`m:ircd_sup` restart a listener that failed the same way at once, and the
+restart intensity then stopped the whole application. Any other accept error
+ends the accept loop and, through the link, the listener, which `m:ircd_sup`
+restarts. Sockets use `{active, false}` until the
 session takes over, `nodelay` (Nagle's algorithm delays multi-line replies),
 and a 5-second send timeout.
 """.
@@ -22,6 +30,10 @@ and a 5-second send timeout.
 -define(RECV_BUFFER, 2048).
 %% Pending connections queued by the kernel (see the listen options).
 -define(LISTEN_BACKLOG, 1024).
+%% Wait before accepting again after a resource-exhaustion error, ms.
+-define(EXHAUSTED_BACKOFF_MS, 100).
+%% Minimum interval between `accept_exhausted` warnings, ms (monotonic).
+-define(EXHAUSTED_LOG_MS, 10000).
 -export([start_link/3, port/1, init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -doc """
@@ -138,14 +150,46 @@ sockname(Kind, Socket) ->
     end.
 
 accept(Kind, Listener) ->
+    accept(Kind, Listener, undefined).
+
+%% Exhausted is undefined, or {LastLogMs, FailuresSinceLog} while accept
+%% keeps failing for lack of descriptors or memory.
+accept(Kind, Listener, Exhausted) ->
     case transport_accept(Kind, Listener) of
         {ok, Socket} ->
             handoff(Kind, Socket),
-            accept(Kind, Listener);
+            accept(Kind, Listener, Exhausted);
+        {error, Reason} when
+            Reason =:= emfile;
+            Reason =:= enfile;
+            Reason =:= system_limit;
+            Reason =:= enobufs;
+            Reason =:= enomem;
+            Reason =:= econnaborted
+        ->
+            Next = note_exhausted(Kind, Reason, Exhausted, erlang:monotonic_time(millisecond)),
+            receive
+            after ?EXHAUSTED_BACKOFF_MS -> ok
+            end,
+            accept(Kind, Listener, Next);
         {error, Reason} ->
             logger:error(#{event => accept_failed, transport => Kind, reason => Reason}),
             exit({accept_failed, Reason})
     end.
+
+note_exhausted(Kind, Reason, undefined, Now) ->
+    log_exhausted(Kind, Reason, 1),
+    {Now, 0};
+note_exhausted(Kind, Reason, {Last, Count}, Now) when Now - Last >= ?EXHAUSTED_LOG_MS ->
+    log_exhausted(Kind, Reason, Count + 1),
+    {Now, 0};
+note_exhausted(_Kind, _Reason, {Last, Count}, _Now) ->
+    {Last, Count + 1}.
+
+log_exhausted(Kind, Reason, Failures) ->
+    logger:warning(#{
+        event => accept_exhausted, transport => Kind, reason => Reason, failures => Failures
+    }).
 
 transport_accept(Kind, Listener) ->
     case base(Kind) of

@@ -86,7 +86,8 @@ The report ends with the server's own view of the run:
 `--host`, `--port`, `--pings`, `--flood`, `--registrations`, `--concurrency`,
 `--fanout-members`, `--each`, `--clients`, `--messages`, `--members`,
 `--rate`, `--load-concurrency`, `--connect-timeout`, `--load-timeout`,
-`--sample-every`, `--loop rsloop|asyncio`, `--commands` (iterations per
+`--sample-every`, `--targets host:port,...` (high-load clients round-robin
+over linked servers, so channels span them), `--loop asyncio|rsloop`, `--commands` (iterations per
 family, 0 skips the matrix), `--oper NAME:PASSWORD`, `--timeout`, `--output`,
 `--json`,
 `--container`, `--kind development|release|production`, `--warmup`,
@@ -95,15 +96,43 @@ does not pace).
 
 ## Event loop and limits
 
+### Two linked servers
+
+With the two-node development stack (see `docs/development.md`), spread the
+high-load clients over both servers:
+
+```sh
+uv run --project bench python bench/traffic.py --port 6667 \
+  --targets 127.0.0.1:6667,127.0.0.1:6668 --container irc-server_ircd-dev_1 \
+  --kind development
+```
+
+Clients alternate between the targets, so every channel has members on both
+and every message crosses the link. Before sending, the script waits until
+each server lists every member of every channel (a server forwards a channel
+message only to servers it knows have members there), and reports how long
+that took. Lower the servers' log level from the development `trace` first:
+at `trace` the synchronous terminal output, not the server, is what gets
+measured. `bench/results/2026-11-21-dev-2node.md` delivered 4,900,000 of
+4,900,000 messages at about 93,000/s across the link.
+
 `traffic.py` runs on the standard asyncio event loop. `--loop rsloop` uses
-[rsloop](https://github.com/RustedBytes/rsloop) 0.1.68 (a Rust asyncio loop,
-io_uring on Linux 6.1+, pinned in `pyproject.toml`) instead, but it is not
-the default: against the same server, a 2,000-client burst on asyncio
-connected every client in 2.1 s and counted all 980,000 deliveries at
-86,500/s, while rsloop 0.1.68 failed half the connections (closed before the
-welcome, in multiples of `--load-concurrency`), counted 9 deliveries short,
-and reached 13,900/s; rsloop 0.1.66 also failed 500 of 2,000 connections. An
-exact per-message check on asyncio found no message lost by the server. One Python
+[rsloop](https://github.com/RustedBytes/rsloop) (a Rust asyncio loop,
+io_uring on Linux 6.1+), pinned to 0.1.69 in `pyproject.toml`. Versions up
+to 0.1.68 lost data: the native reader completed a pending read's Future with
+bytes already taken from its buffer, so a task cancelled after the data
+arrived but before it resumed (an `asyncio.wait_for` timeout in the same
+loop iteration) dropped them. A standalone test lost 2,214 of 200,000 lines
+on 0.1.68 and none on 0.1.69, which returns undelivered bytes to the buffer
+when the awaiting task is cancelled. On the two-server run, rsloop 0.1.69
+(`results/2026-11-21-dev-2node-rsloop.md`) and asyncio
+(`results/2026-11-21-dev-2node.md`) both delivered 4,900,000 of 4,900,000
+messages at about 93,000 to 94,000/s; the server, not the generator, is the
+limit there, and rsloop used more generator CPU (88% of a core against 69%).
+Clients that were "closed before the welcome" in earlier runs were not
+rsloop's doing: back-to-back runs reused each other's nicknames, which the
+server holds for 60 seconds after a quit. Nicknames are now random per run,
+and a client given 433 retries with another. One Python
 process drives every client, so the report states the generator's CPU use
 during the high-load phase: near 100% of a core means the generator, not the
 server, set the pace. The script raises its open-file limit to `--clients`

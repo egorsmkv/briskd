@@ -212,5 +212,8 @@
       "from": "noreply@irc.dev",
       "tls": "never"
     }
-  }
+  },
+  "server_links": [
+    {"name": "irc2.dev", "host": "ircd-dev2", "port": 6668, "password": "devnet-link", "tls": false}
+  ]
 }
