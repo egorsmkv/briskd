@@ -14,7 +14,8 @@ Deno.test("appKeys keeps only this app's storage keys", () => {
     "xbriskd-webirc",
   ]);
   assert(
-    keys.join() === "briskd-webirc-settings,ircd-e2ee-v1:alice,briskd-webirc-dms",
+    keys.join() ===
+      "briskd-webirc-settings,ircd-e2ee-v1:alice,briskd-webirc-dms",
     keys.join(),
   );
 });
