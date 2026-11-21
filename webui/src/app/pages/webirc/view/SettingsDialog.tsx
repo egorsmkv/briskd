@@ -271,6 +271,12 @@ export function SettingsDialog() {
                 >
                   This browser plays calls through the system's default output.
                 </div>
+                <div class="setting-row" id="row-call-camera">
+                  <label for="opt-call-camera" data-i18n="callset.camera">
+                    Camera
+                  </label>
+                  <select id="opt-call-camera"></select>
+                </div>
                 <div class="setting-row">
                   <label for="opt-call-volume" data-i18n="callset.volume">
                     Call volume

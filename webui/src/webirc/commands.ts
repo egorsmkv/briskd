@@ -145,11 +145,19 @@ export function runSlashCommand(
     case "setname":
       if (rest) sendRaw(`SETNAME :${rest}`);
       return;
-    case "call": {
+    case "call":
+    case "vcall":
+    case "videocall": {
       const who = rest.trim() ||
         (buf && buf.name !== "*status" && !isChan(buf.name) ? buf.name : "");
-      if (who && !isChan(who) && isSafeIrcTarget(who)) startCall(who);
-      else addLine(target, { text: "Usage: /call <nick>", kind: "err" });
+      if (who && !isChan(who) && isSafeIrcTarget(who)) {
+        startCall(who, cmd !== "call");
+      } else {
+        addLine(target, {
+          text: `Usage: /${cmd === "call" ? "call" : "videocall"} <nick>`,
+          kind: "err",
+        });
+      }
       return;
     }
     case "hangup":

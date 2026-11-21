@@ -1,0 +1,17 @@
+#!/bin/sh
+# Run the browser video-call test: ircd with WebIRC, rtpengine, and headless
+# Chromium (see docker-compose.yml). Screenshots go to test/calls/browser/shots/.
+set -eu
+cd "$(dirname "$0")"
+mkdir -p shots
+chmod 777 shots
+if docker compose version >/dev/null 2>&1; then
+    compose="docker compose"
+else
+    compose="docker-compose"
+fi
+status=0
+$compose -p ircd-calls-browser -f docker-compose.yml up --build --abort-on-container-exit \
+    --exit-code-from browser || status=$?
+$compose -p ircd-calls-browser -f docker-compose.yml down -v >/dev/null 2>&1 || true
+exit $status

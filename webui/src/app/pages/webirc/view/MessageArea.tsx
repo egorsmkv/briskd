@@ -1,11 +1,68 @@
-// The message list, the call bar, the remote call audio, and the jump-to-latest button.
+// The message list, the call bar, the video call stage, the remote call
+// audio, and the jump-to-latest button.
 // Markup only: the WebIRC controllers (webui/src/webirc/) find these
 // elements by id and wire them when the chat starts.
+
+import { Icon } from "../../../components/Icon.tsx";
 
 export function MessageArea() {
   return (
     <>
       <div class="messages" id="messages"></div>
+      <div
+        class="call-stage hidden"
+        id="call-stage"
+        role="region"
+        aria-label="Video call"
+      >
+        <video
+          class="call-remote-video"
+          id="call-remote-video"
+          autoplay
+          playsInline
+        >
+        </video>
+        <div class="call-stage-placeholder" id="call-stage-placeholder">
+          <div class="call-avatar" id="call-stage-avatar" aria-hidden="true">
+          </div>
+          <div class="call-stage-name" id="call-stage-name" dir="auto"></div>
+          <div class="call-stage-note" id="call-stage-note"></div>
+        </div>
+        <video
+          class="call-local-video hidden"
+          id="call-local-video"
+          autoplay
+          playsInline
+          muted
+          aria-label="Your camera"
+        >
+        </video>
+        <div class="call-stage-tools">
+          <button
+            type="button"
+            class="call-btn ghost-dark"
+            id="btn-call-stage-mini"
+            aria-label="Minimize video"
+            title="Minimize video"
+          >
+            <Icon name="minimize" size={18} class="icon icon-stage-mini" />
+            <Icon
+              name="maximize"
+              size={18}
+              class="icon icon-stage-restore hidden"
+            />
+          </button>
+          <button
+            type="button"
+            class="call-btn ghost-dark"
+            id="btn-call-stage-full"
+            aria-label="Full screen"
+            title="Full screen"
+          >
+            <Icon name="maximize" size={18} />
+          </button>
+        </div>
+      </div>
       <div
         class="call-dock hidden"
         id="call-dock"
@@ -72,6 +129,17 @@ export function MessageArea() {
             <line x1="12" y1="19" x2="12" y2="23" />
             <line x1="8" y1="23" x2="16" y2="23" />
           </svg>
+        </button>
+        <button
+          type="button"
+          class="call-btn hidden"
+          id="btn-call-camera"
+          aria-pressed="true"
+          aria-label="Turn camera off"
+          title="Turn camera off"
+        >
+          <Icon name="video" size={18} class="icon icon-cam" />
+          <Icon name="video-off" size={18} class="icon icon-cam-off hidden" />
         </button>
         <button
           type="button"

@@ -1,5 +1,5 @@
-// Voice call audio preferences: devices, browser audio processing, the Opus
-// send bitrate, playback volume, and the ring sound. Stored per browser in
+// Call preferences: devices (microphone, speakers, camera), browser audio
+// processing, the Opus send bitrate, playback volume, and the ring sound. Stored per browser in
 // localStorage; nothing here is sent to the server.
 
 export interface CallAudioSettings {
@@ -16,6 +16,8 @@ export interface CallAudioSettings {
   volume: number;
   /** Play the ring tone for incoming calls. */
   ringtone: boolean;
+  /** `deviceId` of the camera for video calls; "" is the default. */
+  cameraId: string;
 }
 
 export const CALL_SETTINGS_KEY = "ircd-webirc-call-settings";
@@ -32,6 +34,7 @@ export const DEFAULT_CALL_SETTINGS: CallAudioSettings = {
   bitrate: 0,
   volume: 1,
   ringtone: true,
+  cameraId: "",
 };
 
 /** Validate stored or user-supplied values; anything invalid gets the default. */
@@ -56,6 +59,7 @@ export function normalizeCallSettings(raw: unknown): CallAudioSettings {
     bitrate,
     volume,
     ringtone: flag(r.ringtone, d.ringtone),
+    cameraId: id(r.cameraId),
   };
 }
 
@@ -89,6 +93,29 @@ export function audioConstraints(s: CallAudioSettings): MediaTrackConstraints {
   };
   if (s.inputId) c.deviceId = { ideal: s.inputId };
   return c;
+}
+
+/**
+ * getUserMedia video constraints for `s`: the chosen camera (`ideal`, so an
+ * unplugged one falls back to the default), aiming at 720p and 30 frames per
+ * second without requiring them, so any camera works.
+ */
+export function videoConstraints(s: CallAudioSettings): MediaTrackConstraints {
+  const c: MediaTrackConstraints = {
+    width: { ideal: 1280 },
+    height: { ideal: 720 },
+    frameRate: { ideal: 30, max: 30 },
+  };
+  if (s.cameraId) c.deviceId = { ideal: s.cameraId };
+  return c;
+}
+
+/** Whether changing from `a` to `b` needs a new camera track. */
+export function needsNewCamera(
+  a: CallAudioSettings,
+  b: CallAudioSettings,
+): boolean {
+  return a.cameraId !== b.cameraId;
 }
 
 /** Whether changing from `a` to `b` needs a new microphone track. */

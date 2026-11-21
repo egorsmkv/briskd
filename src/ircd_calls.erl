@@ -1,6 +1,6 @@
 -module(ircd_calls).
 -moduledoc """
-User-to-user voice calls relayed through [rtpengine](https://github.com/sipwise/rtpengine)
+User-to-user voice and video calls relayed through [rtpengine](https://github.com/sipwise/rtpengine)
 (the `calls` configuration key, vendor capability `egorsmkv.github.io/calls`).
 
 This is a server extension, not an IRC or IRCv3 specification. Clients that
@@ -100,12 +100,25 @@ enabled() ->
 
 -doc """
 Value of the `egorsmkv.github.io/calls` capability: protocol version, ring
-timeout, and `hold` (the server relays `HOLD` and `RESUME`).
+timeout, `hold` (the server relays `HOLD` and `RESUME`), and `video` when
+video calls are allowed (`calls.video`, on by default).
 """.
 -spec cap_value() -> binary().
 cap_value() ->
-    #{calls := #{ring_timeout := Ring}} = ircd_config:current(),
-    <<"v=1,ring=", (integer_to_binary(Ring))/binary, ",hold">>.
+    #{calls := #{ring_timeout := Ring} = Calls} = ircd_config:current(),
+    Video =
+        case maps:get(video, Calls, false) of
+            true -> <<",video">>;
+            false -> <<>>
+        end,
+    <<"v=1,ring=", (integer_to_binary(Ring))/binary, ",hold", Video/binary>>.
+
+%% Whether descriptions may carry video (`calls.video`).
+video_enabled() ->
+    case ircd_config:current() of
+        #{calls := #{video := true}} -> true;
+        _ -> false
+    end.
 
 -doc """
 Handle `CALL` from a registered local client. Runs in `m:ircd_state`.
@@ -670,7 +683,7 @@ maybe_complete(Key, #{total := Total, next := Next} = Entry, #{chunks := Chunks}
     State1 = State#{chunks := cancel_assembly(Entry, Chunks, Key)},
     Base64 = iolist_to_binary(lists:reverse(maps:get(parts, Entry))),
     {Pid, Token, Kind} = Key,
-    case ircd_call_proto:decode_sdp(Base64) of
+    case ircd_call_proto:decode_sdp(Base64, video_enabled()) of
         {ok, Sdp} when Kind =:= offer ->
             start_call(Pid, maps:get(callee, Entry), Token, Sdp, State1);
         {ok, Sdp} ->
@@ -732,7 +745,13 @@ start_call(Caller, Callee, Token, Sdp, #{busy := Busy, server := Server} = State
                 timer_ref => undefined,
                 monitors => [monitor(process, P) || P <- [Caller, Callee], is_pid(P)]
             },
-            logger:info(#{event => call_started, call => Id, mode => Mode, remote => remote(Call)}),
+            logger:info(#{
+                event => call_started,
+                call => Id,
+                mode => Mode,
+                remote => remote(Call),
+                video => ircd_call_proto:has_video(Sdp)
+            }),
             State1 = put_call(Call, State),
             case Mode of
                 anchor ->

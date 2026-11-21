@@ -12,7 +12,7 @@ import secrets
 import socket
 
 from aiortc import RTCPeerConnection, RTCSessionDescription
-from aiortc.mediastreams import AudioStreamTrack
+from aiortc.mediastreams import AudioStreamTrack, VideoStreamTrack
 from av import AudioFrame
 
 HOST, PORT = os.environ.get("CALLS_IRC", "127.0.0.1:6667").split(":")
@@ -99,11 +99,14 @@ class Irc:
             self.send(f"CALL {kind} {nick} {token} {i} {len(chunks)} :{chunk}")
 
 
-def counting_peer(freq):
-    """A peer connection sending a tone and counting non-silent received frames."""
+def counting_peer(freq, video=False):
+    """A peer connection sending a tone (and, with `video`, generated video
+    frames), counting non-silent audio frames and video frames received."""
     pc = RTCPeerConnection()
     pc.addTrack(Tone(freq))
-    received = {"frames": 0, "loud": 0}
+    if video:
+        pc.addTrack(VideoStreamTrack())
+    received = {"frames": 0, "loud": 0, "video": 0, "width": 0}
 
     @pc.on("track")
     def on_track(track):
@@ -113,6 +116,10 @@ def counting_peer(freq):
                     frame = await track.recv()
                 except Exception:
                     return
+                if track.kind == "video":
+                    received["video"] += 1
+                    received["width"] = frame.width
+                    continue
                 received["frames"] += 1
                 if any(bytes(frame.planes[0])):
                     received["loud"] += 1
@@ -204,6 +211,61 @@ async def call_through_rtpengine():
         alice.send(f"CALL HANGUP bob {token} :normal")
         await bob.expect(lambda l: f"CALL HANGUP bob {token} :normal" in l)
         # ...and after the hangup the server's NG delete has released it.
+        await until_released()
+    finally:
+        await pc_a.close()
+        await pc_b.close()
+
+
+def test_video_call_through_rtpengine():
+    asyncio.run(video_call_through_rtpengine())
+
+
+async def video_call_through_rtpengine():
+    """Audio and video in one call: the description keeps both sections
+    through rtpengine, and both media arrive on each side."""
+    alice = await Irc.connect("valice")
+    bob = await Irc.connect("vbob")
+    # The capability advertises video calls.
+    token = secrets.token_hex(8)
+    pc_a, got_a = counting_peer(440, video=True)
+    pc_b, got_b = counting_peer(660, video=True)
+    try:
+        await pc_a.setLocalDescription(await pc_a.createOffer())
+        offer_sdp = pc_a.localDescription.sdp
+        assert "m=video" in offer_sdp
+        alice.send_sdp("OFFER", "vbob", token, offer_sdp)
+
+        sender, offer = await bob.receive_sdp("OFFER", token)
+        assert sender == "valice"
+        assert "m=audio" in offer and "m=video" in offer, offer
+        assert own_ip() not in offer
+        bob.send(f"CALL RINGING valice {token}")
+
+        await pc_b.setRemoteDescription(RTCSessionDescription(offer, "offer"))
+        await pc_b.setLocalDescription(await pc_b.createAnswer())
+        bob.send_sdp("ANSWER", "valice", token, pc_b.localDescription.sdp)
+
+        sender, answer = await alice.receive_sdp("ANSWER", token)
+        assert "m=video" in answer, answer
+        assert own_ip() not in answer
+        await pc_a.setRemoteDescription(RTCSessionDescription(answer, "answer"))
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 30
+        while loop.time() < deadline and (
+            min(got_a["loud"], got_b["loud"]) < 100 or min(got_a["video"], got_b["video"]) < 30
+        ):
+            await asyncio.sleep(0.2)
+        print("received", got_a, got_b)
+        assert pc_a.connectionState == "connected"
+        assert pc_b.connectionState == "connected"
+        assert got_a["loud"] >= 100 and got_b["loud"] >= 100, (got_a, got_b)
+        assert got_a["video"] >= 30 and got_b["video"] >= 30, (got_a, got_b)
+        assert got_a["width"] > 0 and got_b["width"] > 0
+
+        alice.send(f"CALL HANGUP vbob {token} :normal")
+        await bob.expect(lambda l: f"CALL HANGUP vbob {token} :normal" in l)
         await until_released()
     finally:
         await pc_a.close()

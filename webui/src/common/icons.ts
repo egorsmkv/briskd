@@ -92,6 +92,35 @@ export const ICONS = {
     ["circle", { cx: "12", cy: "12", r: "4" }],
     ["path", { d: "M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-3.92 7.94" }],
   ],
+  video: [
+    ["polygon", { points: "23 7 16 12 23 17 23 7" }],
+    ["rect", { x: "1", y: "5", width: "15", height: "14", rx: "2" }],
+  ],
+  "video-off": [
+    [
+      "path",
+      {
+        d: "M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2m5.66 0H14a2 2 0 0 1 2 2v3.34l1 1L23 7v10",
+      },
+    ],
+    ["line", { x1: "1", y1: "1", x2: "23", y2: "23" }],
+  ],
+  maximize: [
+    [
+      "path",
+      {
+        d: "M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3",
+      },
+    ],
+  ],
+  minimize: [
+    [
+      "path",
+      {
+        d: "M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3",
+      },
+    ],
+  ],
 } satisfies Record<string, Shape[]>;
 
 export type IconName = keyof typeof ICONS;

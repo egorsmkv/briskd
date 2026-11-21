@@ -33,10 +33,10 @@ validation_test() ->
     ?assertNot(ircd_call_proto:valid_token(<<"has-dash1">>)),
     ?assertNot(ircd_call_proto:valid_token(binary:copy(<<"a">>, 33))),
     ?assertEqual({ok, 1, 1}, ircd_call_proto:parse_part(<<"1">>, <<"1">>)),
-    ?assertEqual({ok, 40, 40}, ircd_call_proto:parse_part(<<"40">>, <<"40">>)),
+    ?assertEqual({ok, 82, 82}, ircd_call_proto:parse_part(<<"82">>, <<"82">>)),
     ?assertEqual(error, ircd_call_proto:parse_part(<<"0">>, <<"3">>)),
     ?assertEqual(error, ircd_call_proto:parse_part(<<"4">>, <<"3">>)),
-    ?assertEqual(error, ircd_call_proto:parse_part(<<"1">>, <<"41">>)),
+    ?assertEqual(error, ircd_call_proto:parse_part(<<"1">>, <<"83">>)),
     ?assertEqual(error, ircd_call_proto:parse_part(<<"x">>, <<"1">>)),
     ?assert(ircd_call_proto:valid_chunk(<<"dj0wDQo=">>)),
     ?assertNot(ircd_call_proto:valid_chunk(<<"not base64!">>)),
@@ -53,9 +53,27 @@ sdp_test() ->
     ),
     Mixed = <<Audio/binary, "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n">>,
     ?assertEqual({error, not_audio}, ircd_call_proto:decode_sdp(base64:encode(Mixed))),
+    %% Video calls: one video section next to audio, when allowed.
+    ?assertEqual({ok, Mixed}, ircd_call_proto:decode_sdp(base64:encode(Mixed), true)),
+    ?assertEqual({error, not_audio}, ircd_call_proto:decode_sdp(base64:encode(Mixed), false)),
+    ?assert(ircd_call_proto:has_video(Mixed)),
+    ?assertNot(ircd_call_proto:has_video(Audio)),
+    TwoVideo = <<Mixed/binary, "m=video 9 UDP/TLS/RTP/SAVPF 97\r\n">>,
+    ?assertEqual(
+        {error, too_many_video}, ircd_call_proto:decode_sdp(base64:encode(TwoVideo), true)
+    ),
+    %% Video alone, or another media type, is never a call.
+    ?assertEqual(
+        {error, not_audio}, ircd_call_proto:decode_sdp(base64:encode(sdp(<<"video">>)), true)
+    ),
+    Data = <<Mixed/binary, "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n">>,
+    ?assertEqual({error, not_audio}, ircd_call_proto:decode_sdp(base64:encode(Data), true)),
+    %% Up to 24 KiB: a long video offer fits.
+    Long24 = <<Mixed/binary, (binary:copy(<<"a=x\r\n">>, 4000))/binary>>,
+    ?assertEqual({ok, Long24}, ircd_call_proto:decode_sdp(base64:encode(Long24), true)),
     ?assertEqual({error, invalid_sdp}, ircd_call_proto:decode_sdp(base64:encode(<<"hello">>))),
     ?assertEqual({error, invalid_base64}, ircd_call_proto:decode_sdp(<<"!!">>)),
-    Big = <<Audio/binary, (binary:copy(<<"a=x\r\n">>, 3000))/binary>>,
+    Big = <<Audio/binary, (binary:copy(<<"a=x\r\n">>, 5000))/binary>>,
     ?assertEqual({error, too_large}, ircd_call_proto:decode_sdp(base64:encode(Big))),
     %% Chunks are at most 400 characters and join back to the description.
     Long = <<Audio/binary, (binary:copy(<<"a=ice-candidate-padding\r\n">>, 100))/binary>>,

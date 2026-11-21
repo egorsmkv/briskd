@@ -91,6 +91,7 @@ export async function refreshCallDevices(): Promise<void> {
   }
   const inputs = devices.filter((d) => d.kind === "audioinput");
   const outputs = devices.filter((d) => d.kind === "audiooutput");
+  const cameras = devices.filter((d) => d.kind === "videoinput");
   fillDeviceSelect(
     $<HTMLSelectElement>("opt-call-input"),
     inputs,
@@ -100,6 +101,16 @@ export async function refreshCallDevices(): Promise<void> {
     $<HTMLSelectElement>("opt-call-output"),
     outputs,
     S.callSettings.outputId,
+  );
+  fillDeviceSelect(
+    $<HTMLSelectElement>("opt-call-camera"),
+    cameras,
+    S.callSettings.cameraId,
+  );
+  // Only when the server offers video calls and this browser has a camera.
+  $("row-call-camera").classList.toggle(
+    "hidden",
+    !calls.videoSupported || cameras.length === 0,
   );
   // Labels are empty until the page has been granted microphone access.
   const unlabelled = devices.length > 0 &&
@@ -273,6 +284,9 @@ export function init(): void {
 
   $<HTMLSelectElement>("opt-call-output").onchange = (ev) =>
     updateCallSettings({ outputId: (ev.target as HTMLSelectElement).value });
+
+  $<HTMLSelectElement>("opt-call-camera").onchange = (ev) =>
+    updateCallSettings({ cameraId: (ev.target as HTMLSelectElement).value });
 
   $<HTMLInputElement>("opt-call-volume").oninput = (ev) => {
     const volume = Number((ev.target as HTMLInputElement).value) / 100;

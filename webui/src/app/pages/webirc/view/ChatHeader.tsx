@@ -90,6 +90,16 @@ export function ChatHeader() {
               </svg>
               <span class="btn-label" data-i18n="call.button">Call</span>
             </button>
+            <button
+              type="button"
+              class="ghost small icon-mobile btn-call hidden"
+              id="btn-video-call"
+              aria-label="Video call"
+              title="Video call"
+            >
+              <Icon name="video" size={15} />
+              <span class="btn-label" data-i18n="call.video_button">Video</span>
+            </button>
           </div>
         </div>
         <div class="head-right">

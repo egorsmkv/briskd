@@ -243,7 +243,8 @@ The module also provides `secret_match/2` for comparing configured passwords.
         max_duration := 0..86400,
         max_calls := 1..10000,
         calls_per_minute := 1..120,
-        require_account := boolean()
+        require_account := boolean(),
+        video := boolean()
     }.
 
 -type features() :: #{
@@ -1603,7 +1604,9 @@ calls(Map) when is_map(Map) ->
         ),
         require_account => boolean_setting(
             require_account, maps:get(<<"require_account">>, Map, false)
-        )
+        ),
+        %% Video calls: a description may carry one video section.
+        video => boolean_setting(video, maps:get(<<"video">>, Map, true))
     };
 calls(Value) ->
     erlang:error({invalid_calls, Value}).

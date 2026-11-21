@@ -3,9 +3,11 @@ import {
   audioConstraints,
   DEFAULT_CALL_SETTINGS,
   meterLevel,
+  needsNewCamera,
   needsNewTrack,
   normalizeCallSettings,
   toneWav,
+  videoConstraints,
 } from "./call_settings.ts";
 
 function assert(cond: boolean, msg: string): void {
@@ -96,4 +98,20 @@ Deno.test("hold music loops over four chords with a bass note per chord", async 
     "loops after 4 chords of 8 steps",
   );
   assert(holdNotes(8).melody !== holdNotes(0).melody, "chord changes");
+});
+
+Deno.test("camera preference and video constraints", () => {
+  assert(normalizeCallSettings({}).cameraId === "", "default camera");
+  assert(
+    normalizeCallSettings({ cameraId: "cam1" }).cameraId === "cam1",
+    "kept",
+  );
+  assert(normalizeCallSettings({ cameraId: 5 }).cameraId === "", "invalid id");
+  const base = normalizeCallSettings({});
+  const c = videoConstraints({ ...base, cameraId: "cam1" });
+  assert(JSON.stringify(c.deviceId) === '{"ideal":"cam1"}', "ideal device");
+  assert(JSON.stringify(c.width) === '{"ideal":1280}', "720p target");
+  assert(videoConstraints(base).deviceId === undefined, "default device");
+  assert(needsNewCamera(base, { ...base, cameraId: "cam1" }), "camera change");
+  assert(!needsNewCamera(base, { ...base, volume: 0.5 }), "other change");
 });

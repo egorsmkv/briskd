@@ -55,6 +55,13 @@ export const COMMANDS: CommandSpec[] = [
   { name: "search", args: "[words]", desc: "cmd.search", needs: "search" },
   { name: "meta", args: "set|clear|list …", desc: "cmd.meta" },
   { name: "call", args: "[nick]", desc: "cmd.call", needs: "calls" },
+  {
+    name: "videocall",
+    aliases: ["vcall"],
+    args: "[nick]",
+    desc: "cmd.videocall",
+    needs: "calls",
+  },
   { name: "hangup", desc: "cmd.hangup", needs: "calls" },
   {
     name: "e2ee",

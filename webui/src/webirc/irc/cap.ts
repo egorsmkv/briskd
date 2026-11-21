@@ -45,8 +45,9 @@ export function handleCap(
         offered.push(capName);
         if (!S.advertisedCaps.includes(capName)) S.advertisedCaps.push(capName);
         if (capName === CALLS_CAP) {
-          calls.holdSupported = eq !== -1 &&
-            tok.slice(eq + 1).split(",").includes("hold");
+          const flags = eq === -1 ? [] : tok.slice(eq + 1).split(",");
+          calls.holdSupported = flags.includes("hold");
+          calls.videoSupported = flags.includes("video");
         }
         if (capName === MULTILINE_CAP) {
           S.multilineLimits = eq === -1

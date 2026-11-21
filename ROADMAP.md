@@ -297,7 +297,7 @@ always-on bouncer details, and Sable's PostgreSQL history server.
 - [x] End-to-end tests with Python clients doing X3DH, the Double Ratchet, and
   Sender Keys against two linked servers (`test/e2ee/run`, in CI).
 
-## Voice calls (server-specific extension)
+## Voice and video calls (server-specific extension)
 
 - [x] `calls` configuration and vendor capability `egorsmkv.github.io/calls`
   ([guide](docs/calls.md)): one-to-one audio calls between local users.
@@ -315,7 +315,14 @@ always-on bouncer details, and Sable's PostgreSQL history server.
   in its rtpengine and the callee's server relays; quits, kills, and
   netsplits end the call and nick changes keep it (`ircd_call_link_tests`,
   two linked server processes).
-- [ ] Group calls and video.
+- [x] One-to-one video calls (`calls.video`, `video` in the capability value):
+  one video section next to the audio, 24 KiB descriptions, relayed by
+  rtpengine without transcoding; WebIRC video stage with camera on/off
+  (no renegotiation), answering with or without video, hold, minimize, full
+  screen, camera choice, and `/videocall` (aiortc audio+video test through
+  rtpengine, browser call manager tests).
+- [ ] Group calls (needs a selective forwarding unit, not rtpengine's
+  two-party relay).
 
 ## Message search (server-specific extension)
 

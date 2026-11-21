@@ -22,7 +22,7 @@ the [roadmap](ROADMAP.md), plus the IRCv3 specifications on
 - Server-to-server links, including bursts, multi-hop routing, invitations,
   and netsplit cleanup.
 - Mnesia disk-copy tables, with persistence for WHOWAS history and safe-channel state.
-- Optional one-to-one voice calls in WebIRC, relayed through rtpengine
+- Optional one-to-one voice and video calls in WebIRC, relayed through rtpengine
   ([guide](docs/calls.md)).
 - Optional full-text message search over stored history, through a Tantivy
   service, in IRC (`SEARCH`) and WebIRC ([guide](docs/search.md)).

@@ -226,10 +226,14 @@ Python clients that do X3DH, the Double Ratchet, and Sender Keys against them
 GitHub Actions builds the development image from the [Dockerfile](https://github.com/egorsmkv/irc-server/blob/main/Dockerfile)
 and runs `just format-check`, `just lint` and `just eqwalize` (ELP),
 `just test-webui`, and `just test` in that image. The image pins the same
-OTP, Rebar3, `just`, Deno, and ELP versions as local development. Three more jobs run
-`test/e2ee/run`, the end-to-end encryption tests on two linked servers,
-`test/calls/run`, the voice call test with rtpengine and WebRTC clients, and
-`test/webui/run`, WebIRC in a browser in light and dark themes.
+OTP, Rebar3, `just`, Deno, and ELP versions as local development. More jobs
+run the search service's checks (`cargo fmt`, `clippy`, and `cargo test` in
+`search/`, and its image build), `test/e2ee/run`, the end-to-end encryption
+tests on two linked servers, `test/calls/run`, the voice and video call tests
+with rtpengine and WebRTC clients, `test/calls/browser/run`, a WebIRC video
+call between two headless Chromium tabs through rtpengine, and
+`test/webui/run`, WebIRC in a browser in light and dark themes. The browser
+jobs keep their screenshots as build artifacts.
 
 ## Building the documentation
 

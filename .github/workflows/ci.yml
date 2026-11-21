@@ -70,6 +70,25 @@ jobs:
       - name: Run test/calls/run
         run: test/calls/run
 
+  calls-browser:
+    name: Video calls in a browser (WebIRC, rtpengine, headless Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Run test/calls/browser/run
+        run: test/calls/browser/run
+
+      - name: Keep the screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: calls-browser-screenshots
+          path: test/calls/browser/shots/
+          if-no-files-found: ignore
+
   webui:
     name: WebIRC in a browser (light and dark, contrast and page errors)
     runs-on: ubuntu-latest
