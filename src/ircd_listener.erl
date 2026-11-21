@@ -219,6 +219,7 @@ handoff(Kind, Socket) ->
         {ok, Pid} when is_pid(Pid) ->
             case Module:controlling_process(Socket, Pid) of
                 ok ->
+                    ok = ircd_stats:count_connection(),
                     Pid ! activate;
                 {error, Reason} ->
                     logger:warning(#{
@@ -228,6 +229,7 @@ handoff(Kind, Socket) ->
                     Module:close(Socket)
             end;
         {error, max_clients} ->
+            ok = ircd_stats:count_rejected(),
             logger:warning(#{event => session_rejected, peer => Peer, reason => max_clients}),
             Module:close(Socket);
         {error, Reason} ->

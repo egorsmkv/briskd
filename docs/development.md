@@ -163,7 +163,7 @@ settings the server puts in the HTML shell (`priv/webui/app.html`).
 | Path | Contents |
 | --- | --- |
 | `app/pages/auth/` | Sign-up, account verification, and password recovery pages; `app/components/auth.tsx` holds their card, notice, field, and ALTCHA components |
-| `app/pages/admin/` | The admin panel: tabs, tables, dialogs, toasts, and a typed store over `/api/overview`, `/api/media`, `/api/action` |
+| `app/pages/admin/` | The admin panel: tabs, tables, dialogs, toasts, and a typed store over `/api/overview`, `/api/media`, `/api/action`; the Stats tab's line charts (`LineChart.tsx`, helpers in `stats_format.ts`) over `/api/stats` |
 | `app/pages/webirc/` | The chat page: typed markup in `view/`; `webirc/boot.ts` then starts the WebIRC controllers below in a fixed order |
 
 | Module | Contents |

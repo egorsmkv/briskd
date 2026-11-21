@@ -4,6 +4,7 @@
 /** The admin tabs in display order. */
 export const TABS = [
   "overview",
+  "stats",
   "clients",
   "channels",
   "links",

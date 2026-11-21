@@ -1,6 +1,7 @@
 // Admin HTTP API: payload types of GET /api/overview and GET /api/media, and
 // POST /api/action. HTTP Basic credentials are the browser's cached ones.
 import { type JsonResult, postJson } from "../../../common/dom.ts";
+import type { StatsPayload } from "./stats_format.ts";
 
 export interface ListenerInfo {
   transport: string;
@@ -178,6 +179,11 @@ async function getText(url: string): Promise<string> {
 /** The raw text of GET /api/overview. */
 export function fetchOverviewText(): Promise<string> {
   return getText("/api/overview");
+}
+
+/** GET /api/stats: the last hour of server samples, one array per metric. */
+export async function fetchStats(): Promise<StatsPayload> {
+  return JSON.parse(await getText("/api/stats")) as StatsPayload;
 }
 
 /** The raw text of GET /api/media. */

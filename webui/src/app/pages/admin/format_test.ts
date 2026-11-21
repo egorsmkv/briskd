@@ -19,6 +19,7 @@ Deno.test("tabFromLocation reads the path, then the hash", () => {
   assertEquals(tabFromLocation("/admin", ""), "overview");
   assertEquals(tabFromLocation("/admin/", ""), "overview");
   assertEquals(tabFromLocation("/admin/clients", ""), "clients");
+  assertEquals(tabFromLocation("/admin/stats", ""), "stats");
   assertEquals(tabFromLocation("/admin/Media/", ""), "media");
   assertEquals(tabFromLocation("/admin/nope", ""), "overview");
   assertEquals(tabFromLocation("/admin", "#dronebl"), "dronebl");

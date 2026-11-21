@@ -39,6 +39,12 @@
   --nick-5: #92400e;
   --nick-6: #b91c1c;
   --nick-7: #4338ca;
+  // Chart series (Stats tab), categorical slots validated for color-vision
+  // deficiency on the light surface; dark themes override them below.
+  --chart-1: #2a78d6;
+  --chart-2: #eb6834;
+  --chart-3: #1baf7a;
+  --chart-4: #eda100;
 }
 
 :root:not([data-theme]),
@@ -94,6 +100,10 @@
   --nick-5: #fbbf24;
   --nick-6: #f87171;
   --nick-7: #a5b4fc;
+  --chart-1: #3987e5;
+  --chart-2: #d95926;
+  --chart-3: #199e70;
+  --chart-4: #c98500;
   --mention-bg: #dc2626;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
 }

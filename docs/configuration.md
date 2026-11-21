@@ -70,6 +70,19 @@ SHA-256 fingerprint is only used by SASL `EXTERNAL`. Server certificate
 handling is unchanged. Port `0` requests an ephemeral port, which is reported
 in the startup log.
 
+## Server statistics in the admin panel
+
+The WebUI admin panel's **Stats** tab charts the last 15 minutes or hour of
+the server: local sessions, registered and remote users, messages and bytes
+per second, accepted and refused connections, the `ircd_state` message
+queue, scheduler utilization, the run queue, and VM memory. `ircd_stats`
+samples every 5 seconds and keeps 720 samples (one hour) in memory, so the
+history starts empty after a restart; `GET /api/stats` returns it for
+signed-in administrators. Sampling reads table sizes and VM statistics only,
+so it keeps working while the state process is saturated. A sustained climb
+of the state queue is the overload signal: see the capacity section of
+[Deployment](deployment.md).
+
 ## Changing features from the admin panel
 
 The WebUI admin panel's **Features & Media** tab changes a set of these

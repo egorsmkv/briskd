@@ -378,7 +378,8 @@ connection_stats(Pid) ->
     end.
 
 -doc """
-Add one message of `Bytes` octets to a connection's sent or received counters.
+Add one message of `Bytes` octets to a connection's sent or received counters,
+and to the server totals of `m:ircd_stats`.
 
 Only the key pairs `sent_messages`/`sent_bytes` and `recv_messages`/`recv_bytes`
 are recognised; any other pair, or a connection without counters, is ignored.
@@ -388,9 +389,14 @@ are recognised; any other pair, or a connection without counters, is ignored.
 ) -> ok.
 update_connection_stats(Pid, MessagesKey, BytesKey, Bytes) ->
     case {MessagesKey, BytesKey} of
-        {sent_messages, sent_bytes} -> update_connection_stats_counter(Pid, 3, 4, Bytes);
-        {recv_messages, recv_bytes} -> update_connection_stats_counter(Pid, 5, 6, Bytes);
-        _ -> ok
+        {sent_messages, sent_bytes} ->
+            ok = ircd_stats:count_traffic(out, 1, Bytes),
+            update_connection_stats_counter(Pid, 3, 4, Bytes);
+        {recv_messages, recv_bytes} ->
+            ok = ircd_stats:count_traffic(in, 1, Bytes),
+            update_connection_stats_counter(Pid, 5, 6, Bytes);
+        _ ->
+            ok
     end.
 
 %% One atomic update. A connection without a row (not counted, or removed

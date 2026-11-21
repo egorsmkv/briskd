@@ -7,6 +7,7 @@ import { overview } from "./store.ts";
 
 const LABELS: Record<Tab, string> = {
   overview: "Overview",
+  stats: "Stats",
   clients: "Clients",
   channels: "Channels",
   links: "Links",

@@ -164,3 +164,14 @@ Deno.test("every custom property a stylesheet uses is defined", async () => {
   }
   assertEquals([...undefinedVars], []);
 });
+
+Deno.test("chart series colors stand out from the dark surface", async () => {
+  const [, dark] = await themes();
+  // Lines and dots need 3:1 against the chart surface (WCAG 1.4.11). Light
+  // slots 3 and 4 (aqua, yellow) sit below it; the Stats charts pair every
+  // series with a legend value and a table view for that case.
+  for (let i = 1; i <= 4; i++) {
+    const ratio = contrast(get(dark, `--chart-${i}`), get(dark, "--surface"));
+    assert(ratio >= 3, `dark: --chart-${i} is ${ratio.toFixed(2)}:1`);
+  }
+});

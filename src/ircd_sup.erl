@@ -19,6 +19,7 @@ restart intensity (one restart in five seconds):
 8. `m:ircd_bots`, the AI assistant bot supervisor, when `bots` is not empty.
    It is `transient`: if it exhausts its own restart intensity it stays down
    instead of restarting the rest of the tree.
+9. `m:ircd_stats`, the statistics sampler behind the admin Stats tab.
 
 With `rest_for_one`, a restart of the state process also restarts every
 session, link, and listener started after it, so no connection outlives the
@@ -85,4 +86,9 @@ init(Config) ->
         }
      || maps:get(bots, Config, []) =/= []
     ],
-    {ok, {#{strategy => rest_for_one}, Children ++ Listeners ++ Certs ++ Ctl ++ Calls ++ Bots}}.
+    %% The statistics sampler for the admin Stats tab, last: it depends on
+    %% nothing after it and its restart affects nothing else.
+    Stats = [#{id => ircd_stats, start => {ircd_stats, start_link, []}}],
+    {ok, {
+        #{strategy => rest_for_one}, Children ++ Listeners ++ Certs ++ Ctl ++ Calls ++ Bots ++ Stats
+    }}.

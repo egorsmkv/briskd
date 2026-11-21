@@ -1,4 +1,5 @@
-// The ircd admin panel (/admin, /admin/<tab>): server overview, clients,
+// The ircd admin panel (/admin, /admin/<tab>): server overview, stats charts
+// (GET /api/stats, fetched while that tab is shown), clients,
 // channels, links, accounts, DroneBL bans, media and feature toggles, and
 // operations. Data comes from GET /api/overview (auto-refreshed every 5 s)
 // and GET /api/media; actions go to POST /api/action.
@@ -24,6 +25,7 @@ import { AccountsTab } from "./AccountsTab.tsx";
 import { DroneblTab } from "./DroneblTab.tsx";
 import { MediaTab } from "./MediaTab.tsx";
 import { OperationsTab } from "./OperationsTab.tsx";
+import { StatsTab } from "./StatsTab.tsx";
 
 /** Auto-refresh period of the overview, in milliseconds. */
 const REFRESH_MS = 5000;
@@ -96,6 +98,9 @@ export default function AdminPage() {
         </div>
         <Panel tab="overview" active={tab} panel={false}>
           <OverviewTab onGoto={select} />
+        </Panel>
+        <Panel tab="stats" active={tab} panel={false}>
+          <StatsTab active={tab === "stats"} />
         </Panel>
         <Panel tab="clients" active={tab}>
           <ClientsTab />

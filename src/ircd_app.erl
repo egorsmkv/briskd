@@ -31,6 +31,7 @@ start(_, _) ->
             Formatter = ircd_log:formatter(maps:get(log_format, Config)),
             ok = logger:update_handler_config(default, formatter, Formatter),
             ok = ircd_log:apply_level(maps:get(level, Config)),
+            ok = ircd_stats:init_counters(),
             case start_mnesia(maps:get(mnesia_dir, Config)) of
                 {ok, StartedMnesia} ->
                     case ircd_sup:start_link(Config) of

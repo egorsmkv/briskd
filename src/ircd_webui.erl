@@ -24,6 +24,8 @@ loads that page's code. The pages:
   password, deletes the account and what it wrote in stored history.
 - `GET /assets/<name>` — the app's scripts (`app.js` and content-hashed
   `chunk-*.js`) and page stylesheets.
+- `GET /api/stats` — the last hour of `m:ircd_stats` samples, one array per
+  metric, for the Stats tab (signed in).
 - `GET /api/overview` — returns combined server stats, clients, channels,
   server links, accounts, and DroneBL status/bans as JSON (signed in).
 - `POST /api/action` — executes an explicitly whitelisted `m:ircd_ctl`
@@ -45,7 +47,7 @@ loads that page's code. The pages:
 
 Security controls:
 
-- The admin routes (`/admin`, `/admin/*`, `/api/overview`, `/api/media`,
+- The admin routes (`/admin`, `/admin/*`, `/api/overview`, `/api/media`, `/api/stats`,
   `/api/action`) require a session from the sign-in page (an `HttpOnly`,
   `SameSite=Strict` cookie) or HTTP Basic credentials, both checked in
   constant time against the active configuration (`m:ircd_webui_auth`), so
@@ -314,7 +316,8 @@ handle_connection(
                         unauthorized when
                             Method =:= <<"GET">>,
                             Path =/= <<"/api/overview">>,
-                            Path =/= <<"/api/media">>
+                            Path =/= <<"/api/media">>,
+                            Path =/= <<"/api/stats">>
                         ->
                             %% A page: go to the sign-in page, then back here.
                             redirect(Socket, login_url(Path));
@@ -345,6 +348,7 @@ admin_path(<<"/admin">>) -> true;
 admin_path(<<"/admin/", _/binary>>) -> true;
 admin_path(<<"/api/overview">>) -> true;
 admin_path(<<"/api/media">>) -> true;
+admin_path(<<"/api/stats">>) -> true;
 admin_path(<<"/api/action">>) -> true;
 admin_path(_) -> false.
 
@@ -1318,6 +1322,7 @@ route(Socket, <<"GET">>, Path, Headers, _Body, Html) when
     Path =:= <<"/admin">>;
     Path =:= <<"/admin/">>;
     Path =:= <<"/admin/overview">>;
+    Path =:= <<"/admin/stats">>;
     Path =:= <<"/admin/clients">>;
     Path =:= <<"/admin/channels">>;
     Path =:= <<"/admin/links">>;
@@ -1350,6 +1355,16 @@ route(Socket, <<"GET">>, <<"/api/overview">>, _Headers, _Body, _Html) ->
         }
     },
     send_json(Socket, 200, <<"OK">>, Payload);
+route(Socket, <<"GET">>, <<"/api/stats">>, _Headers, _Body, _Html) ->
+    try ircd_stats:history() of
+        #{interval_ms := Interval, samples := Samples} ->
+            send_json(Socket, 200, <<"OK">>, #{
+                interval_ms => Interval, metrics => columns(Samples)
+            })
+    catch
+        exit:_ ->
+            send_json(Socket, 503, <<"Service Unavailable">>, #{error => <<"stats_unavailable">>})
+    end;
 route(Socket, <<"GET">>, <<"/api/media">>, _Headers, _Body, _Html) ->
     Config = ircd_config:current_or_empty(),
     send_json(Socket, 200, <<"OK">>, #{
@@ -1568,6 +1583,16 @@ valid_args(Args) when is_list(Args), length(Args) =< 4 ->
     );
 valid_args(_) ->
     false.
+
+%% Samples as one array per metric (oldest first), about half the size of
+%% an array of objects and the shape the charts read.
+columns([]) ->
+    #{};
+columns([First | _] = Samples) ->
+    maps:from_list([
+        {Key, [maps:get(Key, S, null) || S <- Samples]}
+     || Key <- maps:keys(First)
+    ]).
 
 ctl_json(Args) ->
     case ircd_ctl:run(Args ++ [<<"--json">>]) of
