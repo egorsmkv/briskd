@@ -3,6 +3,8 @@
 # The development server on port 6667 is left running.
 set -eu
 cd "$(dirname "$0")/.."
+# shellcheck disable=SC1091
+. ./script/compose.sh
 
 NAME=briskd-release-bench
 PORT=6668
@@ -14,10 +16,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-docker-compose -f docker-compose.dev.yml exec -T briskd-dev just release
+compose -f docker-compose.dev.yml exec -T briskd-dev just release
 
 docker rm -f "$NAME" >/dev/null 2>&1 || true
-docker-compose -f docker-compose.dev.yml run -d --name "$NAME" --no-deps -T \
+compose -f docker-compose.dev.yml run -d --name "$NAME" --no-deps -T \
     -p "${PORT}:6668" \
     -e "BRISKD_CONFIG=${CONFIG}" \
     -e "BRISKD_COOKIE=bench" \

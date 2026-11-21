@@ -19,7 +19,8 @@
 # After each successful run the certificate and key are copied to /certs as
 # fullchain.pem (0644) and privkey.pem (0640, owned by briskd). Each file is
 # written to a temporary name and renamed, so briskd never reads half a file;
-# briskd_certs reloads them within tls_reload_interval seconds.
+# briskd_certs reloads them within tls_reload_interval seconds. A failed
+# publish is retried like a failed `lego run`.
 set -eu
 
 : "${LEGO_DOMAINS:?set LEGO_DOMAINS in lego.env}"
@@ -41,6 +42,18 @@ CHECK_INTERVAL="${CHECK_INTERVAL:-43200}"
 RETRY_INTERVAL="${RETRY_INTERVAL:-3600}"
 BRISKD_UID="${BRISKD_UID:-10001}"
 BRISKD_GID="${BRISKD_GID:-10001}"
+positive_int() {
+    case $2 in
+        '' | *[!0-9]* | 0)
+            echo "lego.sh: $1 must be a positive integer" >&2
+            exit 1
+            ;;
+    esac
+}
+positive_int CHECK_INTERVAL "$CHECK_INTERVAL"
+positive_int RETRY_INTERVAL "$RETRY_INTERVAL"
+positive_int BRISKD_UID "$BRISKD_UID"
+positive_int BRISKD_GID "$BRISKD_GID"
 
 publish() {
     install -m 0640 -o "$BRISKD_UID" -g "$BRISKD_GID" "$KEY" "$OUT/.privkey.pem.tmp"
@@ -51,12 +64,11 @@ publish() {
 
 mkdir -p "$OUT"
 while true; do
-    if /lego run; then
-        publish
+    if /lego run && publish; then
         echo "lego.sh: certificate for $LEGO_DOMAINS published; next check in ${CHECK_INTERVAL}s"
         sleep "$CHECK_INTERVAL"
     else
-        echo "lego.sh: lego run failed; retrying in ${RETRY_INTERVAL}s" >&2
+        echo "lego.sh: lego run or publish failed; retrying in ${RETRY_INTERVAL}s" >&2
         sleep "$RETRY_INTERVAL"
     fi
 done

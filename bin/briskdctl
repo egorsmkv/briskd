@@ -1,5 +1,5 @@
 #!/bin/sh
-# DevOps CLI for controlling and inspecting an briskd server.
+# DevOps CLI for controlling and inspecting a briskd server.
 #
 # Talks to the running server over its local Unix domain control socket
 # ($BRISKD_CTL_SOCKET, or <mnesia_dir>/briskdctl.sock from $BRISKD_CONFIG).
@@ -10,9 +10,12 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 ROOT_DIR="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 
 find_erl() {
+    # A release ships its own ERTS. Prefer that over whatever `erl` is on
+    # PATH, so the emulator matches the beams in the release.
     for candidate in \
         "$ROOT_DIR"/erts-*/bin/erl \
-        /opt/briskd/erts-*/bin/erl
+        /opt/briskd/erts-*/bin/erl \
+        "$ROOT_DIR"/_build/prod/rel/briskd/erts-*/bin/erl
     do
         if [ -x "$candidate" ]; then
             printf '%s\n' "$candidate"
@@ -23,12 +26,6 @@ find_erl() {
         command -v erl
         return 0
     fi
-    for candidate in "$ROOT_DIR"/_build/prod/rel/briskd/erts-*/bin/erl; do
-        if [ -x "$candidate" ]; then
-            printf '%s\n' "$candidate"
-            return 0
-        fi
-    done
     return 1
 }
 

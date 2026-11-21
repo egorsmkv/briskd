@@ -2,13 +2,14 @@
 # Run the E2EE end-to-end tests: two linked briskd servers and Python clients.
 set -eu
 cd "$(dirname "$0")"
-if docker compose version >/dev/null 2>&1; then
-    compose="docker compose"
-else
-    compose="docker-compose"
-fi
+# shellcheck disable=SC1091
+. "$(pwd)/../../script/compose.sh"
+
+cleanup() {
+    compose -p briskd-e2ee -f docker-compose.yml down -v >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
 status=0
-$compose -p briskd-e2ee -f docker-compose.yml up --build --abort-on-container-exit \
+compose -p briskd-e2ee -f docker-compose.yml up --build --abort-on-container-exit \
     --exit-code-from tests || status=$?
-$compose -p briskd-e2ee -f docker-compose.yml down -v >/dev/null 2>&1 || true
-exit $status
+exit "$status"

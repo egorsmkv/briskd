@@ -16,6 +16,8 @@
 # these (for example --pace 0 to see the limit disconnect the client).
 set -eu
 cd "$(dirname "$0")/.."
+# shellcheck disable=SC1091
+. ./script/compose.sh
 
 NAME=briskd-prod-bench
 VOLUME=briskd-prod-bench-data
@@ -35,7 +37,7 @@ cleanup() {
 trap cleanup EXIT
 
 # The compose file requires BRISKD_COOKIE; the build does not use it.
-BRISKD_COOKIE=bench-build docker-compose -f docker-compose.prod.yml build briskd
+BRISKD_COOKIE=bench-build compose -f docker-compose.prod.yml build briskd
 
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker volume rm "$VOLUME" >/dev/null 2>&1 || true

@@ -12,6 +12,8 @@
 # briskd:latest from this tree (for a before/after comparison).
 set -eu
 cd "$(dirname "$0")/.."
+# shellcheck disable=SC1091
+. ./script/compose.sh
 
 NAME=briskd-memory-bench
 VOLUME=briskd-memory-bench-data
@@ -26,7 +28,7 @@ trap cleanup EXIT
 
 IMAGE=${MEMORY_BENCH_IMAGE:-}
 if [ -z "$IMAGE" ]; then
-    BRISKD_COOKIE=bench-build docker-compose -f docker-compose.prod.yml build briskd
+    BRISKD_COOKIE=bench-build compose -f docker-compose.prod.yml build briskd
     IMAGE=briskd:latest
 fi
 

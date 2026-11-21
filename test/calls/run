@@ -2,13 +2,14 @@
 # Run the voice-call end-to-end test: briskd, rtpengine, and two WebRTC clients.
 set -eu
 cd "$(dirname "$0")"
-if docker compose version >/dev/null 2>&1; then
-    compose="docker compose"
-else
-    compose="docker-compose"
-fi
+# shellcheck disable=SC1091
+. "$(pwd)/../../script/compose.sh"
+
+cleanup() {
+    compose -p briskd-calls -f docker-compose.yml down -v >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
 status=0
-$compose -p briskd-calls -f docker-compose.yml up --build --abort-on-container-exit \
+compose -p briskd-calls -f docker-compose.yml up --build --abort-on-container-exit \
     --exit-code-from tests || status=$?
-$compose -p briskd-calls -f docker-compose.yml down -v >/dev/null 2>&1 || true
-exit $status
+exit "$status"
