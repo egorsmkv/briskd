@@ -13,6 +13,7 @@ FROM debian:bookworm-slim
 RUN useradd --system --uid 10001 --home /data search \
     && mkdir -p /data/index && chown -R search /data
 COPY --from=build /src/target/release/ircd-search /usr/local/bin/ircd-search
+COPY LICENSE /usr/share/doc/ircd-search/LICENSE
 USER search
 ENV SEARCH_ADDR=0.0.0.0:7700 SEARCH_DIR=/data/index
 EXPOSE 7700

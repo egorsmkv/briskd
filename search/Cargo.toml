@@ -3,7 +3,7 @@ name = "ircd-search"
 version = "0.1.0"
 edition = "2024"
 description = "Tantivy message index for ircd's egorsmkv.github.io/search extension"
-license = "MIT"
+license = "Apache-2.0"
 publish = false
 
 [dependencies]
