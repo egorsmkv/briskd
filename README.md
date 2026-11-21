@@ -1,5 +1,7 @@
 # ircd
 
+[![CI](https://github.com/egorsmkv/irc-server/actions/workflows/ci.yml/badge.svg)](https://github.com/egorsmkv/irc-server/actions/workflows/ci.yml)
+
 An IRC server written in Erlang/OTP, with TCP, TLS, and WebSocket listeners,
 Mnesia-backed state, and server links that carry bursts, multi-hop routing,
 and netsplit cleanup.
