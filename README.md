@@ -99,13 +99,9 @@ API documentation, built from the module docs with ex_doc, is published at
 
 ## Benchmarks
 
-`bench/run --oper <name>:<password>` measures latency and throughput for
-every client command family and reports the server's own statistics for the
-run (`STATS m` per-command counts and bytes, uptime, LUSERS, container CPU
-and memory); `bench/prod` runs it and the paced load test against the
-production image. The bench is a [uv](https://docs.astral.sh/uv/) project
-(`bench/pyproject.toml`, `bench/uv.lock`). See
-[bench/README.md](bench/README.md).
+`bench/run` measures a live development server, and `bench/prod` measures
+the production image. Both write a report under `bench/results/`. How to
+run them is in [bench/README.md](bench/README.md).
 
 ## Protocol references
 

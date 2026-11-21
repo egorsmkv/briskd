@@ -80,13 +80,12 @@ init({Kind, Port, #{ip := IP, tls_options := TLSOptions}}) ->
         %% (numerics, then the next line). Without nodelay, Nagle holds each
         %% later send until the client ACKs the first, and delayed ACK makes
         %% that ~40 ms per multi-line reply. bench/traffic.py's command matrix
-        %% measured median p50 41.98 ms without it and 0.85 ms with it
-        %% (bench/results/2026-11-19-commands.md).
+        %% measured median p50 41.98 ms without it and 0.85 ms with it.
         {nodelay, true},
         %% The driver keeps a read buffer of this size for every socket.
         %% The default (9216 bytes here) was over half of each idle
-        %% client's memory (bench/results/2026-11-21-memory-before.md: 16.6
-        %% KiB per client, ~9 KiB of it this buffer). An IRC line is at most
+        %% client's memory (16.6 KiB per client, ~9 KiB of it this buffer).
+        %% An IRC line is at most
         %% 512 bytes plus an optional tag section, and longer input is read
         %% in several pieces and joined by the session's line buffer.
         {buffer, ?RECV_BUFFER},
@@ -94,8 +93,7 @@ init({Kind, Port, #{ip := IP, tls_options := TLSOptions}}) ->
         %% gen_tcp default is 5: with hundreds of clients connecting at once
         %% the queue overflowed, the kernel dropped the attempts, and the
         %% clients' retries (1 s, 3 s, 7 s, ...) made registration take tens of
-        %% seconds or fail (bench/traffic.py high-load phase,
-        %% bench/results/2026-11-21-prod.md). The kernel caps it at
+        %% seconds or fail (bench/traffic.py high-load phase). The kernel caps it at
         %% net.core.somaxconn.
         {backlog, ?LISTEN_BACKLOG},
         {send_timeout, 5000}

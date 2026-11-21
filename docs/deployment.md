@@ -342,11 +342,6 @@ Key operational and security events to index and alert on:
     warning is logged. (With the earlier 5-second default, sessions crashed
     instead, disconnecting their clients and adding work for the busy
     process.)
-  - Measured with `bench/prod` (`bench/traffic.py` high-load phase): 10,000
-    clients in channels of 50 sending a burst of 100,000 messages (4.9
-    million deliveries) are all delivered at about 60,000 deliveries a second
-    with no disconnects; delivery latency grows to tens of seconds during such
-    a burst, and new clients register again about 12 seconds after it.
 - **CPU and spam protection:**
   - `flood` token buckets (`briskd_flood`) cap per-client line rate, message
     fan-out, channel joins, and nickname changes, and rate-limit `REGISTER`

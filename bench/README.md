@@ -113,8 +113,7 @@ each server lists every member of every channel (a server forwards a channel
 message only to servers it knows have members there), and reports how long
 that took. Lower the servers' log level from the development `trace` first:
 at `trace` the synchronous terminal output, not the server, is what gets
-measured. `bench/results/2026-11-21-dev-2node.md` delivered 4,900,000 of
-4,900,000 messages at about 93,000/s across the link.
+measured.
 
 `traffic.py` runs on the standard asyncio event loop. `--loop rsloop` uses
 [rsloop](https://github.com/RustedBytes/rsloop) (a Rust asyncio loop,
@@ -122,17 +121,12 @@ io_uring on Linux 6.1+), pinned to 0.1.69 in `pyproject.toml`. Versions up
 to 0.1.68 lost data: the native reader completed a pending read's Future with
 bytes already taken from its buffer, so a task cancelled after the data
 arrived but before it resumed (an `asyncio.wait_for` timeout in the same
-loop iteration) dropped them. A standalone test lost 2,214 of 200,000 lines
-on 0.1.68 and none on 0.1.69, which returns undelivered bytes to the buffer
-when the awaiting task is cancelled. On the two-server run, rsloop 0.1.69
-(`results/2026-11-21-dev-2node-rsloop.md`) and asyncio
-(`results/2026-11-21-dev-2node.md`) both delivered 4,900,000 of 4,900,000
-messages at about 93,000 to 94,000/s; the server, not the generator, is the
-limit there, and rsloop used more generator CPU (88% of a core against 69%).
-Clients that were "closed before the welcome" in earlier runs were not
-rsloop's doing: back-to-back runs reused each other's nicknames, which the
-server holds for 60 seconds after a quit. Nicknames are now random per run,
-and a client given 433 retries with another. One Python
+loop iteration) dropped them. 0.1.69 returns those bytes to the buffer when
+the awaiting task is cancelled. Clients that were "closed before the
+welcome" in earlier runs were not rsloop's doing: back-to-back runs reused
+each other's nicknames, which the server holds for 60 seconds after a quit.
+Nicknames are now random per run, and a client given 433 retries with
+another. One Python
 process drives every client, so the report states the generator's CPU use
 during the high-load phase: near 100% of a core means the generator, not the
 server, set the pace. The script raises its open-file limit to `--clients`
