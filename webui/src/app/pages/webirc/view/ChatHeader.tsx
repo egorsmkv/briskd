@@ -1,6 +1,7 @@
 // Conversation header: what is open (glyph, title, topic) and its actions
-// (topic, moderation, E2EE, call), then the workspace actions (message
-// search, members, settings, connection).
+// (topic, moderation, call), then the icon actions on the right: end-to-end
+// encryption (an open lock when off, a closed lock when on), message search,
+// members, settings, and the connection.
 // Markup only: the WebIRC controllers (webui/src/webirc/) find these
 // elements by id and wire them when the chat starts. `data-kind` on the
 // header (status, channel, or dm) picks the glyph; the connection dot sits
@@ -68,17 +69,6 @@ export function ChatHeader() {
             </button>
             <button
               type="button"
-              class="ghost small btn-e2ee icon-mobile hidden"
-              id="btn-e2ee"
-              aria-pressed="false"
-              title="Toggle end-to-end encryption for this conversation"
-            >
-              <Icon name="unlock" size={15} class="icon e2ee-off-icon" />
-              <Icon name="lock" size={15} class="icon e2ee-on-icon" />
-              <span class="btn-label" id="btn-e2ee-label">E2EE off</span>
-            </button>
-            <button
-              type="button"
               class="ghost small icon-mobile btn-call hidden"
               id="btn-call"
               aria-label="Voice call"
@@ -104,6 +94,17 @@ export function ChatHeader() {
         </div>
         <div class="head-right">
           <span class="my-nick" id="my-nick" title="Your nickname"></span>
+          <button
+            type="button"
+            class="ghost icon btn-e2ee hidden"
+            id="btn-e2ee"
+            aria-pressed="false"
+            title="Toggle end-to-end encryption for this conversation"
+          >
+            <Icon name="unlock" size={18} class="icon e2ee-off-icon" />
+            <Icon name="lock" size={18} class="icon e2ee-on-icon" />
+            <span class="sr-only" id="btn-e2ee-label">Not encrypted</span>
+          </button>
           <button
             type="button"
             class="ghost icon hidden"

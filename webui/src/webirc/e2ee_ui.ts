@@ -52,6 +52,7 @@ export function updateE2eeUi(): void {
   } else {
     btn.title = on ? t("e2ee.on") : t("e2ee.off");
   }
+  btn.setAttribute("aria-label", btn.title);
   form.classList.toggle("e2ee-active", on);
   inp.placeholder = on
     ? t("ph.msg.e2ee", { target: buf.name })
