@@ -140,6 +140,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "briskd-search"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "log",
+ "serde",
+ "serde_json",
+ "tantivy",
+ "tokio",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -536,17 +548,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "briskd-search"
-version = "0.1.0"
-dependencies = [
- "axum",
- "serde",
- "serde_json",
- "tantivy",
- "tokio",
-]
-
-[[package]]
 name = "itertools"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -602,9 +603,9 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "log"
-version = "0.4.35"
+version = "0.4.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
+checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "lru"

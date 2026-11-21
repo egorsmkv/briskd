@@ -12,9 +12,12 @@
 //! - `SEARCH_DIR`: index directory, default `/data/index`.
 //! - `SEARCH_TOKEN`: when set, every request must carry
 //!   `Authorization: Bearer <token>` (compared in constant time).
+//! - `RUST_LOG`: `error`, `warn`, `info` (default), `debug`, `trace`, or `off`.
+//!   Each log line is one JSON object on stderr.
 
 mod index;
 
+use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -70,11 +73,9 @@ fn error(status: StatusCode, reason: &str) -> Response {
 fn index_error(e: Error) -> Response {
     match e {
         Error::Invalid(what) => error(StatusCode::BAD_REQUEST, what),
-        Error::Index(e) => {
-            eprintln!(
-                "{{\"event\":\"index_error\",\"reason\":{:?}}}",
-                e.to_string()
-            );
+        Error::Index(err) => {
+            let reason = err.to_string();
+            log::error!("index_error reason={reason}");
             error(StatusCode::INTERNAL_SERVER_ERROR, "index")
         }
     }
@@ -146,8 +147,48 @@ async fn shutdown() {
     }
 }
 
+struct StderrLogger;
+
+static STDERR_LOGGER: StderrLogger = StderrLogger;
+
+impl log::Log for StderrLogger {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() <= log::max_level()
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        let line = json!({
+            "level": record.level().as_str().to_ascii_lowercase(),
+            "message": record.args().to_string(),
+        });
+        let mut err = std::io::stderr().lock();
+        let _ = writeln!(err, "{line}");
+    }
+
+    fn flush(&self) {
+        let _ = std::io::stderr().flush();
+    }
+}
+
+fn init_log() {
+    let level = match std::env::var("RUST_LOG").ok().as_deref().map(str::trim) {
+        Some("off") => log::LevelFilter::Off,
+        Some("error") => log::LevelFilter::Error,
+        Some("warn" | "warning") => log::LevelFilter::Warn,
+        Some("debug") => log::LevelFilter::Debug,
+        Some("trace") => log::LevelFilter::Trace,
+        _ => log::LevelFilter::Info,
+    };
+    let _ = log::set_logger(&STDERR_LOGGER);
+    log::set_max_level(level);
+}
+
 #[tokio::main]
 async fn main() {
+    init_log();
     let addr: SocketAddr = std::env::var("SEARCH_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:7700".into())
         .parse()
@@ -159,10 +200,8 @@ async fn main() {
     let docs = index.len();
     let state = Arc::new(AppState { index, token });
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
-    eprintln!(
-        "{{\"event\":\"listening\",\"addr\":\"{addr}\",\"docs\":{docs},\"auth\":{}}}",
-        state.token.is_some()
-    );
+    let auth = state.token.is_some();
+    log::info!("listening addr={addr} docs={docs} auth={auth}");
     axum::serve(listener, router(state))
         .with_graceful_shutdown(shutdown())
         .await

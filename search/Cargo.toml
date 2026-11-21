@@ -8,11 +8,23 @@ publish = false
 
 [dependencies]
 axum = "=0.8.9"
+log = "=0.4.29"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 tantivy = "=0.27.0"
 tokio = { version = "=1.54.1", features = ["macros", "rt-multi-thread", "net", "signal", "sync"] }
 
+# search/Dockerfile builds the production image with `cargo build --release`.
+# `cargo test` keeps the dev profile, so these settings do not change the tests.
 [profile.release]
+opt-level = 3
+# Thin LTO: most of the size and speed of fat LTO, and the image build stays
+# within a normal CI runner. One codegen unit so that LTO sees the whole crate.
 lto = "thin"
 codegen-units = 1
+incremental = false
+# Drop symbols from the binary copied into the Alpine image.
+strip = "symbols"
+# Index batches and queries are untrusted. Keep the overflow checks that
+# debug builds have; a panic in the worker still returns HTTP 500.
+overflow-checks = true
