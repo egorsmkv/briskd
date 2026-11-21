@@ -117,6 +117,9 @@ handle_info({irc, Line}, {Kind, Socket, _, _, _} = State) ->
         false ->
             deliver(Module, Socket, Line, State)
     end;
+handle_info(registered, State) ->
+    put(ircd_registered, true),
+    {noreply, State};
 handle_info({irc_safelist, Lines}, State) ->
     put(ircd_safelist, Lines),
     drain_safelist(State);
@@ -144,9 +147,17 @@ handle_info(registration_timeout, {_, _, _, _, Role} = State) ->
         {server_pass, _} ->
             {stop, normal, State};
         client ->
-            case ircd_state:registered() of
+            %% The state process sends `registered` with the welcome, so a
+            %% registered session does not ask: asking queued a call behind
+            %% whatever the state process was busy with (a message burst),
+            %% and its timeout crashed sessions registered long before.
+            case get(ircd_registered) =:= true orelse ask_registered(State) of
                 true ->
                     {noreply, State};
+                overloaded ->
+                    {Kind, Socket, _, _, _} = State,
+                    _ = overloaded(Kind, Socket, State),
+                    {stop, normal, State};
                 false ->
                     logger:info(#{event => registration_timeout, peer => peer_of(State)}),
                     {stop, normal, State}
@@ -781,6 +792,16 @@ process_client_line(Tags, Command, Params, Bytes, {Kind, Socket, _, _, client} =
         ok -> {ok, State}
     catch
         exit:{timeout, _} -> overloaded(Kind, Socket, State)
+    end.
+
+%% Whether the state process has registered this session (only asked when
+%% its `registered` message has not arrived), or `overloaded` past the
+%% command deadline.
+ask_registered(_State) ->
+    try ircd_state:registered() of
+        Registered -> Registered
+    catch
+        exit:{timeout, _} -> overloaded
     end.
 
 %% The state process did not apply this client's command within its deadline

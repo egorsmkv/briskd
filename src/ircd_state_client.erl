@@ -199,6 +199,8 @@ send_welcome(#client{pid = Pid} = Client, Server) ->
 %% An attached connection gets the welcome numerics for the shared nickname
 %% and is then handed to the holder; it is not introduced to anyone.
 send_attach_welcome(Client, Holder, Server) ->
+    %% The session stops its registration timer without asking (ircd_session).
+    Client#client.pid ! registered,
     welcome_numerics(Client, Server),
     ircd_state_info:motd([], Client, Server),
     ircd_state_v3:finish_attach(Client, Holder).
@@ -206,6 +208,8 @@ send_attach_welcome(Client, Holder, Server) ->
 send_full_welcome(#client{nick = Nick, user = User, host = Host} = Client, Server) ->
     ircd_conn:put(Client#client.pid, signon, erlang:system_time(second)),
     true = ets:insert(ircd_ready_clients, {Client#client.pid}),
+    %% The session stops its registration timer without asking (ircd_session).
+    Client#client.pid ! registered,
     _ = ircd_state_info:note_user_counts(),
     ircd_state_link:propagate_introduction(Client, Server),
     ircd_state_v3:registered(Client, Server),

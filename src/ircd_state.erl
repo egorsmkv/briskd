@@ -11,6 +11,7 @@
 %% load), and every session that waited longer crashed, disconnecting its
 %% client and adding cleanup work to the overloaded process. Past this
 %% deadline the session closes with "Server overloaded" (ircd_session).
+%% Server links use the same deadline, so a busy moment does not split them.
 -define(COMMAND_TIMEOUT, 60000).
 -export([
     authenticate_server_link/2,
@@ -177,7 +178,7 @@ set changes (`tls` disappears, `sts` switches to its persistence value),
 clients with `cap-notify` receive `CAP DEL` / `CAP NEW`.
 """.
 -spec tls_upgraded(map()) -> ok.
-tls_upgraded(Info) -> gen_server:call(?MODULE, {tls_upgraded, Info}).
+tls_upgraded(Info) -> gen_server:call(?MODULE, {tls_upgraded, Info}, command_timeout()).
 
 -doc """
 Apply an untagged client command on behalf of the calling session.
@@ -250,7 +251,7 @@ Answer an over-long tagged line from the calling session with
 `417 ERR_INPUTTOOLONG`, honouring its `label` tag. The line is not applied.
 """.
 -spec input_too_long([{binary(), undefined | binary()}]) -> ok.
-input_too_long(Tags) -> gen_server:call(?MODULE, {input_too_long, Tags}).
+input_too_long(Tags) -> gen_server:call(?MODULE, {input_too_long, Tags}, command_timeout()).
 
 -doc """
 Return whether the calling session is registered: `NICK`, `USER`, and any
@@ -258,7 +259,7 @@ required `PASS` are accepted and the welcome has been sent (not held by
 `CAP` negotiation).
 """.
 -spec registered() -> boolean().
-registered() -> gen_server:call(?MODULE, registered).
+registered() -> gen_server:call(?MODULE, registered, command_timeout()).
 
 -doc """
 Return the RFC 2813 burst lines for a newly authenticated link: known
@@ -266,7 +267,7 @@ servers, local and remote users, IRCv3 account state, channels, synchronized
 accounts, metadata, and read markers.
 """.
 -spec server_burst() -> [binary()].
-server_burst() -> gen_server:call(?MODULE, server_burst).
+server_burst() -> gen_server:call(?MODULE, server_burst, command_timeout()).
 
 -doc """
 Record a directly connected peer after its `PASS`/`SERVER` handshake
@@ -302,7 +303,9 @@ caller then drops the link.
     ok | {error, term()}.
 server_command(Peer, Prefix, Command, Params, Tags) ->
     ircd_log:server_command(Peer, Command, Params),
-    gen_server:call(?MODULE, {server_command, Peer, Prefix, Command, Params, Tags}).
+    gen_server:call(
+        ?MODULE, {server_command, Peer, Prefix, Command, Params, Tags}, command_timeout()
+    ).
 
 -doc """
 Treat the loss of the link to `Peer` as a netsplit: remove the users,

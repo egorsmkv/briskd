@@ -1,5 +1,5 @@
 {
-  "when": "2026-11-21T11:53:04.743705+00:00",
+  "when": "2026-11-21T12:36:54.573600+00:00",
   "target": "127.0.0.1:16667",
   "python": "3.14.3",
   "host": "Linux-7.0.0-43-generic-x86_64-with-glibc2.39",
@@ -23,7 +23,7 @@
     {
       "clients": 10,
       "repeat": 1,
-      "channel": "#load957e10r1",
+      "channel": "#load14e910r1",
       "sent": 500,
       "expected_deliveries": 4500,
       "received_deliveries": 4500,
@@ -33,22 +33,22 @@
       "disconnects": 0,
       "errors": [],
       "error_numerics": {},
-      "elapsed_s": 4.993100069987122,
-      "send_elapsed_s": 4.992019060009625,
-      "messages_per_s": 100.15987398874955,
-      "deliveries_per_s": 901.2437036960099,
+      "elapsed_s": 4.993688028014731,
+      "send_elapsed_s": 4.992271505005192,
+      "messages_per_s": 100.15480918830355,
+      "deliveries_per_s": 901.137591045911,
       "latency_samples": 4500,
       "delivery_latency": {
-        "p50_ms": 1.25,
-        "p95_ms": 1.523,
-        "p99_ms": 1.714,
-        "p99.9_ms": 3.532
+        "p50_ms": 1.259,
+        "p95_ms": 1.536,
+        "p99_ms": 1.746,
+        "p99.9_ms": 3.203
       },
       "registration_latency": {
-        "p50_ms": 1.264,
-        "p95_ms": 1.374,
-        "p99_ms": 1.374,
-        "p99.9_ms": 1.374
+        "p50_ms": 1.154,
+        "p95_ms": 1.307,
+        "p99_ms": 1.307,
+        "p99.9_ms": 1.307
       },
       "client_wire_bytes": {
         "min": 88,
@@ -57,39 +57,39 @@
       },
       "resource_samples": [
         {
-          "elapsed_s": 1.023,
-          "BlockIO": "4.1kB / 380MB",
-          "CPUPerc": "19.26%",
+          "elapsed_s": 1.229,
+          "BlockIO": "0B / 113MB",
+          "CPUPerc": "21.94%",
           "Container": "ircd-prod-bench",
-          "ID": "e9ed0a025863",
-          "MemPerc": "0.96%",
-          "MemUsage": "306.1MiB / 31.26GiB",
+          "ID": "0cdf57eb88a7",
+          "MemPerc": "0.92%",
+          "MemUsage": "295.7MiB / 31.26GiB",
           "Name": "ircd-prod-bench",
-          "NetIO": "252MB / 681MB",
+          "NetIO": "256MB / 681MB",
           "PIDs": "35"
         },
         {
-          "elapsed_s": 3.029,
-          "BlockIO": "4.1kB / 380MB",
-          "CPUPerc": "25.24%",
+          "elapsed_s": 3.239,
+          "BlockIO": "0B / 113MB",
+          "CPUPerc": "21.69%",
           "Container": "ircd-prod-bench",
-          "ID": "e9ed0a025863",
-          "MemPerc": "0.96%",
-          "MemUsage": "306.1MiB / 31.26GiB",
+          "ID": "0cdf57eb88a7",
+          "MemPerc": "0.92%",
+          "MemUsage": "295.4MiB / 31.26GiB",
           "Name": "ircd-prod-bench",
-          "NetIO": "252MB / 681MB",
+          "NetIO": "257MB / 682MB",
           "PIDs": "35"
         },
         {
-          "elapsed_s": 5.036,
-          "BlockIO": "4.1kB / 380MB",
-          "CPUPerc": "18.74%",
+          "elapsed_s": 5.243,
+          "BlockIO": "0B / 113MB",
+          "CPUPerc": "17.06%",
           "Container": "ircd-prod-bench",
-          "ID": "e9ed0a025863",
-          "MemPerc": "0.96%",
-          "MemUsage": "306.5MiB / 31.26GiB",
+          "ID": "0cdf57eb88a7",
+          "MemPerc": "0.92%",
+          "MemUsage": "295.3MiB / 31.26GiB",
           "Name": "ircd-prod-bench",
-          "NetIO": "252MB / 682MB",
+          "NetIO": "257MB / 682MB",
           "PIDs": "35"
         }
       ]
@@ -97,7 +97,7 @@
     {
       "clients": 10,
       "repeat": 2,
-      "channel": "#load850610r2",
+      "channel": "#load7f3710r2",
       "sent": 500,
       "expected_deliveries": 4500,
       "received_deliveries": 4500,
@@ -107,22 +107,22 @@
       "disconnects": 0,
       "errors": [],
       "error_numerics": {},
-      "elapsed_s": 4.993661237997003,
-      "send_elapsed_s": 4.992448702047113,
-      "messages_per_s": 100.15125439245456,
-      "deliveries_per_s": 901.1424254731756,
+      "elapsed_s": 4.9918721269932576,
+      "send_elapsed_s": 4.99064469296718,
+      "messages_per_s": 100.18745688399744,
+      "deliveries_per_s": 901.4653992570267,
       "latency_samples": 4500,
       "delivery_latency": {
-        "p50_ms": 1.241,
-        "p95_ms": 1.482,
-        "p99_ms": 1.568,
-        "p99.9_ms": 1.77
+        "p50_ms": 1.28,
+        "p95_ms": 1.573,
+        "p99_ms": 2.248,
+        "p99.9_ms": 3.348
       },
       "registration_latency": {
-        "p50_ms": 2.398,
-        "p95_ms": 2.841,
-        "p99_ms": 2.841,
-        "p99.9_ms": 2.841
+        "p50_ms": 2.403,
+        "p95_ms": 2.77,
+        "p99_ms": 2.77,
+        "p99.9_ms": 2.77
       },
       "client_wire_bytes": {
         "min": 88,
@@ -131,39 +131,39 @@
       },
       "resource_samples": [
         {
-          "elapsed_s": 1.935,
-          "BlockIO": "4.1kB / 381MB",
-          "CPUPerc": "25.04%",
+          "elapsed_s": 1.927,
+          "BlockIO": "0B / 125MB",
+          "CPUPerc": "23.39%",
           "Container": "ircd-prod-bench",
-          "ID": "e9ed0a025863",
-          "MemPerc": "0.95%",
-          "MemUsage": "304MiB / 31.26GiB",
+          "ID": "0cdf57eb88a7",
+          "MemPerc": "0.88%",
+          "MemUsage": "280.2MiB / 31.26GiB",
           "Name": "ircd-prod-bench",
-          "NetIO": "252MB / 682MB",
+          "NetIO": "257MB / 683MB",
           "PIDs": "35"
         },
         {
-          "elapsed_s": 3.942,
-          "BlockIO": "4.1kB / 381MB",
-          "CPUPerc": "20.51%",
+          "elapsed_s": 3.939,
+          "BlockIO": "0B / 125MB",
+          "CPUPerc": "22.29%",
           "Container": "ircd-prod-bench",
-          "ID": "e9ed0a025863",
-          "MemPerc": "0.95%",
-          "MemUsage": "304.5MiB / 31.26GiB",
+          "ID": "0cdf57eb88a7",
+          "MemPerc": "0.87%",
+          "MemUsage": "279.2MiB / 31.26GiB",
           "Name": "ircd-prod-bench",
-          "NetIO": "252MB / 683MB",
+          "NetIO": "257MB / 683MB",
           "PIDs": "35"
         },
         {
-          "elapsed_s": 5.949,
-          "BlockIO": "4.1kB / 381MB",
-          "CPUPerc": "1.73%",
+          "elapsed_s": 5.944,
+          "BlockIO": "0B / 125MB",
+          "CPUPerc": "1.91%",
           "Container": "ircd-prod-bench",
-          "ID": "e9ed0a025863",
-          "MemPerc": "0.95%",
-          "MemUsage": "304.1MiB / 31.26GiB",
+          "ID": "0cdf57eb88a7",
+          "MemPerc": "0.87%",
+          "MemUsage": "278.9MiB / 31.26GiB",
           "Name": "ircd-prod-bench",
-          "NetIO": "252MB / 683MB",
+          "NetIO": "257MB / 683MB",
           "PIDs": "35"
         }
       ]
@@ -171,7 +171,7 @@
     {
       "clients": 25,
       "repeat": 1,
-      "channel": "#loadd7d525r1",
+      "channel": "#load3bfb25r1",
       "sent": 1250,
       "expected_deliveries": 30000,
       "received_deliveries": 30000,
@@ -181,145 +181,219 @@
       "disconnects": 0,
       "errors": [],
       "error_numerics": {},
-      "elapsed_s": 4.999252227018587,
-      "send_elapsed_s": 4.99726469401503,
-      "messages_per_s": 250.1368401591898,
-      "deliveries_per_s": 6000.897461797232,
+      "elapsed_s": 4.999173407966737,
+      "send_elapsed_s": 4.997335732972715,
+      "messages_per_s": 250.13328437239596,
+      "deliveries_per_s": 6000.992074448083,
       "latency_samples": 30000,
       "delivery_latency": {
+        "p50_ms": 1.854,
+        "p95_ms": 2.27,
+        "p99_ms": 2.488,
+        "p99.9_ms": 4.084
+      },
+      "registration_latency": {
+        "p50_ms": 2.698,
+        "p95_ms": 3.013,
+        "p99_ms": 3.251,
+        "p99.9_ms": 3.251
+      },
+      "client_wire_bytes": {
+        "min": 83,
+        "max": 220,
+        "mean": 145.2456
+      },
+      "resource_samples": [
+        {
+          "elapsed_s": 1.82,
+          "BlockIO": "0B / 125MB",
+          "CPUPerc": "93.74%",
+          "Container": "ircd-prod-bench",
+          "ID": "0cdf57eb88a7",
+          "MemPerc": "0.87%",
+          "MemUsage": "278.9MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "257MB / 686MB",
+          "PIDs": "35"
+        },
+        {
+          "elapsed_s": 3.827,
+          "BlockIO": "0B / 125MB",
+          "CPUPerc": "112.44%",
+          "Container": "ircd-prod-bench",
+          "ID": "0cdf57eb88a7",
+          "MemPerc": "0.87%",
+          "MemUsage": "279MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "258MB / 689MB",
+          "PIDs": "35"
+        },
+        {
+          "elapsed_s": 5.833,
+          "BlockIO": "0B / 125MB",
+          "CPUPerc": "18.32%",
+          "Container": "ircd-prod-bench",
+          "ID": "0cdf57eb88a7",
+          "MemPerc": "0.87%",
+          "MemUsage": "278.6MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "258MB / 691MB",
+          "PIDs": "35"
+        }
+      ]
+    },
+    {
+      "clients": 25,
+      "repeat": 2,
+      "channel": "#load177c25r2",
+      "sent": 1250,
+      "expected_deliveries": 30000,
+      "received_deliveries": 30000,
+      "missing_deliveries": 0,
+      "duplicates": 0,
+      "unexpected": 0,
+      "disconnects": 0,
+      "errors": [],
+      "error_numerics": {},
+      "elapsed_s": 4.999367106007412,
+      "send_elapsed_s": 4.997209037013818,
+      "messages_per_s": 250.1396260875576,
+      "deliveries_per_s": 6000.759568936429,
+      "latency_samples": 30000,
+      "delivery_latency": {
+        "p50_ms": 1.864,
+        "p95_ms": 2.325,
+        "p99_ms": 2.7,
+        "p99.9_ms": 3.485
+      },
+      "registration_latency": {
+        "p50_ms": 2.529,
+        "p95_ms": 2.896,
+        "p99_ms": 2.965,
+        "p99.9_ms": 2.965
+      },
+      "client_wire_bytes": {
+        "min": 83,
+        "max": 220,
+        "mean": 145.2456
+      },
+      "resource_samples": [
+        {
+          "elapsed_s": 1.83,
+          "BlockIO": "0B / 125MB",
+          "CPUPerc": "99.22%",
+          "Container": "ircd-prod-bench",
+          "ID": "0cdf57eb88a7",
+          "MemPerc": "0.87%",
+          "MemUsage": "278.3MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "259MB / 694MB",
+          "PIDs": "35"
+        },
+        {
+          "elapsed_s": 3.837,
+          "BlockIO": "0B / 153MB",
+          "CPUPerc": "174.07%",
+          "Container": "ircd-prod-bench",
+          "ID": "0cdf57eb88a7",
+          "MemPerc": "0.90%",
+          "MemUsage": "289.6MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "259MB / 696MB",
+          "PIDs": "35"
+        },
+        {
+          "elapsed_s": 5.845,
+          "BlockIO": "0B / 153MB",
+          "CPUPerc": "19.36%",
+          "Container": "ircd-prod-bench",
+          "ID": "0cdf57eb88a7",
+          "MemPerc": "0.90%",
+          "MemUsage": "287.7MiB / 31.26GiB",
+          "Name": "ircd-prod-bench",
+          "NetIO": "260MB / 698MB",
+          "PIDs": "35"
+        }
+      ]
+    },
+    {
+      "clients": 50,
+      "repeat": 1,
+      "channel": "#load711050r1",
+      "sent": 2500,
+      "expected_deliveries": 122500,
+      "received_deliveries": 122500,
+      "missing_deliveries": 0,
+      "duplicates": 0,
+      "unexpected": 0,
+      "disconnects": 0,
+      "errors": [],
+      "error_numerics": {},
+      "elapsed_s": 5.000088647007942,
+      "send_elapsed_s": 4.998733008047566,
+      "messages_per_s": 500.1267313087531,
+      "deliveries_per_s": 24499.565637362073,
+      "latency_samples": 122500,
+      "delivery_latency": {
+        "p50_ms": 1.177,
+        "p95_ms": 1.548,
+        "p99_ms": 1.855,
+        "p99.9_ms": 3.879
+      },
+      "registration_latency": {
         "p50_ms": 1.876,
-        "p95_ms": 2.248,
-        "p99_ms": 2.447,
-        "p99.9_ms": 3.422
-      },
-      "registration_latency": {
-        "p50_ms": 2.984,
-        "p95_ms": 3.49,
-        "p99_ms": 3.491,
-        "p99.9_ms": 3.491
+        "p95_ms": 2.303,
+        "p99_ms": 2.362,
+        "p99.9_ms": 2.362
       },
       "client_wire_bytes": {
-        "min": 83,
-        "max": 220,
-        "mean": 145.2456
+        "min": 82,
+        "max": 222,
+        "mean": 145.4084
       },
       "resource_samples": [
         {
-          "elapsed_s": 1.828,
-          "BlockIO": "4.1kB / 382MB",
-          "CPUPerc": "113.21%",
+          "elapsed_s": 1.735,
+          "BlockIO": "0B / 153MB",
+          "CPUPerc": "192.79%",
           "Container": "ircd-prod-bench",
-          "ID": "e9ed0a025863",
-          "MemPerc": "0.95%",
-          "MemUsage": "304.7MiB / 31.26GiB",
+          "ID": "0cdf57eb88a7",
+          "MemPerc": "0.89%",
+          "MemUsage": "286.3MiB / 31.26GiB",
           "Name": "ircd-prod-bench",
-          "NetIO": "253MB / 686MB",
+          "NetIO": "261MB / 709MB",
           "PIDs": "35"
         },
         {
-          "elapsed_s": 3.836,
-          "BlockIO": "4.1kB / 382MB",
-          "CPUPerc": "125.08%",
+          "elapsed_s": 3.741,
+          "BlockIO": "0B / 153MB",
+          "CPUPerc": "201.88%",
           "Container": "ircd-prod-bench",
-          "ID": "e9ed0a025863",
-          "MemPerc": "0.95%",
-          "MemUsage": "304.5MiB / 31.26GiB",
+          "ID": "0cdf57eb88a7",
+          "MemPerc": "0.89%",
+          "MemUsage": "284.1MiB / 31.26GiB",
           "Name": "ircd-prod-bench",
-          "NetIO": "253MB / 689MB",
+          "NetIO": "263MB / 721MB",
           "PIDs": "35"
         },
         {
-          "elapsed_s": 5.843,
-          "BlockIO": "4.1kB / 383MB",
-          "CPUPerc": "20.72%",
+          "elapsed_s": 5.749,
+          "BlockIO": "0B / 153MB",
+          "CPUPerc": "54.04%",
           "Container": "ircd-prod-bench",
-          "ID": "e9ed0a025863",
-          "MemPerc": "0.95%",
-          "MemUsage": "304.1MiB / 31.26GiB",
+          "ID": "0cdf57eb88a7",
+          "MemPerc": "0.88%",
+          "MemUsage": "280.5MiB / 31.26GiB",
           "Name": "ircd-prod-bench",
-          "NetIO": "253MB / 690MB",
-          "PIDs": "35"
-        }
-      ]
-    },
-    {
-      "clients": 25,
-      "repeat": 2,
-      "channel": "#loada11e25r2",
-      "sent": 1250,
-      "expected_deliveries": 30000,
-      "received_deliveries": 30000,
-      "missing_deliveries": 0,
-      "duplicates": 0,
-      "unexpected": 0,
-      "disconnects": 0,
-      "errors": [],
-      "error_numerics": {},
-      "elapsed_s": 4.999343463976402,
-      "send_elapsed_s": 4.997341562004294,
-      "messages_per_s": 250.13299261030696,
-      "deliveries_per_s": 6000.7879466913955,
-      "latency_samples": 30000,
-      "delivery_latency": {
-        "p50_ms": 1.863,
-        "p95_ms": 2.238,
-        "p99_ms": 2.408,
-        "p99.9_ms": 3.01
-      },
-      "registration_latency": {
-        "p50_ms": 1.642,
-        "p95_ms": 2.563,
-        "p99_ms": 2.6,
-        "p99.9_ms": 2.6
-      },
-      "client_wire_bytes": {
-        "min": 83,
-        "max": 220,
-        "mean": 145.2456
-      },
-      "resource_samples": [
-        {
-          "elapsed_s": 1.842,
-          "BlockIO": "4.1kB / 383MB",
-          "CPUPerc": "110.19%",
-          "Container": "ircd-prod-bench",
-          "ID": "e9ed0a025863",
-          "MemPerc": "0.95%",
-          "MemUsage": "304.9MiB / 31.26GiB",
-          "Name": "ircd-prod-bench",
-          "NetIO": "254MB / 693MB",
-          "PIDs": "35"
-        },
-        {
-          "elapsed_s": 3.85,
-          "BlockIO": "4.1kB / 384MB",
-          "CPUPerc": "121.88%",
-          "Container": "ircd-prod-bench",
-          "ID": "e9ed0a025863",
-          "MemPerc": "0.95%",
-          "MemUsage": "304.8MiB / 31.26GiB",
-          "Name": "ircd-prod-bench",
-          "NetIO": "254MB / 696MB",
-          "PIDs": "35"
-        },
-        {
-          "elapsed_s": 5.858,
-          "BlockIO": "4.1kB / 385MB",
-          "CPUPerc": "23.93%",
-          "Container": "ircd-prod-bench",
-          "ID": "e9ed0a025863",
-          "MemPerc": "0.95%",
-          "MemUsage": "304.9MiB / 31.26GiB",
-          "Name": "ircd-prod-bench",
-          "NetIO": "255MB / 698MB",
+          "NetIO": "264MB / 728MB",
           "PIDs": "35"
         }
       ]
     },
     {
       "clients": 50,
-      "repeat": 1,
-      "channel": "#load711e50r1",
+      "repeat": 2,
+      "channel": "#loadd98a50r2",
       "sent": 2500,
       "expected_deliveries": 122500,
       "received_deliveries": 122500,
@@ -329,22 +403,22 @@
       "disconnects": 0,
       "errors": [],
       "error_numerics": {},
-      "elapsed_s": 4.999450684001204,
-      "send_elapsed_s": 4.9982502910424955,
-      "messages_per_s": 500.17503214681346,
-      "deliveries_per_s": 24502.6919441397,
+      "elapsed_s": 5.000429982028436,
+      "send_elapsed_s": 4.999026496021543,
+      "messages_per_s": 500.09736935573676,
+      "deliveries_per_s": 24497.89326923194,
       "latency_samples": 122500,
       "delivery_latency": {
-        "p50_ms": 1.163,
-        "p95_ms": 1.537,
-        "p99_ms": 2.158,
-        "p99.9_ms": 4.249
+        "p50_ms": 1.182,
+        "p95_ms": 1.566,
+        "p99_ms": 1.927,
+        "p99.9_ms": 3.5
       },
       "registration_latency": {
-        "p50_ms": 1.765,
-        "p95_ms": 2.143,
-        "p99_ms": 2.166,
-        "p99.9_ms": 2.166
+        "p50_ms": 1.042,
+        "p95_ms": 1.262,
+        "p99_ms": 1.424,
+        "p99.9_ms": 1.424
       },
       "client_wire_bytes": {
         "min": 82,
@@ -353,113 +427,39 @@
       },
       "resource_samples": [
         {
-          "elapsed_s": 1.726,
-          "BlockIO": "4.1kB / 412MB",
-          "CPUPerc": "229.08%",
+          "elapsed_s": 1.769,
+          "BlockIO": "0B / 153MB",
+          "CPUPerc": "204.85%",
           "Container": "ircd-prod-bench",
-          "ID": "e9ed0a025863",
-          "MemPerc": "1.04%",
-          "MemUsage": "332.7MiB / 31.26GiB",
+          "ID": "0cdf57eb88a7",
+          "MemPerc": "0.87%",
+          "MemUsage": "278.9MiB / 31.26GiB",
           "Name": "ircd-prod-bench",
-          "NetIO": "256MB / 708MB",
+          "NetIO": "266MB / 739MB",
           "PIDs": "35"
         },
         {
-          "elapsed_s": 3.73,
-          "BlockIO": "4.1kB / 413MB",
-          "CPUPerc": "197.29%",
+          "elapsed_s": 3.772,
+          "BlockIO": "0B / 153MB",
+          "CPUPerc": "192.20%",
           "Container": "ircd-prod-bench",
-          "ID": "e9ed0a025863",
-          "MemPerc": "1.02%",
-          "MemUsage": "327.8MiB / 31.26GiB",
+          "ID": "0cdf57eb88a7",
+          "MemPerc": "0.87%",
+          "MemUsage": "278.6MiB / 31.26GiB",
           "Name": "ircd-prod-bench",
-          "NetIO": "258MB / 720MB",
+          "NetIO": "268MB / 751MB",
           "PIDs": "35"
         },
         {
-          "elapsed_s": 5.738,
-          "BlockIO": "4.1kB / 414MB",
-          "CPUPerc": "52.28%",
+          "elapsed_s": 5.779,
+          "BlockIO": "0B / 153MB",
+          "CPUPerc": "48.30%",
           "Container": "ircd-prod-bench",
-          "ID": "e9ed0a025863",
-          "MemPerc": "1.01%",
-          "MemUsage": "324.1MiB / 31.26GiB",
+          "ID": "0cdf57eb88a7",
+          "MemPerc": "0.87%",
+          "MemUsage": "278.6MiB / 31.26GiB",
           "Name": "ircd-prod-bench",
-          "NetIO": "259MB / 728MB",
-          "PIDs": "35"
-        }
-      ]
-    },
-    {
-      "clients": 50,
-      "repeat": 2,
-      "channel": "#load583a50r2",
-      "sent": 2500,
-      "expected_deliveries": 122500,
-      "received_deliveries": 122500,
-      "missing_deliveries": 0,
-      "duplicates": 0,
-      "unexpected": 0,
-      "disconnects": 0,
-      "errors": [],
-      "error_numerics": {},
-      "elapsed_s": 5.000415245012846,
-      "send_elapsed_s": 4.9992428430123255,
-      "messages_per_s": 500.0757271662381,
-      "deliveries_per_s": 24497.965468402876,
-      "latency_samples": 122500,
-      "delivery_latency": {
-        "p50_ms": 1.153,
-        "p95_ms": 1.524,
-        "p99_ms": 2.192,
-        "p99.9_ms": 4.484
-      },
-      "registration_latency": {
-        "p50_ms": 1.197,
-        "p95_ms": 2.025,
-        "p99_ms": 2.317,
-        "p99.9_ms": 2.317
-      },
-      "client_wire_bytes": {
-        "min": 82,
-        "max": 222,
-        "mean": 145.4084
-      },
-      "resource_samples": [
-        {
-          "elapsed_s": 1.696,
-          "BlockIO": "4.1kB / 416MB",
-          "CPUPerc": "195.36%",
-          "Container": "ircd-prod-bench",
-          "ID": "e9ed0a025863",
-          "MemPerc": "0.99%",
-          "MemUsage": "318.4MiB / 31.26GiB",
-          "Name": "ircd-prod-bench",
-          "NetIO": "261MB / 738MB",
-          "PIDs": "35"
-        },
-        {
-          "elapsed_s": 3.701,
-          "BlockIO": "4.1kB / 417MB",
-          "CPUPerc": "201.41%",
-          "Container": "ircd-prod-bench",
-          "ID": "e9ed0a025863",
-          "MemPerc": "0.98%",
-          "MemUsage": "312.8MiB / 31.26GiB",
-          "Name": "ircd-prod-bench",
-          "NetIO": "263MB / 750MB",
-          "PIDs": "35"
-        },
-        {
-          "elapsed_s": 5.71,
-          "BlockIO": "4.1kB / 418MB",
-          "CPUPerc": "59.16%",
-          "Container": "ircd-prod-bench",
-          "ID": "e9ed0a025863",
-          "MemPerc": "0.97%",
-          "MemUsage": "309.5MiB / 31.26GiB",
-          "Name": "ircd-prod-bench",
-          "NetIO": "264MB / 758MB",
+          "NetIO": "269MB / 758MB",
           "PIDs": "35"
         }
       ]
