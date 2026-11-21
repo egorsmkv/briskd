@@ -1,8 +1,23 @@
 name: CI
 
+# Push only. A docs-only push does not start this workflow. Each job then
+# runs only when a file it builds or tests is in the push.
 on:
   push:
-  pull_request:
+    paths:
+      - "src/**"
+      - "include/**"
+      - "test/**"
+      - "webui/**"
+      - "priv/webui/**"
+      - "search/**"
+      - "docker/rtpengine/**"
+      - "Dockerfile"
+      - "rebar.config"
+      - "rebar.lock"
+      - "justfile"
+      - ".elp_lint.toml"
+      - ".github/workflows/ci.yml"
 
 permissions:
   contents: read
@@ -12,8 +27,89 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: select jobs
+    runs-on: ubuntu-latest
+    outputs:
+      test: ${{ steps.filter.outputs.test }}
+      e2ee: ${{ steps.filter.outputs.e2ee }}
+      search: ${{ steps.filter.outputs.search }}
+      calls: ${{ steps.filter.outputs.calls }}
+      calls_browser: ${{ steps.filter.outputs.calls_browser }}
+      webui: ${{ steps.filter.outputs.webui }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Match changed paths to jobs
+        id: filter
+        run: |
+          set -eu
+          before="${{ github.event.before }}"
+          sha="${{ github.sha }}"
+          all=false
+          files=""
+          zero=0000000000000000000000000000000000000000
+          if [ -z "$before" ] || [ "$before" = "$zero" ]; then
+            all=true
+          elif ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
+            all=true
+          else
+            files="$(git diff --name-only "$before" "$sha")"
+          fi
+
+          hit() {
+            if [ "$all" = true ]; then
+              return 0
+            fi
+            printf '%s\n' "$files" | grep -Eq "$1"
+          }
+          flag() {
+            if hit "$2"; then
+              echo "$1=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$1=false" >> "$GITHUB_OUTPUT"
+            fi
+          }
+
+          # The development image compiles this tree. Jobs that boot ircd share it.
+          server='^(src/|include/|rebar\.config$|rebar\.lock$|Dockerfile$|\.github/workflows/ci\.yml$)'
+          flag test "${server}|^(justfile$|\.elp_lint\.toml$|webui/|priv/webui/|test/.*\.erl$|test/.*\.hrl$)"
+          flag e2ee "${server}|^test/e2ee/"
+          flag search '^(search/|\.github/workflows/ci\.yml$)'
+          flag webui "${server}|^(webui/|priv/webui/|test/webui/)"
+
+          calls=false
+          browser=false
+          # WebUI sources do not affect the Python voice-call harness.
+          if [ "$all" = true ] || hit "${server}|^docker/rtpengine/"; then
+            calls=true
+            browser=true
+          fi
+          if [ "$all" = false ] && hit '^(webui/|priv/webui/)'; then
+            browser=true
+          fi
+          if [ "$all" = false ]; then
+            if printf '%s\n' "$files" | grep -E '^test/calls/' | grep -qv '^test/calls/browser/'; then
+              calls=true
+            fi
+            if printf '%s\n' "$files" | grep -Eq '^(test/calls/browser/|test/webui/Dockerfile$|test/webui/server\.sh$|test/e2ee/server\.sh$)'; then
+              browser=true
+            fi
+            if printf '%s\n' "$files" | grep -Eq '^test/e2ee/server\.sh$'; then
+              calls=true
+            fi
+          fi
+          echo "calls=${calls}" >> "$GITHUB_OUTPUT"
+          echo "calls_browser=${browser}" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$files" | head -n 50
+
   test:
     name: format, lint, eqwalize, and eunit
+    needs: changes
+    if: needs.changes.outputs.test == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -33,6 +129,8 @@ jobs:
 
   e2ee:
     name: E2EE end-to-end (two linked servers, Python clients)
+    needs: changes
+    if: needs.changes.outputs.e2ee == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -44,6 +142,8 @@ jobs:
 
   search:
     name: Search service (Rust)
+    needs: changes
+    if: needs.changes.outputs.search == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Check out
@@ -61,6 +161,8 @@ jobs:
 
   calls:
     name: Voice calls end-to-end (ircd, rtpengine, WebRTC clients)
+    needs: changes
+    if: needs.changes.outputs.calls == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -72,6 +174,8 @@ jobs:
 
   calls-browser:
     name: Video calls in a browser (WebIRC, rtpengine, headless Chromium)
+    needs: changes
+    if: needs.changes.outputs.calls_browser == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -91,6 +195,8 @@ jobs:
 
   webui:
     name: WebIRC in a browser (light and dark, contrast and page errors)
+    needs: changes
+    if: needs.changes.outputs.webui == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:

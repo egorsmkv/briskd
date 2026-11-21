@@ -259,17 +259,28 @@ Python clients that do X3DH, the Double Ratchet, and Sender Keys against them
 
 ## Continuous integration
 
-GitHub Actions builds the development image from the [Dockerfile](https://github.com/egorsmkv/irc-server/blob/main/Dockerfile)
+GitHub Actions runs `.github/workflows/ci.yml` on push, not on pull requests.
+A push that only changes docs, the README, or other paths outside the list
+does not start it. Each job then runs only when that push touches a file the
+job builds or tests: the Erlang suite and WebUI unit checks for `src/`,
+`include/`, `test/*.erl`, `webui/`, and the build files; `test/e2ee/run` for
+the server tree and `test/e2ee/`; the search checks for `search/`;
+`test/calls/run` for the server tree, `docker/rtpengine/`, and `test/calls/`
+outside the browser harness; `test/calls/browser/run` and `test/webui/run`
+for the server tree, `webui/`, and their own harnesses.
+
+The Erlang job builds the development image from the
+[Dockerfile](https://github.com/egorsmkv/irc-server/blob/main/Dockerfile)
 and runs `just format-check`, `just lint` and `just eqwalize` (ELP),
 `just test-webui`, and `just test` in that image. The image pins the same
-OTP, Rebar3, `just`, Deno, and ELP versions as local development. More jobs
-run the search service's checks (`cargo fmt`, `clippy`, and `cargo test` in
-`search/`, and its image build), `test/e2ee/run`, the end-to-end encryption
-tests on two linked servers, `test/calls/run`, the voice and video call tests
-with rtpengine and WebRTC clients, `test/calls/browser/run`, a WebIRC video
-call between two headless Chromium tabs through rtpengine, and
-`test/webui/run`, WebIRC in a browser in light and dark themes. The browser
-jobs keep their screenshots as build artifacts.
+OTP, Rebar3, `just`, Deno, and ELP versions as local development. The search
+job runs `cargo fmt`, `clippy`, and `cargo test` in `search/` and builds its
+image. `test/e2ee/run` is the end-to-end encryption tests on two linked
+servers. `test/calls/run` is the voice-call test with rtpengine and WebRTC
+clients. `test/calls/browser/run` is a WebIRC video call between two
+headless Chromium tabs through rtpengine. `test/webui/run` opens WebIRC in
+a browser in light and dark themes. The browser jobs keep their screenshots
+as build artifacts.
 
 ## Building the documentation
 
