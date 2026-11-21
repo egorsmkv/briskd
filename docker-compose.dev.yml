@@ -37,6 +37,24 @@ services:
   # config/ircd.dev2.json). Each lists the other in `server_links`, so they
   # link whichever starts first. Clients on either see the same channels and
   # users, which exercises bursts, propagation, and cross-server delivery.
+  # Message search (egorsmkv.github.io/search; docs/search.md): one Tantivy
+  # index per server, since each indexes its own stored history.
+  ircd-search:
+    build:
+      context: search
+    environment:
+      SEARCH_TOKEN: dev-search-token
+    volumes:
+      - search-data:/data
+
+  ircd-search2:
+    build:
+      context: search
+    environment:
+      SEARCH_TOKEN: dev-search-token
+    volumes:
+      - search2-data:/data
+
   ircd-dev:
     build:
       context: .
@@ -48,6 +66,7 @@ services:
       - inbucket
       - rustfs
       - rtpengine
+      - ircd-search
     env_file:
       - .dev.env
     ports:
@@ -86,6 +105,7 @@ services:
       - until [ -f priv/webui/assets/app.js ]; do sleep 2; done; just run-config config/ircd.dev2.json
     depends_on:
       - ircd-dev
+      - ircd-search2
     env_file:
       - .dev.env
     environment:
@@ -114,4 +134,6 @@ volumes:
   ircd-mnesia:
   ircd2-mnesia:
   ircd2-build:
+  search-data:
+  search2-data:
   rustfs-data:

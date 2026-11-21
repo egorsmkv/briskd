@@ -111,6 +111,7 @@ The module also provides `secret_match/2` for comparing configured passwords.
     voice := voice(),
     files := files(),
     calls := calls(),
+    search := search(),
     features := features(),
     bots := [bot()]
 }.
@@ -224,6 +225,16 @@ The module also provides `secret_match/2` for comparing configured passwords.
 
 -type files() :: null | s3_bucket().
 
+%% Message search through ircd-search (`search`); see m:ircd_search.
+-type search() ::
+    null
+    | #{
+        url := binary(),
+        token := undefined | binary(),
+        timeout := 100..60000,
+        max_results := 1..200
+    }.
+
 -type calls() ::
     null
     | #{
@@ -306,6 +317,7 @@ The module also provides `secret_match/2` for comparing configured passwords.
     voice/0,
     files/0,
     calls/0,
+    search/0,
     features/0,
     account_verification/0,
     smtp/0,
@@ -454,6 +466,7 @@ load(Path) ->
             voice => voice(maps:get(<<"voice">>, Json, null)),
             files => files(maps:get(<<"files">>, Json, null)),
             calls => calls(maps:get(<<"calls">>, Json, null)),
+            search => search(maps:get(<<"search">>, Json, null)),
             features => features(maps:get(<<"features">>, Json, #{})),
             max_accounts => positive_limit(maps:get(<<"max_accounts">>, Json, 100000)),
             max_empty_channels => positive_limit(maps:get(<<"max_empty_channels">>, Json, 1000)),
@@ -1512,6 +1525,65 @@ bot_temperature(_Nick, Value) when is_number(Value), Value >= 0, Value =< 2 ->
     float(Value);
 bot_temperature(Nick, Value) ->
     erlang:error({invalid_bot, Nick, temperature, Value}).
+
+%%% Message search (`search`): the ircd-search service's base URL, an
+%%% optional bearer token (`token`, or `token_env` naming an environment
+%%% variable), the request timeout in milliseconds, and the most results one
+%%% SEARCH returns. Disabled when `null` or `false`. Bounds are inclusive.
+
+search(null) ->
+    null;
+search(false) ->
+    null;
+search(Map) when is_map(Map) ->
+    #{
+        url => strip_slash(webui_url(url, maps:get(<<"url">>, Map, undefined))),
+        token => search_token(Map),
+        timeout => search_int(timeout, maps:get(<<"timeout">>, Map, 3000), 100, 60000),
+        max_results => search_int(max_results, maps:get(<<"max_results">>, Map, 50), 1, 200)
+    };
+search(Value) ->
+    erlang:error({invalid_search, Value}).
+
+strip_slash(Url) ->
+    case binary:last(Url) of
+        $/ -> strip_slash(binary:part(Url, 0, byte_size(Url) - 1));
+        _ -> Url
+    end.
+
+search_token(Map) ->
+    case {maps:get(<<"token">>, Map, null), maps:get(<<"token_env">>, Map, null)} of
+        {null, null} ->
+            undefined;
+        {Token, null} when is_binary(Token) ->
+            search_token_value(Token);
+        {null, Var} when is_binary(Var) ->
+            case re:run(Var, <<"^[A-Za-z_][A-Za-z0-9_]{0,63}$">>, [{capture, none}]) of
+                match -> ok;
+                nomatch -> erlang:error({invalid_search, token_env})
+            end,
+            case os:getenv(binary_to_list(Var)) of
+                Value when is_list(Value), Value =/= [] ->
+                    search_token_value(unicode:characters_to_binary(Value));
+                _ ->
+                    erlang:error({invalid_search, token_env, unset})
+            end;
+        _ ->
+            erlang:error({invalid_search, token})
+    end.
+
+search_token_value(Token) when byte_size(Token) > 0, byte_size(Token) =< 512 ->
+    case binary:match(Token, [<<0>>, <<"\r">>, <<"\n">>, <<" ">>]) of
+        nomatch -> retain_secret(Token);
+        _ -> erlang:error({invalid_search, token})
+    end;
+search_token_value(_) ->
+    erlang:error({invalid_search, token}).
+
+search_int(_Key, Value, Min, Max) when is_integer(Value, Min, Max) ->
+    Value;
+search_int(Key, Value, _Min, _Max) ->
+    erlang:error({invalid_search, Key, Value}).
 
 %%% Voice calls relayed through rtpengine (`calls`). Disabled when `null` or
 %%% `false`. Bounds are inclusive.

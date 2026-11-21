@@ -72,6 +72,7 @@ cannot be removed.
     <<"egorsmkv.github.io/e2ee">>,
     <<"egorsmkv.github.io/features">>,
     <<"egorsmkv.github.io/files">>,
+    <<"egorsmkv.github.io/search">>,
     <<"egorsmkv.github.io/voice">>,
     <<"extended-join">>,
     <<"extended-monitor">>,
@@ -436,6 +437,12 @@ value(<<"egorsmkv.github.io/calls">>, _Info) ->
 value(<<"egorsmkv.github.io/e2ee">>, _Info) ->
     case ircd_e2ee:enabled() of
         true -> {ok, ircd_e2ee:cap_value()};
+        false -> error
+    end;
+%% Message search (ircd_search): offered only when `search` is configured.
+value(<<"egorsmkv.github.io/search">>, _Info) ->
+    case ircd_search:enabled() of
+        true -> {ok, ircd_search:cap_value()};
         false -> error
     end;
 %% Voice messages (ircd_voice): offered only when S3 storage is configured.

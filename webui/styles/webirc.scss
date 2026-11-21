@@ -1324,6 +1324,113 @@ svg.icon {
   white-space: nowrap;
 }
 
+/* Message search dialog (search_ui.ts). Matched words use the accent wash
+   with body text, a pair the token test keeps at AA contrast. */
+.search-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+  input {
+    flex: 1 1 220px;
+    min-width: 0;
+    height: 36px;
+    padding: 0 10px;
+  }
+  select {
+    height: 36px;
+    max-width: 100%;
+  }
+}
+
+.search-help {
+  margin: 0 0 10px;
+  font-size: 12px;
+}
+
+.search-status {
+  min-height: 18px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  &.err {
+    color: var(--danger);
+  }
+}
+
+.search-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.search-hit {
+  display: flex;
+  flex-direction: column;
+  /* Buttons centre their content by default; a result reads from the start. */
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 4px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--text);
+  text-align: start;
+  font: inherit;
+  cursor: pointer;
+  &:hover,
+  &:focus-visible {
+    border-color: var(--accent);
+  }
+  mark {
+    background: var(--accent-soft);
+    color: var(--text);
+    border-radius: 3px;
+    padding: 0 1px;
+  }
+}
+
+.search-hit-head {
+  display: flex;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  font-size: 12.5px;
+}
+
+.search-hit-nick {
+  font-weight: 600;
+}
+
+.search-hit-time {
+  margin-inline-start: auto;
+  font-size: 12px;
+}
+
+.search-hit-text {
+  text-align: start;
+  font-size: 13.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+#btn-search-more {
+  margin-top: 10px;
+}
+
+
 // Count of lines that arrived while scrolled up.
 .fab-count {
   position: absolute;

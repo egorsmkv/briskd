@@ -16,6 +16,8 @@ import {
   slashState,
 } from "./slash.ts";
 import { buffers, S } from "./state.ts";
+import { capOn } from "./caps.ts";
+import { SEARCH_CAP } from "./search.ts";
 import { isChan } from "./util.ts";
 
 let items: CommandSpec[] = [];
@@ -43,6 +45,8 @@ function available(spec: CommandSpec): boolean {
       return e2ee.isServerSupported();
     case "oper":
       return S.isIrcOp;
+    case "search":
+      return S.isRegistered && capOn(SEARCH_CAP);
     default:
       return true;
   }

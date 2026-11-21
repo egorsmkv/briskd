@@ -1799,6 +1799,8 @@ registered_command(<<"MONITOR">>, Params, Client, Server) ->
     ircd_state_monitor:monitor(Params, Client, Server);
 registered_command(<<"CHATHISTORY">>, Params, Client, Server) ->
     ircd_state_history:chathistory(Params, Client, Server);
+registered_command(<<"SEARCH">>, Params, Client, Server) ->
+    ircd_state_search:search(Params, Client, Server);
 registered_command(<<"MARKREAD">>, Params, Client, Server) ->
     ircd_state_history:markread(Params, Client, Server);
 registered_command(<<"REDACT">>, Params, Client, Server) ->
@@ -2208,6 +2210,7 @@ supported_command(Command) ->
             <<"REDACT">>,
             <<"REGISTER">>,
             <<"RENAME">>,
+            <<"SEARCH">>,
             <<"SETNAME">>,
             <<"STARTTLS">>,
             <<"VERIFY">>,

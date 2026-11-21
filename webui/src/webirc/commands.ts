@@ -11,6 +11,9 @@ import { openSettings } from "./settings.ts";
 import { switchBuf } from "./sidebar.ts";
 import { S } from "./state.ts";
 import { COMMANDS, usage } from "./slash.ts";
+import { capOn } from "./caps.ts";
+import { SEARCH_CAP } from "./search.ts";
+import { openSearch } from "./search_ui.ts";
 import { type BufferState } from "./types.ts";
 import { isChan } from "./util.ts";
 
@@ -183,6 +186,16 @@ export function runSlashCommand(
       }
       return;
     }
+    case "search":
+      if (!capOn(SEARCH_CAP)) {
+        addLine(S.activeBuf, {
+          text: t("search.err.unavailable"),
+          kind: "err",
+        });
+      } else {
+        openSearch(rest);
+      }
+      return;
     case "history": {
       const limit = parseInt(rest, 10) || 50;
       if (buf && buf.name !== "*status") {

@@ -47,6 +47,7 @@ to the process working directory unless they are absolute.
 | `retention` | `channels` | `channels` or `transient`. `channels` keeps ordinary channel state and channel/DM message history across a restart; `transient` clears them on restart |
 | `history_limit` | `100` | Channel `PRIVMSG`/`NOTICE` lines kept per channel when `retention` is `channels` (1..10000) |
 | `server_links` | `[]` | Direct peer definitions with `name`, `host`, `port`, `password`, and optional `tls` |
+| `search` | `null` | Message search through ircd-search: `{"url": "http://ircd-search:7700", "token" or "token_env": ..., "timeout": 3000, "max_results": 50}`. See [Message search](search.md) |
 | `ws_port`, `wss_port` | `null` | IRCv3 WebSocket listeners over TCP and TLS; `null` disables |
 | `ws_origins` | `null` | Allowed WebSocket `Origin` values; `null` allows any origin |
 | `network` | value of `name` | `NETWORK` ISUPPORT token |

@@ -66,6 +66,7 @@ const SERVICE_NAMES: Record<string, string> = {
   "egorsmkv.github.io/calls": "features.calls",
   "egorsmkv.github.io/e2ee": "features.e2ee",
   "draft/chathistory": "features.history",
+  "egorsmkv.github.io/search": "features.search",
 };
 
 /**

@@ -215,5 +215,6 @@
   },
   "server_links": [
     {"name": "irc2.dev", "host": "ircd-dev2", "port": 6668, "password": "devnet-link", "tls": false}
-  ]
+  ],
+  "search": {"url": "http://ircd-search:7700", "token": "dev-search-token", "max_results": 50}
 }

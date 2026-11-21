@@ -14,6 +14,9 @@
     chathistory/3,
     entry/7,
     find/2,
+    fold_messages/2,
+    search_scope/2,
+    search_entry/2,
     markread/3,
     markread_on_join/3,
     note_channel/2,
@@ -531,6 +534,10 @@ append(Tab, Conv, Entry) ->
     {Last, Msgs, Events} = index(Tab, Conv),
     Seq = Last + 1,
     mnesia:dirty_write({Tab, {Conv, Class, Seq}, Entry}),
+    case Class of
+        msg -> ircd_search:note_add(Tab, Conv, Seq, Entry);
+        event -> ok
+    end,
     Limit = limit(),
     {Msgs1, Events1} =
         case Class of
@@ -542,8 +549,12 @@ append(Tab, Conv, Entry) ->
 
 drop_oldest(Tab, Conv, Class, Count, Limit) when Count > Limit ->
     case mnesia:dirty_next(Tab, {Conv, Class, 0}) of
-        {Conv, Class, _} = Oldest ->
+        {Conv, Class, Seq} = Oldest ->
             mnesia:dirty_delete(Tab, Oldest),
+            case Class of
+                msg when is_integer(Seq) -> ircd_search:note_delete(Tab, Conv, Seq);
+                _ -> ok
+            end,
             drop_oldest(Tab, Conv, Class, Count - 1, Limit);
         _ ->
             0
@@ -562,6 +573,7 @@ delete(Tab, Conv) ->
     ]),
     lists:foreach(fun(K) -> mnesia:dirty_delete(Tab, K) end, Keys),
     ets:delete(?INDEX, {Tab, Conv}),
+    ircd_search:note_delete_conv(Tab, Conv),
     ok.
 
 %% `a` sorts before both classes: the next key is the conversation's first.
@@ -1061,6 +1073,97 @@ other_party(Mine, [#{account := Sender, target := Target, prefix := Prefix} | _]
     case Sender =/= undefined andalso ircd_wire:fold(Sender) =:= Mine of
         true -> Target;
         false -> hd(binary:split(Prefix, <<"!">>))
+    end.
+
+%%% Message search (m:ircd_search, m:ircd_state_search)
+
+-doc """
+Fold `Fun(Table, Conversation, Seq, Entry, Acc)` over every stored message
+(the `msg` class: `PRIVMSG`, `NOTICE`, `TAGMSG`) of every channel and direct
+conversation. `m:ircd_search` rebuilds its index with it; it reads one
+conversation at a time.
+""".
+-spec fold_messages(
+    fun((channel_message | direct_message, term(), pos_integer(), map(), Acc) -> Acc), Acc
+) -> Acc.
+fold_messages(Fun, Acc0) ->
+    lists:foldl(
+        fun(Tab, Acc1) ->
+            lists:foldl(
+                fun(Conv, Acc2) ->
+                    Rows = mnesia:dirty_select(Tab, [
+                        {{Tab, {Conv, msg, '$1'}, '$2'}, [], [{{'$1', '$2'}}]}
+                    ]),
+                    lists:foldl(
+                        fun
+                            ({Seq, Entry}, Acc3) when is_integer(Seq), Seq > 0 ->
+                                Fun(Tab, Conv, Seq, normalize(Entry), Acc3);
+                            (_, Acc3) ->
+                                Acc3
+                        end,
+                        Acc2,
+                        Rows
+                    )
+                end,
+                Acc1,
+                conversations(Tab)
+            )
+        end,
+        Acc0,
+        [channel_message, direct_message]
+    ).
+
+-doc """
+The conversations `Client` may search for `Target`, as
+`{IndexName, {Table, Conversation}, ReplayName}`: a channel the client is a
+member of; a nickname or account, for the direct conversation with it (the
+client must be logged in); or `*`, for every channel the client is in and
+every direct conversation of its account. `ReplayName` is the channel name
+to deliver a result to, or `undefined` for a direct message (delivered to its
+stored target). The same rules as `CHATHISTORY` (`access/2`).
+""".
+-spec search_scope(#client{}, binary()) ->
+    {ok, [{binary(), {channel_message | direct_message, term()}, binary() | undefined}]}
+    | error.
+search_scope(#client{pid = Pid, channels = Keys}, <<"*">>) ->
+    Channels = [
+        {ircd_search:conv_id(channel_message, Key), {channel_message, Key}, Name}
+     || Key <- Keys,
+        [#channel{name = Name}] <- [mnesia:dirty_read(channel, Key)]
+    ],
+    Direct =
+        case ircd_state_v3:account(Pid) of
+            undefined ->
+                [];
+            Account ->
+                Me = {account, ircd_wire:fold(Account)},
+                [
+                    {ircd_search:conv_id(direct_message, Pair), {direct_message, Pair}, undefined}
+                 || {A, B} = Pair <- dm_conversations(),
+                    A =:= Me orelse B =:= Me
+                ]
+        end,
+    {ok, Channels ++ Direct};
+search_scope(Client, Target) ->
+    case access(Client, Target) of
+        {ok, Name, {channel, Key}} ->
+            {ok, [{ircd_search:conv_id(channel_message, Key), {channel_message, Key}, Name}]};
+        {ok, _Name, {direct, Pair}} ->
+            {ok, [{ircd_search:conv_id(direct_message, Pair), {direct_message, Pair}, undefined}]};
+        error ->
+            error
+    end.
+
+-doc """
+The stored message `Seq` of conversation `{Table, Conversation}`, if it is
+still in history.
+""".
+-spec search_entry({channel_message | direct_message, term()}, pos_integer()) ->
+    {ok, map()} | error.
+search_entry({Tab, Conv}, Seq) ->
+    case mnesia:dirty_read(Tab, {Conv, msg, Seq}) of
+        [{_, _, Entry}] -> {ok, normalize(Entry)};
+        [] -> error
     end.
 
 %%% MARKREAD

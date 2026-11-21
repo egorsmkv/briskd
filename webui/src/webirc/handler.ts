@@ -11,6 +11,7 @@ import { handleChat } from "./irc/chat.ts";
 import { handleReplies } from "./irc/replies.ts";
 import { handlePresence } from "./irc/presence.ts";
 import { handleNumerics } from "./irc/numerics.ts";
+import { handleSearchReply } from "./search_ui.ts";
 
 export function handleMessage(raw: string): void {
   let msg = parseIrc(raw);
@@ -29,6 +30,9 @@ export function handleMessage(raw: string): void {
   const assembled = multiline.feed(msg);
   if (assembled.kind === "consumed") return;
   if (assembled.kind === "complete") msg = assembled.message;
+  // Message search replies (egorsmkv.github.io/search) go to the search
+  // dialog, never into a conversation.
+  if (handleSearchReply(msg)) return;
   const time = msg.tags.time;
   if (handleCap(msg, time)) return;
   if (handleRegistration(msg, time)) return;

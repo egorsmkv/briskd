@@ -13,6 +13,7 @@ import { IncomingCallDialog } from "./view/IncomingCallDialog.tsx";
 import { MembersPanel } from "./view/MembersPanel.tsx";
 import { MessageArea } from "./view/MessageArea.tsx";
 import { ModerationDialog } from "./view/ModerationDialog.tsx";
+import { SearchDialog } from "./view/SearchDialog.tsx";
 import { SettingsDialog } from "./view/SettingsDialog.tsx";
 import { Sidebar } from "./view/Sidebar.tsx";
 import { TopicDialog } from "./view/TopicDialog.tsx";
@@ -46,6 +47,7 @@ class WebircView extends Component {
         <ModerationDialog />
         <AttachDialog />
         <DiscoverDialog />
+        <SearchDialog />
         <IncomingCallDialog />
       </>
     );

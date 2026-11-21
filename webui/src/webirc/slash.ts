@@ -4,7 +4,7 @@
 // /help prints this same table, so the list and the help never disagree.
 
 /** When a command applies; the picker hides those that do not. */
-export type CommandNeed = "channel" | "calls" | "e2ee" | "oper";
+export type CommandNeed = "channel" | "calls" | "e2ee" | "oper" | "search";
 
 export interface CommandSpec {
   name: string;
@@ -52,6 +52,7 @@ export const COMMANDS: CommandSpec[] = [
   { name: "setname", args: "<real name>", desc: "cmd.setname" },
   { name: "monitor", args: "+|- <nick>", desc: "cmd.monitor" },
   { name: "history", args: "[limit]", desc: "cmd.history" },
+  { name: "search", args: "[words]", desc: "cmd.search", needs: "search" },
   { name: "meta", args: "set|clear|list …", desc: "cmd.meta" },
   { name: "call", args: "[nick]", desc: "cmd.call", needs: "calls" },
   { name: "hangup", desc: "cmd.hangup", needs: "calls" },

@@ -14,3 +14,4 @@
 /bench/.venv/
 __pycache__/
 *.pyc
+search/target/

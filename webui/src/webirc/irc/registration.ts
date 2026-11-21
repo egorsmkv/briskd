@@ -16,6 +16,7 @@ import {
   startHeartbeat,
 } from "../connection.ts";
 import { e2ee } from "../e2ee_ui.ts";
+import { updateSearchButton } from "../search_ui.ts";
 import { buffers, S } from "../state.ts";
 import type { IrcMessage } from "../types.ts";
 import { dmNames, monitorAdd, requestMarker } from "../users.ts";
@@ -38,6 +39,7 @@ export function handleRegistration(
     S.myNick = params[0] || S.myNick;
     S.isRegistered = true;
     showMyNick();
+    updateSearchButton();
     e2ee.setMyNick(S.myNick);
     e2ee.onRegistered();
     updateTitle();

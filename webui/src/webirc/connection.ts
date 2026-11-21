@@ -7,6 +7,8 @@ import { backoffDelay } from "../common/reconnect.ts";
 import { E2EE_CAP } from "../e2ee/manager.ts";
 import { addLine, updateTitle } from "./buffers.ts";
 import { calls, updateCallButton } from "./calls_ui.ts";
+import { SEARCH_CAP } from "./search.ts";
+import { resetSearch } from "./search_ui.ts";
 import { capOn, multiline, resetIrcv3State } from "./caps.ts";
 import { FEATURES_CAP, FILES_CAP, REDACT_CAP, VOICE_CAP } from "./constants.ts";
 import { e2ee } from "./e2ee_ui.ts";
@@ -96,6 +98,7 @@ export function wantedCaps(): string[] {
     FILES_CAP,
     VOICE_CAP,
     CALLS_CAP,
+    SEARCH_CAP,
   ];
   if (S.saslPass && !S.isRegistered) wanted.push("sasl");
   return wanted;
@@ -327,6 +330,7 @@ export function connectSocket(url: string): void {
     calls.enabled = false;
     updateCallButton();
     S.isRegistered = false;
+    resetSearch();
     S.hiddenUnread = 0;
     S.hiddenMentions = 0;
     e2ee.resetConnection();

@@ -18,6 +18,7 @@ import { e2ee } from "../e2ee_ui.ts";
 import { closeAttachMenu, updateFileButton } from "../files.ts";
 import { parseFeatures } from "../feature_flags.ts";
 import { announceServices, setServerFeatures } from "../server_features.ts";
+import { updateSearchButton } from "../search_ui.ts";
 import { S } from "../state.ts";
 import type { IrcMessage } from "../types.ts";
 import { updateVoiceButton } from "../voice.ts";
@@ -103,6 +104,7 @@ export function handleCap(
         setServerFeatures({ redaction: false });
       }
       if (removed.includes(FILES_CAP)) closeAttachMenu();
+      updateSearchButton();
       announceServices(removed, false);
     } else if (sub === "ACK") {
       const acked = (params[2] || "").split(" ").filter(Boolean);
@@ -124,6 +126,7 @@ export function handleCap(
         updateVoiceButton();
       }
       if (acked.includes("account-tag")) e2ee.setAccountTagEnabled(true);
+      updateSearchButton();
       if (S.isRegistered) {
         // A later ACK (cap-notify): never re-run SASL or send CAP END again.
         if (acked.includes("draft/metadata-2")) metadataSubscribe();

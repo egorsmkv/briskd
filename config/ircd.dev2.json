@@ -174,5 +174,6 @@
       "password": "devnet-link",
       "tls": false
     }
-  ]
+  ],
+  "search": {"url": "http://ircd-search2:7700", "token": "dev-search-token", "max_results": 50}
 }

@@ -13,7 +13,9 @@ TCP when TLS is configured), and the drafts
 `draft/read-marker` (plus the vendor capability `egorsmkv.github.io/calls`
 when `calls` is configured, see [Voice calls](calls.md), and
 `egorsmkv.github.io/e2ee` when
-`e2ee` is configured; see [End-to-end encryption](e2ee.md)). `CAP LS 302` shows values (`sasl` mechanisms, multiline
+`e2ee` is configured; see [End-to-end encryption](e2ee.md); and
+`egorsmkv.github.io/search` when `search` is configured; see
+[Message search](search.md)). `CAP LS 302` shows values (`sasl` mechanisms, multiline
 and metadata limits, the STS policy) and uses `*` continuation lines. Version
 302 makes `cap-notify` implicit. `CAP REQ` is atomic; an unknown or
 unrequestable name (`sts`) is `NAK`, and an unknown subcommand is numeric 410.

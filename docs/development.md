@@ -54,6 +54,11 @@ and start it again to see the burst. Run commands for the second server in
 its own container, for example
 `docker compose -f docker-compose.dev.yml exec -T ircd-dev2 just build`.
 
+Each server also has its own message search service (`ircd-search` and
+`ircd-search2`, built from `search/`, token `dev-search-token`; see
+[Message search](search.md)). Run the service's checks with
+`cargo test` and `cargo clippy --all-targets -- -D warnings` in `search/`.
+
 `bench/traffic.py --targets 127.0.0.1:6667,127.0.0.1:6668` spreads its
 high-load clients over both servers, so every channel spans the link (see
 [Benchmarks](../bench/README.md)).

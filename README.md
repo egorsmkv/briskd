@@ -24,6 +24,8 @@ the [roadmap](ROADMAP.md), plus the IRCv3 specifications on
 - Mnesia disk-copy tables, with persistence for WHOWAS history and safe-channel state.
 - Optional one-to-one voice calls in WebIRC, relayed through rtpengine
   ([guide](docs/calls.md)).
+- Optional full-text message search over stored history, through a Tantivy
+  service, in IRC (`SEARCH`) and WebIRC ([guide](docs/search.md)).
 - Optional AI assistant bots configured in the JSON file, answering in
   channels and private messages through any OpenAI-compatible API
   ([guide](docs/bots.md)).
@@ -65,6 +67,7 @@ For the Docker development environment, project commands, and CI, see
 | [Configuration](docs/configuration.md) | Every JSON setting, TLS, retention, operators, and predefined channels |
 | [IRC support](docs/irc-support.md) | Implemented commands, implementation policies, limits, and server links |
 | [IRCv3](docs/ircv3.md) | Capabilities, tags, accounts, history, metadata, and WebSocket support |
+| [Message search](docs/search.md) | Optional Tantivy search over stored history: `SEARCH`, the ircd-search service, and WebIRC |
 | [End-to-end encryption](docs/e2ee.md) | Optional blind broker for Double Ratchet / OMEMO clients: key directory and offline queue |
 | [Deployment](docs/deployment.md) | Production image and Compose file, and graceful shutdown |
 | [Development](docs/development.md) | Docker environment, `just` commands, CI, and building these docs |

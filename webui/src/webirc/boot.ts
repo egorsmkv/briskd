@@ -23,6 +23,7 @@ import { init as init_chat_scroll } from "./chat/scroll.ts";
 import { init as init_chat_actions } from "./chat/actions.ts";
 import { init as init_mention_picker } from "./mention_picker.ts";
 import { init as init_command_picker } from "./command_picker.ts";
+import { init as init_search_ui } from "./search_ui.ts";
 
 let started = false;
 
@@ -51,4 +52,5 @@ export function boot(): void {
   init_chat_actions();
   init_mention_picker();
   init_command_picker();
+  init_search_ui();
 }

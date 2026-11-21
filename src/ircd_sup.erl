@@ -20,6 +20,7 @@ restart intensity (one restart in five seconds):
    It is `transient`: if it exhausts its own restart intensity it stays down
    instead of restarting the rest of the tree.
 9. `m:ircd_stats`, the statistics sampler behind the admin Stats tab.
+10. `m:ircd_search`, the message search indexer, when `search` is configured.
 
 With `rest_for_one`, a restart of the state process also restarts every
 session, link, and listener started after it, so no connection outlives the
@@ -89,6 +90,13 @@ init(Config) ->
     %% The statistics sampler for the admin Stats tab, last: it depends on
     %% nothing after it and its restart affects nothing else.
     Stats = [#{id => ircd_stats, start => {ircd_stats, start_link, []}}],
+    %% The message search indexer, when `search` is configured; last, so a
+    %% restart rebuilds the index without touching anything else.
+    Search = [
+        #{id => ircd_search, start => {ircd_search, start_link, []}}
+     || maps:get(search, Config, null) =/= null
+    ],
     {ok, {
-        #{strategy => rest_for_one}, Children ++ Listeners ++ Certs ++ Ctl ++ Calls ++ Bots ++ Stats
+        #{strategy => rest_for_one},
+        Children ++ Listeners ++ Certs ++ Ctl ++ Calls ++ Bots ++ Stats ++ Search
     }}.

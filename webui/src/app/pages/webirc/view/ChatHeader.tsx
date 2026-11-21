@@ -1,6 +1,6 @@
 // Conversation header: what is open (glyph, title, topic) and its actions
-// (topic, moderation, E2EE, call), then the workspace actions (members,
-// settings, connection).
+// (topic, moderation, E2EE, call), then the workspace actions (message
+// search, members, settings, connection).
 // Markup only: the WebIRC controllers (webui/src/webirc/) find these
 // elements by id and wire them when the chat starts. `data-kind` on the
 // header (status, channel, or dm) picks the glyph; the connection dot sits
@@ -104,6 +104,16 @@ export function ChatHeader() {
         </div>
         <div class="head-right">
           <span class="my-nick" id="my-nick" title="Your nickname"></span>
+          <button
+            type="button"
+            class="ghost icon hidden"
+            id="btn-search"
+            aria-label="Search messages"
+            aria-keyshortcuts="Control+K Meta+K"
+            title="Search messages (Ctrl+K)"
+          >
+            <Icon name="search" size={18} />
+          </button>
           <button
             type="button"
             class="ghost icon"

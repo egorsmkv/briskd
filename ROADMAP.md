@@ -317,6 +317,22 @@ always-on bouncer details, and Sable's PostgreSQL history server.
   two linked server processes).
 - [ ] Group calls and video.
 
+## Message search (server-specific extension)
+
+- [x] `search` configuration and vendor capability `egorsmkv.github.io/search`
+  ([guide](docs/search.md)): `SEARCH <target> <limit> [timestamp=] :<query>`
+  over a channel, a direct conversation, or `*`, with `CHATHISTORY` access
+  rules, results as a batch of stored messages, and `FAIL SEARCH` replies.
+- [x] ircd-search (`search/`, Rust, Tantivy): an HTTP/JSON index service
+  that stores no readable text and filters by the conversations ircd allows.
+- [x] The index mirrors stored history (`ircd_search`): adds, `history_limit`
+  trimming, redaction, edits, account erasure, and destroyed channels; full
+  rebuild from Mnesia at start and after an outage; E2EE messages are never
+  indexed.
+- [x] WebIRC search dialog (header button, Ctrl+K, `/search`), highlighted
+  matches, paging, and jumping to a result in its conversation.
+- [ ] Search across linked servers (each server searches its own history).
+
 ## AI assistant bots (server-specific extension)
 
 - [x] `ai_providers` and `bots` configuration (`ircd_config`,
