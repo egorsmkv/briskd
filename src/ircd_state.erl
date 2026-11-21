@@ -158,7 +158,16 @@ certificate, if any). The caller is monitored, and a `client` and
 `user_modes` row are written for it.
 """.
 -spec connect(binary(), map()) -> ok.
-connect(Host, Info) -> gen_server:call(?MODULE, {connect, Host, Info}, ?COMMAND_TIMEOUT).
+connect(Host, Info) -> gen_server:call(?MODULE, {connect, Host, Info}, command_timeout()).
+
+%% COMMAND_TIMEOUT, or the `command_timeout` application environment value
+%% (milliseconds; for tests that need the overload path without waiting a
+%% minute). Not a configuration-file setting.
+command_timeout() ->
+    case application:get_env(ircd, command_timeout) of
+        {ok, Ms} when is_integer(Ms), Ms > 0 -> Ms;
+        _ -> ?COMMAND_TIMEOUT
+    end.
 
 -doc """
 Record that the calling session finished a `STARTTLS` handshake.
@@ -192,7 +201,7 @@ that need registration.
 -spec command(binary(), [binary()], non_neg_integer(), [{binary(), undefined | binary()}]) ->
     ok | quit | starttls.
 command(Command, Params, Bytes, Tags) ->
-    gen_server:call(?MODULE, {command, Command, Params, Bytes, Tags}, ?COMMAND_TIMEOUT).
+    gen_server:call(?MODULE, {command, Command, Params, Bytes, Tags}, command_timeout()).
 
 -doc """
 Apply a command from a secondary connection attached to `Primary`
@@ -204,7 +213,7 @@ not attached to `Primary` or the primary is gone.
 -spec command_as(pid(), binary(), [binary()], non_neg_integer(), list()) -> ok | quit.
 command_as(Primary, Command, Params, Bytes, Tags) ->
     gen_server:call(
-        ?MODULE, {command_as, Primary, Command, Params, Bytes, Tags}, ?COMMAND_TIMEOUT
+        ?MODULE, {command_as, Primary, Command, Params, Bytes, Tags}, command_timeout()
     ).
 
 -doc """
@@ -380,6 +389,12 @@ init(#{name := Name} = Config) ->
     persistent_term:put({?MODULE, started}, Started),
     persistent_term:put({?MODULE, started_at}, erlang:monotonic_time(second)),
     persistent_term:put({?MODULE, started_at_system}, erlang:system_time(second)),
+    %% Sessions that received the full welcome: the local user count for
+    %% LUSERS, kept as they register and leave instead of counted by a scan
+    %% of every client on each registration (ircd_state_info).
+    ircd_ready_clients = ets:new(ircd_ready_clients, [named_table, public, set]),
+    %% Session -> channels it was invited to (ircd_state_channel:prune_invited/1).
+    ircd_invites = ets:new(ircd_invites, [named_table, public, bag]),
     ircd_command_stats = ets:new(ircd_command_stats, [
         named_table, public, set, {write_concurrency, true}
     ]),
@@ -429,6 +444,7 @@ init(#{name := Name} = Config) ->
     table(e2ee_device, record_info(fields, e2ee_device), []),
     table(e2ee_queue, record_info(fields, e2ee_queue), [{type, ordered_set}]),
     table(direct_history, record_info(fields, direct_history), []),
+    table(direct_message, record_info(fields, direct_message), [{type, ordered_set}]),
     %% Admin overrides of features (ircd_overrides), durable.
     table(setting, record_info(fields, setting), []),
     ok = mnesia:wait_for_tables(
@@ -439,6 +455,7 @@ init(#{name := Name} = Config) ->
             e2ee_device,
             e2ee_queue,
             direct_history,
+            direct_message,
             client,
             channel,
             channel_history,
@@ -471,14 +488,32 @@ init(#{name := Name} = Config) ->
     {ok, Name}.
 
 table(Table, Fields, Options) ->
-    case mnesia:create_table(Table, [{attributes, Fields}, {disc_copies, [node()]} | Options]) of
+    case mnesia:create_table(Table, [{attributes, Fields}, {storage(Table), [node()]} | Options]) of
         {atomic, ok} ->
             ok;
         {aborted, {already_exists, Table}} ->
             ok = load_table(Table, Fields, Options),
             ensure_table_shape(Table, Fields),
-            ensure_disc_copy(Table)
+            ensure_storage(Table)
     end.
+
+%% Tables cleared on every start (sessions, presence, and imported peer
+%% state) are kept in memory only: as disc_copies every write went through
+%% the Mnesia transaction log, including the `activity` row written for
+%% every client command, for data no restart keeps. Everything else (WHOWAS,
+%% channels and their history, accounts, ...) stays on disk.
+storage(Table) when
+    Table =:= client;
+    Table =:= activity;
+    Table =:= user_modes;
+    Table =:= remote_client;
+    Table =:= remote_channel;
+    Table =:= known_server;
+    Table =:= service
+->
+    ram_copies;
+storage(_Table) ->
+    disc_copies.
 
 %% An existing schema entry is not readable until its local copy is loaded.
 load_table(Table, Fields, Options) ->
@@ -497,17 +532,20 @@ replace_table(Table, Fields, Options) ->
         {aborted, Reason} ->
             logger:warning("Mnesia delete_table ~p returned ~p", [Table, Reason])
     end,
-    case mnesia:create_table(Table, [{attributes, Fields}, {disc_copies, [node()]} | Options]) of
+    case mnesia:create_table(Table, [{attributes, Fields}, {storage(Table), [node()]} | Options]) of
         {atomic, ok} -> ok;
         {aborted, {already_exists, Table}} -> ok
     end.
 
-ensure_disc_copy(Table) ->
+%% An existing table keeps the storage type it was created with: convert it
+%% (transient tables written to disk by earlier releases become ram_copies).
+ensure_storage(Table) ->
+    Wanted = storage(Table),
     case mnesia:table_info(Table, storage_type) of
-        ram_copies ->
-            {atomic, ok} = mnesia:change_table_copy_type(Table, node(), disc_copies),
+        Wanted ->
             ok;
-        disc_copies ->
+        _ ->
+            {atomic, ok} = mnesia:change_table_copy_type(Table, node(), Wanted),
             ok
     end.
 
@@ -638,7 +676,7 @@ reset_channels() ->
                 end,
                 table_keys(channel)
             ),
-            ok = ircd_state_history:init_channel_storage(),
+            ok = ircd_state_history:init_storage(),
             lists:foreach(
                 fun(Key) ->
                     case mnesia:dirty_read(channel, Key) of
@@ -665,8 +703,9 @@ reset_channels() ->
             ),
             {atomic, ok} = mnesia:clear_table(channel_history),
             {atomic, ok} = mnesia:clear_table(channel_message),
-            ok = ircd_state_history:init_channel_storage(),
             {atomic, ok} = mnesia:clear_table(direct_history),
+            {atomic, ok} = mnesia:clear_table(direct_message),
+            ok = ircd_state_history:init_storage(),
             ok
     end,
     ircd_state_meta:restore_channels(),

@@ -29,7 +29,7 @@ decided by the setting loaded at that start.
 | End-to-end encryption offline queue (`e2ee_queue`, ciphertext until acknowledged or `queue_ttl`) | Kept | Kept |
 | Channel metadata (`channel_meta`, synced with `ircd_chan_meta`) | Kept for safe `!` channels; deleted for ordinary channels | Kept |
 | IRCv3 connection state: capabilities, MONITOR lists, user metadata, SASL progress | Deleted | Deleted |
-| Direct-message history between accounts (`direct_history`) | Deleted | Kept, newest `history_limit` entries per pair |
+| Direct-message history between accounts (`direct_message`: one row per message) | Deleted | Kept, newest `history_limit` entries per pair |
 | Admin feature overrides (`setting`: control key and value, set in the admin panel) | Kept | Kept |
 
 A restart therefore drops live nick occupancy, operator status, and peer state
@@ -171,9 +171,21 @@ one row per entry keyed by `{Channel, Class, Seq}`), so recording a message
 writes one small row instead of the channel's whole history. At startup
 under `channels` retention, every `channel_history` row is converted into
 `channel_message` rows and deleted; `channel_history` stays as an empty table.
-`channel_message` is created empty when it is missing. Rolling back to an
-older release after this conversion needs the backup taken before the
-upgrade: older code reads only `channel_history`.
+`channel_message` is created empty when it is missing. Direct-message history
+moved the same way, from `direct_history` to `direct_message` (keyed
+`{PartyPair, Class, Seq}`), and is converted at the same time. Rolling back to
+an older release after this conversion needs the backup taken before the
+upgrade: older code reads only `channel_history` and `direct_history`.
+
+The tables cleared on every start (`client`, `activity`, `user_modes`,
+`remote_client`, `remote_channel`, `known_server`, `service`) are kept in
+memory only (`ram_copies`); an existing disc copy from an earlier release is
+converted at startup. As disc copies, every write to them went through the
+transaction log, including the `activity` row written for every client
+command, for data that no restart keeps. Mnesia's
+`dump_log_write_threshold` defaults to 50,000 writes here (Mnesia's own
+default is 1,000), so bursts of history writes do not start a log dump while
+the previous one runs; a value set in `sys.config` is kept.
 
 Roll back by stopping the node and restoring the backup taken before the
 upgrade. Do not mix a newer schema with an older beam without that restore.

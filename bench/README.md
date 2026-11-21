@@ -95,9 +95,15 @@ does not pace).
 
 ## Event loop and limits
 
-`traffic.py` runs on [rsloop](https://github.com/RustedBytes/rsloop), a Rust
-asyncio event loop (io_uring on Linux 6.1+, pinned in `pyproject.toml`);
-`--loop asyncio` uses the standard loop instead, for comparison. One Python
+`traffic.py` runs on the standard asyncio event loop. `--loop rsloop` uses
+[rsloop](https://github.com/RustedBytes/rsloop) 0.1.68 (a Rust asyncio loop,
+io_uring on Linux 6.1+, pinned in `pyproject.toml`) instead, but it is not
+the default: against the same server, a 2,000-client burst on asyncio
+connected every client in 2.1 s and counted all 980,000 deliveries at
+86,500/s, while rsloop 0.1.68 failed half the connections (closed before the
+welcome, in multiples of `--load-concurrency`), counted 9 deliveries short,
+and reached 13,900/s; rsloop 0.1.66 also failed 500 of 2,000 connections. An
+exact per-message check on asyncio found no message lost by the server. One Python
 process drives every client, so the report states the generator's CPU use
 during the high-load phase: near 100% of a core means the generator, not the
 server, set the pace. The script raises its open-file limit to `--clients`

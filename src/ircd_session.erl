@@ -261,6 +261,12 @@ deliver(Module, Socket, Line, State) ->
     mirror(Line),
     case Module:send(Socket, outgoing(Line)) of
         ok ->
+            %% Counted here, by the session that writes the line, rather than
+            %% by the state process once per recipient of every fan-out
+            %% (STATS l; ircd_connection_stats has write_concurrency).
+            ircd_state_client:update_connection_stats(
+                self(), sent_messages, sent_bytes, iolist_size(Line)
+            ),
             {noreply, State};
         {error, Reason} ->
             logger:debug(#{event => send_failed, peer => peer_of(State), reason => Reason}),

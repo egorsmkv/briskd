@@ -435,7 +435,7 @@ roadmap_memory_bounds(Port) ->
         ),
         Convos = [
             K
-         || K <- ircd_state:table_keys(direct_history),
+         || K <- ircd_state_history:direct_conversations(),
             element(1, K) =:= {account, <<"capuser">>} orelse
                 element(2, K) =:= {account, <<"capuser">>}
         ],

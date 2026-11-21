@@ -675,9 +675,13 @@ migration() ->
     {atomic, ok} = mnesia:create_table(service, [
         {attributes, record_info(fields, service) ++ [extra]} | Disc
     ]),
-    %% A RAM-only table becomes a disc copy.
+    %% A transient table an older release kept on disk becomes RAM-only, and
+    %% a durable table created RAM-only becomes a disc copy.
     {atomic, ok} = mnesia:create_table(activity, [
-        {attributes, record_info(fields, activity)}, {ram_copies, [node()]}
+        {attributes, record_info(fields, activity)} | Disc
+    ]),
+    {atomic, ok} = mnesia:create_table(read_marker, [
+        {attributes, record_info(fields, read_marker)}, {ram_copies, [node()]}
     ]),
     %% A safe channel row survives a transient restart, so it shows the
     %% migrated shape; the account row keeps its data.
@@ -738,7 +742,8 @@ migration() ->
         ?assertEqual(
             record_info(fields, remote_channel), mnesia:table_info(remote_channel, attributes)
         ),
-        ?assertEqual(disc_copies, mnesia:table_info(activity, storage_type)),
+        ?assertEqual(ram_copies, mnesia:table_info(activity, storage_type)),
+        ?assertEqual(disc_copies, mnesia:table_info(read_marker, storage_type)),
         ?assertEqual(
             record_info(fields, service) ++ [extra], mnesia:table_info(service, attributes)
         ),

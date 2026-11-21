@@ -48,7 +48,11 @@ channel is kept only under `channels` retention or when it is a configured
 channel. Empty non-predefined channels without remote members are bounded by
 `max_empty_channels` and expire after `empty_channel_ttl` seconds.
 """.
+%% Session pid -> folded channel keys it was invited to (ETS bag, owned by
+%% ircd_state), so a disconnect cleans only those channels' invite lists.
+-define(INVITES, ircd_invites).
 -export([
+    note_invited/2,
     admin_create/3,
     admin_destroy/3,
     admin_mode/4,
@@ -252,11 +256,30 @@ channel_age_key(Created) when is_integer(Created) -> Created;
 channel_age_key(_) -> 0.
 
 -doc """
-Remove a disconnecting session `Pid` (and any dead pids) from every channel's
-`invited` list.
+Record that session `Pid` was invited to channel `Key` (folded), so its
+disconnect visits only those channels (`prune_invited/1`).
+""".
+-spec note_invited(pid(), binary()) -> ok.
+note_invited(Pid, Key) ->
+    case ets:whereis(?INVITES) of
+        undefined -> ok;
+        _ -> true = ets:insert(?INVITES, {Pid, Key})
+    end,
+    ok.
+
+-doc """
+Remove a disconnecting session `Pid` (and any dead pids) from the `invited`
+list of every channel it was invited to. Only those channels are read (an
+index kept by `note_invited/2`), where every channel used to be read on
+every disconnect.
 """.
 -spec prune_invited(pid()) -> ok.
 prune_invited(Pid) when is_pid(Pid) ->
+    Keys =
+        case ets:whereis(?INVITES) of
+            undefined -> [];
+            _ -> lists:usort([K || {_, K} <- ets:take(?INVITES, Pid)])
+        end,
     lists:foreach(
         fun(Key) ->
             case mnesia:dirty_read(channel, Key) of
@@ -270,7 +293,7 @@ prune_invited(Pid) when is_pid(Pid) ->
                     ok
             end
         end,
-        ircd_state:table_keys(channel)
+        Keys
     ).
 
 -doc """
@@ -1881,6 +1904,7 @@ invite(Nick, Name, #client{pid = Pid} = Client, Server) ->
                                 invited =
                                     lists:usort([Target#client.pid | AliveInvited])
                             }),
+                            note_invited(Target#client.pid, Channel#channel.key),
                             notify_invite(Target, Canonical, Client, Server),
                             ircd_state_v3:invite_notify(
                                 Channel,

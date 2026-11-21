@@ -2173,7 +2173,8 @@ remember_local_invite(Pid, Name) ->
     case mnesia:dirty_read(channel, ircd_wire:fold(Name)) of
         [#channel{invited = Invited} = Channel] ->
             Alive = [P || P <- Invited, is_process_alive(P)],
-            mnesia:dirty_write(Channel#channel{invited = lists:usort([Pid | Alive])});
+            mnesia:dirty_write(Channel#channel{invited = lists:usort([Pid | Alive])}),
+            ircd_state_channel:note_invited(Pid, Channel#channel.key);
         [] ->
             ok
     end.

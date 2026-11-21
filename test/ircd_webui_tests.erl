@@ -668,13 +668,10 @@ live_webui() ->
         %% Keys are the sorted pair ({account, _} sorts before {nick, _}).
         WithKeeper = {Me, Keeper},
         WithGuest = {Me, Guest},
-        ok = mnesia:dirty_write(#direct_history{
-            key = WithKeeper,
-            entries = [Entry(<<"eraseme">>, <<"hi">>), Entry(<<"keeper">>, <<"hello">>)]
-        }),
-        ok = mnesia:dirty_write(#direct_history{
-            key = WithGuest, entries = [Entry(undefined, <<"from guest">>)]
-        }),
+        ok = ircd_state_history:replace_direct(WithKeeper, [
+            Entry(<<"eraseme">>, <<"hi">>), Entry(<<"keeper">>, <<"hello">>)
+        ]),
+        ok = ircd_state_history:replace_direct(WithGuest, [Entry(undefined, <<"from guest">>)]),
         DeleteReq = fun(Account, Pass, Extra) ->
             http_req(
                 Port,
@@ -704,10 +701,10 @@ live_webui() ->
             [#{text := <<"theirs">>}, #{text := <<"legacy">>, account := undefined}], ChanLeft
         ),
         ?assertMatch(
-            [#direct_history{entries = [#{text := <<"hello">>}]}],
-            mnesia:dirty_read(direct_history, WithKeeper)
+            [#{text := <<"hello">>}],
+            ircd_state_history:direct_history(WithKeeper)
         ),
-        ?assertEqual([], mnesia:dirty_read(direct_history, WithGuest)),
+        ?assertEqual([], ircd_state_history:direct_history(WithGuest)),
         {401, _, _} = DeleteReq(<<"eraseme">>, <<"erase-pass-1">>, Csrf),
         ?assertMatch({ok, _}, ircd_account:find(<<"keeper">>)),
 

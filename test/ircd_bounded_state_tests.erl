@@ -25,7 +25,8 @@ run() ->
         link_process_down(),
         table_owners(),
         password_resets(),
-        account_channels()
+        account_channels(),
+        overloaded_command()
     after
         _ = application:stop(ircd),
         os:unsetenv("IRCD_CONFIG")
@@ -121,6 +122,58 @@ account_channels() ->
     true = ets:insert(Table, {<<"leaver">>, [<<"#a">>]}),
     {ok, _} = ircd_ctl:run(["delete-account", "leaver"]),
     ?assertEqual([], ets:lookup(Table, <<"leaver">>)).
+
+%% A command the state process does not apply within its deadline closes
+%% the client with "Server overloaded" instead of crashing the session, and
+%% the server serves new clients once it catches up.
+overloaded_command() ->
+    Port = listener_port(),
+    Sock = client(Port, <<"slowpoke">>),
+    ok = application:set_env(ircd, command_timeout, 200),
+    State =
+        case whereis(ircd_state) of
+            P when is_pid(P) -> P
+        end,
+    ok = sys:suspend(State),
+    try
+        ok = gen_tcp:send(Sock, <<"LUSERS\r\n">>),
+        Closed = recv_all(Sock, <<>>),
+        ?assertNotEqual(nomatch, binary:match(Closed, <<"Server overloaded">>))
+    after
+        ok = sys:resume(State),
+        ok = application:unset_env(ircd, command_timeout),
+        gen_tcp:close(Sock)
+    end,
+    ?assertEqual(State, whereis(ircd_state)),
+    Next = client(Port, <<"nextone">>),
+    gen_tcp:close(Next).
+
+listener_port() ->
+    {_, Pid, _, _} = lists:keyfind(tcp, 1, supervisor:which_children(ircd_sup)),
+    {ok, {_, Port}} = inet:sockname(sys:get_state(Pid)),
+    Port.
+
+client(Port, Nick) ->
+    {ok, Sock} = gen_tcp:connect("127.0.0.1", Port, [binary, {active, false}, {packet, raw}]),
+    ok = gen_tcp:send(Sock, [<<"NICK ">>, Nick, <<"\r\nUSER ">>, Nick, <<" 0 * :T\r\n">>]),
+    _ = recv_until(Sock, <<" 001 ">>, <<>>),
+    Sock.
+
+recv_until(Sock, Needle, Acc) ->
+    case binary:match(Acc, Needle) of
+        nomatch ->
+            {ok, <<_/binary>> = Bin} = gen_tcp:recv(Sock, 0, 5000),
+            recv_until(Sock, Needle, <<Acc/binary, Bin/binary>>);
+        _ ->
+            Acc
+    end.
+
+%% Everything until the server closes the connection.
+recv_all(Sock, Acc) ->
+    case gen_tcp:recv(Sock, 0, 5000) of
+        {ok, <<_/binary>> = Bin} -> recv_all(Sock, <<Acc/binary, Bin/binary>>);
+        {error, closed} -> Acc
+    end.
 
 wait_until(Fun) -> wait_until(Fun, 50).
 

@@ -205,6 +205,7 @@ send_attach_welcome(Client, Holder, Server) ->
 
 send_full_welcome(#client{nick = Nick, user = User, host = Host} = Client, Server) ->
     ircd_conn:put(Client#client.pid, signon, erlang:system_time(second)),
+    true = ets:insert(ircd_ready_clients, {Client#client.pid}),
     _ = ircd_state_info:note_user_counts(),
     ircd_state_link:propagate_introduction(Client, Server),
     ircd_state_v3:registered(Client, Server),
@@ -388,17 +389,17 @@ update_connection_stats(Pid, MessagesKey, BytesKey, Bytes) ->
         _ -> ok
     end.
 
+%% One atomic update. A connection without a row (not counted, or removed
+%% by the state process while its session was still sending) is ignored:
+%% sessions call this concurrently with that removal.
 update_connection_stats_counter(Pid, MessagesPosition, BytesPosition, Bytes) ->
-    case ets:member(ircd_connection_stats, Pid) of
-        true ->
-            _ = ets:update_counter(
-                ircd_connection_stats,
-                Pid,
-                [{MessagesPosition, 1}, {BytesPosition, Bytes}]
-            ),
-            ok;
-        false ->
-            ok
+    try
+        _ = ets:update_counter(
+            ircd_connection_stats, Pid, [{MessagesPosition, 1}, {BytesPosition, Bytes}]
+        ),
+        ok
+    catch
+        error:badarg -> ok
     end.
 
 -doc """
@@ -459,6 +460,7 @@ disconnect(#client{pid = Pid, channels = Channels} = Client, Reason, Server) ->
         Channels
     ),
     ok = forget_nick(Pid, Client#client.nick),
+    ets:delete(ircd_ready_clients, Pid),
     mnesia:dirty_delete(client, Pid),
     mnesia:dirty_delete(activity, Pid),
     mnesia:dirty_delete(user_modes, Pid),

@@ -1534,6 +1534,7 @@ holder and `{attach, Holder}` to the connection.
 finish_attach(#client{pid = Pid, nick = Nick}, Holder) ->
     ets:insert(ircd_attached, {Pid, Holder}),
     logger:info(#{event => session_attached, nick => Nick}),
+    ets:delete(ircd_ready_clients, Pid),
     mnesia:dirty_delete(client, Pid),
     mnesia:dirty_delete(activity, Pid),
     mnesia:dirty_delete(user_modes, Pid),

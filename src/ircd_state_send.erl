@@ -630,30 +630,41 @@ deliver(Pid, Prefix, Command, Middle, Tail, Tags) ->
 
 deliver_line(_Pid, [], _Size) ->
     ok;
-deliver_line(Pid, Line, Size) ->
+deliver_line(Pid, Line, _Size) ->
+    %% The session counts what it sends (ircd_session:deliver/4).
     Pid ! {irc, Line},
-    ircd_state_client:update_connection_stats(Pid, sent_messages, sent_bytes, Size),
     ok.
 
 %% Build each distinct tag variant once per fan-out and share the binary.
+%% Which tags a recipient sees depends only on four of its capabilities
+%% (`tag_allowed/2` and the server-time rule in `visible/2`), so the line is
+%% cached by those: the tag list is filtered once per combination, not once
+%% per recipient.
 send_cached(Pid, Prefix, Command, Middle, Tail, Tags, Cache) ->
     Enabled = ircd_cap:enabled_set(Pid),
-    case Command =:= <<"TAGMSG">> andalso not maps:is_key(<<"message-tags">>, Enabled) of
+    MessageTags = maps:is_key(<<"message-tags">>, Enabled),
+    case Command =:= <<"TAGMSG">> andalso not MessageTags of
         true ->
             Cache;
         false ->
-            Visible = visible(Enabled, Tags),
+            Key = {
+                MessageTags,
+                maps:is_key(<<"server-time">>, Enabled),
+                maps:is_key(<<"account-tag">>, Enabled),
+                maps:is_key(<<"draft/oper-tag">>, Enabled)
+            },
             case Cache of
-                #{Visible := {Line, Size}} ->
+                #{Key := {Line, Size}} ->
                     deliver_line(Pid, Line, Size),
                     Cache;
                 _ ->
+                    Visible = visible(Enabled, Tags),
                     Line = iolist_to_binary(
                         ircd_wire:message(Visible, Prefix, Command, Middle, Tail)
                     ),
                     Size = byte_size(Line),
                     deliver_line(Pid, Line, Size),
-                    Cache#{Visible => {Line, Size}}
+                    Cache#{Key => {Line, Size}}
             end
     end.
 

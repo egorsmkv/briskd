@@ -19,9 +19,11 @@ The default target is the development listener on port 6667. `bench/release`
 starts a packaged release on port 6668 and passes `--kind release`. Each run
 uses a fresh nick prefix because a quit holds that nick for 60 seconds.
 
-The event loop is rsloop (a Rust asyncio loop, io_uring on Linux) unless
-`--loop asyncio` is given; the report names the loop and the generator's own
-CPU use, so a saturated generator is not mistaken for a slow server.
+The event loop is the standard asyncio loop; `--loop rsloop` uses rsloop (a
+Rust asyncio loop, io_uring on Linux) instead, which lost connections and
+deliveries in these runs (bench/README.md). The report names the loop and the
+generator's own CPU use, so a saturated generator is not mistaken for a slow
+server.
 """
 
 import argparse
@@ -260,6 +262,10 @@ async def high_load(args, base):
                 welcome.append(time.perf_counter() - started)
                 writer.write(f"JOIN {prefix}{i // members}\r\n".encode())
                 await writer.drain()
+                # Only a confirmed member (end of NAMES) counts towards the
+                # expected deliveries: a JOIN still queued when the messages
+                # go out would miss them without any error.
+                await read_until(reader, b" 366 ", args.connect_timeout)
                 conns[i] = (reader, writer)
             except Exception as exc:  # noqa: BLE001 - counted by kind
                 if isinstance(exc, EOFError):
@@ -282,8 +288,6 @@ async def high_load(args, base):
     for i in live:
         group_size[i // members] = group_size.get(i // members, 0) + 1
     expected = sum(share[i] * (group_size[i // members] - 1) for i in live)
-    # Let every JOIN land before counting starts.
-    await asyncio.sleep(min(10.0, 1.0 + n / 5000))
 
     received = 0
     latencies = []
@@ -885,9 +889,10 @@ def main():
     )
     parser.add_argument(
         "--loop",
-        choices=("rsloop", "asyncio"),
-        default="rsloop",
-        help="event loop: rsloop (Rust, io_uring on Linux) or the standard asyncio loop",
+        choices=("asyncio", "rsloop"),
+        default="asyncio",
+        help="event loop: the standard asyncio loop, or rsloop (Rust, io_uring on Linux; "
+        "unreliable at high load, see bench/README.md)",
     )
     parser.add_argument("--timeout", type=float, default=8)
     parser.add_argument("--output", default="")

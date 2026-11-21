@@ -94,6 +94,7 @@ start_mnesia(Dir) ->
                     end;
                 false ->
                     ok = application:set_env(mnesia, dir, Dir),
+                    ok = log_dump_threshold(),
                     ok = filelib:ensure_dir(filename:join(Dir, "schema.DAT")),
                     case ensure_mnesia_schema(Dir) of
                         ok ->
@@ -105,6 +106,24 @@ start_mnesia(Dir) ->
                             {error, {mnesia_schema, SchemaReason}}
                     end
             end
+    end.
+
+%% Mnesia dumps its transaction log into the table files every
+%% `dump_log_write_threshold` writes (default 1000). Channel history writes
+%% one row per message, so a burst of messages started a dump while the
+%% previous one was still running ("Mnesia is overloaded:
+%% {dump_log,write_threshold}"; bench/traffic.py high-load phase). A larger
+%% threshold dumps less often: the log grows larger between dumps and takes
+%% longer to replay after a crash, with no loss of data. A value set by the
+%% operator (sys.config) is kept.
+-define(DUMP_LOG_WRITE_THRESHOLD, 50000).
+
+log_dump_threshold() ->
+    case application:get_env(mnesia, dump_log_write_threshold) of
+        {ok, _} ->
+            ok;
+        undefined ->
+            application:set_env(mnesia, dump_log_write_threshold, ?DUMP_LOG_WRITE_THRESHOLD)
     end.
 
 ensure_mnesia_schema(Dir) ->

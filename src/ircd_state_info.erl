@@ -800,16 +800,13 @@ restarts. Returns `{Local, Global}`.
 """.
 -spec note_user_counts() -> {non_neg_integer(), non_neg_integer()}.
 note_user_counts() ->
-    Local = ets:foldl(
-        fun(#client{} = C, N) ->
-            case ircd_state_client:ready(C) of
-                true -> N + 1;
-                false -> N
-            end
+    %% Welcomed local users (ircd_ready_clients): O(1), where counting the
+    %% `client` table on every registration made registering N users O(N^2).
+    Local =
+        case ets:info(ircd_ready_clients, size) of
+            N when is_integer(N) -> N;
+            undefined -> 0
         end,
-        0,
-        client
-    ),
     Global = Local + ets:info(remote_client, size),
     put(ircd_max_local, max(Local, get_count(ircd_max_local))),
     put(ircd_max_global, max(Global, get_count(ircd_max_global))),

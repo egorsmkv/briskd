@@ -5,7 +5,10 @@
     erase_account/1,
     has_channel_history/1,
     history_channels/0,
-    init_channel_storage/0,
+    init_storage/0,
+    direct_conversations/0,
+    direct_history/1,
+    replace_direct/2,
     replace_channel/2,
     valid_marker_target/1,
     chathistory/3,
@@ -57,11 +60,11 @@ Runs inside `m:ircd_state`. Channel history is the Mnesia `channel_message`
 table (ordered_set), one row per entry keyed by folded channel name, class
 (message or event), and sequence number, so recording a message writes one
 small row; a per-channel index (ETS `ircd_history_index`) keeps the last
-sequence number and the counts used to drop the oldest entry. Direct-message history is the Mnesia
-`direct_history` table, keyed by the sorted pair of participants; a message
-is recorded only when at least one side is logged in, and only a logged-in
-user can read it (one list per pair, newest first). Both are capped by
-`history_limit` (`ircd_state:history_limit/0`): the newest `history_limit`
+sequence number and the counts used to drop the oldest entry. Direct-message
+history is the Mnesia `direct_message` table, stored the same way and keyed
+by the sorted pair of participants; a message is recorded only when at least
+one side is logged in, and only a logged-in user can read it. Both are capped
+by `history_limit` (`ircd_state:history_limit/0`): the newest `history_limit`
 messages (`PRIVMSG`, `NOTICE`, `TAGMSG`) and, separately, the newest
 `history_limit` events, so event-playback never pushes messages out. History
 survives restart only under `channels` retention; `transient` retention
@@ -237,29 +240,6 @@ store_event(Key, Command, Prefix, Params, Text, {MsgId, Time}) ->
             ok
     end.
 
-%% Keep the newest `history_limit` messages (PRIVMSG, NOTICE, TAGMSG) and,
-%% separately, the newest `history_limit` events, so draft/event-playback
-%% entries never push messages out of history.
-trim(Entries) ->
-    trim(Entries, limit(), limit(), []).
-
-trim([], _Messages, _Events, Acc) ->
-    lists:reverse(Acc);
-trim([#{cmd := Cmd} = Entry | Rest], Messages, Events, Acc) when
-    Cmd =:= <<"PRIVMSG">>; Cmd =:= <<"NOTICE">>; Cmd =:= <<"TAGMSG">>
-->
-    case Messages of
-        0 -> trim(Rest, 0, Events, Acc);
-        _ -> trim(Rest, Messages - 1, Events, [Entry | Acc])
-    end;
-trim([Entry | Rest], Messages, Events, Acc) when is_map(Entry) ->
-    case Events of
-        0 -> trim(Rest, Messages, 0, Acc);
-        _ -> trim(Rest, Messages, Events - 1, [Entry | Acc])
-    end;
-trim([Legacy | Rest], Messages, Events, Acc) ->
-    trim([normalize(Legacy) | Rest], Messages, Events, Acc).
-
 params_list(notarget) -> [];
 params_list(Params) -> Params.
 
@@ -302,19 +282,14 @@ note_direct({FromAccount, _} = From, {ToAccount, _} = To, Target, #{cmd := Comma
             PartyA = party(From),
             PartyB = party(To),
             Key = dm_key(PartyA, PartyB),
-            Existing = dm_entries(Key),
-            case Existing of
-                [] ->
+            case has(direct_message, Key) of
+                false ->
                     prune_direct_conversations(PartyA, Key),
                     prune_direct_conversations(PartyB, Key);
-                _ ->
+                true ->
                     ok
             end,
-            Stored = Entry#{target => ircd_wire:retain(Target)},
-            mnesia:dirty_write(#direct_history{
-                key = Key, entries = trim([Stored | Existing])
-            }),
-            ok;
+            append(direct_message, Key, Entry#{target => ircd_wire:retain(Target)});
         false ->
             ok
     end;
@@ -351,22 +326,19 @@ erase_account(Folded) ->
     ]),
     Me = {account, Folded},
     Direct = lists:sum([
-        case {mnesia:dirty_read(direct_history, Key), Other} of
-            {[#direct_history{entries = Entries}], {nick, _}} ->
-                mnesia:dirty_delete(direct_history, Key),
-                length([E || E <- Entries, Mine(E)]);
-            {[#direct_history{entries = Entries} = Row], _} ->
-                {Gone, Kept} = lists:partition(Mine, Entries),
-                case {Gone, Kept} of
-                    {[], _} -> ok;
-                    {_, []} -> mnesia:dirty_delete(direct_history, Key);
-                    _ -> mnesia:dirty_write(Row#direct_history{entries = Kept})
-                end,
-                length(Gone);
-            {[], _} ->
-                0
+        begin
+            Entries = dm_entries(Key),
+            {Gone, Kept} = lists:partition(Mine, Entries),
+            case {Other, Gone, Kept} of
+                %% Only the account could read a conversation with a nick.
+                {{nick, _}, _, _} -> delete(direct_message, Key);
+                {_, [], _} -> ok;
+                {_, _, []} -> delete(direct_message, Key);
+                _ -> replace(direct_message, Key, Kept)
+            end,
+            length(Gone)
         end
-     || {A, B} = Key <- ircd_state:table_keys(direct_history),
+     || {A, B} = Key <- dm_conversations(),
         Other <- [
             if
                 A =:= Me -> B;
@@ -390,18 +362,17 @@ prune_direct_conversations({account, _} = Party, KeepingKey) ->
         max_direct_conversations, ircd_config:current_or_empty(), 200
     ),
     Convos = [
-        {latest_entry_time(Entries), Key}
-     || Key <- ircd_state:table_keys(direct_history),
+        {dm_latest_time(Key), Key}
+     || Key <- dm_conversations(),
         Key =/= KeepingKey,
-        element(1, Key) =:= Party orelse element(2, Key) =:= Party,
-        [#direct_history{entries = Entries}] <- [mnesia:dirty_read(direct_history, Key)]
+        element(1, Key) =:= Party orelse element(2, Key) =:= Party
     ],
     Excess = length(Convos) - (Max - 1),
     case Excess > 0 of
         true ->
             Oldest = lists:sublist(lists:sort(Convos), Excess),
             lists:foreach(
-                fun({_, OldKey}) -> mnesia:dirty_delete(direct_history, OldKey) end,
+                fun({_, OldKey}) -> delete(direct_message, OldKey) end,
                 Oldest
             );
         false ->
@@ -410,21 +381,28 @@ prune_direct_conversations({account, _} = Party, KeepingKey) ->
 prune_direct_conversations(_, _) ->
     ok.
 
-latest_entry_time([#{time := Time} | _]) when is_integer(Time) -> Time;
-latest_entry_time(_) -> 0.
-
-%%% Channel history storage: one `channel_message` row per entry.
+%%% History storage: one row per entry.
+%%
+%% Channel history is `channel_message`, keyed {FoldedChannel, Class, Seq};
+%% direct-message history is `direct_message`, keyed {PartyPair, Class, Seq}.
+%% Class is `msg` or `event` (each trimmed to `history_limit`), and Seq
+%% orders a conversation's entries. Appending writes one small row; the
+%% older formats (`channel_history`, `direct_history`: one row per
+%% conversation holding its whole list) were rewritten for every message and
+%% are only read to migrate them. Match specifications are written as plain
+%% tuples ('_' and '$N' do not fit the record field types) and bind the
+%% conversation, so ordered_set selects stay within it.
 
 -define(INDEX, ircd_history_index).
 
 -doc """
-Create the per-channel index of `channel_message` (last sequence number and
-entry counts per class) and move rows of the older one-row-per-channel
-`channel_history` table into `channel_message`. Call from `m:ircd_state`'s
-`init/1`, which owns the index.
+Create the history index (per conversation: last sequence number and entry
+counts per class) and move rows of the older one-row-per-conversation
+tables, `channel_history` and `direct_history`, into `channel_message` and
+`direct_message`. Call from `m:ircd_state`'s `init/1`, which owns the index.
 """.
--spec init_channel_storage() -> ok.
-init_channel_storage() ->
+-spec init_storage() -> ok.
+init_storage() ->
     _ =
         case ets:whereis(?INDEX) of
             undefined -> ets:new(?INDEX, [named_table, public, set]);
@@ -434,13 +412,25 @@ init_channel_storage() ->
         fun(Key) ->
             case mnesia:dirty_read(channel_history, Key) of
                 [#channel_history{channel = Channel, entries = Entries}] ->
-                    replace_channel(Channel, Entries),
+                    replace(channel_message, Channel, Entries),
                     mnesia:dirty_delete(channel_history, Channel);
                 [] ->
                     ok
             end
         end,
         mnesia:dirty_all_keys(channel_history)
+    ),
+    lists:foreach(
+        fun(Key) ->
+            case mnesia:dirty_read(direct_history, Key) of
+                [#direct_history{key = Pair, entries = Entries}] ->
+                    replace(direct_message, Pair, Entries),
+                    mnesia:dirty_delete(direct_history, Pair);
+                [] ->
+                    ok
+            end
+        end,
+        mnesia:dirty_all_keys(direct_history)
     ).
 
 -doc "The stored history of channel `Key` (folded name), newest first.".
@@ -449,15 +439,63 @@ channel_history(Key) ->
     channel_entries(Key).
 
 channel_entries(Key) ->
-    [normalize(E) || {_Seq, E} <- lists:reverse(lists:keysort(1, channel_rows(Key)))].
+    entries(channel_message, Key).
 
-%% {Seq, Entry} for every row of channel `Key`. Match specifications are
-%% written as plain tuples: '_' and '$N' do not fit the record's field types.
-%% The bound channel prefix keeps the ordered_set select to that channel.
-channel_rows(Key) ->
-    mnesia:dirty_select(channel_message, [
-        {{channel_message, {Key, '_', '$1'}, '$2'}, [], [{{'$1', '$2'}}]}
-    ]).
+dm_entries(Pair) ->
+    entries(direct_message, Pair).
+
+-doc "Every direct conversation with stored history, as its party pair.".
+-spec direct_conversations() -> [{dm_party(), dm_party()}].
+direct_conversations() ->
+    dm_conversations().
+
+-doc "The stored history of direct conversation `Pair`, newest first.".
+-spec direct_history({dm_party(), dm_party()}) -> [map()].
+direct_history(Pair) ->
+    dm_entries(Pair).
+
+-doc "Replace the history of direct conversation `Pair` (newest first).".
+-spec replace_direct({dm_party(), dm_party()}, [map() | tuple()]) -> ok.
+replace_direct(Pair, Entries) ->
+    replace(direct_message, Pair, Entries).
+
+-doc """
+Replace the whole history of channel `Key` with `Entries` (newest first,
+trimmed to `history_limit` per class). Used after a redaction and when an
+account's messages are erased.
+""".
+-spec replace_channel(binary(), [map() | tuple()]) -> ok.
+replace_channel(Key, Entries) ->
+    replace(channel_message, Key, Entries).
+
+-doc "Delete the history of channel `Key` (the channel is gone).".
+-spec delete_channel_history(binary()) -> ok.
+delete_channel_history(Key) ->
+    delete(channel_message, Key).
+
+-doc "Whether channel `Key` has stored history.".
+-spec has_channel_history(binary()) -> boolean().
+has_channel_history(Key) ->
+    has(channel_message, Key).
+
+-doc "Every channel (folded name) with stored history.".
+-spec history_channels() -> [binary()].
+history_channels() ->
+    [K || K <- conversations(channel_message), is_binary(K)].
+
+append_channel(Key, Entry) ->
+    append(channel_message, Key, Entry).
+
+%% {Seq, Entry} rows of conversation `Conv` in `Tab`, newest first.
+entries(Tab, Conv) ->
+    Rows = [
+        Row
+     || {Seq, _} = Row <- mnesia:dirty_select(Tab, [
+            {{Tab, {Conv, '_', '$1'}, '$2'}, [], [{{'$1', '$2'}}]}
+        ]),
+        is_integer(Seq)
+    ],
+    [normalize(E) || {_Seq, E} <- lists:reverse(lists:keysort(1, Rows))].
 
 class_of(#{cmd := Cmd}) when
     Cmd =:= <<"PRIVMSG">>; Cmd =:= <<"NOTICE">>; Cmd =:= <<"TAGMSG">>
@@ -468,95 +506,96 @@ class_of({Cmd, _, _}) when Cmd =:= <<"PRIVMSG">>; Cmd =:= <<"NOTICE">> ->
 class_of(_) ->
     event.
 
-%% {LastSeq, Messages, Events} for channel `Key`, counted once from its
-%% rows and then kept up to date.
-index(Key) ->
-    case ets:lookup(?INDEX, Key) of
-        [{Key, Last, Msgs, Events}] ->
+%% {LastSeq, Messages, Events} of `Conv` in `Tab`, counted once from its rows
+%% and then kept up to date.
+index(Tab, Conv) ->
+    Id = {Tab, Conv},
+    case ets:lookup(?INDEX, Id) of
+        [{Id, Last, Msgs, Events}] ->
             {Last, Msgs, Events};
         [] ->
-            Rows = mnesia:dirty_select(channel_message, [
-                {{channel_message, {Key, '$1', '$2'}, '_'}, [], [{{'$1', '$2'}}]}
+            Rows = mnesia:dirty_select(Tab, [
+                {{Tab, {Conv, '$1', '$2'}, '_'}, [], [{{'$1', '$2'}}]}
             ]),
             Last = lists:max([0 | [Seq || {_, Seq} <- Rows]]),
             Msgs = length([1 || {msg, _} <- Rows]),
             Events = length(Rows) - Msgs,
-            ets:insert(?INDEX, {Key, Last, Msgs, Events}),
+            ets:insert(?INDEX, {Id, Last, Msgs, Events}),
             {Last, Msgs, Events}
     end.
 
-%% Append `Entry` to channel `Key`: one row, then the oldest of its class is
-%% dropped while the class holds more than `history_limit` entries.
-append_channel(Key, Entry) ->
+%% Append `Entry`: one row, then the oldest of its class is dropped while
+%% the class holds more than `history_limit` entries.
+append(Tab, Conv, Entry) ->
     Class = class_of(Entry),
-    {Last, Msgs, Events} = index(Key),
+    {Last, Msgs, Events} = index(Tab, Conv),
     Seq = Last + 1,
-    mnesia:dirty_write(#channel_message{key = {Key, Class, Seq}, entry = Entry}),
+    mnesia:dirty_write({Tab, {Conv, Class, Seq}, Entry}),
     Limit = limit(),
     {Msgs1, Events1} =
         case Class of
-            msg -> {drop_oldest(Key, msg, Msgs + 1, Limit), Events};
-            event -> {Msgs, drop_oldest(Key, event, Events + 1, Limit)}
+            msg -> {drop_oldest(Tab, Conv, msg, Msgs + 1, Limit), Events};
+            event -> {Msgs, drop_oldest(Tab, Conv, event, Events + 1, Limit)}
         end,
-    ets:insert(?INDEX, {Key, Seq, Msgs1, Events1}),
+    ets:insert(?INDEX, {{Tab, Conv}, Seq, Msgs1, Events1}),
     ok.
 
-drop_oldest(Key, Class, Count, Limit) when Count > Limit ->
-    case mnesia:dirty_next(channel_message, {Key, Class, 0}) of
-        {Key, Class, _} = Oldest ->
-            mnesia:dirty_delete(channel_message, Oldest),
-            drop_oldest(Key, Class, Count - 1, Limit);
+drop_oldest(Tab, Conv, Class, Count, Limit) when Count > Limit ->
+    case mnesia:dirty_next(Tab, {Conv, Class, 0}) of
+        {Conv, Class, _} = Oldest ->
+            mnesia:dirty_delete(Tab, Oldest),
+            drop_oldest(Tab, Conv, Class, Count - 1, Limit);
         _ ->
             0
     end;
-drop_oldest(_Key, _Class, Count, _Limit) ->
+drop_oldest(_Tab, _Conv, _Class, Count, _Limit) ->
     Count.
 
--doc """
-Replace the whole history of channel `Key` with `Entries` (newest first,
-trimmed to `history_limit` per class). Used to migrate the older format,
-after a redaction, and when an account's messages are erased.
-""".
--spec replace_channel(binary(), [map() | tuple()]) -> ok.
-replace_channel(Key, Entries) ->
-    delete_channel_history(Key),
-    lists:foreach(fun(E) -> append_channel(Key, E) end, lists:reverse(Entries)).
+%% Replace a conversation's history with `Entries` (newest first).
+replace(Tab, Conv, Entries) ->
+    delete(Tab, Conv),
+    lists:foreach(fun(E) -> append(Tab, Conv, E) end, lists:reverse(Entries)).
 
--doc "Delete the history of channel `Key` (the channel is gone).".
--spec delete_channel_history(binary()) -> ok.
-delete_channel_history(Key) ->
-    Keys = mnesia:dirty_select(channel_message, [
-        {{channel_message, {Key, '$1', '$2'}, '_'}, [], [{{Key, '$1', '$2'}}]}
+delete(Tab, Conv) ->
+    Keys = mnesia:dirty_select(Tab, [
+        {{Tab, {Conv, '$1', '$2'}, '_'}, [], [{{{const, Conv}, '$1', '$2'}}]}
     ]),
-    lists:foreach(fun(K) -> mnesia:dirty_delete(channel_message, K) end, Keys),
-    ets:delete(?INDEX, Key),
+    lists:foreach(fun(K) -> mnesia:dirty_delete(Tab, K) end, Keys),
+    ets:delete(?INDEX, {Tab, Conv}),
     ok.
 
--doc "Whether channel `Key` has stored history.".
--spec has_channel_history(binary()) -> boolean().
-has_channel_history(Key) ->
-    %% `a` sorts before both classes: the next key is the channel's first.
-    case mnesia:dirty_next(channel_message, {Key, a, 0}) of
-        {Key, _, _} -> true;
+%% `a` sorts before both classes: the next key is the conversation's first.
+has(Tab, Conv) ->
+    case mnesia:dirty_next(Tab, {Conv, a, 0}) of
+        {Conv, _, _} -> true;
         _ -> false
     end.
 
--doc "Every channel (folded name) with stored history.".
--spec history_channels() -> [binary()].
-history_channels() ->
-    history_channels(mnesia:dirty_first(channel_message), []).
+%% Every conversation in `Tab`; `z` sorts after both classes, so the next
+%% key after {Conv, z, 0} is the next conversation's first.
+conversations(Tab) ->
+    conversations(Tab, mnesia:dirty_first(Tab), []).
 
-history_channels({Key, _, _}, Acc) ->
-    %% `z` sorts after both classes: the next key is the next channel's.
-    history_channels(mnesia:dirty_next(channel_message, {Key, z, 0}), [Key | Acc]);
-history_channels(_, Acc) ->
+conversations(Tab, {Conv, _, _}, Acc) ->
+    conversations(Tab, mnesia:dirty_next(Tab, {Conv, z, 0}), [Conv | Acc]);
+conversations(_Tab, _, Acc) ->
     lists:reverse(Acc).
 
-dm_entries(Key) ->
-    case mnesia:dirty_read(direct_history, Key) of
-        [#direct_history{entries = Entries}] -> Entries;
-        [] -> []
+%% Time of the newest message of direct conversation `Pair` (0 if none).
+dm_latest_time(Pair) ->
+    case mnesia:dirty_prev(direct_message, {Pair, z, 0}) of
+        {Pair, _, _} = Newest ->
+            case mnesia:dirty_read(direct_message, Newest) of
+                [{direct_message, _, #{time := Time}}] when is_integer(Time) -> Time;
+                _ -> 0
+            end;
+        _ ->
+            0
     end.
+
+%% Direct conversations, keyed by party pair.
+dm_conversations() ->
+    [P || {_, _} = P <- conversations(direct_message)].
 
 normalize({Command, Prefix, Text}) ->
     #{
@@ -596,7 +635,7 @@ remove(Source, MsgId) ->
     Kept = [E || E <- entries(Source), maps:get(msgid, E) =/= MsgId],
     case Source of
         {channel, Key} -> replace_channel(Key, Kept);
-        {direct, Key} -> mnesia:dirty_write(#direct_history{key = Key, entries = Kept})
+        {direct, Key} -> replace(direct_message, Key, Kept)
     end,
     ok.
 
@@ -979,7 +1018,7 @@ targets(#client{pid = Pid, channels = Keys}, From, To, N) ->
                 Me = {account, Mine},
                 [
                     {other_party(Mine, Entries), latest_time(Entries)}
-                 || {A, B} = Pair <- ircd_state:table_keys(direct_history),
+                 || {A, B} = Pair <- dm_conversations(),
                     A =:= Me orelse B =:= Me,
                     Entries <- [dm_entries(Pair)],
                     Entries =/= []

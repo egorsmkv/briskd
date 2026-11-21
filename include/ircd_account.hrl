@@ -31,3 +31,11 @@
     key :: {dm_party(), dm_party()},
     entries = [] :: [map() | tuple()]
 }).
+%% Direct-message history, one row per entry (ordered_set,
+%% ircd_state_history), keyed {PartyPair, Class, Seq} like channel_message;
+%% the `direct_history` row above (one list per pair) is only read to migrate
+%% it.
+-record(direct_message, {
+    key :: {{dm_party(), dm_party()}, msg | event, pos_integer()},
+    entry :: map() | tuple()
+}).

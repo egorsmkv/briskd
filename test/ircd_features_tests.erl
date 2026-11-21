@@ -136,11 +136,17 @@ reaction_persistence_test() ->
             {channel_history, [{attributes, [channel, entries]}, {record_name, channel_history}]},
             {channel_message, [
                 {attributes, [key, entry]}, {record_name, channel_message}, {type, ordered_set}
+            ]},
+            {direct_history, [{attributes, [key, entries]}, {record_name, direct_history}]},
+            {direct_message, [
+                {attributes, [key, entry]}, {record_name, direct_message}, {type, ordered_set}
             ]}
         ]
     ),
-    ok = mnesia:wait_for_tables([channel_history, channel_message], 5000),
-    ok = ircd_state_history:init_channel_storage(),
+    ok = mnesia:wait_for_tables(
+        [channel_history, channel_message, direct_history, direct_message], 5000
+    ),
+    ok = ircd_state_history:init_storage(),
     try
         persistent_term:put({ircd_state, config}, #{chathistory => true, history_limit => 50}),
         Key = <<"#react_persist_test">>,
@@ -183,6 +189,8 @@ reaction_persistence_test() ->
             true ->
                 _ = mnesia:delete_table(channel_history),
                 _ = mnesia:delete_table(channel_message),
+                _ = mnesia:delete_table(direct_history),
+                _ = mnesia:delete_table(direct_message),
                 stopped = mnesia:stop(),
                 _ = application:unset_env(mnesia, dir),
                 _ = file:del_dir_r(Dir);

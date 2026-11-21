@@ -1,6 +1,7 @@
 -module(ircd_history_storage_tests).
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("ircd/include/ircd_channel.hrl").
+-include_lib("ircd/include/ircd_account.hrl").
 
 %% Channel history in `channel_message`: one row per entry, trimmed per
 %% class (messages and events separately) to `history_limit`, read newest
@@ -12,7 +13,9 @@ storage_test_() ->
             fun appends_and_trims/0,
             fun events_trimmed_separately/0,
             fun replace_delete_and_listing/0,
-            fun migrates_old_rows/0
+            fun migrates_old_rows/0,
+            fun direct_messages/0,
+            fun direct_conversation_cap/0
         ]
     end}.
 
@@ -30,9 +33,17 @@ setup() ->
     {atomic, ok} = mnesia:create_table(channel_message, [
         {attributes, record_info(fields, channel_message)}, {type, ordered_set}
     ]),
-    ok = mnesia:wait_for_tables([channel_history, channel_message], 5000),
+    {atomic, ok} = mnesia:create_table(direct_history, [
+        {attributes, record_info(fields, direct_history)}
+    ]),
+    {atomic, ok} = mnesia:create_table(direct_message, [
+        {attributes, record_info(fields, direct_message)}, {type, ordered_set}
+    ]),
+    ok = mnesia:wait_for_tables(
+        [channel_history, channel_message, direct_history, direct_message], 5000
+    ),
     persistent_term:put({ircd_state, config}, #{chathistory => true, history_limit => 5}),
-    ok = ircd_state_history:init_channel_storage(),
+    ok = ircd_state_history:init_storage(),
     {Dir, Old}.
 
 cleanup({Dir, Old}) ->
@@ -104,8 +115,57 @@ migrates_old_rows() ->
     ok = mnesia:dirty_write(#channel_history{
         channel = Key, entries = [msg(2), {<<"PRIVMSG">>, <<"o!u@h">>, <<"legacy">>}]
     }),
-    ok = ircd_state_history:init_channel_storage(),
+    ok = ircd_state_history:init_storage(),
     ?assertEqual([], mnesia:dirty_read(channel_history, Key)),
     ?assertEqual([<<"2">>, <<"legacy">>], texts(Key)),
     %% The other channels survived the index rebuild.
     ?assertEqual([<<"51">>, <<"50">>], lists:sublist(texts(<<"#trim">>), 2)).
+
+dm(From, To, N) ->
+    ok = ircd_state_history:note_direct(
+        {From, From}, {To, To}, To, (msg(N))#{account => From}
+    ).
+
+pair(A, B) ->
+    list_to_tuple(lists:sort([{account, A}, {account, B}])).
+
+%% A direct message appends one row; the newest 5 stay (history_limit 5).
+%% An older direct_history row is migrated like a channel's.
+direct_messages() ->
+    [dm(<<"ann">>, <<"bob">>, N) || N <- lists:seq(1, 12)],
+    Pair = pair(<<"ann">>, <<"bob">>),
+    ?assertEqual(
+        [<<"12">>, <<"11">>, <<"10">>, <<"9">>, <<"8">>],
+        [T || #{text := T} <- ircd_state_history:direct_history(Pair)]
+    ),
+    ?assertEqual(
+        5, length(mnesia:dirty_match_object({direct_message, {Pair, '_', '_'}, '_'}))
+    ),
+    Old = pair(<<"cat">>, <<"dan">>),
+    ok = mnesia:dirty_write(#direct_history{key = Old, entries = [msg(2), msg(1)]}),
+    ok = ircd_state_history:init_storage(),
+    ?assertEqual([], mnesia:dirty_read(direct_history, Old)),
+    ?assertEqual(
+        [<<"2">>, <<"1">>], [T || #{text := T} <- ircd_state_history:direct_history(Old)]
+    ),
+    ?assert(lists:member(Pair, ircd_state_history:direct_conversations())).
+
+%% An account keeps at most max_direct_conversations conversations: a new
+%% one drops the one with the oldest last message.
+direct_conversation_cap() ->
+    persistent_term:put(
+        {ircd_state, config},
+        #{chathistory => true, history_limit => 5, max_direct_conversations => 2}
+    ),
+    dm(<<"eve">>, <<"p1">>, 100),
+    dm(<<"eve">>, <<"p2">>, 200),
+    dm(<<"eve">>, <<"p3">>, 300),
+    Mine = [
+        P
+     || P <- ircd_state_history:direct_conversations(),
+        element(1, P) =:= {account, <<"eve">>} orelse element(2, P) =:= {account, <<"eve">>}
+    ],
+    ?assertEqual(
+        lists:sort([pair(<<"eve">>, <<"p2">>), pair(<<"eve">>, <<"p3">>)]), lists:sort(Mine)
+    ),
+    persistent_term:put({ircd_state, config}, #{chathistory => true, history_limit => 5}).
