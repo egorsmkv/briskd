@@ -655,6 +655,23 @@ dispatch([<<"rehash">> | _], Format) ->
     end);
 dispatch([<<"reload-certs">> | _], Format) ->
     cmd_reload_certs(Format);
+dispatch([<<"search">> | _], Format) ->
+    cmd_search(Format);
+dispatch([<<"search-rebuild">> | _], Format) ->
+    case ircd_search:rebuild_now() of
+        ok ->
+            reply_ok(
+                Format,
+                #{status => <<"rebuilding">>},
+                <<"Message search index rebuild started">>
+            );
+        {error, not_configured} ->
+            reply_error(
+                Format,
+                #{status => <<"error">>, reason => <<"not_configured">>},
+                <<"Message search is not configured">>
+            )
+    end;
 dispatch([<<"log-level">>], Format) ->
     cmd_get_log_level(Format);
 dispatch([<<"log-level">>, Level | _], Format) ->
@@ -1041,6 +1058,40 @@ cmd_reload_certs(Format) ->
                     )
             end
     end.
+
+cmd_search(Format) ->
+    Info = ircd_search:info(),
+    Service = maps:get(service, Info, #{}),
+    Text =
+        case Info of
+            #{status := not_configured} ->
+                <<"Message search: not configured">>;
+            _ ->
+                iolist_to_binary(
+                    io_lib:format(
+                        "Message search: ~ts (~ts), ~b queued, ~b rebuilds~n"
+                        "Service: ~ts",
+                        [
+                            maps:get(status, Info),
+                            case maps:get(enabled, Info) of
+                                true -> "on";
+                                false -> "switched off"
+                            end,
+                            maps:get(queued, Info, 0),
+                            maps:get(rebuilds, Info, 0),
+                            case Service of
+                                #{reachable := true, docs := Docs, bytes := Bytes} ->
+                                    io_lib:format("~b messages, ~p bytes", [Docs, Bytes]);
+                                #{error := Error} ->
+                                    io_lib:format("unreachable (~ts)", [Error]);
+                                _ ->
+                                    "unknown"
+                            end
+                        ]
+                    )
+                )
+        end,
+    reply_ok(Format, Info, Text).
 
 cmd_get_log_level(Format) ->
     Config = ircd_config:current_or_empty(),
@@ -1510,6 +1561,8 @@ format_help(json) ->
                 <<"check-config [<path>]">>,
                 <<"rehash">>,
                 <<"reload-certs">>,
+                <<"search">>,
+                <<"search-rebuild">>,
                 <<"log-level [<level>]">>,
                 <<"clients">>,
                 <<"kick-client <nick> [<reason>]">>,
@@ -1543,6 +1596,8 @@ format_help(text) ->
         "  check-config [<path>]                     Validate JSON configuration and TLS certificate pairs\n"
         "  rehash                                    Reload configuration file live (no restart)\n"
         "  reload-certs                              Check and reload TLS certificates immediately\n"
+        "  search                                    Message search status and index size\n"
+        "  search-rebuild                            Rebuild the message search index now\n"
         "  log-level [<level>]                       Show or change live log level (trace..emergency)\n"
         "  clients                                   List connected local clients\n"
         "  kick-client <nick> [<reason>]             Disconnect a local client\n"

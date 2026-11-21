@@ -29,7 +29,7 @@ loads that page's code. The pages:
 - `GET /api/overview` — returns combined server stats, clients, channels,
   server links, accounts, and DroneBL status/bans as JSON (signed in).
 - `POST /api/action` — executes an explicitly whitelisted `m:ircd_ctl`
-  management action (`rehash`, `check-config`, `reload-certs`, `log-level`,
+  management action (`rehash`, `check-config`, `reload-certs`, `search-rebuild`, `log-level`,
   `kick-client`, `notice-all`, `set-topic`, `connect`, `squit`,
   `create-account`, `verify-account`, `delete-account`, `backup`,
   `dronebl-ban`, `dronebl-unban`, `drain`, `stop`).
@@ -1340,6 +1340,7 @@ route(Socket, <<"GET">>, <<"/api/overview">>, _Headers, _Body, _Html) ->
         channels => ctl_json([<<"channels">>]),
         links => ctl_json([<<"links">>]),
         accounts => ctl_json([<<"accounts">>]),
+        search => ctl_json([<<"search">>]),
         dronebl => #{
             stats => ircd_dronebl:stats(),
             bans => ircd_dronebl:list_bans()
@@ -1513,6 +1514,7 @@ dispatch_action(Socket, Action, Args) ->
 allowed_action(<<"rehash">>) -> true;
 allowed_action(<<"check-config">>) -> true;
 allowed_action(<<"reload-certs">>) -> true;
+allowed_action(<<"search-rebuild">>) -> true;
 allowed_action(<<"log-level">>) -> true;
 allowed_action(<<"kick-client">>) -> true;
 allowed_action(<<"notice-all">>) -> true;

@@ -5,6 +5,7 @@ import {
   isIpAddress,
   matchesFilter,
   pageWindow,
+  searchSummary,
   tabFromLocation,
   tabPath,
 } from "./format.ts";
@@ -75,4 +76,33 @@ Deno.test("pageWindow clamps the page", () => {
   });
   assertEquals(pageWindow(30, 25, 9).page, 2);
   assertEquals(pageWindow(30, 25, 0).page, 1);
+});
+
+Deno.test("searchSummary describes the index for the Overview card", () => {
+  assertEquals(searchSummary(undefined).value, "not configured");
+  assertEquals(
+    searchSummary({ status: "not_configured" }).value,
+    "not configured",
+  );
+  assertEquals(
+    searchSummary({ enabled: false, status: "disabled" }).value,
+    "off",
+  );
+  assertEquals(
+    searchSummary({
+      enabled: true,
+      status: "down",
+      queued: 3,
+      service: { reachable: false },
+    }),
+    { value: "unreachable", sub: "indexer down, 3 queued", ok: false },
+  );
+  assertEquals(
+    searchSummary({
+      enabled: true,
+      status: "ready",
+      service: { reachable: true, docs: 100608, bytes: 3 * 1024 * 1024 },
+    }),
+    { value: "100,608", sub: "messages, 3.0 MiB on disk | ready", ok: true },
+  );
 });

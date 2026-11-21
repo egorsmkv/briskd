@@ -4,7 +4,8 @@
 //! An HTTP/JSON service over a Tantivy index (see `index.rs`). ircd mirrors
 //! its stored history into it with `POST /index` and runs searches with
 //! `POST /search`, naming the conversations the searching user may read;
-//! the service never decides access. `GET /health` reports readiness.
+//! the service never decides access. `GET /health` reports readiness, the
+//! document and segment counts, and the index size on disk in bytes.
 //!
 //! Configuration (environment):
 //! - `SEARCH_ADDR`: listen address, default `0.0.0.0:7700`.
@@ -83,7 +84,13 @@ async fn health(State(state): State<Shared>, headers: HeaderMap) -> Response {
     if !authorized(&state, &headers) {
         return error(StatusCode::UNAUTHORIZED, "unauthorized");
     }
-    Json(json!({ "status": "ok", "docs": state.index.len() })).into_response()
+    Json(json!({
+        "status": "ok",
+        "docs": state.index.len(),
+        "segments": state.index.segments(),
+        "bytes": state.index.disk_bytes(),
+    }))
+    .into_response()
 }
 
 async fn apply(

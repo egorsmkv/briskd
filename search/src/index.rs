@@ -7,7 +7,7 @@
 //! indexed but not stored: the index can match words but cannot return a
 //! message's content. ircd loads matching messages from its own history.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -95,6 +95,8 @@ pub struct MessageIndex {
     reader: IndexReader,
     writer: Mutex<IndexWriter>,
     fields: Fields,
+    /// Where the index lives on disk (none in memory).
+    dir: Option<PathBuf>,
 }
 
 fn schema() -> (Schema, Fields) {
@@ -125,7 +127,9 @@ impl MessageIndex {
         let directory = tantivy::directory::MmapDirectory::open(dir)
             .map_err(|e| Error::Index(tantivy::TantivyError::from(e)))?;
         let index = Index::open_or_create(directory, schema)?;
-        Self::with_index(index, fields)
+        let mut ix = Self::with_index(index, fields)?;
+        ix.dir = Some(dir.to_path_buf());
+        Ok(ix)
     }
 
     /// An index held in memory (tests).
@@ -146,6 +150,7 @@ impl MessageIndex {
             reader,
             writer: Mutex::new(writer),
             fields,
+            dir: None,
         })
     }
 
@@ -253,6 +258,27 @@ impl MessageIndex {
     pub fn len(&self) -> u64 {
         self.reader.searcher().num_docs()
     }
+
+    /// Segments the index is made of (merged in the background).
+    pub fn segments(&self) -> usize {
+        self.reader.searcher().segment_readers().len()
+    }
+
+    /// Bytes the index takes on disk (0 in memory): every file in its
+    /// directory, including those of segments awaiting garbage collection.
+    pub fn disk_bytes(&self) -> u64 {
+        let Some(dir) = &self.dir else { return 0 };
+        std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter_map(|e| e.metadata().ok())
+                    .filter(|m| m.is_file())
+                    .map(|m| m.len())
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
 }
 
 #[cfg(test)]
@@ -355,6 +381,20 @@ mod tests {
         assert_eq!(ix.len(), 2);
         ix.apply(vec![Op::Clear]).unwrap();
         assert_eq!(ix.len(), 0);
+    }
+
+    #[test]
+    fn reports_its_size_on_disk() {
+        let dir = std::env::temp_dir().join(format!("ircd-search-test-{}", std::process::id()));
+        let ix = MessageIndex::open(&dir).unwrap();
+        assert_eq!(ix.segments(), 0);
+        ix.apply(vec![add("c #a 1", "c #a", 1, "hello world")])
+            .unwrap();
+        assert_eq!(ix.len(), 1);
+        assert_eq!(ix.segments(), 1);
+        assert!(ix.disk_bytes() > 0);
+        drop(ix);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

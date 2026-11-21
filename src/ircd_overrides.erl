@@ -5,8 +5,8 @@ WebUI admin panel without editing the configuration file.
 
 Each control names one setting the server already applies live: a chat
 feature (`features.*`), history, account options, a configured subsystem
-(`e2ee`, `calls`, `voice`, `files`: on means the file's section, off means
-none), DroneBL, or a limit. An override replaces the file's value; the
+(`e2ee`, `calls`, `voice`, `files`, `search`: on means the file's section,
+off means none), DroneBL, or a limit. An override replaces the file's value; the
 effective configuration is the file's with the overrides applied
 (`apply/2`), computed at startup and on every `REHASH`, so an override
 survives both. Overrides are rows of the durable Mnesia `setting` table.
@@ -66,6 +66,7 @@ controls() ->
             Section(calls),
             Section(voice),
             Section(files),
+            Section(search),
             #{key => <<"dronebl">>, group => <<"security">>, kind => boolean, path => dronebl},
             Top(utf8_only, <<"security">>, boolean),
             Top(monitor_limit, <<"limits">>, {integer, 1, 1000000}),

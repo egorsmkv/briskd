@@ -9,6 +9,8 @@
     forget_remote/1,
     expire/0,
     tag/1,
+    encrypted/1,
+    envelope_tags/1,
     burst_lines/0,
     receive_link/4,
     remote_renamed/2
@@ -137,6 +139,27 @@ tag(type) -> <<"+" ?VENDOR "/e2ee-type">>;
 tag(qid) -> <<?VENDOR "/e2ee-qid">>;
 tag(body) -> <<?VENDOR "/e2ee-body">>;
 tag(tags) -> <<?VENDOR "/e2ee-tags">>.
+
+-doc """
+Whether a message is an end-to-end encrypted envelope: its tags include one
+of the extension's client-only tags (`e2ee-src`, `e2ee-dst`, `e2ee-type`).
+Its body is then ciphertext, which must never be treated as text (message
+search never indexes it). Decided from the tags alone, whether or not the
+`e2ee` feature is configured.
+""".
+-spec encrypted([{binary(), undefined | binary()}]) -> boolean().
+encrypted(Tags) ->
+    envelope_tags(Tags) =/= [].
+
+-doc """
+The extension's client-only tags in `Tags`, in order. A message from a client
+that did not negotiate `message-tags` keeps these (and only these), so an
+encrypted body is still stored and relayed as encrypted.
+""".
+-spec envelope_tags([{binary(), undefined | binary()}]) -> [{binary(), undefined | binary()}].
+envelope_tags(Tags) ->
+    Names = [tag(src), tag(dst), tag(type)],
+    [{K, V} || {K, V} <- Tags, lists:member(K, Names)].
 
 %%% Commands
 

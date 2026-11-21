@@ -1,6 +1,6 @@
 // Overview: summary cards; most link to their tab (mouse and keyboard).
 import type { ComponentChildren } from "preact";
-import { fmtBytes, type Tab } from "./format.ts";
+import { fmtBytes, searchSummary, type Tab } from "./format.ts";
 import { overview } from "./store.ts";
 
 function Card(
@@ -52,6 +52,7 @@ export function OverviewTab({ onGoto }: { onGoto: (tab: Tab) => void }) {
       ["Accounts", "accounts"],
       ["DroneBL", "dronebl"],
       ["Features & Media", "media"],
+      ["Message Search", "operations"],
       ["Database", undefined],
       ["Erlang VM", undefined],
     ];
@@ -72,6 +73,7 @@ export function OverviewTab({ onGoto }: { onGoto: (tab: Tab) => void }) {
   }
 
   const st = data.status ?? {};
+  const search = searchSummary(data.search);
   const dbl = data.dronebl?.stats ?? {};
   const feats = data.features ?? {};
   const totalFeats = Object.keys(feats).length || 6;
@@ -136,6 +138,13 @@ export function OverviewTab({ onGoto }: { onGoto: (tab: Tab) => void }) {
         value={`${enabledCount}/${totalFeats} features`}
         sub={mediaSub}
         goto="media"
+        onGoto={onGoto}
+      />
+      <Card
+        label="Message Search"
+        value={search.value}
+        sub={search.sub}
+        goto="operations"
         onGoto={onGoto}
       />
       <Card

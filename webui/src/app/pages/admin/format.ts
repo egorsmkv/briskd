@@ -95,3 +95,36 @@ export function pageWindow(
   const start = (p - 1) * size;
   return { page: p, totalPages, start, end: Math.min(start + size, total) };
 }
+
+/** The Overview card for message search: headline, detail, and state. */
+export function searchSummary(
+  info: {
+    enabled?: boolean;
+    status?: string;
+    queued?: number;
+    service?: { reachable?: boolean; docs?: number; bytes?: number | null };
+  } | undefined,
+): { value: string; sub: string; ok: boolean } {
+  if (!info || info.status === "not_configured") {
+    return { value: "not configured", sub: "set search in config", ok: false };
+  }
+  if (!info.enabled || info.status === "disabled") {
+    return { value: "off", sub: "switched off in Features & Media", ok: false };
+  }
+  const svc = info.service ?? {};
+  if (!svc.reachable) {
+    return {
+      value: "unreachable",
+      sub: `indexer ${info.status ?? "unknown"}, ${info.queued ?? 0} queued`,
+      ok: false,
+    };
+  }
+  const docs = svc.docs ?? 0;
+  return {
+    value: docs.toLocaleString("en-US"),
+    sub: `${docs === 1 ? "message" : "messages"}, ${
+      fmtBytes(svc.bytes ?? 0)
+    } on disk | ${info.status ?? "unknown"}`,
+    ok: info.status === "ready",
+  };
+}

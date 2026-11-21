@@ -46,7 +46,11 @@ for IRCv3 drafts, and there is no published one for end-to-end encryption.
 | `+egorsmkv.github.io/e2ee-type` | client-only tag | Envelope type, such as `prekey`, `msg`, `skdist` (clients) |
 | `egorsmkv.github.io/e2ee-qid` | server tag | Queue id on a replayed envelope, for `ACK` |
 
-The client needs `message-tags` (for the tags) and the e2ee capability. All
+The client needs `message-tags` (for the tags) and the e2ee capability. If a
+client sends the three envelope tags without having negotiated
+`message-tags`, the server still keeps those tags (and no other client-only
+tags), so the message is stored and relayed as an encrypted envelope and
+never treated as text, for example by [message search](search.md). All
 `E2EE` subcommands need the capability; replies are `E2EE` lines from the
 server, and errors are IRCv3 standard replies, `FAIL E2EE <code>`.
 

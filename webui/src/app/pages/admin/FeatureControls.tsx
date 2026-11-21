@@ -88,6 +88,10 @@ const META: Record<string, Meta> = {
     title: "File sharing",
     desc: "Upload images and files (S3 storage).",
   },
+  search: {
+    title: "Message search",
+    desc: "SEARCH and WebIRC search through ircd-search.",
+  },
   dronebl: {
     title: "DroneBL checks",
     desc: "Look up connecting addresses in the DroneBL blocklist.",

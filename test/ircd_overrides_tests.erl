@@ -23,6 +23,7 @@ base() ->
         calls => null,
         voice => null,
         files => null,
+        search => null,
         dronebl => #{enabled => false, zone => <<"dnsbl.dronebl.org">>},
         utf8_only => false,
         monitor_limit => 100,

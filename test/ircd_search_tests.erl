@@ -35,7 +35,9 @@ run() ->
         mirrors_history(Bob),
         searches(Alice, Carol),
         skips_encrypted(),
+        skips_encrypted_wire(Port, Alice),
         rewrites_conversations(),
+        admin_controls(Alice),
         recovers(Alice, Listen, HttpPort)
     after
         _ = application:stop(ircd),
@@ -111,6 +113,89 @@ skips_encrypted() ->
     ?assertEqual([<<"ciphertext">>], [T || #{text := T} <- docs(<<"c #e">>)]),
     ?assertEqual(Before + 1, length(ops())).
 
+%% Encrypted envelopes sent over real connections are stored in history,
+%% with their E2EE tags, and never indexed: with message-tags, without it
+%% (only the envelope tags are kept), as a draft/multiline batch, and as a
+%% direct message between accounts. A plain message after them proves the
+%% index changes were flushed.
+skips_encrypted_wire(Port, Alice) ->
+    Src = <<"+egorsmkv.github.io/e2ee-src=tagger:1">>,
+    Type = <<"+egorsmkv.github.io/e2ee-type=msg">>,
+    Dst = <<"+egorsmkv.github.io/e2ee-dst=2">>,
+    {ok, _} = ircd_ctl:run([<<"create-account">>, <<"tagger">>, <<"tagger-pass-1">>]),
+    Tagger = sasl_client(
+        Port,
+        <<"tagger">>,
+        <<"tagger-pass-1">>,
+        [<<"message-tags">>, <<"batch">>, <<"draft/multiline">>, <<"sasl">>]
+    ),
+    Plain = client(Port, <<"plainy">>, []),
+    [
+        cmd(C, <<"JOIN ", Ch/binary>>)
+     || C <- [Tagger, Plain], Ch <- [<<"#e1">>, <<"#e2">>, <<"#e3">>]
+    ],
+    cmd(Tagger, <<"@", Src/binary, ";", Type/binary, " PRIVMSG #e1 :SECRETONE with tags">>),
+    %% plainy did not negotiate message-tags.
+    cmd(Plain, <<"@", Type/binary, " PRIVMSG #e2 :SECRETTWO without message-tags">>),
+    send(Tagger, <<"@", Src/binary, ";", Type/binary, " BATCH +m1 draft/multiline #e3">>),
+    send(Tagger, <<"@batch=m1 PRIVMSG #e3 :SECRETTHREE first line">>),
+    send(Tagger, <<"@batch=m1 PRIVMSG #e3 :second line">>),
+    cmd(Tagger, <<"BATCH -m1">>),
+    cmd(
+        Tagger,
+        <<"@", Src/binary, ";", Type/binary, ";", Dst/binary, " PRIVMSG plainy :SECRETFOUR direct">>
+    ),
+    cmd(Tagger, <<"PRIVMSG #e1 :plain marker after the envelopes">>),
+    wait_until(fun() -> docs(<<"c #e1">>) =/= [] end),
+    %% Stored, as encrypted.
+    Stored = lists:append([
+        ircd_state_history:channel_history(C)
+     || C <- [<<"#e1">>, <<"#e2">>, <<"#e3">>]
+    ]),
+    Secret = [
+        E
+     || #{text := T} = E <- Stored,
+        binary:match(iolist_to_binary(body(T)), <<"SECRET">>) =/= nomatch
+    ],
+    ?assertEqual(3, length(Secret)),
+    [?assert(ircd_e2ee:encrypted(Tags)) || #{tags := Tags} <- Secret],
+    %% Never indexed: not in any document, not found by SEARCH.
+    Indexed = [X || {{doc, _}, _, _, X} <- ets:tab2list(?FAKE)],
+    ?assertEqual([], [X || X <- Indexed, binary:match(X, <<"SECRET">>) =/= nomatch]),
+    ?assertEqual([<<"plain marker after the envelopes">>], [T || #{text := T} <- docs(<<"c #e1">>)]),
+    ?assertEqual(0, count(cmd(Tagger, <<"SEARCH * 10 :SECRETONE">>), <<"PRIVMSG">>)),
+    ?assertEqual(0, count(cmd(Tagger, <<"SEARCH plainy 10 :SECRETFOUR">>), <<"PRIVMSG">>)),
+    %% A full rebuild applies the same rule.
+    ok = ircd_search:rebuild_now(),
+    #{rebuilds := R} = ircd_search:info(),
+    wait_until(fun() ->
+        maps:get(rebuilds, ircd_search:info()) >= R andalso
+            maps:get(status, ircd_search:info()) =:= ready
+    end),
+    _ = cmd(Alice, <<"LUSERS">>),
+    Rebuilt = [X || {{doc, _}, _, _, X} <- ets:tab2list(?FAKE)],
+    ?assertEqual([], [X || X <- Rebuilt, binary:match(X, <<"SECRET">>) =/= nomatch]),
+    gen_tcp:close(Tagger),
+    gen_tcp:close(Plain).
+
+body({multiline, Lines}) -> [L || {_, L} <- Lines];
+body(Text) when is_binary(Text) -> Text;
+body(_) -> <<>>.
+
+sasl_client(Port, Nick, Password, Caps) ->
+    {ok, S} = gen_tcp:connect("127.0.0.1", Port, [binary, {active, false}, {packet, line}]),
+    send(S, [<<"CAP REQ :">>, lists:join(<<" ">>, Caps)]),
+    send(S, [<<"NICK ">>, Nick]),
+    send(S, [<<"USER ">>, Nick, <<" 0 * :T">>]),
+    _ = recv_until(S, <<"ACK">>),
+    send(S, <<"AUTHENTICATE PLAIN">>),
+    _ = recv_until(S, <<"AUTHENTICATE +">>),
+    send(S, [<<"AUTHENTICATE ">>, base64:encode(<<0, Nick/binary, 0, Password/binary>>)]),
+    _ = recv_until(S, <<" 903 ">>),
+    send(S, <<"CAP END">>),
+    _ = recv_until(S, <<" 001 ">>),
+    S.
+
 %% A rewritten conversation (redaction, account erasure) is removed whole and
 %% indexed again from what history keeps.
 rewrites_conversations() ->
@@ -119,6 +204,40 @@ rewrites_conversations() ->
     ok = ircd_state_history:replace_channel(<<"#s">>, Kept),
     wait_until(fun() -> length(docs(<<"c #s">>)) =:= 2 end),
     ?assert(lists:member({delete_conv, <<"c #s">>}, [{K, C} || {K, C} <- conv_ops()])).
+
+%% The admin panel's view (ircd_search:info/0, `ircdctl search`), a manual
+%% rebuild, and the `search` switch: off withdraws SEARCH, on rebuilds.
+admin_controls(Alice) ->
+    #{status := ready, enabled := true, service := Service} = ircd_search:info(),
+    ?assertMatch(#{reachable := true, docs := _, bytes := 4096}, Service),
+    {ok, Json} = ircd_ctl:run([<<"search">>, <<"--json">>]),
+    ?assertMatch(
+        #{<<"status">> := <<"ready">>, <<"service">> := #{<<"reachable">> := true}},
+        json:decode(Json)
+    ),
+    #{rebuilds := Rebuilds} = ircd_search:info(),
+    Clears = length([clear || clear <- op_kinds()]),
+    ok = ircd_search:rebuild_now(),
+    wait_until(fun() -> maps:get(rebuilds, ircd_search:info()) =:= Rebuilds + 1 end),
+    ?assertEqual(Clears + 1, length([clear || clear <- op_kinds()])),
+    #{last_rebuild_docs := Docs, last_rebuild_at := At} = ircd_search:info(),
+    ?assert(is_integer(Docs) andalso Docs > 0),
+    ?assert(is_integer(At)),
+    %% Switched off: the command is unknown and the indexer idles.
+    {ok, _} = ircd_state:set_control(<<"search">>, <<"false">>),
+    ?assertNot(ircd_search:enabled()),
+    ?assert(has(cmd(Alice, <<"SEARCH #s 10 :alpha">>), <<" 421 ">>)),
+    cmd(Alice, <<"PRIVMSG #s :gamma while off">>),
+    wait_until(fun() -> maps:get(status, ircd_search:info()) =:= disabled end),
+    ?assertMatch(#{enabled := false, service := #{reachable := false}}, ircd_search:info()),
+    %% Back on: the index is rebuilt, including what was said meanwhile.
+    {ok, _} = ircd_state:reset_control(<<"search">>),
+    wait_until(
+        fun() -> lists:member(<<"gamma while off">>, [T || #{text := T} <- docs(<<"c #s">>)]) end,
+        300
+    ),
+    wait_until(fun() -> maps:get(status, ircd_search:info()) =:= ready end),
+    ?assert(has(cmd(Alice, <<"SEARCH #s 10 :gamma">>), <<":gamma while off">>)).
 
 %% With the service gone, SEARCH fails softly; once it answers again the
 %% index is rebuilt from history.
@@ -174,20 +293,25 @@ accept(Listen) ->
 
 serve(Sock) ->
     case read_request(Sock, <<>>) of
+        {ok, <<"/health">>, _} ->
+            Docs = length([1 || {{doc, _}, _, _, _} <- ets:tab2list(?FAKE)]),
+            respond(Sock, #{status => ok, docs => Docs, segments => 1, bytes => 4096});
         {ok, Path, Body} ->
-            Reply = handle(Path, json:decode(Body)),
-            Json = iolist_to_binary(json:encode(Reply)),
-            gen_tcp:send(Sock, [
-                <<"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n">>,
-                <<"Content-Length: ">>,
-                integer_to_binary(byte_size(Json)),
-                <<"\r\n\r\n">>,
-                Json
-            ]);
+            respond(Sock, handle(Path, json:decode(Body)));
         error ->
             ok
     end,
     gen_tcp:close(Sock).
+
+respond(Sock, Reply) ->
+    Json = iolist_to_binary(json:encode(Reply)),
+    gen_tcp:send(Sock, [
+        <<"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n">>,
+        <<"Content-Length: ">>,
+        integer_to_binary(byte_size(Json)),
+        <<"\r\n\r\n">>,
+        Json
+    ]).
 
 read_request(Sock, Acc) ->
     case binary:split(Acc, <<"\r\n\r\n">>) of

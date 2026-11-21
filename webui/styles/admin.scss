@@ -1318,3 +1318,22 @@ body.modal-open {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Key-value details in an Operations card (message search status). */
+.kv-list {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 14px;
+  margin: 0 0 12px;
+  font-size: 13px;
+  div {
+    display: contents;
+  }
+  dt {
+    color: var(--muted);
+  }
+  dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+}

@@ -24,10 +24,16 @@ clients ──SEARCH──▶ ircd ──POST /search──▶ ircd-search (Tant
   `history_limit` is removed, and a redaction, edit, account erasure ("Delete
   my data"), or destroyed channel removes the conversation and indexes what
   history keeps of it. Searches reach exactly as far back as `CHATHISTORY`.
-- **Not indexed:** end-to-end encrypted messages (the server only sees
-  ciphertext), `TAGMSG` (reactions, typing), events (joins, parts, modes),
-  and anything history does not keep (`chathistory: false`, messages between
-  users who are not logged in).
+- **Not indexed:** end-to-end encrypted messages, `TAGMSG` (reactions,
+  typing), events (joins, parts, modes), and anything history does not keep
+  (`chathistory: false`, messages between users who are not logged in). A
+  message is encrypted when it carries any of the E2EE envelope tags
+  (`+egorsmkv.github.io/e2ee-src`, `-dst`, `-type`; `ircd_e2ee:encrypted/1`),
+  whatever the body looks like: single lines, `draft/multiline` batches
+  (tags on the opening `BATCH`), direct messages, messages queued for offline
+  devices, and messages from linked servers. The server keeps these tags even
+  from a client that did not negotiate `message-tags`, so such a message is
+  never stored or indexed as text. Rebuilds apply the same rule.
 - **The index holds no readable text.** Message bodies are tokenized for
   matching but not stored, and a search returns only message ids. ircd loads
   each result from its own history, so a message deleted after it was indexed
@@ -122,6 +128,29 @@ The service reads its environment:
 | `SEARCH_ADDR` | `0.0.0.0:7700` | Listen address |
 | `SEARCH_DIR` | `/data/index` | Index directory (a volume) |
 | `SEARCH_TOKEN` | none | When set, every request must carry `Authorization: Bearer <token>` |
+
+## Admin panel and ircdctl
+
+- **Overview** shows a Message Search card: indexed messages, the index size
+  on disk, and the indexer's status. It opens the Operations tab.
+- **Operations → Message Search** lists the indexer status and queued
+  changes, whether the service answers, indexed messages, index size and
+  segments, the last rebuild (when, how many messages, how long), rebuilds
+  since start, and the last error. **Rebuild Index** clears the index and
+  rebuilds it from stored history (searches return partial results until it
+  finishes); **Refresh** reloads the figures.
+- **Features & Media → Services → Message search** switches the feature off
+  and on without a restart. Off withdraws the capability (`CAP DEL`), makes
+  `SEARCH` unknown (421), and stops sending index changes; on offers it again
+  (`CAP NEW`) and rebuilds the index, including what was said meanwhile. The
+  switch is an override stored in Mnesia, like the other controls, and works
+  only when the configuration file has a `search` section.
+- `ircdctl search` prints the same status (`--json` for the full map), and
+  `ircdctl search-rebuild` starts a rebuild.
+
+The status is published by the indexer into a small ETS table, so reading it
+never waits on a rebuild in progress; the service's health is a
+`GET /health` with a 2-second timeout.
 
 ## Operations
 

@@ -133,12 +133,33 @@ export interface MediaPayload {
   };
 }
 
+/** `ircdctl search`: the message search indexer and its service. */
+export interface SearchInfo {
+  enabled?: boolean;
+  /** starting, ready, down, disabled, not_configured, or busy. */
+  status?: string;
+  queued?: number;
+  rebuilds?: number;
+  last_rebuild_at?: number | null;
+  last_rebuild_ms?: number | null;
+  last_rebuild_docs?: number | null;
+  last_error?: string | null;
+  service?: {
+    reachable?: boolean;
+    docs?: number;
+    segments?: number | null;
+    bytes?: number | null;
+    error?: string;
+  };
+}
+
 export interface OverviewPayload {
   status?: StatusData;
   clients?: { clients?: ClientEntry[] };
   channels?: { channels?: ChannelEntry[] };
   links?: { connected?: ConnectedLink[]; configured?: ConfiguredLink[] };
   accounts?: { accounts?: AccountEntry[] };
+  search?: SearchInfo;
   dronebl?: {
     stats?: {
       enabled?: boolean;

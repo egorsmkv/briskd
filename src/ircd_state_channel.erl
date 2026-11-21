@@ -1015,10 +1015,13 @@ ERR_TOOMANYTARGETS. Each remaining target goes through `deliver_body/6`.
 """.
 -spec deliver(binary(), [binary()], #client{}, binary(), [{binary(), undefined | binary()}]) -> ok.
 deliver(Command, Params, #client{pid = Pid} = Client, Server, Tags) ->
+    %% Without message-tags a client's tags are ignored, except the E2EE
+    %% envelope tags: dropping them would store and relay ciphertext as if it
+    %% were text (and message search would index it).
     ClientTags =
         case ircd_cap:enabled(Pid, <<"message-tags">>) of
             true -> ircd_cap:client_tags(Tags);
-            false -> []
+            false -> ircd_e2ee:envelope_tags(Tags)
         end,
     case {Command, Params} of
         {<<"TAGMSG">>, []} ->

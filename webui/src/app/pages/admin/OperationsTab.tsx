@@ -1,5 +1,5 @@
 // Operations: rehash, config check, TLS reload, log level, broadcast notice,
-// Mnesia backup, drain, and stop.
+// message search (status, index size, rebuild), Mnesia backup, drain, and stop.
 import { useState } from "preact/hooks";
 import {
   busyKey,
@@ -8,11 +8,14 @@ import {
   LOG_LEVEL_SELECT_ID,
   logLevelChoice,
   openModal,
+  overview,
+  refresh,
   runAction,
   serverName,
   toast,
 } from "./store.ts";
 import { ActionButton } from "./Table.tsx";
+import { fmtBytes } from "./format.ts";
 
 const LOG_LEVELS = [
   "trace",
@@ -70,6 +73,111 @@ function stop(): void {
     requireText: serverName(),
     onConfirm: (reason) => op("stop", [reason]),
   });
+}
+
+function rebuildSearch(): void {
+  openModal({
+    title: "Rebuild Search Index",
+    message:
+      "The index is cleared and rebuilt from stored history. Searches return partial results until it finishes, usually within seconds.",
+    confirmLabel: "Rebuild Index",
+    onConfirm: () =>
+      void runAction("search-rebuild", [], {
+        key: busyKey("search-rebuild"),
+        // The rebuild runs in the background: show its progress shortly.
+        after: () =>
+          new Promise((r) => setTimeout(() => r(refresh(true)), 1500)),
+      }),
+  });
+}
+
+function when(ms: number | null | undefined): string {
+  return ms ? new Date(ms).toLocaleString() : "never";
+}
+
+function SearchCard() {
+  const info = overview.value?.search;
+  const configured = !!info && info.status !== "not_configured";
+  const svc = info?.service ?? {};
+  const rows: Array<[string, string]> = !configured ? [] : [
+    [
+      "Indexer",
+      info?.enabled
+        ? `${info?.status ?? "unknown"}, ${info?.queued ?? 0} changes queued`
+        : "switched off (Features & Media)",
+    ],
+    [
+      "Service",
+      svc.reachable
+        ? "reachable"
+        : `unreachable${svc.error ? ` (${svc.error})` : ""}`,
+    ],
+    [
+      "Indexed messages",
+      svc.reachable ? (svc.docs ?? 0).toLocaleString("en-US") : "-",
+    ],
+    [
+      "Index size",
+      svc.reachable
+        ? `${fmtBytes(svc.bytes ?? 0)} in ${svc.segments ?? 0} segments`
+        : "-",
+    ],
+    [
+      "Last rebuild",
+      info?.last_rebuild_at
+        ? `${when(info.last_rebuild_at)}: ${
+          (info.last_rebuild_docs ?? 0).toLocaleString("en-US")
+        } messages in ${((info.last_rebuild_ms ?? 0) / 1000).toFixed(1)} s`
+        : "never",
+    ],
+    ["Rebuilds since start", String(info?.rebuilds ?? 0)],
+  ];
+  if (configured && info?.last_error) {
+    rows.push(["Last error", info.last_error]);
+  }
+  return (
+    <div class="ops-card">
+      <h3>Message Search</h3>
+      <p class="muted">
+        The Tantivy index behind SEARCH and WebIRC search. It mirrors stored
+        history and is rebuilt from it at startup and after an outage.
+      </p>
+      {configured
+        ? (
+          <dl class="kv-list" id="search-info">
+            {rows.map(([k, v]) => (
+              <div key={k}>
+                <dt>{k}</dt>
+                <dd>{v}</dd>
+              </div>
+            ))}
+          </dl>
+        )
+        : (
+          <p class="muted" id="search-info">
+            Not configured: add a <code>search</code>{" "}
+            section to the configuration and restart.
+          </p>
+        )}
+      <div class="ops-row">
+        <ActionButton
+          busyKey={busyKey("search-rebuild")}
+          id="btn-search-rebuild"
+          disabled={!configured || !info?.enabled}
+          onClick={rebuildSearch}
+        >
+          Rebuild Index
+        </ActionButton>
+        <ActionButton
+          busyKey="ui:refresh-search"
+          id="btn-search-refresh"
+          onClick={() => void refresh(true)}
+        >
+          Refresh
+        </ActionButton>
+      </div>
+    </div>
+  );
 }
 
 function BackupCard() {
@@ -192,6 +300,8 @@ export function OperationsTab() {
           </ActionButton>
         </div>
       </div>
+
+      <SearchCard />
 
       <BackupCard />
 

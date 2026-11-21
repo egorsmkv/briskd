@@ -26,6 +26,13 @@ document with the same id, so the index converges on the history. Failures
 are retried after 5 seconds, doubling to 60, and logged when the service
 goes down and when it is back (`search_unavailable`, `search_ready`).
 
+The indexer publishes its status in the `ircd_search_status` ETS table after
+every change, and `info/0` reads it from there, so the admin panel never
+waits on a rebuild in progress. `rebuild_now/0` starts a rebuild on request.
+When the `search` control is switched off in the admin panel, the indexer
+drops queued changes, sends nothing, and checks every 5 seconds whether it is
+back on; it then rebuilds the index.
+
 `search/4` runs a query (`POST /search`) for the conversations a user may
 read; it is called from an `m:ircd_deferred` worker, never from the state
 process. The service returns message ids only; `m:ircd_state_search` loads
@@ -49,7 +56,9 @@ reduced to its text; invalid UTF-8 becomes U+FFFD.
     note_delete/3,
     note_delete_conv/2,
     conv_id/2,
-    search/4
+    search/4,
+    info/0,
+    rebuild_now/0
 ]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, format_status/1]).
 
@@ -62,6 +71,14 @@ reduced to its text; invalid UTF-8 becomes U+FFFD.
 %% Retry delays after a failure, ms.
 -define(RETRY_MIN_MS, 5000).
 -define(RETRY_MAX_MS, 60000).
+%% While search is switched off in the admin panel: check this often whether
+%% it is back on, ms.
+-define(DISABLED_CHECK_MS, 5000).
+%% The indexer's published status (info/0 reads it without waiting on the
+%% process, which is busy for seconds during a rebuild).
+-define(STATUS_TABLE, ircd_search_status).
+%% Wait for GET /health from the admin panel, ms.
+-define(HEALTH_TIMEOUT_MS, 2000).
 %% Largest response accepted from the service, bytes.
 -define(MAX_RESPONSE, 4 * 1024 * 1024).
 
@@ -157,6 +174,76 @@ search(Query, Convs, Limit, Before) ->
             Error
     end.
 
+-doc """
+The indexer's state and the service's health, for the admin panel and
+`ircdctl search`:
+
+- `enabled`: search is configured and switched on (`search` control);
+- `status`: `starting`, `rebuilding`, `ready`, `down` (retrying), or
+  `disabled`;
+- `queued`: index changes waiting to be sent;
+- `rebuilds`, `last_rebuild_at` (ms since the epoch or `null`),
+  `last_rebuild_ms`, `last_rebuild_docs`, and `last_error` (or `null`);
+- `service`: `#{reachable := true, docs, segments, bytes}` from
+  `GET /health` (2-second timeout), or `#{reachable := false, error}`.
+
+Without the indexer process (`search` not configured) only
+`#{enabled := false, status := not_configured}`.
+""".
+-spec info() -> map().
+info() ->
+    case whereis(?MODULE) of
+        Pid when is_pid(Pid) ->
+            Local =
+                case ets:whereis(?STATUS_TABLE) of
+                    undefined ->
+                        #{status => starting};
+                    _ ->
+                        case ets:lookup(?STATUS_TABLE, info) of
+                            [{info, #{} = Map}] -> Map;
+                            _ -> #{status => starting}
+                        end
+                end,
+            Service =
+                case enabled() of
+                    true -> health();
+                    false -> #{reachable => false, error => <<"disabled">>}
+                end,
+            maps:merge(Local, #{enabled => enabled(), service => Service});
+        _ ->
+            #{enabled => false, status => not_configured}
+    end.
+
+-doc """
+Clear the index and rebuild it from stored history now (also cancels a
+pending retry). Returns at once; `info/0` shows when it finished.
+""".
+-spec rebuild_now() -> ok | {error, not_configured}.
+rebuild_now() ->
+    case whereis(?MODULE) of
+        Pid when is_pid(Pid) -> gen_server:cast(Pid, rebuild_now);
+        _ -> {error, not_configured}
+    end.
+
+health() ->
+    case request(get, <<"/health">>, undefined, ?HEALTH_TIMEOUT_MS) of
+        {ok, #{<<"docs">> := Docs} = Map} when is_integer(Docs) ->
+            #{
+                reachable => true,
+                docs => Docs,
+                segments => maps:get(<<"segments">>, Map, null),
+                bytes => maps:get(<<"bytes">>, Map, null)
+            };
+        {ok, _} ->
+            #{reachable => false, error => <<"bad_response">>};
+        {error, Reason} ->
+            #{reachable => false, error => reason_text(Reason)}
+    end.
+
+reason_text(Reason) when is_atom(Reason) -> atom_to_binary(Reason);
+reason_text({http_status, Status}) -> <<"HTTP ", (integer_to_binary(Status))/binary>>;
+reason_text(Reason) -> iolist_to_binary(io_lib:format("~0p", [Reason])).
+
 hit(#{<<"id">> := Id, <<"conv">> := Conv, <<"time">> := Time}) when
     is_binary(Id), is_binary(Conv), is_integer(Time)
 ->
@@ -179,7 +266,7 @@ hit(_) ->
 document(Tab, Conv, Seq, #{cmd := Cmd, text := Body} = Entry) when
     Cmd =:= <<"PRIVMSG">>; Cmd =:= <<"NOTICE">>
 ->
-    case {encrypted(maps:get(tags, Entry, [])), text(Body)} of
+    case {encrypted(Entry), text(Body)} of
         {false, Text} when byte_size(Text) > 0 ->
             ConvId = conv_id(Tab, Conv),
             #{
@@ -195,14 +282,10 @@ document(Tab, Conv, Seq, #{cmd := Cmd, text := Body} = Entry) when
 document(_Tab, _Conv, _Seq, _Entry) ->
     skip.
 
-encrypted(Tags) when is_list(Tags) ->
-    lists:any(
-        fun
-            ({Key, _}) when is_binary(Key) -> binary:match(Key, <<"/e2ee-">>) =/= nomatch;
-            (_) -> false
-        end,
-        Tags
-    );
+%% An end-to-end encrypted envelope (ircd_e2ee:encrypted/1). An entry
+%% without a tag list (the oldest history format) is plain text.
+encrypted(#{tags := Tags}) when is_list(Tags) ->
+    ircd_e2ee:encrypted([T || {K, _} = T <- Tags, is_binary(K)]);
 encrypted(_) ->
     false.
 
@@ -251,40 +334,62 @@ name(Name) ->
 
 -doc false.
 init([]) ->
+    _ = ets:new(?STATUS_TABLE, [named_table, protected, set, {read_concurrency, true}]),
     self() ! rebuild,
-    {ok, #{
-        queue => [],
-        count => 0,
-        flush => undefined,
-        status => starting,
-        retry => ?RETRY_MIN_MS,
-        retry_timer => undefined
-    }}.
+    {ok,
+        publish(#{
+            queue => [],
+            count => 0,
+            flush => undefined,
+            status => starting,
+            retry => ?RETRY_MIN_MS,
+            retry_timer => undefined,
+            rebuilds => 0,
+            last_rebuild_at => null,
+            last_rebuild_ms => null,
+            last_rebuild_docs => null,
+            last_error => null
+        })}.
 
 -doc false.
 handle_call(status, _From, #{status := Status, count := Count} = State) ->
     {reply, #{status => Status, queued => Count}, State};
+handle_call(info, _From, State) ->
+    {reply, status_map(State), State};
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
 
 -doc false.
-handle_cast({op, _Op}, #{count := Count} = State) when Count >= ?MAX_QUEUE ->
+handle_cast(Message, State) ->
+    {noreply, publish(cast(Message, State))}.
+
+cast(rebuild_now, #{retry_timer := Timer} = State) ->
+    case Timer of
+        undefined -> ok;
+        _ -> erlang:cancel_timer(Timer)
+    end,
+    logger:notice(#{event => search_rebuild_requested}),
+    rebuild(State#{retry_timer := undefined, retry := ?RETRY_MIN_MS});
+%% Switched off: nothing is sent; switching it on again rebuilds the index.
+cast({op, _Op}, #{status := disabled} = State) ->
+    State;
+cast({op, _Op}, #{count := Count} = State) when Count >= ?MAX_QUEUE ->
     logger:warning(#{event => search_queue_overflow, dropped => Count}),
-    {noreply, schedule_rebuild(State#{queue := [], count := 0}, 0)};
-handle_cast({op, Op}, #{queue := Queue, count := Count} = State) ->
+    schedule_rebuild(State#{queue := [], count := 0}, 0);
+cast({op, Op}, #{queue := Queue, count := Count} = State) ->
     Next = State#{queue := [Op | Queue], count := Count + 1},
     case Count + 1 >= ?BATCH of
-        true -> {noreply, flush(Next)};
-        false -> {noreply, arm_flush(Next)}
+        true -> flush(Next);
+        false -> arm_flush(Next)
     end;
-handle_cast(_Message, State) ->
-    {noreply, State}.
+cast(_Message, State) ->
+    State.
 
 -doc false.
 handle_info(flush, State) ->
-    {noreply, flush(State#{flush := undefined})};
+    {noreply, publish(flush(State#{flush := undefined}))};
 handle_info(rebuild, State) ->
-    {noreply, rebuild(State#{retry_timer := undefined})};
+    {noreply, publish(rebuild(State#{retry_timer := undefined}))};
 handle_info(_Message, State) ->
     {noreply, State}.
 
@@ -298,6 +403,15 @@ format_status(Status) ->
         end,
         Status
     ).
+
+%% The admin-facing part of the state, as info/0 returns it.
+status_map(#{status := Status, count := Count} = State) ->
+    Keys = [rebuilds, last_rebuild_at, last_rebuild_ms, last_rebuild_docs, last_error],
+    maps:merge(maps:with(Keys, State), #{status => Status, queued => Count}).
+
+publish(State) ->
+    true = ets:insert(?STATUS_TABLE, {info, status_map(State)}),
+    State.
 
 arm_flush(#{flush := undefined} = State) ->
     State#{flush := erlang:send_after(?FLUSH_MS, self(), flush)};
@@ -334,14 +448,41 @@ send_ops(Ops) ->
 
 %% Clear the index and send every stored message, then the queued operations.
 rebuild(State) ->
+    case enabled() of
+        true -> rebuild_enabled(State);
+        false -> disabled(State)
+    end.
+
+%% Search is switched off (admin panel): drop the queue, keep no index work
+%% going, and look again every few seconds.
+disabled(#{status := Status} = State0) ->
+    State = cancel_flush(State0),
+    case Status of
+        disabled -> ok;
+        _ -> logger:notice(#{event => search_disabled})
+    end,
+    State#{
+        status := disabled,
+        queue := [],
+        count := 0,
+        retry_timer := erlang:send_after(?DISABLED_CHECK_MS, self(), rebuild)
+    }.
+
+rebuild_enabled(State0) ->
+    %% Shown while it runs: this process answers nothing until it is done.
+    State = publish(State0#{status := rebuilding}),
     Started = erlang:monotonic_time(millisecond),
     Result =
         try
+            put(ircd_search_rebuild_docs, 0),
             Pending = ircd_state_history:fold_messages(
                 fun(Tab, Conv, Seq, Entry, Acc) ->
                     case document(Tab, Conv, Seq, Entry) of
-                        skip -> Acc;
-                        Op -> push(Op, Acc)
+                        skip ->
+                            Acc;
+                        Op ->
+                            put(ircd_search_rebuild_docs, get(ircd_search_rebuild_docs) + 1),
+                            push(Op, Acc)
                     end
                 end,
                 {[#{op => clear}], 1}
@@ -353,11 +494,21 @@ rebuild(State) ->
         end,
     case Result of
         ok ->
-            WasDown = maps:get(status, State) =:= down,
-            log_ready(WasDown, erlang:monotonic_time(millisecond) - Started),
-            flush(State#{status := ready, retry := ?RETRY_MIN_MS});
+            WasDown = maps:get(status, State0) =:= down,
+            Ms = erlang:monotonic_time(millisecond) - Started,
+            log_ready(WasDown, Ms),
+            #{rebuilds := Rebuilds} = State,
+            flush(State#{
+                status := ready,
+                retry := ?RETRY_MIN_MS,
+                rebuilds := Rebuilds + 1,
+                last_rebuild_at := erlang:system_time(millisecond),
+                last_rebuild_ms := Ms,
+                last_rebuild_docs := erase(ircd_search_rebuild_docs),
+                last_error := null
+            });
         {error, Reason} ->
-            failed(Reason, State)
+            failed(Reason, State#{status := maps:get(status, State0)})
     end.
 
 %% Accumulate rebuild operations, sending a batch whenever one fills.
@@ -372,7 +523,10 @@ push(Op, {Acc, N}) ->
 log_ready(WasDown, Ms) ->
     logger:notice(#{event => search_ready, recovered => WasDown, rebuild_ms => Ms}).
 
-failed(Reason, #{status := Status, retry := Retry} = State) ->
+failed(disabled, State) ->
+    disabled(State);
+failed(Reason, #{status := Status, retry := Retry} = State0) ->
+    State = State0#{last_error := reason_text(Reason)},
     case Status of
         down -> ok;
         _ -> logger:warning(#{event => search_unavailable, reason => Reason, retry_ms => Retry})
@@ -395,10 +549,19 @@ config() ->
     maps:get(search, ircd_config:current_or_empty(), null).
 
 post(Path, Body) ->
+    request(post, Path, Body, undefined).
+
+%% A request to the service; `Timeout` overrides the configured one.
+request(Method, Path, Body, Timeout0) ->
     case config() of
         null ->
             {error, disabled};
-        #{url := Url, token := Token, timeout := Timeout} ->
+        #{url := Url, token := Token, timeout := Configured} ->
+            Timeout =
+                case Timeout0 of
+                    undefined -> Configured;
+                    _ -> Timeout0
+                end,
             Headers = [
                 {<<"content-type">>, <<"application/json">>},
                 {<<"accept">>, <<"application/json">>}
@@ -413,8 +576,12 @@ post(Path, Body) ->
                 {follow_redirect, false},
                 {max_body_size, ?MAX_RESPONSE}
             ],
-            Json = iolist_to_binary(json:encode(Body)),
-            try hackney:request(post, <<Url/binary, Path/binary>>, Headers, Json, Opts) of
+            Json =
+                case Body of
+                    undefined -> <<>>;
+                    _ -> iolist_to_binary(json:encode(Body))
+                end,
+            try hackney:request(Method, <<Url/binary, Path/binary>>, Headers, Json, Opts) of
                 {ok, Status, _RespHeaders, Resp} when
                     Status >= 200, Status < 300, is_binary(Resp)
                 ->
