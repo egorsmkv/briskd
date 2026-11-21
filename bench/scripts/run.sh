@@ -2,5 +2,5 @@
 # Generate IRC traffic against the running server and write bench/results/.
 # Python and its dependencies come from bench/pyproject.toml via uv.
 set -eu
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 exec uv run --project bench --locked python bench/traffic.py "$@"

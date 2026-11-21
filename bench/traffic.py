@@ -15,7 +15,7 @@ family. The report also carries the server's own statistics for the
 run: the `STATS m` per-command delta, uptime, LUSERS, and container CPU and
 memory sampled once per second. `--oper` adds operator-only commands.
 
-The default target is the development listener on port 6667. `bench/release`
+The default target is the development listener on port 6667. `bench/scripts/release.sh`
 starts a packaged release on port 6668 and passes `--kind release`. Each run
 uses a fresh nick prefix because a quit holds that nick for 60 seconds.
 
@@ -660,7 +660,7 @@ def preamble(report):
             "`config/briskd.prod.json` (flood limits, DroneBL, `channels` retention,",
             "JSON info logging) with only `max_clients` raised so the high-load",
             "clients fit, `ulimit -n` 65536, `init`, and a fresh data volume, on",
-            "another host port (`bench/prod`).",
+            "another host port (`bench/scripts/prod.sh`).",
             "Load generator: host CPython asyncio through the published port.",
             stats,
             otp,

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Measure the server's memory: per session, under traffic, and after churn.
 
-Runs against a server in a Docker container (bench/memory-prod starts the
+Runs against a server in a Docker container (bench/scripts/memory-prod.sh starts the
 production image) and reads the node's own view of memory with erl_call
 inside that container, after a full garbage collection, at each step:
 

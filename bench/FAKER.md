@@ -6,7 +6,7 @@ Run against an already running development server on localhost:6667:
 uv run --project bench --locked python bench/faker_load.py --output bench/results/faker-load.json
 ```
 
-uv installs Faker from `bench/uv.lock` into `bench/.venv`. `bench/prod`
+uv installs Faker from `bench/uv.lock` into `bench/.venv`. `bench/scripts/prod.sh`
 runs the same test against the production image (`--kind production`).
 
 Defaults: 10, 25, and 50 simultaneous TCP clients, two repetitions per size,

@@ -2,7 +2,7 @@
 # Build the packaged release, measure it on port 6668, then stop that node.
 # The development server on port 6667 is left running.
 set -eu
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 # shellcheck disable=SC1091
 . ./script/compose.sh
 

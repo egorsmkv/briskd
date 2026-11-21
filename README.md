@@ -99,7 +99,7 @@ API documentation, built from the module docs with ex_doc, is published at
 
 ## Benchmarks
 
-`bench/run` measures a live development server, and `bench/prod` measures
+`bench/scripts/run.sh` measures a live development server, and `bench/scripts/prod.sh` measures
 the production image. Both write a report under `bench/results/`. How to
 run them is in [bench/README.md](bench/README.md).
 

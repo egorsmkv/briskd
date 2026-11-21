@@ -11,7 +11,7 @@
 # MEMORY_BENCH_IMAGE measures an already built image instead of building
 # briskd:latest from this tree (for a before/after comparison).
 set -eu
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 # shellcheck disable=SC1091
 . ./script/compose.sh
 
@@ -62,6 +62,6 @@ uv run --project bench --locked python bench/memory.py \
     --port "$PORT" \
     --container "$NAME" \
     --cookie "$COOKIE" \
-    --note "Production image \`$IMAGE\` (Dockerfile.prod, config/briskd.prod.json), started by bench/memory-prod." \
+    --note "Production image \`$IMAGE\` (Dockerfile.prod, config/briskd.prod.json), started by bench/scripts/memory-prod.sh." \
     --output "bench/results/${stamp}-memory.md" \
     --json "bench/results/${stamp}-memory.json" "$@"

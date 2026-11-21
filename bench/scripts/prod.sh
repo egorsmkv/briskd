@@ -15,7 +15,7 @@
 # second and the pipelined PING phase sends 400; extra arguments override
 # these (for example --pace 0 to see the limit disconnect the client).
 set -eu
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 # shellcheck disable=SC1091
 . ./script/compose.sh
 
