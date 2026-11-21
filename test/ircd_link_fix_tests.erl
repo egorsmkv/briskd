@@ -128,6 +128,8 @@ link_rules() ->
         %% Bug 8: metadata of a local & channel stays out of the burst.
         ?assert(has(Burst, <<"METADATA #c theme">>)),
         ?assertNot(has(Burst, <<"local-only">>)),
+        %% A local & channel is not a shared channel (RFC 2811).
+        ?assertNot(has(Burst, <<"&loc">>)),
         Other = handshake(Port, <<"other.test">>),
         sync(Other),
         ok = cmd(?PEER, <<"SERVER">>, [<<"leaf.test">>, <<"2">>, <<"2">>, <<"Leaf">>]),
@@ -230,7 +232,36 @@ link_rules() ->
         ?assertEqual({error, too_many_batches}, Open(<<"11">>)),
         ok = Open(<<"5">>),
         ?assertEqual(10, length(peer_batches(?PEER))),
-        ok = ircd_state:server_disconnect(?PEER),
+        %% A second PASS/SERVER for the live peer is refused and does not
+        %% remove the peer or a local user.
+        Dup = connect(Port),
+        send(Dup, <<"PASS linksecret 0210 |">>),
+        send(Dup, <<"SERVER peer.test 1 1 :peer.test">>),
+        ?assertNot(has(recv_until(Dup, <<"SERVER irc.test">>, 1000, false), <<"SERVER irc.test">>)),
+        ?assertMatch([_], mnesia:dirty_read(known_server, ?PEER)),
+        ?assertMatch(#client{}, ircd_state_client:find_nick(<<"alice">>)),
+        ?assert(has(sync(Peer), <<"PONG">>)),
+        %% A non-operator on the peer cannot KILL, and cannot invite into +i.
+        ok = cmd(?PEER, <<"NICK">>, nick(<<"victim">>, <<"1">>, <<"+">>)),
+        ok = cmd(?PEER, <<"NICK">>, nick(<<"peon">>, <<"1">>, <<"+">>)),
+        ?assertEqual(
+            {error, remote_kill_requires_operator},
+            cmd(<<"peon!u@h.test">>, <<"KILL">>, [<<"victim">>, <<"no">>])
+        ),
+        ?assertMatch([_], mnesia:dirty_read(remote_client, <<"victim">>)),
+        ok = cmd(?PEER, <<"KILL">>, [<<"victim">>, <<"server">>]),
+        ?assertEqual([], mnesia:dirty_read(remote_client, <<"victim">>)),
+        _Bob = client(Port, <<"bob">>),
+        send(Alice, <<"MODE #c +i">>),
+        sync(Alice),
+        ok = cmd(<<"peon!u@h.test">>, <<"INVITE">>, [<<"bob">>, <<"#c">>]),
+        #client{pid = BobPid} = ircd_state_client:find_nick(<<"bob">>),
+        [#channel{invited = Invited}] = mnesia:dirty_read(channel, <<"#c">>),
+        ?assertNot(lists:member(BobPid, Invited)),
+        %% Closing the peer socket is what drops its batches. server_disconnect
+        %% from a process that does not own the link must not be required.
+        ok = gen_tcp:close(Peer),
+        wait_until(fun() -> peer_batches(?PEER) =:= [] end),
         ?assertEqual([], peer_batches(?PEER))
     after
         stop()

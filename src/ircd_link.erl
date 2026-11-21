@@ -209,7 +209,11 @@ format_status(Status) ->
     Status.
 
 redact_state(#{peer := Peer} = State) ->
-    redact_config(State#{peer := maps:remove(password, Peer), peer_password => redacted});
+    %% The read buffer can hold a partial PASS line.
+    Cleared = State#{buffer => <<>>},
+    redact_config(Cleared#{peer := maps:remove(password, Peer), peer_password => redacted});
+redact_state(State) when is_map(State) ->
+    State#{buffer => <<>>};
 redact_state(State) ->
     State.
 
@@ -373,13 +377,23 @@ handle_server_line(
                 attempts => 0,
                 backoff => undefined
             },
-            case send_burst(ircd_state:server_burst(), Authenticated) of
+            %% Register before the burst. A duplicate peer is rejected with
+            %% the pre-authentication state, so retry/2 does not split the
+            %% link that already owns the name. A burst that fails after
+            %% registration is disconnected here, then retried from that
+            %% same pre-authentication state.
+            case ircd_state:register_adjacent(Name, Token, outbound) of
+                {error, duplicate_peer} ->
+                    {error, duplicate_peer, State};
                 ok ->
-                    ok = ircd_state:register_adjacent(Name, Token, outbound),
-                    logger:notice(#{event => server_link_authenticated, peer => Name}),
-                    {ok, arm_liveness(Authenticated#{ping_pending => undefined})};
-                {error, Reason} ->
-                    {error, {state_burst_failed, Reason}, Authenticated}
+                    case send_burst(ircd_state:server_burst(), Authenticated) of
+                        ok ->
+                            logger:notice(#{event => server_link_authenticated, peer => Name}),
+                            {ok, arm_liveness(Authenticated#{ping_pending => undefined})};
+                        {error, Reason} ->
+                            ok = ircd_state:server_disconnect(Name),
+                            {error, {state_burst_failed, Reason}, State}
+                    end
             end;
         false ->
             {error, peer_server_identity_mismatch, State}

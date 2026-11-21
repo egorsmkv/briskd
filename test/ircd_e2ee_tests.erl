@@ -420,6 +420,13 @@ link() ->
         ?assert(has(sync(Bob), <<"E2EE DEVICES carol :">>)),
         ?assertNot(has(sync(Bob), <<"2002">>)),
         %% Rebind and quit: remote user QUIT cleans up its ETS binding.
+        %% DELETE removed the device, so publish it again before BIND.
+        send(
+            Peer,
+            <<":peer.test E2EE DEVICE carol 2002 ",
+                (integer_to_binary(erlang:system_time(microsecond)))/binary, " ",
+                (?K32("c"))/binary, " 3:", (?K32("d"))/binary, " ", (?SIG)/binary>>
+        ),
         send(Peer, <<":carol!u@h.test E2EE BIND 2002">>),
         _ = sync(Peer),
         ?assertEqual(

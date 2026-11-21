@@ -587,6 +587,20 @@ scan_safe_short(Wanted) ->
             none
     end.
 
+%% Local row for a channel learned from a peer, before the first local member.
+channel_from_remote(#remote_channel{key = Key, name = Name, flags = RemoteFlags}) ->
+    ModeKeys = [$a, $i, $m, $n, $p, $q, $r, $s, $t, $K],
+    #channel{
+        key = Key,
+        name = Name,
+        created = erlang:system_time(second),
+        topic = maps:get(topic, RemoteFlags, <<>>),
+        flags = #{M => true || M <- ModeKeys, is_map_key(M, RemoteFlags)},
+        lists = maps:with([ban, exception, invite], RemoteFlags),
+        password = maps:get(key, RemoteFlags, undefined),
+        limit = maps:get(limit, RemoteFlags, undefined)
+    }.
+
 safe_channel_id() ->
     Alphabet = <<"ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890">>,
     safe_channel_id(erlang:system_time(second) rem 60466176, Alphabet, <<>>).
@@ -599,30 +613,38 @@ safe_channel_id(Value, Alphabet, Acc) ->
     safe_channel_id(Value div 36, Alphabet, <<Char, Acc/binary>>).
 
 %% Add a client to a channel and grant operator status to the first member.
+%% A channel that already exists on a linked server is adopted from its
+%% `remote_channel` row (modes, key, limit, lists, topic). The joiner is a
+%% plain member of that channel, not its founder.
 add_member(Key, Name, #client{pid = Pid} = Client, Server, Password) ->
     {Channel, IsNew} =
         case mnesia:dirty_read(channel, Key) of
             [#channel{} = Existing] ->
                 {Existing, false};
             [] ->
-                {
-                    #channel{
-                        key = Key,
-                        name = Name,
-                        created = erlang:system_time(second),
-                        creator =
-                            case binary:first(Name) of
-                                $! -> Pid;
-                                _ -> undefined
-                            end,
-                        flags =
-                            case binary:first(Name) of
-                                $+ -> #{$t => true};
-                                _ -> #{}
-                            end
-                    },
-                    true
-                }
+                case mnesia:dirty_read(remote_channel, Key) of
+                    [#remote_channel{} = Remote] ->
+                        {channel_from_remote(Remote), false};
+                    [] ->
+                        {
+                            #channel{
+                                key = Key,
+                                name = Name,
+                                created = erlang:system_time(second),
+                                creator =
+                                    case binary:first(Name) of
+                                        $! -> Pid;
+                                        _ -> undefined
+                                    end,
+                                flags =
+                                    case binary:first(Name) of
+                                        $+ -> #{$t => true};
+                                        _ -> #{}
+                                    end
+                            },
+                            true
+                        }
+                end
         end,
     #channel{name = Canonical, members = Members} = Channel,
     Admin = ircd_state:administrator(Pid) andalso ircd_state:predefined_channel(Key),
@@ -1092,7 +1114,11 @@ deliver_body(Command, Target, Body, #client{pid = Pid} = Client, Server, ClientT
     case mnesia:dirty_read(channel, ircd_wire:fold(Target)) of
         [#channel{name = Name, members = Members, flags = Flags} = Channel] ->
             Roles = maps:get(Pid, Members, []),
-            Outside = maps:is_key($n, Flags) andalso not maps:is_key(Pid, Members),
+            %% +a hides every sender behind one mask, so an outsider must not
+            %% be able to speak as a member. Treat it like +n.
+            Outside =
+                (maps:is_key($n, Flags) orelse maps:is_key($a, Flags)) andalso
+                    not maps:is_key(Pid, Members),
             Moderated =
                 maps:is_key($m, Flags) andalso
                     not (lists:member(operator, Roles) orelse lists:member(voice, Roles)),
@@ -1353,11 +1379,13 @@ topic(Name, Rest, #client{pid = Pid} = Client, Server) ->
                         Client, Server, <<"482">>, [Canonical], <<"You're not channel operator">>
                     );
                 {false, true, [Text | _]} ->
-                    mnesia:dirty_write(Channel#channel{
+                    UpdatedTopic = Channel#channel{
                         topic = ircd_wire:retain(Text),
                         topic_by = iolist_to_binary(channel_origin_prefix(Channel, Client)),
                         topic_at = erlang:system_time(second)
-                    }),
+                    },
+                    mnesia:dirty_write(UpdatedTopic),
+                    ircd_state_link:note_local_channel(UpdatedTopic),
                     {TopicTags, TopicMeta} = ircd_state_history:event_tags(),
                     ircd_state_history:note_event(
                         Channel#channel.key,
@@ -2134,7 +2162,11 @@ channel_mode(Name, [Mode], #client{pid = Pid} = Client, Server) when
 channel_mode(Name, Rest, #client{pid = Pid} = Client, Server) ->
     case mnesia:dirty_read(channel, ircd_wire:fold(Name)) of
         [#channel{name = Canonical, members = Members} = Channel] ->
-            IsCreator = Channel#channel.creator =:= Pid,
+            %% Creator authority is per membership (AGENTS.md 8.3). A founder
+            %% who has left keeps the creator field so a later rejoin still
+            %% has it, but cannot change modes while absent.
+            IsCreator =
+                Channel#channel.creator =:= Pid andalso maps:is_key(Pid, Members),
             IsOperator = lists:member(operator, maps:get(Pid, Members, [])),
             case {Rest, IsOperator orelse IsCreator} of
                 {[], _} ->
@@ -2358,7 +2390,14 @@ announce_mode_changes(#channel{key = Key, name = Name, members = Members} = Chan
                         Key, <<"MODE">>, Origin, [ModeString | Params], none, Meta
                     )
             end,
-            ircd_state_link:propagate_channel_mode(Client, Name, ModeString, Params)
+            ircd_state_link:propagate_channel_mode(Client, Name, ModeString, Params),
+            %% Keep the peer's copy of this channel aligned with the row just
+            %% written, so a later remote MODE cannot replace it with a
+            %% partial flag map.
+            case mnesia:dirty_read(channel, Key) of
+                [#channel{} = Current] -> ircd_state_link:note_local_channel(Current);
+                [] -> ok
+            end
     end.
 
 mode_authorized($r, _Action, #channel{name = <<$!, _/binary>>} = Channel, Client) ->

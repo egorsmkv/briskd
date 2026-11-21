@@ -251,8 +251,11 @@ controls() ->
 -doc """
 Answer an over-long tagged line from the calling session with
 `417 ERR_INPUTTOOLONG`, honouring its `label` tag. The line is not applied.
+
+The line still costs one flood token, the same as any other client line.
+`quit` means the session was disconnected for excess flood.
 """.
--spec input_too_long([{binary(), undefined | binary()}]) -> ok.
+-spec input_too_long([{binary(), undefined | binary()}]) -> ok | quit.
 input_too_long(Tags) -> gen_server:call(?MODULE, {input_too_long, Tags}, command_timeout()).
 
 -doc """
@@ -276,7 +279,8 @@ Record a directly connected peer after its `PASS`/`SERVER` handshake
 succeeds. Writes a hop-1 `known_server` row and indexes the calling link
 process under the folded name as an `inbound` or `outbound` peer.
 """.
--spec register_adjacent(binary(), binary(), inbound | outbound) -> ok.
+-spec register_adjacent(binary(), binary(), inbound | outbound) ->
+    ok | {error, duplicate_peer}.
 register_adjacent(Name, Token, Kind) ->
     gen_server:call(?MODULE, {register_adjacent, Name, Token, Kind}).
 
@@ -976,7 +980,11 @@ handle_call({register_adjacent, Name, Token, Kind}, {Pid, _}, Server) ->
     Result = ircd_state_net:register_adjacent(Name, Token, Kind, Pid),
     %% A link process that dies without its own cleanup (killed, or a crash
     %% outside its callbacks) still splits the peer: see peer_down/2.
-    _ = erlang:monitor(process, Pid),
+    %% A rejected duplicate is not monitored and is not recorded.
+    case Result of
+        ok -> erlang:monitor(process, Pid);
+        {error, duplicate_peer} -> ok
+    end,
     {reply, Result, Server};
 handle_call({ctl, Action}, _From, Server) ->
     {reply, ircd_ctl:handle_state_action(Action, Server), Server};
@@ -1205,7 +1213,9 @@ other_call({server_command, Peer, _Prefix, <<"SQUIT">>, [Target | Rest]}, _, Ser
     %% An unknown target is a stale SQUIT that crossed a split and is ignored.
     case behind_peer(Peer, Target) of
         true ->
-            ircd_state_net:split(Target, Reason, Peer),
+            %% Close the adjacent socket when the target is that peer. The
+            %% pids are captured inside drop_server before the rows go away.
+            ircd_state_net:drop_server(Target, Reason, Peer),
             {reply, ok, Server};
         unknown ->
             {reply, ok, Server};
@@ -1223,10 +1233,15 @@ other_call({server_command, Peer, Prefix, <<"SQUERY">>, Params}, _, Server) when
     {reply, ircd_state_net:remote_squery(Peer, Prefix, Params), Server};
 other_call({server_command, Peer, Prefix, <<"KILL">>, [Nick | Rest]}, _, Server) ->
     Source = link_source(Peer, Prefix),
-    case
-        ircd_state_link:trusted_server(Peer, Source) orelse
-            is_tuple(ircd_state_link:remote_source(Peer, Source))
-    of
+    %% A server this peer may speak for can KILL. A user can KILL only with
+    %% user mode +o, which an honest peer sets from OPER. Any nick on the
+    %% link is not enough: that let a non-operator remove local users.
+    Operator =
+        case ircd_state_link:remote_source(Peer, Source) of
+            {ok, #remote_client{modes = Modes}} -> maps:is_key($o, Modes);
+            error -> false
+        end,
+    case ircd_state_link:trusted_server(Peer, Source) orelse Operator of
         true ->
             Reason =
                 case Rest of
@@ -1235,7 +1250,12 @@ other_call({server_command, Peer, Prefix, <<"KILL">>, [Nick | Rest]}, _, Server)
                 end,
             {reply, ircd_state_link:receive_remote_kill(Peer, Nick, Reason), Server};
         false ->
-            {reply, {error, unknown_remote_source}, Server}
+            Reply =
+                case ircd_state_link:remote_source(Peer, Source) of
+                    {ok, #remote_client{}} -> {error, remote_kill_requires_operator};
+                    error -> {error, unknown_remote_source}
+                end,
+            {reply, Reply, Server}
     end;
 other_call({server_command, _Peer, _Prefix, _Command, _Params}, _, Server) ->
     {reply, ok, Server};
@@ -1249,19 +1269,27 @@ other_call({request_password_reset, Email, RecoveryUrl, PeerIP}, _, Server) ->
     {reply, ircd_state_v3:request_password_reset_web(Email, RecoveryUrl, PeerIP), Server};
 other_call({complete_password_reset, Email, Code, NewPassword, PeerIP}, _, Server) ->
     {reply, ircd_state_v3:complete_password_reset_web(Email, Code, NewPassword, PeerIP), Server};
-other_call({server_disconnect, Peer}, _, Server) ->
-    disconnect_peer(Peer),
+other_call({server_disconnect, Peer}, {Pid, _}, Server) ->
+    disconnect_peer(Peer, Pid),
     {reply, ok, Server};
 other_call({input_too_long, Tags}, {Pid, _}, Server) ->
     Client = ircd_state_client:client(Pid),
-    Label = ircd_cap:label(ircd_cap:state(Pid), Tags),
-    ok = ircd_state_send:begin_label(Pid, Label),
-    try
-        ircd_state_send:numeric(Client, Server, <<"417">>, [], <<"Input line was too long">>)
-    after
-        ircd_state_send:end_label(Server)
-    end,
-    {reply, ok, Server};
+    %% One line token, and no message or join token: the line was not a command.
+    case ircd_flood:check_command(Pid, <<"PING">>, [], [], ircd_state_client:ready(Client)) of
+        {flood, Category} ->
+            flood_quit(Client, Category, Server);
+        allow ->
+            Label = ircd_cap:label(ircd_cap:state(Pid), Tags),
+            ok = ircd_state_send:begin_label(Pid, Label),
+            try
+                ircd_state_send:numeric(
+                    Client, Server, <<"417">>, [], <<"Input line was too long">>
+                )
+            after
+                ircd_state_send:end_label(Server)
+            end,
+            {reply, ok, Server}
+    end;
 other_call({command_as, Primary, Command, Params, Bytes, Tags}, {Caller, Ref}, Server) ->
     case ets:lookup(ircd_attached, Caller) of
         [{Caller, Primary}] ->
@@ -1301,24 +1329,27 @@ client_command(Command, Params, Bytes, Tags, {Pid, _} = From, Server) ->
         )
     of
         {flood, Category} ->
-            logger:warning(#{
-                event => flood_exceeded,
-                nick => Client#client.nick,
-                host => Client#client.host,
-                category => Category
-            }),
-            ircd_state_send:send(
-                Pid,
-                Server,
-                <<"ERROR">>,
-                [],
-                [<<"Closing Link: ">>, Client#client.host, <<" (Excess Flood)">>]
-            ),
-            ircd_state_client:disconnect(Client, <<"Excess Flood">>, Server),
-            {reply, quit, Server};
+            flood_quit(Client, Category, Server);
         allow ->
             run_client_command(Command, Params, Tags, Client, From, Server)
     end.
+
+flood_quit(#client{pid = Pid} = Client, Category, Server) ->
+    logger:warning(#{
+        event => flood_exceeded,
+        nick => Client#client.nick,
+        host => Client#client.host,
+        category => Category
+    }),
+    ircd_state_send:send(
+        Pid,
+        Server,
+        <<"ERROR">>,
+        [],
+        [<<"Closing Link: ">>, Client#client.host, <<" (Excess Flood)">>]
+    ),
+    ircd_state_client:disconnect(Client, <<"Excess Flood">>, Server),
+    {reply, quit, Server}.
 
 run_client_command(Command, Params, Tags, #client{pid = Pid} = Client, From, Server) ->
     Label =
@@ -1342,6 +1373,9 @@ run_client_command(Command, Params, Tags, #client{pid = Pid} = Client, From, Ser
             end_reply(Server),
             case Reply of
                 quit -> ok;
+                %% PONG is not a liveness answer here, so it must not refresh
+                %% the idle timer on its own.
+                _ when Command =:= <<"PONG">> -> ok;
                 _ -> ircd_state_client:touch_activity(Pid)
             end,
             {reply, Reply, Server};
@@ -1428,12 +1462,20 @@ session_down(Pid, State) ->
     end,
     {noreply, State}.
 
-%% Netsplit cleanup for the peer `Peer`: users, servers, and channels reached
-%% only through it are removed and the other peers are told.
-disconnect_peer(Peer) ->
-    ircd_state_link:flush_netjoin(Peer),
-    ircd_state_link:forget_peer_batches(Peer),
-    ircd_state_net:split(Peer, <<"Netsplit ", Peer/binary>>, Peer).
+%% Netsplit cleanup when `Caller` still owns a direction of `Peer`.
+%% A caller that owns nothing (the registration was already removed, or a
+%% newer link holds the name) leaves the peer in place.
+disconnect_peer(Peer, Caller) ->
+    case ircd_state_net:release_link(Peer, Caller) of
+        absent ->
+            ok;
+        kept ->
+            ok;
+        split ->
+            ircd_state_link:flush_netjoin(Peer),
+            ircd_state_link:forget_peer_batches(Peer),
+            ircd_state_net:split(Peer, <<"Netsplit ", Peer/binary>>, Peer)
+    end.
 
 %% A registered link process went away. A link that ends normally calls
 %% server_disconnect/1 first, which removes its registration, so this only
@@ -1445,7 +1487,7 @@ peer_down(Pid) ->
     lists:foreach(
         fun(Peer) ->
             logger:warning(#{event => link_process_down, peer => Peer}),
-            disconnect_peer(Peer)
+            disconnect_peer(Peer, Pid)
         end,
         Peers
     ).

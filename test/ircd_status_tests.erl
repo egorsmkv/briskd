@@ -2,14 +2,18 @@
 -include_lib("eunit/include/eunit.hrl").
 
 session_status_redacts_link_password_test() ->
-    State = {tcp, socket, <<"peer">>, <<>>, {server_pass, <<"secret">>}},
+    State = {tcp, socket, <<"peer">>, <<"PASS secret\r">>, {server_pass, <<"secret">>}},
     #{state := Redacted} = ircd_session:format_status(#{state => State}),
-    ?assertEqual({tcp, socket, <<"peer">>, <<>>, {server_pass, redacted}}, Redacted).
+    ?assertEqual({tcp, socket, <<"peer">>, <<>>, {server_pass, redacted}}, Redacted),
+    Plain = {tcp, socket, <<"peer">>, <<"PRIVMSG #c :hello">>, client},
+    #{state := PlainRedacted} = ircd_session:format_status(#{state => Plain}),
+    ?assertEqual({tcp, socket, <<"peer">>, <<>>, client}, PlainRedacted).
 
 link_status_redacts_peer_password_test() ->
     State = #{
         peer => #{name => <<"irc.example">>, password => <<"secret">>},
         peer_password => <<"secret">>,
+        buffer => <<"PASS secret">>,
         config => #{
             name => <<"irc.local">>,
             server_links => [#{name => <<"irc.example">>, password => <<"secret">>}],

@@ -108,7 +108,9 @@ burst_and_import() ->
         ?assert(has(OtherSide, <<"MODE #remote +tnl 9">>)),
         %% Replicated account, metadata, and read marker.
         Sync =
-            <<":peer.test ACCOUNTSYNC acct c2FsdA== 4096 c3RvcmVk c2VydmVy 1700000000 :fp1,fp2">>,
+            <<":peer.test ACCOUNTSYNC acct c2FsdA== 4096 ",
+                "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE= ",
+                "YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI= 1700000000 :fp1,fp2">>,
         send(Peer, Sync),
         ?assert(has(recv_until(Other, <<"ACCOUNTSYNC">>), <<"ACCOUNTSYNC acct c2FsdA== 4096">>)),
         %% The same account again is kept and not relayed a second time.
@@ -611,18 +613,23 @@ rejected_input() ->
                 <<"acct">>, <<"c2E=">>, <<"10">>, <<"c2E=">>, <<"c2E=">>, <<"1">>
             ])
         ),
+        Stored = <<"YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE=">>,
+        ServerKey = <<"YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI=">>,
         ok = cmd(
             ?PEER, <<"ACCOUNTSYNC">>, [
-                <<"acct">>, <<"c2E=">>, <<"4096">>, <<"c2E=">>, <<"c2E=">>, <<"5">>
+                <<"acct">>, <<"c2E=">>, <<"4096">>, Stored, ServerKey, <<"5">>
             ]
         ),
         %% An older account from another server replaces the newer copy.
         ok = cmd(
             ?PEER, <<"ACCOUNTSYNC">>, [
-                <<"acct">>, <<"c2E=">>, <<"4096">>, <<"c2E=">>, <<"c2E=">>, <<"2">>
+                <<"acct">>, <<"c2E=">>, <<"4096">>, Stored, ServerKey, <<"2">>
             ]
         ),
-        recv_until(Other, <<"ACCOUNTSYNC acct c2E= 4096 c2E= c2E= 2">>),
+        recv_until(
+            Other,
+            <<"ACCOUNTSYNC acct c2E= 4096 ", Stored/binary, " ", ServerKey/binary, " 2">>
+        ),
         ?assertEqual({error, invalid_metadata}, cmd(?PEER, <<"METADATA">>, [<<"x">>])),
         ?assertEqual(
             {error, metadata_source_mismatch},

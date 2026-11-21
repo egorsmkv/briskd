@@ -516,7 +516,9 @@ changed since `password_params/1`, the check fails.
 -spec password_matches(binary(), binary(), pos_integer(), binary()) -> {ok, #account{}} | error.
 password_matches(Name, Salt, Iterations, Candidate) ->
     case find(Name) of
-        {ok, #account{salt = Salt, iterations = Iterations, stored_key = Stored} = Account} ->
+        {ok, #account{salt = Salt, iterations = Iterations, stored_key = Stored} = Account} when
+            byte_size(Stored) =:= 32, byte_size(Candidate) =:= 32
+        ->
             case crypto:hash_equals(Candidate, Stored) of
                 true -> {ok, Account};
                 false -> error

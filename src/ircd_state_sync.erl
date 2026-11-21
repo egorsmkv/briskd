@@ -127,8 +127,10 @@ receive_accountsync(Peer, Prefix, [Name, Salt, I, Stored, ServerKey, Created | R
         DecodedStored = base64:decode(Stored),
         DecodedServerKey = base64:decode(ServerKey),
         true = byte_size(DecodedSalt) > 0 andalso byte_size(DecodedSalt) =< 64,
-        true = byte_size(DecodedStored) > 0 andalso byte_size(DecodedStored) =< 64,
-        true = byte_size(DecodedServerKey) > 0 andalso byte_size(DecodedServerKey) =< 64,
+        %% SCRAM-SHA-256 keys are 32 bytes. A shorter key makes
+        %% crypto:hash_equals/2 raise and crash the state process.
+        true = byte_size(DecodedStored) =:= 32,
+        true = byte_size(DecodedServerKey) =:= 32,
         Fps =
             case Rest of
                 [List | _] -> [F || F <- binary:split(List, <<",">>, [global, trim_all])];

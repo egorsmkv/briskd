@@ -900,13 +900,29 @@ link_command(<<"ACK">>, Peer, Prefix, [AccountText, DevText, SeqsText], _) ->
 link_command(<<"BIND">>, Peer, Prefix, [DevText], _) ->
     {ok, Dev} = device_id(DevText),
     %% The source must be a user reached through this link, logged in.
+    %% The device row must already exist (a prior DEVICE line). A binding
+    %% held by a local session is not replaced.
     case ircd_state_link:remote_source(Peer, Prefix) of
         {ok, #remote_client{key = NickKey, account = Account}} when is_binary(Account) ->
-            store(fun() ->
-                true = ets:match_delete(?BOUND, {'_', {remote, NickKey}}),
-                true = ets:insert(?BOUND, {{ircd_wire:fold(Account), Dev}, {remote, NickKey}})
-            end),
-            {ok, ircd_wire:line(Prefix, <<"E2EE">>, [<<"BIND">>, integer_to_binary(Dev)], none)};
+            Folded = ircd_wire:fold(Account),
+            case mnesia:dirty_read(e2ee_device, {Folded, Dev}) of
+                [] ->
+                    {error, e2ee_unknown_device};
+                [_] ->
+                    case ets:lookup(?BOUND, {Folded, Dev}) of
+                        [{_, Owner}] when is_pid(Owner) ->
+                            {error, e2ee_device_bound_locally};
+                        _ ->
+                            store(fun() ->
+                                true = ets:match_delete(?BOUND, {'_', {remote, NickKey}}),
+                                true = ets:insert(?BOUND, {{Folded, Dev}, {remote, NickKey}})
+                            end),
+                            {ok,
+                                ircd_wire:line(
+                                    Prefix, <<"E2EE">>, [<<"BIND">>, integer_to_binary(Dev)], none
+                                )}
+                    end
+            end;
         {ok, #remote_client{}} ->
             {error, e2ee_bind_without_account};
         _ ->

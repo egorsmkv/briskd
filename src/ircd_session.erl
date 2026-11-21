@@ -256,7 +256,9 @@ mirror(Line) ->
 Redact secrets from the state shown by `sys:get_status/1` and crash reports.
 
 Between an inbound peer's `PASS` and `SERVER`, the state holds the link
-password; it is replaced by `redacted`. Other states are returned unchanged.
+password; it is replaced by `redacted`. The read buffer is cleared on every
+connection state: it can hold a partial `PASS` line. Other shapes are
+returned unchanged.
 """.
 -spec format_status(map()) -> map().
 format_status(#{state := State} = Status) ->
@@ -264,8 +266,10 @@ format_status(#{state := State} = Status) ->
 format_status(Status) ->
     Status.
 
-redact_state({Kind, Socket, Peer, Buffer, {server_pass, _Password}}) ->
-    {Kind, Socket, Peer, Buffer, {server_pass, redacted}};
+redact_state({Kind, Socket, Peer, _Buffer, {server_pass, _Password}}) ->
+    {Kind, Socket, Peer, <<>>, {server_pass, redacted}};
+redact_state({Kind, Socket, Peer, _Buffer, Role}) ->
+    {Kind, Socket, Peer, <<>>, Role};
 redact_state(State) ->
     State.
 
@@ -605,6 +609,7 @@ consume(Data, Pending, Count, State) ->
                 {error, input_too_long, Tags} ->
                     case reject_long_line(Tags, State) of
                         {ok, Updated} -> consume(Rest, Pending, Count, Updated);
+                        quit -> quit;
                         error -> error
                     end;
                 empty ->
@@ -674,6 +679,8 @@ overlong(<<"@", _/binary>> = Data, {_, _, _, _, Role} = State) when
                 {ok, Updated} ->
                     put(ircd_discard, true),
                     {ok, set_buffer(Updated, <<>>)};
+                quit ->
+                    quit;
                 error ->
                     error
             end;
@@ -689,11 +696,15 @@ reject_long_line(_Tags, {_, _, _, _, {server_pass, _}}) ->
     error;
 reject_long_line(Tags, {_, _, _, _, awaiting} = State) ->
     ClientState = promote_client(State),
-    ok = ircd_state:input_too_long(Tags),
-    {ok, ClientState};
+    case ircd_state:input_too_long(Tags) of
+        ok -> {ok, ClientState};
+        quit -> quit
+    end;
 reject_long_line(Tags, {_, _, _, _, client} = State) ->
-    ok = ircd_state:input_too_long(Tags),
-    {ok, State}.
+    case ircd_state:input_too_long(Tags) of
+        ok -> {ok, State};
+        quit -> quit
+    end.
 
 set_buffer({Kind, Socket, Peer, _, Role}, Buffer) ->
     {Kind, Socket, Peer, Buffer, Role}.
@@ -768,18 +779,28 @@ process_server_intro(Name, Hop, Token, State) ->
                         )
                     ],
                     Burst = [iolist_to_binary(Line) || Line <- ircd_state:server_burst()],
-                    ok = ircd_state:register_adjacent(Name, Token, inbound),
-                    Module = transport(Kind),
-                    case Module:send(Socket, [Reply, Burst]) of
+                    %% Register before the burst so a second session for the
+                    %% same peer is refused without receiving it. The role is
+                    %% still `server_pass` until the send succeeds, and
+                    %% terminate/2 only splits a `{server, _}` role, so a
+                    %% refusal must not call server_disconnect.
+                    case ircd_state:register_adjacent(Name, Token, inbound) of
+                        {error, duplicate_peer} ->
+                            error;
                         ok ->
-                            logger:notice(#{
-                                event => inbound_server_link_authenticated, peer => Name
-                            }),
-                            erlang:send_after(60000, self(), liveness_ping),
-                            peer_buffer(Module, Socket, Name),
-                            {ok, set_peer_and_role(State, Name, {server, undefined})};
-                        {error, _} ->
-                            error
+                            Module = transport(Kind),
+                            case Module:send(Socket, [Reply, Burst]) of
+                                ok ->
+                                    logger:notice(#{
+                                        event => inbound_server_link_authenticated, peer => Name
+                                    }),
+                                    erlang:send_after(60000, self(), liveness_ping),
+                                    peer_buffer(Module, Socket, Name),
+                                    {ok, set_peer_and_role(State, Name, {server, undefined})};
+                                {error, _} ->
+                                    ok = ircd_state:server_disconnect(Name),
+                                    error
+                            end
                     end;
                 false ->
                     error

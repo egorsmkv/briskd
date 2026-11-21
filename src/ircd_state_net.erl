@@ -34,6 +34,8 @@ them over immediately.
     reclaim/3,
     oper_command/4,
     register_adjacent/4,
+    release_link/2,
+    drop_server/3,
     servlist/4,
     service_count/0,
     remove_remote_user/1,
@@ -55,8 +57,23 @@ and the link's `Token`, then makes the link reachable by `m:ircd_links`:
 `ircd_inbound_peers`; `outbound` stores it (the `m:ircd_link` worker) in
 `ircd_outbound_ready`.
 """.
--spec register_adjacent(binary(), binary(), inbound | outbound, pid()) -> ok.
+-spec register_adjacent(binary(), binary(), inbound | outbound, pid()) ->
+    ok | {error, duplicate_peer}.
 register_adjacent(Name, Token, Kind, Pid) ->
+    Fold = ircd_wire:fold(Name),
+    Owners = [
+        Owner
+     || {_, {Owner, _}} <-
+            ets:lookup(?INBOUND, Fold) ++ ets:lookup(ircd_outbound_ready, Fold)
+    ],
+    case [Owner || Owner <- Owners, Owner =/= Pid] of
+        [_ | _] ->
+            {error, duplicate_peer};
+        [] ->
+            register_adjacent_new(Name, Token, Kind, Pid)
+    end.
+
+register_adjacent_new(Name, Token, Kind, Pid) ->
     Local = local_name(),
     Record = #known_server{
         key = ircd_wire:fold(Name),
@@ -207,6 +224,79 @@ split(Lost, Reason, Except) ->
         end,
         [Name || Name <- lost_names(Lost)]
     ),
+    ok.
+
+-doc """
+Forget the direction rows of `Name` that `Pid` owns.
+
+`split` when that was the last direction, so the caller removes the peer's
+users. `kept` when another direction is still registered. `absent` when `Pid`
+owns neither row: a session that lost the name, or one that already left,
+must not split whoever holds it now.
+""".
+-spec release_link(binary(), pid()) -> split | kept | absent.
+release_link(Name, Pid) ->
+    Fold = ircd_wire:fold(Name),
+    OwnIn = owns_direction(?INBOUND, Fold, Pid),
+    OwnOut = owns_direction(ircd_outbound_ready, Fold, Pid),
+    case OwnIn orelse OwnOut of
+        false ->
+            absent;
+        true ->
+            case OwnIn of
+                true -> ets:delete(?INBOUND, Fold);
+                false -> ok
+            end,
+            case OwnOut of
+                true -> ets:delete(ircd_outbound_ready, Fold);
+                false -> ok
+            end,
+            case
+                ets:lookup(?INBOUND, Fold) =:= [] andalso
+                    ets:lookup(ircd_outbound_ready, Fold) =:= []
+            of
+                true -> split;
+                false -> kept
+            end
+    end.
+
+owns_direction(Table, Fold, Pid) ->
+    case ets:lookup(Table, Fold) of
+        [{_, {Pid, _}}] -> true;
+        _ -> false
+    end.
+
+%% Link processes registered for an adjacent peer. Captured before `split/3`,
+%% which removes the rows.
+adjacent_pids(Name) ->
+    Fold = ircd_wire:fold(Name),
+    [
+        Pid
+     || Table <- [?INBOUND, ircd_outbound_ready],
+        {_, {Pid, _}} <- ets:lookup(Table, Fold),
+        is_pid(Pid)
+    ].
+
+-doc """
+Remove server `Name` and close a direct link when `Name` is adjacent.
+
+The owner pids are taken before `split/3` deletes them. Those processes are
+then stopped with reason `squit`, so the socket cannot keep sending as the
+peer after the registration is gone. A name that is not a direct link has no
+owner and only the split runs.
+""".
+-spec drop_server(binary(), binary(), undefined | binary()) -> ok.
+drop_server(Name, Reason, Except) ->
+    Pids = adjacent_pids(Name),
+    case Pids of
+        [] ->
+            ok;
+        _ ->
+            ircd_state_link:flush_netjoin(Name),
+            ok = ircd_state_link:forget_peer_batches(Name)
+    end,
+    split(Name, Reason, Except),
+    lists:foreach(fun(Pid) -> exit(Pid, squit) end, Pids),
     ok.
 
 -doc """
@@ -694,7 +784,7 @@ oper_command_allowed(<<"SQUIT">>, [Target | Rest], Client, Server) ->
         [] ->
             ircd_state_send:numeric(Client, Server, <<"402">>, [Target], <<"No such server">>);
         [#known_server{name = Name}] ->
-            split(Name, Reason, undefined),
+            drop_server(Name, Reason, undefined),
             ircd_state_send:send(
                 Client#client.pid,
                 Server,

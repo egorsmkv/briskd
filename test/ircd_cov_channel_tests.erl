@@ -594,7 +594,10 @@ remote_channels(Port) ->
     want(Heard, <<"PRIVMSG #rcremote :t2">>),
     %% Inviting a remote user to a channel shared with the link.
     want(cmd(A, <<"INVITE rc_rem #rcremote">>, <<" 341 ">>), <<"rc_rem #rcremote">>),
-    %% A channel shared with a link cannot be renamed.
+    %% A channel shared with a link cannot be renamed. Operator is granted by
+    %% the peer: joining an existing network channel does not confer it.
+    send(Peer, <<":peer.test MODE #rcremote +o rc_alice">>),
+    sync_peer(Peer),
     want(cmd(A, <<"RENAME #rcremote #rcmoved">>, <<"FAIL">>), <<"CANNOT_RENAME">>),
     %% Private flags set by the peer are reflected in the NAMES symbol.
     send(Peer, <<":peer.test MODE #rcremote +p">>),

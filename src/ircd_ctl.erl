@@ -414,7 +414,7 @@ handle_state_action({squit, Target, Reason}, _Server) ->
             {error, {no_such_server, Target}};
         [#known_server{name = Name}] ->
             logger:notice(#{event => ctl_squit, target => Name}),
-            ircd_state_net:split(Name, Reason, undefined),
+            ircd_state_net:drop_server(Name, Reason, undefined),
             {ok, #{status => <<"split">>, server => Name, reason => Reason}}
     end;
 handle_state_action({create_account, Name, Password, Email}, _Server) ->

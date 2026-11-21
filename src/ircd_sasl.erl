@@ -231,7 +231,13 @@ scram_final(Session, ClientFinal) ->
                     AuthMessage = <<Bare/binary, ",", ServerFirst/binary, ",", Without/binary>>,
                     Signature = crypto:mac(hmac, sha256, Stored, AuthMessage),
                     ClientKey = crypto:exor(Proof, Signature),
-                    case crypto:hash_equals(crypto:hash(sha256, ClientKey), Stored) of
+                    %% An imported verifier that is not 32 bytes must fail the
+                    %% check. crypto:hash_equals/2 raises badarg on a size
+                    %% mismatch, which would take down ircd_state.
+                    case
+                        byte_size(Stored) =:= 32 andalso
+                            crypto:hash_equals(crypto:hash(sha256, ClientKey), Stored)
+                    of
                         true ->
                             ServerSignature = crypto:mac(hmac, sha256, ServerKey, AuthMessage),
                             {continue, <<"v=", (base64:encode(ServerSignature))/binary>>,

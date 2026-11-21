@@ -70,15 +70,18 @@ outbound() ->
         recv_until(Up, <<"PRIVMSG rem :to-up">>),
         send(Alice, <<"PRIVMSG #room :room-up">>),
         recv_until(Up, <<"PRIVMSG #room :room-up">>),
-        %% An inbound session with the same name does not get a second copy.
-        Twin = handshake(Port, ?UP),
+        %% A second inbound session for this peer is refused and does not
+        %% replace the outbound link.
+        Dup = connect(Port),
+        send(Dup, <<"PASS linksecret 0210 |">>),
+        send(Dup, <<"SERVER ", ?UP/binary, " 1 1 :", ?UP/binary>>),
+        ?assertEqual(closed, wait_closed(Dup)),
+        ?assertMatch(#{phase := authenticated}, sys:get_state(Link)),
         In = handshake(Port, <<"in.test">>),
-        sync(Twin),
         sync(In),
         send(Alice, <<"TOPIC #room :fanout">>),
         recv_until(Up, <<"TOPIC #room :fanout">>),
         recv_until(In, <<"TOPIC #room :fanout">>),
-        ?assertNot(has(sync(Twin), <<"fanout">>)),
         %% A line from the inbound peer is relayed to the outbound peer.
         send(In, <<":in.test NICK inny 1 iuser ihost.test 3 + :In">>),
         recv_until(Up, <<"NICK inny">>),

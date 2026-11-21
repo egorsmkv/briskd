@@ -6,8 +6,9 @@ lines, messages, channel joins, and nickname changes, plus a per-host
 
 Runs inside `m:ircd_state` and stores ephemeral state in the `ircd_flood` ETS
 table. Local IRC operators (user mode `+o`) are exempt from per-connection
-flood disconnection, and `QUIT` and `PONG` are always accepted so a client can
-answer liveness checks or close cleanly. When a connection exceeds any bucket,
+flood disconnection, and `QUIT` is always accepted so a client can close
+cleanly. `PONG` is an ordinary line: this server does not use client `PONG`
+for liveness. When a connection exceeds any bucket,
 `check_command/5` returns `{flood, Category}` and `m:ircd_state` closes the
 connection with `ERROR :Closing Link: <host> (Excess Flood)`.
 
@@ -110,9 +111,10 @@ completed registration. Returns `allow` or `{flood, Category}`.
 """.
 -spec check_command(pid(), binary(), [binary()], list(), boolean()) ->
     allow | {flood, category()}.
-check_command(_Pid, Command, _Params, _Tags, _IsReady) when
-    Command =:= <<"QUIT">>; Command =:= <<"PONG">>
-->
+%% QUIT disconnects after one command, so it is not a flood vehicle.
+%% PONG is an ordinary line: the server does not use client PONGs for
+%% liveness, and an unlimited PONG would occupy ircd_state indefinitely.
+check_command(_Pid, <<"QUIT">>, _Params, _Tags, _IsReady) ->
     allow;
 check_command(Pid, Command, Params, Tags, IsReady) ->
     case config() of

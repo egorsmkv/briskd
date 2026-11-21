@@ -15,6 +15,9 @@ SSRF defenses:
 - Resolves DNS before connecting and blocks loopback, RFC 1918 private,
   link-local / cloud metadata (`169.254.0.0/16`), CGNAT (`100.64.0.0/10`),
   multicast, IPv6 ULA/link-local, and IPv4-mapped private addresses.
+- Connects to one of those addresses. The original name is sent only as the
+  `Host` header and, for HTTPS, as the TLS server name, so a later DNS
+  answer cannot move the connection onto a private address.
 - Disables automatic redirects, reads at most 64 KiB, and bounds the whole
   download (connect, headers, and body) to 5 seconds.
 """.
@@ -190,21 +193,24 @@ extract_metadata(Html, Host) when is_binary(Html), is_binary(Host) ->
 default_port(<<"https">>) -> 443;
 default_port(_) -> 80.
 
-fetch_uncached(Url, #{host := Host} = Parsed) ->
-    case check_public_host(Host) of
-        ok ->
-            do_http_get(Url, Parsed);
+fetch_uncached(_Url, #{host := Host} = Parsed) ->
+    case public_addresses(Host) of
+        {ok, Addrs} ->
+            connect_public(Parsed, Addrs, dns_failed);
         {error, Reason} ->
             {error, Reason}
     end.
 
-check_public_host(Host) ->
+%% Every answer must be public. A name that resolves to both a public and a
+%% private address is rejected, and the connect uses one of the addresses
+%% returned here rather than the name.
+public_addresses(Host) ->
     HostStr = binary_to_list(Host),
     case inet:parse_address(HostStr) of
         {ok, IP} ->
             case is_private_ip(IP) of
                 true -> {error, private_address};
-                false -> ok
+                false -> {ok, [IP]}
             end;
         {error, _} ->
             V4 =
@@ -221,9 +227,9 @@ check_public_host(Host) ->
                 [] ->
                     {error, dns_failed};
                 Addrs ->
-                    case lists:any(fun is_private_ip/1, Addrs) of
-                        true -> {error, private_address};
-                        false -> ok
+                    case lists:all(fun(Addr) -> not is_private_ip(Addr) end, Addrs) of
+                        true -> {ok, Addrs};
+                        false -> {error, private_address}
                     end
             end
     end.
@@ -231,26 +237,73 @@ check_public_host(Host) ->
 %% hackney 4 has no "read at most N bytes" option: `max_body_size` fails the
 %% whole request with `body_too_large` when the page is bigger. So the body is
 %% streamed on a dedicated connection and the read stops at ?MAX_HTML_BYTES.
-do_http_get(Url, #{host := Host} = Parsed) ->
+%% `Address` is the checked IP; `Host` is only the HTTP Host header and the
+%% TLS server name.
+connect_public(_Parsed, [], Reason) ->
+    {error, Reason};
+connect_public(#{host := Host, scheme := Scheme, port := Port} = Parsed, [IP | Rest], _) ->
     Deadline = erlang:monotonic_time(millisecond) + ?TIMEOUT_MS,
     Headers = [
+        {<<"Host">>, host_header(Host)},
         {<<"user-agent">>, <<"ircd-link-preview/1.0">>},
         {<<"accept">>, <<"text/html,application/xhtml+xml;q=0.9,*/*;q=0.1">>}
     ],
-    Opts = [
+    Transport =
+        case Scheme of
+            <<"https">> -> hackney_ssl;
+            _ -> hackney_tcp
+        end,
+    case inet:ntoa(IP) of
+        {error, einval} ->
+            connect_public(Parsed, Rest, einval);
+        Address ->
+            case hackney:connect(Transport, Address, Port, connect_opts(Scheme, Host)) of
+                {ok, Conn} ->
+                    try
+                        get_head(Conn, request_path(Parsed), Headers, Host, Deadline)
+                    after
+                        hackney:close(Conn)
+                    end;
+                {error, Reason} ->
+                    connect_public(Parsed, Rest, Reason)
+            end
+    end.
+
+connect_opts(Scheme, Host) ->
+    Base = [
         {connect_timeout, ?TIMEOUT_MS},
         {recv_timeout, ?TIMEOUT_MS},
         {pool, false}
     ],
-    case hackney:connect(Url, Opts) of
-        {ok, Conn} ->
-            try
-                get_head(Conn, request_path(Parsed), Headers, Host, Deadline)
-            after
-                hackney:close(Conn)
-            end;
-        {error, Reason} ->
-            {error, Reason}
+    case Scheme of
+        <<"https">> ->
+            Sni =
+                case inet:parse_address(binary_to_list(Host)) of
+                    {ok, _} -> disable;
+                    {error, _} -> binary_to_list(Host)
+                end,
+            Base ++
+                [
+                    {ssl_options, [
+                        {verify, verify_peer},
+                        {depth, 5},
+                        {cacerts, public_key:cacerts_get()},
+                        {server_name_indication, Sni},
+                        {customize_hostname_check, [
+                            {match_fun, public_key:pkix_verify_hostname_match_fun(https)}
+                        ]}
+                    ]}
+                ];
+        _ ->
+            Base
+    end.
+
+%% An IPv6 literal in the Host header is bracketed. The allowed ports are the
+%% scheme defaults, so the port is omitted.
+host_header(Host) ->
+    case binary:match(Host, <<":">>) of
+        nomatch -> Host;
+        _ -> <<"[", Host/binary, "]">>
     end.
 
 get_head(Conn, Path, Headers, Host, Deadline) ->
