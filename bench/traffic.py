@@ -409,6 +409,23 @@ async def high_load(args, base):
     }
 
 
+async def wait_responsive(args, base, limit=300.0):
+    """Seconds until a fresh client registers (None if not within `limit`)."""
+    started = time.perf_counter()
+    attempt = 0
+    while time.perf_counter() - started < limit:
+        attempt += 1
+        try:
+            _r, writer, _d, _b = await register(
+                args.host, args.port, nick_for(base, 93_000_000 + attempt), 10
+            )
+            await quit_client(writer)
+            return time.perf_counter() - started
+        except Exception:  # noqa: BLE001 - still busy: try again
+            await asyncio.sleep(1)
+    return None
+
+
 def load_section(load):
     if not load:
         return []
@@ -443,6 +460,11 @@ def load_section(load):
         f"max {fmt_ms(max(lat) if lat else None)}.",
         f"Disconnects during the phase: {load['disconnects']}; error numerics: "
         f"{load['numerics'] or 'none'}.",
+        (
+            f"After the phase a new client registered within {load['recovery']:.1f} s."
+            if load.get("recovery") is not None
+            else "After the phase no new client could register within 300 s."
+        ),
         f"Load generator CPU during the phase: {util:.0f}% of one core "
         + ("(near 100%: the generator may be the limit, not the server)." if util >= 90 else "."),
         "",
@@ -622,6 +644,13 @@ def write_report(path, report):
 
 def command_section(report):
     rows = report.get("commands") or []
+    if report.get("commands_error"):
+        return [
+            "## Commands",
+            "",
+            f"The command matrix did not run: `{report['commands_error']}`.",
+            "",
+        ]
     if not rows:
         return []
     out = [
@@ -740,22 +769,30 @@ async def main_async(args):
     load = None
     if args.clients > 0:
         load = await high_load(args, base)
-        # Let the load's sessions finish quitting before the next phase.
-        await asyncio.sleep(min(15.0, 2.0 + args.clients / 2000))
+        # After a burst the server may still be working through it: wait
+        # until a fresh client registers again, and report how long it took.
+        load["recovery"] = await wait_responsive(args, base)
     matrix = []
+    matrix_error = None
     if args.commands:
-        matrix = await bench_commands.command_matrix(
-            args.host,
-            args.port,
-            lambda index: nick_for(base, 80_000_000 + index),
-            args.commands,
-            oper,
-            args.timeout,
-            args.pace,
+        try:
+            matrix = await bench_commands.command_matrix(
+                args.host,
+                args.port,
+                lambda index: nick_for(base, 80_000_000 + index),
+                args.commands,
+                oper,
+                args.timeout,
+                args.pace,
+            )
+        except Exception as exc:  # noqa: BLE001 - reported, the run still writes its report
+            matrix_error = f"{type(exc).__name__}: {exc}"
+    try:
+        stats_after = await bench_commands.server_stats(
+            args.host, args.port, nick_for(base, 92_000_000), oper
         )
-    stats_after = await bench_commands.server_stats(
-        args.host, args.port, nick_for(base, 92_000_000), oper
-    )
+    except Exception:  # noqa: BLE001 - the server could not answer: no statistics
+        stats_after = stats_before
     container = await asyncio.to_thread(sampler.stop)
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     out = Path(args.output) if args.output else ROOT / "bench" / "results" / f"{stamp}.md"
@@ -781,6 +818,7 @@ async def main_async(args):
         "load": load,
         "loop": args.loop,
         "commands": matrix,
+        "commands_error": matrix_error,
         "iterations": args.commands,
         "pace": args.pace,
         "server": {

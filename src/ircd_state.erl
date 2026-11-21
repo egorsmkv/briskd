@@ -158,7 +158,7 @@ certificate, if any). The caller is monitored, and a `client` and
 `user_modes` row are written for it.
 """.
 -spec connect(binary(), map()) -> ok.
-connect(Host, Info) -> gen_server:call(?MODULE, {connect, Host, Info}).
+connect(Host, Info) -> gen_server:call(?MODULE, {connect, Host, Info}, ?COMMAND_TIMEOUT).
 
 -doc """
 Record that the calling session finished a `STARTTLS` handshake.

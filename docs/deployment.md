@@ -275,6 +275,24 @@ Key operational and security events to index and alert on:
   - Outbound server links drop and reconnect with exponential backoff (5 s to
     300 s with jitter) if a peer stalls past a 30 s send timeout or 50,000
     queued lines.
+  - The client listener queues up to 1024 pending connections (`backlog`,
+    capped by the kernel's `net.core.somaxconn`). The previous default of 5
+    made the kernel drop connection attempts when hundreds of clients
+    connected at once, and their retries made registration take tens of
+    seconds.
+  - Each session sends one command at a time to the state process and stops
+    reading its socket until it is applied, so a busy server slows clients
+    down through TCP instead of queueing their input. A command not applied
+    within 60 seconds means the server is overloaded: the client gets
+    `ERROR :Closing Link: … (Server overloaded)` and a `command_timeout`
+    warning is logged. (With the earlier 5-second default, sessions crashed
+    instead, disconnecting their clients and adding work for the busy
+    process.)
+  - Measured with `bench/prod` (`bench/traffic.py` high-load phase): 10,000
+    clients in channels of 50 sending a burst of 100,000 messages (4.9
+    million deliveries) are all delivered at about 60,000 deliveries a second
+    with no disconnects; delivery latency grows to tens of seconds during such
+    a burst, and new clients register again about 12 seconds after it.
 - **CPU and spam protection:**
   - `flood` token buckets (`ircd_flood`) cap per-client line rate, message
     fan-out, channel joins, and nickname changes, and rate-limit `REGISTER`

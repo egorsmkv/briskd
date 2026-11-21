@@ -633,8 +633,12 @@ process_line(Tags, <<"SERVER">>, [Name, Hop, Token, _Info], _Bytes, State) ->
         [] -> process_server_intro(Name, Hop, Token, State);
         _ -> error
     end;
-process_line(Tags, Command, Params, Bytes, {_, _, _, _, awaiting} = State) ->
-    process_client_line(Tags, Command, Params, Bytes, promote_client(State));
+process_line(Tags, Command, Params, Bytes, {Kind, Socket, _, _, awaiting} = State) ->
+    try promote_client(State) of
+        Client -> process_client_line(Tags, Command, Params, Bytes, Client)
+    catch
+        exit:{timeout, _} -> overloaded(Kind, Socket, State)
+    end;
 process_line(_Tags, _Command, _Params, _Bytes, {_, _, _, _, {server_pass, _}}) ->
     error;
 process_line(_Tags, <<"QUIT">>, _Params, _Bytes, {_, _, _, _, {attached, _}}) ->
