@@ -36,7 +36,11 @@ outbound() ->
         ?assertEqual(redacted, maps:get(peer_password, Redacted)),
         ?assertNot(maps:is_key(password, maps:get(peer, Redacted))),
         send(Up, <<"SERVER up.test 1 1 :Up">>),
-        ?assert(has(recv_until(Up, <<"NJOIN #room">>), <<"NICK alice 0 alice ">>)),
+        Burst = recv_until(Up, <<"NJOIN #room">>),
+        ?assert(has(Burst, <<"NICK alice 0 alice ">>)),
+        %% The burst must not introduce the peer to itself. That SERVER line
+        %% is a loop and the peer drops the link.
+        ?assertNot(has(Burst, <<"SERVER up.test">>)),
         wait_until(fun() -> maps:get(phase, sys:get_state(Link)) =:= authenticated end),
         %% An authenticated link resets the reconnect backoff.
         ?assertMatch(#{attempts := 0, backoff := undefined}, sys:get_state(Link)),

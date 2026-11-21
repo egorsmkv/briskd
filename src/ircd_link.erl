@@ -377,16 +377,20 @@ handle_server_line(
                 attempts => 0,
                 backoff => undefined
             },
-            %% Register before the burst. A duplicate peer is rejected with
-            %% the pre-authentication state, so retry/2 does not split the
-            %% link that already owns the name. A burst that fails after
-            %% registration is disconnected here, then retried from that
-            %% same pre-authentication state.
+            %% Take the burst before registration. Registering first would
+            %% put this peer into known_servers, and the burst would
+            %% introduce the peer to itself (`SERVER` of its own name),
+            %% which the other side rejects as a loop. A duplicate is still
+            %% rejected before anything is sent, with the pre-authentication
+            %% state, so retry/2 does not split the link that already owns
+            %% the name. A burst that fails after registration is
+            %% disconnected here, then retried from that same state.
+            Burst = ircd_state:server_burst(),
             case ircd_state:register_adjacent(Name, Token, outbound) of
                 {error, duplicate_peer} ->
                     {error, duplicate_peer, State};
                 ok ->
-                    case send_burst(ircd_state:server_burst(), Authenticated) of
+                    case send_burst(Burst, Authenticated) of
                         ok ->
                             logger:notice(#{event => server_link_authenticated, peer => Name}),
                             {ok, arm_liveness(Authenticated#{ping_pending => undefined})};
