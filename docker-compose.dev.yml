@@ -20,13 +20,16 @@ services:
     volumes:
       - rustfs-data:/data
 
-  # Media relay for WebIRC voice calls. Browsers on this machine reach it at
-  # 127.0.0.1 through the published UDP port range.
+  # Media relay for WebIRC calls. It tells browsers to send media to
+  # RTPENGINE_ADVERTISE on the published UDP port range: 127.0.0.1 (the
+  # default) works for browsers on this machine only. For calls from other
+  # devices set it to an address they reach, for example this host's Tailscale
+  # IP, in `.env` (gitignored; see docs/development.md).
   rtpengine:
     build:
       context: docker/rtpengine
     environment:
-      RTPENGINE_ADVERTISE: 127.0.0.1
+      RTPENGINE_ADVERTISE: ${RTPENGINE_ADVERTISE:-127.0.0.1}
       RTPENGINE_PORT_MIN: "30000"
       RTPENGINE_PORT_MAX: "30100"
     ports:

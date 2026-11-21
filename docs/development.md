@@ -63,6 +63,39 @@ Each server also has its own message search service (`ircd-search` and
 high-load clients over both servers, so every channel spans the link (see
 [Benchmarks](../bench/README.md)).
 
+### Using the development server from other devices (Tailscale)
+
+Browsers allow the camera and microphone only on HTTPS pages (or
+`localhost`), so calls from another device need the web UI over HTTPS, and
+rtpengine must announce an address that device can reach. With
+[Tailscale](https://tailscale.com) on the development host:
+
+1. Enable Serve and HTTPS certificates for the tailnet (the first
+   `tailscale serve` prints the link to do it).
+2. Serve the web UI and the WebSocket over HTTPS on the host's tailnet name:
+
+   ```sh
+   sudo tailscale serve --bg http://127.0.0.1:8081
+   sudo tailscale serve --bg --set-path /ws http://127.0.0.1:8080
+   ```
+
+   WebIRC loaded over HTTPS without a `wss_port` connects to
+   `wss://<page host>/ws`, which the second line forwards to ircd's
+   WebSocket port.
+3. Announce the host's Tailscale address for media, in `.env` next to the
+   compose file (gitignored), and recreate rtpengine:
+
+   ```sh
+   echo "RTPENGINE_ADVERTISE=$(tailscale ip -4)" >> .env
+   docker compose -f docker-compose.dev.yml up -d --force-recreate rtpengine
+   ```
+
+   Media then flows over the tailnet to the published UDP ports
+   30000–30100.
+
+Open `https://<host>.<tailnet>.ts.net/` on the other device. `sudo tailscale
+serve reset` removes the configuration.
+
 With docker-compose 1.x on a recent Docker Engine, recreating a changed
 service can fail with `KeyError: 'ContainerConfig'` and leave the old
 container renamed with an ID prefix; remove that container (`docker rm -f`)

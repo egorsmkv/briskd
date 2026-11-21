@@ -1,4 +1,5 @@
 // Saved session (sessionStorage), URL paths for conversations, and the WebSocket URL default.
+import { defaultWsUrl } from "./ws_url.ts";
 import { config } from "../app/config.ts";
 import { RECLAIM_SECRET, reclaimSecret } from "../common/reconnect.ts";
 import { clearHistory } from "./history_cache.ts";
@@ -147,18 +148,8 @@ export function tabReclaimSecret(): string {
 /** Wire this module's DOM listeners and initial state. */
 export function init(): void {
   (function initWsUrl() {
-    const isHttps = location.protocol === "https:";
-    const host = location.hostname || "127.0.0.1";
     const inp = $<HTMLInputElement>("inp-ws");
-    if (isHttps && WSS_PORT) {
-      inp.value = `wss://${host}:${WSS_PORT}/`;
-    } else if (WS_PORT) {
-      inp.value = `ws://${host}:${WS_PORT}/`;
-    } else if (WSS_PORT) {
-      inp.value = `wss://${host}:${WSS_PORT}/`;
-    } else {
-      inp.value = `${isHttps ? "wss" : "ws"}://${location.host}/`;
-    }
+    inp.value = defaultWsUrl(location, WS_PORT, WSS_PORT);
     const pathBuf = pathToBuffer(location.pathname);
     const qChan = new URLSearchParams(location.search).get("channel")?.trim();
     if (pathBuf && isChan(pathBuf)) {

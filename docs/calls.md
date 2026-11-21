@@ -269,4 +269,6 @@ screenshots in `test/calls/browser/shots/`. CI runs it.
 
 The development compose file includes rtpengine, advertising `127.0.0.1` with
 UDP ports 30000–30100 published, and `config/ircd.dev.json` enables calls, so
-two browser windows on the same machine can call each other.
+two browser windows on the same machine can call each other. For calls from
+other devices (HTTPS and a reachable media address), see "Using the
+development server from other devices" in [Development](development.md).
