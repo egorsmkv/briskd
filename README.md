@@ -95,7 +95,7 @@ For the Docker development environment, project commands, and CI, see
 | [Roadmap](ROADMAP.md) | Checked coverage of the RFCs and IRCv3 specifications |
 
 API documentation, built from the module docs with ex_doc, is published at
-<https://egorsmkv.github.io/irc-server/> and includes these guides.
+<https://egorsmkv.github.io/briskd/> and includes these guides.
 
 ## Benchmarks
 

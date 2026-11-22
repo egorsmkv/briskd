@@ -1,6 +1,6 @@
 # Configuration
 
-The default configuration is [`config/briskd.json`](https://github.com/egorsmkv/irc-server/blob/main/config/briskd.json). Set
+The default configuration is [`config/briskd.json`](https://github.com/egorsmkv/briskd/blob/main/config/briskd.json). Set
 `BRISKD_CONFIG` to select another file. Paths in the file are resolved relative
 to the process working directory unless they are absolute. The server reads
 that file at startup and again on `REHASH`.

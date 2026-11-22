@@ -16,7 +16,6 @@ RUN addgroup -S -g 10001 search \
     && adduser -S -D -H -u 10001 -G search -h /data search \
     && mkdir -p /data/index && chown -R search:search /data
 COPY --from=build /src/target/release/briskd-search /usr/local/bin/briskd-search
-COPY LICENSE /usr/share/doc/briskd-search/LICENSE
 USER search
 ENV SEARCH_ADDR=0.0.0.0:7700 SEARCH_DIR=/data/index
 EXPOSE 7700

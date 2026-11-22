@@ -26,7 +26,7 @@ talks to rtpengine; the callee's server relays the `CALL` lines.
 
 1. Run rtpengine (12.x was tested) where browsers can reach it over UDP. The
    repository has an image built from Debian's `rtpengine-daemon` package in
-   [`docker/rtpengine`](https://github.com/egorsmkv/irc-server/tree/main/docker/rtpengine).
+   [`docker/rtpengine`](https://github.com/egorsmkv/briskd/tree/main/docker/rtpengine).
    It runs in userspace mode (no kernel module) and takes:
 
    | Variable | Default | Meaning |
