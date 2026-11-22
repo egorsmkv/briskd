@@ -259,34 +259,37 @@ parse_peer(_) ->
 -doc """
 Return `true` when `IP` is a loopback, private (RFC 1918 / ULA), link-local,
 CGNAT (RFC 6598), multicast, or unspecified address.
+
+Unique-local IPv6 is `fc00::/7`, so both `fc00::/8` and `fd00::/8` match.
+An IPv4-mapped address (`::ffff:0:0/96`) is judged as the IPv4 address it
+carries.
 """.
 -spec is_private(inet:ip_address()) -> boolean().
-is_private({0, _, _, _}) ->
-    true;
-is_private({10, _, _, _}) ->
-    true;
-is_private({100, B, _, _}) when B >= 64, B =< 127 -> true;
-is_private({127, _, _, _}) ->
-    true;
-is_private({169, 254, _, _}) ->
-    true;
-is_private({172, B, _, _}) when B >= 16, B =< 31 -> true;
-is_private({192, 168, _, _}) ->
-    true;
-is_private({A, _, _, _}) when A >= 224 -> true;
-is_private({_, _, _, _}) ->
-    false;
-is_private({0, 0, 0, 0, 0, 0, 0, 0}) ->
-    true;
-is_private({0, 0, 0, 0, 0, 0, 0, 1}) ->
-    true;
 is_private({0, 0, 0, 0, 0, 16#FFFF, Hi, Lo}) ->
     is_private({Hi bsr 8, Hi band 16#FF, Lo bsr 8, Lo band 16#FF});
-is_private({W1, _, _, _, _, _, _, _}) when (W1 band 16#FE00) =:= 16#FC00 -> true;
-is_private({W1, _, _, _, _, _, _, _}) when (W1 band 16#FFC0) =:= 16#FE80 -> true;
-is_private({W1, _, _, _, _, _, _, _}) when (W1 band 16#FF00) =:= 16#FF00 -> true;
-is_private({_, _, _, _, _, _, _, _}) ->
-    false.
+is_private({_, _, _, _} = IP) ->
+    briskd_ip:any(IP, private_ranges());
+is_private({_, _, _, _, _, _, _, _} = IP) ->
+    briskd_ip:any(IP, private_ranges()).
+
+%% Addresses DroneBL skips. `224.0.0.0/3` is multicast and the former Class E
+%% block, the same set as an address whose first octet is at least 224.
+private_ranges() ->
+    [
+        {{0, 0, 0, 0}, 8},
+        {{10, 0, 0, 0}, 8},
+        {{100, 64, 0, 0}, 10},
+        {{127, 0, 0, 0}, 8},
+        {{169, 254, 0, 0}, 16},
+        {{172, 16, 0, 0}, 12},
+        {{192, 168, 0, 0}, 16},
+        {{224, 0, 0, 0}, 3},
+        {{0, 0, 0, 0, 0, 0, 0, 0}, 128},
+        {{0, 0, 0, 0, 0, 0, 0, 1}, 128},
+        {{16#FC00, 0, 0, 0, 0, 0, 0, 0}, 7},
+        {{16#FE80, 0, 0, 0, 0, 0, 0, 0}, 10},
+        {{16#FF00, 0, 0, 0, 0, 0, 0, 0}, 8}
+    ].
 
 -doc """
 Return the human-readable DroneBL listing description for return code `Code`.

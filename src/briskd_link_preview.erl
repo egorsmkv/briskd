@@ -125,14 +125,13 @@ carries. Anything that is not an IPv4 or IPv6 tuple is blocked.
 is_private_ip({0, 0, 0, 0, 0, 16#FFFF, Hi, Lo}) ->
     is_private_ip({Hi bsr 8, Hi band 255, Lo bsr 8, Lo band 255});
 is_private_ip({_, _, _, _} = IP) ->
-    in_blocked(IP);
+    briskd_ip:any(IP, blocked_ranges());
 is_private_ip({_, _, _, _, _, _, _, _} = IP) ->
-    in_blocked(IP);
+    briskd_ip:any(IP, blocked_ranges());
 is_private_ip(_) ->
     true.
 
-%% IPv4 and IPv6 ranges that link previews must not fetch. Prefix lengths are
-%% inclusive bit counts from the top of the address.
+%% Ranges a link preview must not fetch.
 blocked_ranges() ->
     [
         {{0, 0, 0, 0}, 8},
@@ -151,26 +150,6 @@ blocked_ranges() ->
         {{16#FE80, 0, 0, 0, 0, 0, 0, 0}, 10},
         {{16#FF00, 0, 0, 0, 0, 0, 0, 0}, 8}
     ].
-
-in_blocked(IP) ->
-    lists:any(fun(Cidr) -> in_cidr(IP, Cidr) end, blocked_ranges()).
-
-in_cidr({A, B, C, D}, {{W, X, Y, Z}, Prefix}) when is_integer(Prefix), Prefix >= 0, Prefix =< 32 ->
-    ip4_int({A, B, C, D}) bsr (32 - Prefix) =:= ip4_int({W, X, Y, Z}) bsr (32 - Prefix);
-in_cidr({A, B, C, D, E, F, G, H}, {{N1, N2, N3, N4, N5, N6, N7, N8}, Prefix}) when
-    is_integer(Prefix), Prefix >= 0, Prefix =< 128
-->
-    ip6_int({A, B, C, D, E, F, G, H}) bsr (128 - Prefix) =:=
-        ip6_int({N1, N2, N3, N4, N5, N6, N7, N8}) bsr (128 - Prefix);
-in_cidr(_, _) ->
-    false.
-
-ip4_int({A, B, C, D}) ->
-    (A bsl 24) bor (B bsl 16) bor (C bsl 8) bor D.
-
-ip6_int({A, B, C, D, E, F, G, H}) ->
-    (A bsl 112) bor (B bsl 96) bor (C bsl 80) bor (D bsl 64) bor (E bsl 48) bor (F bsl 32) bor
-        (G bsl 16) bor H.
 
 -doc """
 Extract sanitized OpenGraph / HTML metadata (`title`, `description`, `site_name`)

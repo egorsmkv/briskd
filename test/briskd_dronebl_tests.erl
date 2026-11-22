@@ -22,6 +22,7 @@ pure_helpers_test() ->
     ?assert(briskd_dronebl:is_private({192, 168, 1, 1})),
     ?assert(briskd_dronebl:is_private({100, 64, 0, 1})),
     ?assert(briskd_dronebl:is_private({0, 0, 0, 0, 0, 0, 0, 1})),
+    ?assert(briskd_dronebl:is_private({16#FD00, 0, 0, 0, 0, 0, 0, 1})),
     ?assert(briskd_dronebl:is_private({0, 0, 0, 0, 0, 16#FFFF, 16#7F00, 1})),
     ?assertNot(briskd_dronebl:is_private({198, 51, 100, 7})),
     ?assertNot(briskd_dronebl:is_private({16#2001, 16#0db8, 0, 0, 0, 0, 0, 1})),
