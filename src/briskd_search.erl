@@ -83,6 +83,10 @@ reduced to its text; invalid UTF-8 becomes U+FFFD.
 -define(MAX_RESPONSE, 4 * 1024 * 1024).
 
 -type history_table() :: channel_message | direct_message.
+-doc """
+One search hit. `conv` is the index name from `conv_id/2`, `seq` is the
+history sequence, and `time` is the message timestamp.
+""".
 -type hit() :: #{conv := binary(), seq := pos_integer(), time := integer()}.
 -export_type([hit/0]).
 

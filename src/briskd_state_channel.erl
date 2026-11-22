@@ -90,8 +90,10 @@ channel. Empty non-predefined channels without remote members are bounded by
 ]).
 -include("briskd_state.hrl").
 
-%% A message body: `none` for TAGMSG, the text of a PRIVMSG or NOTICE, or a
-%% draft/multiline batch as {Concat, Line} pairs in order.
+-doc """
+A message body: `none` for `TAGMSG`, the text of a `PRIVMSG` or `NOTICE`, or a
+draft/multiline batch as `{Concat, Line}` pairs in order.
+""".
 -type body() :: none | binary() | {multiline, [{boolean(), binary()}]}.
 -export_type([body/0]).
 

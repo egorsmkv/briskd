@@ -68,8 +68,10 @@ Subcommands:
 
 -define(MAX_CTL_BYTES, 65536).
 
-%% A state-changing control action, run inside briskd_state (briskd_state:ctl/1).
-%% Every binary comes from a control-socket argument.
+-doc """
+State-changing control action, applied inside `briskd_state`
+(`briskd_state:ctl/1`). Every binary is taken from a control-socket argument.
+""".
 -type state_action() ::
     rehash
     | {set_log_level, binary()}

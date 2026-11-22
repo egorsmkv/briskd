@@ -29,10 +29,15 @@ A subsystem that is not configured in the file cannot be turned on here.
 
 -include("briskd_state.hrl").
 
+-doc "Value stored for an override: a boolean switch or an integer limit.".
 -type value() :: boolean() | integer().
 -type kind() :: boolean | {integer, integer(), integer()}.
 -type path() ::
     {top, atom()} | {feature, atom()} | {section, atom()} | dronebl.
+-doc """
+One admin-panel setting: its key, display group, value kind, and where it
+lands in the configuration map.
+""".
 -type control() :: #{key := binary(), group := binary(), kind := kind(), path := path()}.
 
 %% The controls, in the order the admin panel shows them.

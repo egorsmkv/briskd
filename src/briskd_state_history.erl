@@ -37,8 +37,11 @@
 -include("briskd_state.hrl").
 -include("briskd_account.hrl").
 
-%% One stored message or event. `msgid` is `undefined` for a line that
-%% arrived without one; events (JOIN, PART, ...) add `params` and `notarget`.
+-doc """
+One stored message or event. `msgid` is `undefined` for a line that arrived
+without one. Events (`JOIN`, `PART`, and the rest) add `params` and
+`notarget`.
+""".
 -type entry() :: #{
     cmd := binary(),
     prefix := binary(),

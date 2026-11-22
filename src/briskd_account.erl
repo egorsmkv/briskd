@@ -32,6 +32,10 @@
 -include("briskd_account.hrl").
 -export_type([verifier/0]).
 
+-doc """
+SCRAM-SHA-256 verifier stored for an account (RFC 5802): salt, PBKDF2
+iteration count, StoredKey, and ServerKey. The password itself is not stored.
+""".
 -type verifier() :: #{
     salt := binary(),
     iterations := pos_integer(),

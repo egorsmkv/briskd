@@ -26,6 +26,10 @@ The row is deleted with `delete/1` when the client disconnects, so nothing
 here survives the connection or a server restart.
 """.
 
+-doc """
+Key in a connection's IRCv3 state row. The value type of each key is given by
+`get/2` and `get/3` and listed in the module documentation.
+""".
 -type key() ::
     account
     | sasl
@@ -41,6 +45,10 @@ here survives the connection or a server restart.
     | e2ee_fetch
     | reclaim.
 
+-doc """
+Open client batch (draft/multiline) on one connection. `lines` is newest
+first; the boolean is `true` for a draft/multiline-concat line.
+""".
 -type batch() :: #{
     ref := binary(),
     %% The labeled-response label of the BATCH +ref line, if any.

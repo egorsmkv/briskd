@@ -39,7 +39,12 @@ continuation with `{error, {worker, Reason}}`.
 -define(REQUEST, briskd_deferred_request).
 -define(COUNT, briskd_deferred_count).
 
+-doc "Pure work run in a worker. A zero-arity fun; it may close over a password.".
 -type work() :: fun(() -> term()).
+-doc """
+Continuation run in `briskd_state` with `{ok, Result}` or `{error, Reason}`.
+It must not capture a password.
+""".
 -type continuation() :: fun(({ok, term()} | {error, term()}) -> term()).
 -export_type([work/0, continuation/0]).
 

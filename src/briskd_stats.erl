@@ -61,7 +61,15 @@ nickname or channel.
 -define(REJECTED, 6).
 -define(COUNTER_SIZE, 6).
 
+-doc """
+One statistics sample. The keys and their units are listed in the module
+documentation. Rates are `null` in the first sample.
+""".
 -type sample() :: #{atom() => number() | null}.
+-doc """
+Samples kept for the admin Stats tab. `interval_ms` is the sampling period
+in milliseconds. `samples` is oldest first.
+""".
 -type history() :: #{interval_ms := pos_integer(), samples := [sample()]}.
 -export_type([sample/0, history/0]).
 

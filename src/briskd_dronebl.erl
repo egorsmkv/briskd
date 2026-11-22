@@ -58,6 +58,11 @@ so enabling, disabling, or tuning `dronebl` takes effect immediately on
 -define(TABLE, briskd_dronebl_cache).
 -define(SWEEP_INTERVAL_MS, 60000).
 
+-doc """
+DNS resolver used for a DroneBL lookup: the query name and the timeout in
+milliseconds passed to `inet_res:lookup/5`. Tests inject a stub through
+`set_resolver/1`.
+""".
 -type resolver() :: fun((string(), pos_integer()) -> {ok, [inet:ip_address()]} | {error, term()}).
 -export_type([resolver/0]).
 

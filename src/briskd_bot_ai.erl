@@ -31,10 +31,12 @@ CRLF) stays within 512 octets, and splits never cut a UTF-8 sequence.
     request/3
 ]).
 
-%% A request change a provider asked for: send `max_completion_tokens` in
-%% place of `max_tokens`, or leave `temperature` at the provider default.
+-doc """
+A request change a provider asked for: send `max_completion_tokens` instead
+of `max_tokens`, or leave `temperature` at the provider default.
+""".
 -type adaptation() :: max_completion_tokens | default_temperature.
-%% What complete/3 builds the request from.
+-doc "Inputs `complete/3` builds a chat completion request from.".
 -type request() :: #{
     settings := #{model := binary(), max_tokens := pos_integer(), temperature := number()},
     system := binary(),

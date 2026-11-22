@@ -37,11 +37,14 @@ The module also provides `secret_match/2` for comparing configured passwords.
     store_base/1
 ]).
 
-%% The configuration load/1 returns. Every key is always present; optional
-%% sections are `null` when unset (a predefined channel's password and limit
-%% use `undefined`).
+%% Listener port, or `null` when that listener is off.
 -type port_or_null() :: null | inet:port_number().
 
+-doc """
+Normalized configuration `load/1` returns. Every key is present. Optional
+sections are `null` when unset. A predefined channel's password and limit
+use `undefined`.
+""".
 -type config() :: #{
     %% identity and listeners
     config_path := file:filename_all(),
@@ -127,6 +130,11 @@ The module also provides `secret_match/2` for comparing configured passwords.
 
 -type webirc_gateway() :: #{password := binary(), hosts := [inet:ip_address(), ...]}.
 
+-doc """
+One entry of the configured `channels` list: folded key, wire name, topic,
+optional key and limit (`undefined` when the JSON value was `null`), and
+mode flags.
+""".
 -type channel_entry() :: #{
     key := binary(),
     name := binary(),
@@ -137,6 +145,10 @@ The module also provides `secret_match/2` for comparing configured passwords.
     flags := #{char() => true}
 }.
 
+-doc """
+One direct server peer (RFC 2813): name, host, port, link password, and
+whether that hop uses TLS.
+""".
 -type server_link() :: #{
     name := binary(),
     host := binary(),
@@ -145,6 +157,10 @@ The module also provides `secret_match/2` for comparing configured passwords.
     tls := boolean()
 }.
 
+-doc """
+`ADMIN` reply fields (RFC 2812): server name, two location lines, and an
+email address.
+""".
 -type admin_info() :: #{
     name := binary(),
     location1 := binary(),
@@ -152,6 +168,10 @@ The module also provides `secret_match/2` for comparing configured passwords.
     email := binary()
 }.
 
+-doc """
+Command and message flood limits. `null` turns flood control off. An omitted
+`flood` key uses the default limits.
+""".
 -type flood() ::
     null
     | #{
@@ -166,7 +186,10 @@ The module also provides `secret_match/2` for comparing configured passwords.
         register_per_minute := pos_integer()
     }.
 
-%% Always a map: `false`/`true` are shorthands for enabled => false/true.
+-doc """
+DroneBL DNSBL settings. JSON `false` and `true` are the shorthands
+`#{enabled => false}` and `#{enabled => true}` with the other defaults filled in.
+""".
 -type dronebl() :: #{
     enabled := boolean(),
     zone := binary(),
@@ -179,7 +202,7 @@ The module also provides `secret_match/2` for comparing configured passwords.
     max_in_flight := 1..1024
 }.
 
-%% `false` in JSON also becomes null.
+-doc "Admin WebUI listener, or `null` when `webui` is `false` or absent.".
 -type webui() ::
     null
     | #{
@@ -191,6 +214,7 @@ The module also provides `secret_match/2` for comparing configured passwords.
         privacy_url := binary()
     }.
 
+-doc "End-to-end encryption broker limits, or `null` when E2EE is off.".
 -type e2ee() ::
     null
     | #{
@@ -210,7 +234,10 @@ The module also provides `secret_match/2` for comparing configured passwords.
     max_bytes := pos_integer()
 }.
 
-%% `false` in JSON also becomes null. s3_bucket() plus max_duration.
+-doc """
+Voice-message object storage, or `null` when `voice` is `false` or absent.
+The same fields as an S3 bucket, plus `max_duration` in seconds.
+""".
 -type voice() ::
     null
     | #{
@@ -223,9 +250,13 @@ The module also provides `secret_match/2` for comparing configured passwords.
         max_duration := 1..600
     }.
 
+-doc "File-upload object storage, or `null` when file uploads are off.".
 -type files() :: null | s3_bucket().
 
-%% Message search through briskd-search (`search`); see m:briskd_search.
+-doc """
+briskd-search client settings, or `null` when message search is off.
+See `m:briskd_search`.
+""".
 -type search() ::
     null
     | #{
@@ -235,6 +266,10 @@ The module also provides `secret_match/2` for comparing configured passwords.
         max_results := 1..200
     }.
 
+-doc """
+Voice and video call settings, or `null` when calls are off: the rtpengine
+address, ring and duration limits, and whether an account is required.
+""".
 -type calls() ::
     null
     | #{
@@ -247,6 +282,10 @@ The module also provides `secret_match/2` for comparing configured passwords.
         video := boolean()
     }.
 
+-doc """
+Chat feature switches: reactions, replies, typing notifications, editing,
+redaction, and link previews.
+""".
 -type features() :: #{
     reactions := boolean(),
     replies := boolean(),
@@ -256,6 +295,11 @@ The module also provides `secret_match/2` for comparing configured passwords.
     link_previews := boolean()
 }.
 
+-doc """
+How a new account proves its email address, or `null` when verification is
+off. `ttl` is the code lifetime in seconds. At least one of `command` and
+`smtp` delivers the code; `verify_url` is the page the message links to.
+""".
 -type account_verification() ::
     null
     | #{
@@ -266,6 +310,7 @@ The module also provides `secret_match/2` for comparing configured passwords.
         verify_url => binary()
     }.
 
+-doc "SMTP relay used to send account-verification and password-reset mail.".
 -type smtp() :: #{
     relay := binary(),
     port := 1..65535,
@@ -277,6 +322,11 @@ The module also provides `secret_match/2` for comparing configured passwords.
     password := null | binary()
 }.
 
+-doc """
+OpenAI-compatible chat provider for assistant bots. `timeout` is milliseconds.
+`missing_key_env` names an empty `api_key_env` variable, otherwise
+`undefined`.
+""".
 -type ai_provider() :: #{
     name := binary(),
     base_url := binary(),
@@ -288,6 +338,10 @@ The module also provides `secret_match/2` for comparing configured passwords.
     timeout := pos_integer()
 }.
 
+-doc """
+One AI assistant bot: its identity, provider, the channels it joins, and when
+it answers.
+""".
 -type bot() :: #{
     nick := binary(),
     user := binary(),

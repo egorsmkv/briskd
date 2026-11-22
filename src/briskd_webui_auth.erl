@@ -38,7 +38,10 @@ server process, which owns them; request handlers only read and write rows.
 ]).
 -export_type([scope/0]).
 
-%% What a password attempt was for; each is limited separately.
+-doc """
+What a password attempt was for. Each scope is rate-limited on its own
+(`retry_after/2`).
+""".
 -type scope() :: admin | account_delete.
 
 -define(SESSIONS, briskd_webui_sessions).

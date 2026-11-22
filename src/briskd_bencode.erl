@@ -14,6 +14,10 @@ raising, since NG replies arrive over UDP.
 
 -define(MAX_DEPTH, 16).
 
+-doc """
+One bencode value: an integer, a binary (or an atom, written as a string), a
+list, or a map whose keys are atoms or binaries.
+""".
 -type value() :: integer() | binary() | atom() | [value()] | #{atom() | binary() => value()}.
 -export_type([value/0]).
 
