@@ -28,6 +28,8 @@ private_ip_ssrf_test() ->
     ?assert(briskd_link_preview:is_private_ip({100, 64, 0, 1})),
     ?assert(briskd_link_preview:is_private_ip({0, 0, 0, 0, 0, 0, 0, 1})),
     ?assert(briskd_link_preview:is_private_ip({16#FC00, 0, 0, 0, 0, 0, 0, 1})),
+    %% fd00::/8 is the other half of unique-local fc00::/7.
+    ?assert(briskd_link_preview:is_private_ip({16#FD00, 0, 0, 0, 0, 0, 0, 1})),
     ?assert(briskd_link_preview:is_private_ip({16#FE80, 0, 0, 0, 0, 0, 0, 1})),
     %% IPv4-mapped loopback ::ffff:127.0.0.1
     ?assert(briskd_link_preview:is_private_ip({0, 0, 0, 0, 0, 16#FFFF, 16#7F00, 16#0001})),

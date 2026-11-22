@@ -116,48 +116,61 @@ validate_url(_) ->
 -doc """
 Return `true` when an IPv4 or IPv6 tuple falls in a loopback, private,
 link-local, CGNAT, multicast, or reserved range that must never be fetched.
+
+Unique-local IPv6 is `fc00::/7`, so both `fc00::/8` and `fd00::/8` match.
+An IPv4-mapped address (`::ffff:0:0/96`) is judged as the IPv4 address it
+carries. Anything that is not an IPv4 or IPv6 tuple is blocked.
 """.
 -spec is_private_ip(inet:ip_address()) -> boolean().
-is_private_ip({0, _, _, _}) ->
-    true;
-is_private_ip({10, _, _, _}) ->
-    true;
-is_private_ip({127, _, _, _}) ->
-    true;
-is_private_ip({169, 254, _, _}) ->
-    true;
-is_private_ip({172, B, _, _}) when B >= 16, B =< 31 -> true;
-is_private_ip({192, 168, _, _}) ->
-    true;
-is_private_ip({100, B, _, _}) when B >= 64, B =< 127 -> true;
-is_private_ip({192, 0, 0, _}) ->
-    true;
-is_private_ip({192, 0, 2, _}) ->
-    true;
-is_private_ip({198, 18, _, _}) ->
-    true;
-is_private_ip({198, 19, _, _}) ->
-    true;
-is_private_ip({198, 51, 100, _}) ->
-    true;
-is_private_ip({203, 0, 113, _}) ->
-    true;
-is_private_ip({A, _, _, _}) when A >= 224 -> true;
-is_private_ip({_, _, _, _}) ->
-    false;
-is_private_ip({0, 0, 0, 0, 0, 0, 0, 0}) ->
-    true;
-is_private_ip({0, 0, 0, 0, 0, 0, 0, 1}) ->
-    true;
 is_private_ip({0, 0, 0, 0, 0, 16#FFFF, Hi, Lo}) ->
     is_private_ip({Hi bsr 8, Hi band 255, Lo bsr 8, Lo band 255});
-is_private_ip({A, _, _, _, _, _, _, _}) when (A band 16#FE00) =:= 16#FC00 -> true;
-is_private_ip({A, _, _, _, _, _, _, _}) when (A band 16#FFC0) =:= 16#FE80 -> true;
-is_private_ip({A, _, _, _, _, _, _, _}) when (A band 16#FF00) =:= 16#FF00 -> true;
-is_private_ip({_, _, _, _, _, _, _, _}) ->
-    false;
+is_private_ip({_, _, _, _} = IP) ->
+    in_blocked(IP);
+is_private_ip({_, _, _, _, _, _, _, _} = IP) ->
+    in_blocked(IP);
 is_private_ip(_) ->
     true.
+
+%% IPv4 and IPv6 ranges that link previews must not fetch. Prefix lengths are
+%% inclusive bit counts from the top of the address.
+blocked_ranges() ->
+    [
+        {{0, 0, 0, 0}, 8},
+        {{10, 0, 0, 0}, 8},
+        {{100, 64, 0, 0}, 10},
+        {{127, 0, 0, 0}, 8},
+        {{169, 254, 0, 0}, 16},
+        {{172, 16, 0, 0}, 12},
+        {{192, 168, 0, 0}, 16},
+        {{198, 18, 0, 0}, 15},
+        {{224, 0, 0, 0}, 4},
+        {{240, 0, 0, 0}, 4},
+        {{0, 0, 0, 0, 0, 0, 0, 0}, 128},
+        {{0, 0, 0, 0, 0, 0, 0, 1}, 128},
+        {{16#FC00, 0, 0, 0, 0, 0, 0, 0}, 7},
+        {{16#FE80, 0, 0, 0, 0, 0, 0, 0}, 10},
+        {{16#FF00, 0, 0, 0, 0, 0, 0, 0}, 8}
+    ].
+
+in_blocked(IP) ->
+    lists:any(fun(Cidr) -> in_cidr(IP, Cidr) end, blocked_ranges()).
+
+in_cidr({A, B, C, D}, {{W, X, Y, Z}, Prefix}) when is_integer(Prefix), Prefix >= 0, Prefix =< 32 ->
+    ip4_int({A, B, C, D}) bsr (32 - Prefix) =:= ip4_int({W, X, Y, Z}) bsr (32 - Prefix);
+in_cidr({A, B, C, D, E, F, G, H}, {{N1, N2, N3, N4, N5, N6, N7, N8}, Prefix}) when
+    is_integer(Prefix), Prefix >= 0, Prefix =< 128
+->
+    ip6_int({A, B, C, D, E, F, G, H}) bsr (128 - Prefix) =:=
+        ip6_int({N1, N2, N3, N4, N5, N6, N7, N8}) bsr (128 - Prefix);
+in_cidr(_, _) ->
+    false.
+
+ip4_int({A, B, C, D}) ->
+    (A bsl 24) bor (B bsl 16) bor (C bsl 8) bor D.
+
+ip6_int({A, B, C, D, E, F, G, H}) ->
+    (A bsl 112) bor (B bsl 96) bor (C bsl 80) bor (D bsl 64) bor (E bsl 48) bor (F bsl 32) bor
+        (G bsl 16) bor H.
 
 -doc """
 Extract sanitized OpenGraph / HTML metadata (`title`, `description`, `site_name`)
