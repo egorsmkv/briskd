@@ -227,7 +227,7 @@ welcome_numerics(Client, Server) ->
         Server,
         <<"002">>,
         [],
-        [<<"Your host is ">>, Server, <<", running version 0.1.0">>]
+        [<<"Your host is ">>, Server, <<", running version ">>, briskd_app:vsn()]
     ),
     briskd_state_send:numeric(
         Client,
@@ -243,7 +243,7 @@ welcome_numerics(Client, Server) ->
         Client,
         Server,
         <<"004">>,
-        [Server, <<"0.1.0">>, <<"iowB">>, <<"abeIimnpsqrKltkov">>],
+        [Server, briskd_app:vsn(), <<"iowB">>, <<"abeIimnpsqrKltkov">>],
         none
     ),
     briskd_isupport:send(Client, Server, briskd_isupport:tokens()),

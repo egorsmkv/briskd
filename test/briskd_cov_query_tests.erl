@@ -59,7 +59,7 @@ info_and_operator() ->
 
 server_queries(Alice) ->
     Version = cmd(Alice, <<"VERSION">>),
-    ?assert(has(Version, <<" 351 alice 0.1.0 irc.test :Erlang/OTP IRC server">>)),
+    ?assert(has(Version, <<" 351 alice 1.0.0 irc.test :Erlang/OTP IRC server">>)),
     ?assert(has(cmd(Alice, <<"VERSION irc.*">>), <<" 351 ">>)),
     ?assert(has(cmd(Alice, <<"VERSION no.such">>), <<" 402 alice no.such ">>)),
     ?assert(has(cmd(Alice, <<"TIME">>), <<" 391 alice irc.test :">>)),
@@ -73,7 +73,7 @@ server_queries(Alice) ->
     ?assert(has(cmd(Alice, <<"ADMIN bob">>), <<" 256 ">>)),
     ?assert(has(cmd(Alice, <<"ADMIN no.such">>), <<" 402 alice no.such ">>)),
     Info = cmd(Alice, <<"INFO">>),
-    ?assert(has(Info, <<" 371 alice :briskd-0.1.0">>)),
+    ?assert(has(Info, <<" 371 alice :briskd-1.0.0">>)),
     ?assert(has(Info, <<" 371 alice :Started: ">>)),
     ?assert(has(Info, <<" 374 alice :End of INFO list">>)),
     ?assert(has(cmd(Alice, <<"INFO no.such">>), <<" 402 ">>)),
@@ -146,7 +146,7 @@ trace_before_oper(Alice) ->
     %% A non-operator sees only operators in a server TRACE; there are none.
     Trace = cmd(Alice, <<"TRACE">>),
     ?assertNot(has(Trace, <<" 205 ">>)),
-    ?assert(has(Trace, <<" 262 alice irc.test briskd-0.1.0 :End of TRACE">>)),
+    ?assert(has(Trace, <<" 262 alice irc.test briskd-1.0.0 :End of TRACE">>)),
     ?assert(has(cmd(Alice, <<"TRACE irc.test">>), <<" 262 ">>)),
     User = cmd(Alice, <<"TRACE bob">>),
     ?assert(has(User, <<" 205 alice User 0 bob">>)),

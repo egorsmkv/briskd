@@ -1,6 +1,6 @@
 {application, briskd, [
     {description, "IRC server"},
-    {vsn, "0.1.0"},
+    {vsn, "1.0.0"},
     {registered, [
         briskd_sup, briskd_state, briskd_sessions, briskd_links, briskd_stats, briskd_search
     ]},

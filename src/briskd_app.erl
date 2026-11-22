@@ -19,7 +19,16 @@ On stop, `prep_stop/1` drains clients and links (`m:briskd_shutdown`), and
 application started it. A failed start undoes the same steps.
 """.
 -behaviour(application).
--export([start/2, prep_stop/1, stop/1]).
+-export([start/2, prep_stop/1, stop/1, vsn/0]).
+
+-doc """
+Application version from the `vsn` field of `briskd.app`, as a binary.
+""".
+-spec vsn() -> binary().
+vsn() ->
+    _ = application:load(briskd),
+    {ok, Vsn} = application:get_key(briskd, vsn),
+    list_to_binary(Vsn).
 
 -doc false.
 start(_, _) ->

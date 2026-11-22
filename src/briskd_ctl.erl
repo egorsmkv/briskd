@@ -872,7 +872,7 @@ cmd_status(Format) ->
                 status => <<"running">>,
                 name => maps:get(name, Config, <<"irc.local">>),
                 network => maps:get(network, Config, <<"irc.local">>),
-                version => <<"0.1.0">>,
+                version => briskd_app:vsn(),
                 started_at => StartedIso,
                 uptime_seconds => Uptime,
                 retention => atom_to_binary(maps:get(retention, Config, channels)),

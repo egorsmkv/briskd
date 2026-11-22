@@ -118,7 +118,7 @@ trace_end(Client, Server) ->
         Client,
         Server,
         <<"262">>,
-        [Server, <<"briskd-0.1.0">>],
+        [Server, <<"briskd-", (briskd_app:vsn())/binary>>],
         <<"End of TRACE">>
     ).
 
@@ -724,7 +724,11 @@ info(Params, Client, Server) ->
             CompileText = iolist_to_binary(io_lib:format("~p", [CompileTime])),
             Started = persistent_term:get({briskd_state, started}),
             briskd_state_send:numeric(
-                Client, Server, <<"371">>, [], <<"briskd-0.1.0, Erlang/OTP IRC server">>
+                Client,
+                Server,
+                <<"371">>,
+                [],
+                <<"briskd-", (briskd_app:vsn())/binary, ", Erlang/OTP IRC server">>
             ),
             briskd_state_send:numeric(Client, Server, <<"371">>, [], [<<"Compiled: ">>, CompileText]),
             briskd_state_send:numeric(Client, Server, <<"371">>, [], <<"Patch level: 0">>),

@@ -2054,7 +2054,7 @@ registered_command(<<"VERSION">>, Params, Client, Server) ->
     case briskd_state_info:query_local_server(Params, Server) of
         true ->
             briskd_state_send:numeric(
-                Client, Server, <<"351">>, [<<"0.1.0">>, Server], <<"Erlang/OTP IRC server">>
+                Client, Server, <<"351">>, [briskd_app:vsn(), Server], <<"Erlang/OTP IRC server">>
             );
         {false, Target} ->
             briskd_state_send:numeric(Client, Server, <<"402">>, [Target], <<"No such server">>)
