@@ -1,5 +1,5 @@
 -module(briskd_conn).
--export([delete/1, get/2, get/3, put/3, remove/2]).
+-export([account_pids/1, delete/1, get/2, get/3, put/3, remove/2]).
 
 -moduledoc """
 Per-connection IRCv3 state, stored as one map per client pid in the
@@ -114,7 +114,12 @@ another writer.
     (pid(), e2ee_fetch, {integer(), non_neg_integer()}) -> ok;
     (pid(), reclaim, binary()) -> ok.
 put(Pid, Key, Value) ->
-    ets:insert(briskd_conn, {Pid, (row(Pid))#{Key => Value}}),
+    Row = row(Pid),
+    case Key of
+        account -> update_account_session(Pid, maps:get(account, Row, undefined), Value);
+        _ -> ok
+    end,
+    ets:insert(briskd_conn, {Pid, Row#{Key => Value}}),
     ok.
 
 %% The row is a map whose value types depend on the key, which the specs of
@@ -132,8 +137,16 @@ Remove `Key` from the connection `Pid`. A missing row or key is not an error.
 -spec remove(pid(), key()) -> ok.
 remove(Pid, Key) ->
     case ets:lookup(briskd_conn, Pid) of
-        [{_, Map}] -> ets:insert(briskd_conn, {Pid, maps:remove(Key, Map)});
-        [] -> ok
+        [{_, Map}] ->
+            case Key of
+                account ->
+                    update_account_session(Pid, maps:get(account, Map, undefined), undefined);
+                _ ->
+                    ok
+            end,
+            ets:insert(briskd_conn, {Pid, maps:remove(Key, Map)});
+        [] ->
+            ok
     end,
     ok.
 
@@ -142,5 +155,55 @@ Drop every key of the connection `Pid`. Called when the client disconnects.
 """.
 -spec delete(pid()) -> ok.
 delete(Pid) ->
+    case ets:lookup(briskd_conn, Pid) of
+        [{_, Map}] ->
+            update_account_session(Pid, maps:get(account, Map, undefined), undefined);
+        [] ->
+            ok
+    end,
     ets:delete(briskd_conn, Pid),
     ok.
+
+-doc """
+Session pids currently logged in to `Account` (compared RFC 1459 folded).
+""".
+-spec account_pids(binary()) -> [pid()].
+account_pids(Account) ->
+    Folded = briskd_wire:fold(Account),
+    case ets:whereis(briskd_account_sessions) of
+        undefined ->
+            case ets:whereis(briskd_conn) of
+                undefined ->
+                    [];
+                _ ->
+                    [
+                        Pid
+                     || {Pid, Map} <- ets:tab2list(briskd_conn),
+                        Acct <- [maps:get(account, Map, undefined)],
+                        is_binary(Acct),
+                        briskd_wire:fold(Acct) =:= Folded
+                    ]
+            end;
+        _ ->
+            lists:usort([Pid || {_, Pid} <- ets:lookup(briskd_account_sessions, Folded)])
+    end.
+
+update_account_session(Pid, Old, New) ->
+    case ets:whereis(briskd_account_sessions) of
+        undefined ->
+            ok;
+        _ ->
+            case Old of
+                Bin when is_binary(Bin) ->
+                    ets:delete_object(briskd_account_sessions, {briskd_wire:fold(Bin), Pid});
+                _ ->
+                    ok
+            end,
+            case New of
+                NewBin when is_binary(NewBin) ->
+                    ets:insert(briskd_account_sessions, {briskd_wire:fold(NewBin), Pid});
+                _ ->
+                    ok
+            end,
+            ok
+    end.

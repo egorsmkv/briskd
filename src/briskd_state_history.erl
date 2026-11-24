@@ -1323,16 +1323,18 @@ Move every account's read marker from folded channel name `OldKey` to
 """.
 -spec rename_markers(binary(), binary()) -> ok.
 rename_markers(OldKey, NewKey) ->
+    Rows = mnesia:dirty_select(read_marker, [
+        {{read_marker, {'$1', OldKey}, '$2'}, [], [{{'$1', '$2'}}]}
+    ]),
     lists:foreach(
         fun
-            ({Account, Target} = Key) when Target =:= OldKey ->
-                [#read_marker{time = Time}] = mnesia:dirty_read(read_marker, Key),
-                mnesia:dirty_delete(read_marker, Key),
+            ({Account, Time}) when is_binary(Account), is_integer(Time) ->
+                mnesia:dirty_delete(read_marker, {Account, OldKey}),
                 mnesia:dirty_write(#read_marker{key = {Account, NewKey}, time = Time});
             (_) ->
                 ok
         end,
-        briskd_state:table_keys(read_marker)
+        Rows
     ),
     case ets:whereis(briskd_conn) of
         undefined ->
@@ -1368,21 +1370,13 @@ remote_marker(Account, Target, Time) ->
             store_account_marker(element(1, Key), element(2, Key), Time),
             Server = server(),
             lists:foreach(
-                fun({Pid, Map}) ->
-                    case maps:get(account, Map, undefined) of
-                        Name when is_binary(Name) ->
-                            case
-                                briskd_wire:fold(Name) =:= element(1, Key) andalso
-                                    briskd_cap:enabled(Pid, <<"draft/read-marker">>)
-                            of
-                                true -> send_marker(Pid, Server, Target, Time);
-                                false -> ok
-                            end;
-                        _ ->
-                            ok
+                fun(Pid) ->
+                    case briskd_cap:enabled(Pid, <<"draft/read-marker">>) of
+                        true -> send_marker(Pid, Server, Target, Time);
+                        false -> ok
                     end
                 end,
-                ets:tab2list(briskd_conn)
+                briskd_conn:account_pids(element(1, Key))
             ),
             updated
     end.
@@ -1393,12 +1387,9 @@ same_account(Pid) ->
         undefined ->
             [Pid];
         Account ->
-            Folded = briskd_wire:fold(Account),
             [
                 Other
-             || {Other, Map} <- ets:tab2list(briskd_conn),
-                is_binary(maps:get(account, Map, undefined)),
-                briskd_wire:fold(maps:get(account, Map)) =:= Folded,
+             || Other <- briskd_conn:account_pids(Account),
                 Other =:= Pid orelse briskd_cap:enabled(Other, <<"draft/read-marker">>)
             ]
     end.

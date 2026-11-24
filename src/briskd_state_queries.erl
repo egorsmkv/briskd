@@ -143,26 +143,27 @@ remote_userhost(Nick) ->
 %% Select WHO matches and format RFC 2812 WHO replies (352), or IRCv3 WHOX
 %% replies (354) when the second parameter carries `%<fields>[,<token>]`.
 who_command([], Client, Server) ->
-    who_mask(<<"*">>, false, Client, Server);
+    who_mask(<<"*">>, false, undefined, Client, Server);
 who_command([Mask, Filter | _], Client, Server) ->
     case binary:split(Filter, <<"%">>) of
         [Flags, Spec] ->
             case whox_spec(Spec) of
                 {ok, Fields, Token} ->
-                    put(briskd_whox, {Fields, Token}),
-                    try
-                        who_mask(Mask, binary:match(Flags, <<"o">>) =/= nomatch, Client, Server)
-                    after
-                        erase(briskd_whox)
-                    end;
+                    who_mask(
+                        Mask,
+                        binary:match(Flags, <<"o">>) =/= nomatch,
+                        {Fields, Token},
+                        Client,
+                        Server
+                    );
                 error ->
-                    who_mask(Mask, false, Client, Server)
+                    who_mask(Mask, false, undefined, Client, Server)
             end;
         [_] ->
-            who_mask(Mask, briskd_wire:fold(Filter) =:= <<"o">>, Client, Server)
+            who_mask(Mask, briskd_wire:fold(Filter) =:= <<"o">>, undefined, Client, Server)
     end;
 who_command([Mask], Client, Server) ->
-    who_mask(Mask, false, Client, Server).
+    who_mask(Mask, false, undefined, Client, Server).
 
 %% `%<fields>[,<token>]`. The token is 1 to 3 digits. Unknown field letters
 %% are ignored, as WHOX requires.
@@ -184,37 +185,34 @@ whox_spec(Spec) ->
 
 %% Emit one WHO row as 352, or as 354 with only the requested WHOX fields in
 %% the fixed order t c u i h s n f d l a o r.
-emit_who(Requester, Server, Row) ->
-    case get(briskd_whox) of
-        undefined ->
-            #{
-                channel := C,
-                user := U,
-                host := H,
-                server := S,
-                nick := N,
-                flags := F,
-                hop := D,
-                real := R
-            } = Row,
-            briskd_state:numeric(
-                Requester, Server, <<"352">>, [C, U, H, S, N, F], [integer_to_binary(D), <<" ">>, R]
-            );
-        {Fields, Token} ->
-            Order = "tcuihsnfdlaor",
-            Wanted = [Field || Field <- Order, lists:member(Field, Fields)],
-            {Middle, Trailing} = lists:foldl(
-                fun
-                    ($r, {Acc, _}) -> {Acc, maps:get(real, Row)};
-                    ($t, {Acc, T}) when Token =:= undefined -> {Acc, T};
-                    ($t, {Acc, T}) -> {[Token | Acc], T};
-                    (Field, {Acc, T}) -> {[whox_field(Field, Row) | Acc], T}
-                end,
-                {[], none},
-                Wanted
-            ),
-            briskd_state:numeric(Requester, Server, <<"354">>, lists:reverse(Middle), Trailing)
-    end.
+emit_who(Requester, Server, Row, undefined) ->
+    #{
+        channel := C,
+        user := U,
+        host := H,
+        server := S,
+        nick := N,
+        flags := F,
+        hop := D,
+        real := R
+    } = Row,
+    briskd_state:numeric(
+        Requester, Server, <<"352">>, [C, U, H, S, N, F], [integer_to_binary(D), <<" ">>, R]
+    );
+emit_who(Requester, Server, Row, {Fields, Token}) ->
+    Order = "tcuihsnfdlaor",
+    Wanted = [Field || Field <- Order, lists:member(Field, Fields)],
+    {Middle, Trailing} = lists:foldl(
+        fun
+            ($r, {Acc, _}) -> {Acc, maps:get(real, Row)};
+            ($t, {Acc, T}) when Token =:= undefined -> {Acc, T};
+            ($t, {Acc, T}) -> {[Token | Acc], T};
+            (Field, {Acc, T}) -> {[whox_field(Field, Row) | Acc], T}
+        end,
+        {[], none},
+        Wanted
+    ),
+    briskd_state:numeric(Requester, Server, <<"354">>, lists:reverse(Middle), Trailing).
 
 whox_field($c, #{channel := V}) -> V;
 whox_field($u, #{user := V}) -> V;
@@ -229,7 +227,7 @@ whox_field($a, #{account := undefined}) -> <<"0">>;
 whox_field($a, #{account := V}) -> V;
 whox_field($o, _) -> <<"n/a">>.
 
-who_mask(Mask, OperatorsOnly, Client, Server) ->
+who_mask(Mask, OperatorsOnly, Whox, Client, Server) ->
     ChannelKey = briskd_wire:fold(Mask),
     case mnesia:dirty_read(channel, ChannelKey) of
         [#channel{name = Name, members = Members, flags = Flags}] ->
@@ -248,7 +246,7 @@ who_mask(Mask, OperatorsOnly, Client, Server) ->
                                 briskd_state:visible_member(Pid, Client, Members) andalso
                                     who_operator_matches(Pid, OperatorsOnly)
                             of
-                                true -> who_reply(Member, Name, Client, Server);
+                                true -> who_reply(Member, Name, Client, Server, Whox);
                                 false -> ok
                             end;
                         _ ->
@@ -258,20 +256,20 @@ who_mask(Mask, OperatorsOnly, Client, Server) ->
                 maps:keys(Members)
             ),
             case Visible of
-                true -> remote_who_channel(Name, Client, OperatorsOnly, Server);
+                true -> remote_who_channel(Name, Client, OperatorsOnly, Server, Whox);
                 false -> ok
             end;
         [] ->
             case mnesia:dirty_read(remote_channel, ChannelKey) of
                 [#remote_channel{name = Name}] ->
-                    remote_who_channel(Name, Client, OperatorsOnly, Server);
+                    remote_who_channel(Name, Client, OperatorsOnly, Server, Whox);
                 [] ->
-                    who_mask_nonchannel(Mask, OperatorsOnly, Client, Server)
+                    who_mask_nonchannel(Mask, OperatorsOnly, Client, Server, Whox)
             end
     end,
     briskd_state:numeric(Client, Server, <<"315">>, [Mask], <<"End of WHO list">>).
 
-who_mask_nonchannel(Mask, OperatorsOnly, Client, Server) ->
+who_mask_nonchannel(Mask, OperatorsOnly, Client, Server, Whox) ->
     case briskd_state:find_nick(Mask) of
         #client{} = Member ->
             %% An exact nickname is answered even for +i users; invisibility
@@ -280,7 +278,7 @@ who_mask_nonchannel(Mask, OperatorsOnly, Client, Server) ->
                 briskd_state:ready(Member) andalso
                     who_operator_matches(Member#client.pid, OperatorsOnly)
             of
-                true -> who_reply(Member, <<"*">>, Client, Server);
+                true -> who_reply(Member, <<"*">>, Client, Server, Whox);
                 false -> ok
             end;
         undefined ->
@@ -295,7 +293,7 @@ who_mask_nonchannel(Mask, OperatorsOnly, Client, Server) ->
                             of
                                 true ->
                                     who_reply(
-                                        Member, who_channel(Member, Client), Client, Server
+                                        Member, who_channel(Member, Client), Client, Server, Whox
                                     );
                                 false ->
                                     ok
@@ -306,10 +304,10 @@ who_mask_nonchannel(Mask, OperatorsOnly, Client, Server) ->
                 end,
                 briskd_state_client:pids()
             ),
-            remote_who_mask(Mask, OperatorsOnly, Client, Server)
+            remote_who_mask(Mask, OperatorsOnly, Client, Server, Whox)
     end.
 
-remote_who_channel(Name, Client, OperatorsOnly, Server) ->
+remote_who_channel(Name, Client, OperatorsOnly, Server, Whox) ->
     case mnesia:dirty_read(remote_channel, briskd_wire:fold(Name)) of
         [#remote_channel{name = Canonical, members = Members, flags = Flags}] ->
             LocalMember =
@@ -377,7 +375,8 @@ remote_who_channel(Name, Client, OperatorsOnly, Server) ->
                                                     User,
                                                     Host,
                                                     Real
-                                                )
+                                                ),
+                                                Whox
                                             );
                                         false ->
                                             ok
@@ -398,7 +397,7 @@ who_operator_matches(_Pid, false) ->
 who_operator_matches(Pid, true) ->
     maps:is_key($o, briskd_state:user_modes(Pid)).
 
-remote_who_mask(Mask, OperatorsOnly, Client, Server) ->
+remote_who_mask(Mask, OperatorsOnly, Client, Server, Whox) ->
     lists:foreach(
         fun(Key) ->
             case mnesia:dirty_read(remote_client, Key) of
@@ -440,7 +439,10 @@ remote_who_mask(Mask, OperatorsOnly, Client, Server) ->
                             emit_who(
                                 Client,
                                 Server,
-                                remote_row(Key, <<"*">>, Status, Home, Peer, Nick, User, Host, Real)
+                                remote_row(
+                                    Key, <<"*">>, Status, Home, Peer, Nick, User, Host, Real
+                                ),
+                                Whox
                             );
                         false ->
                             ok
@@ -506,7 +508,8 @@ who_reply(
     #client{nick = Nick, user = User, host = Host, real = Real} = Member,
     Channel,
     Requester,
-    Server
+    Server,
+    Whox
 ) ->
     Away =
         case Member#client.away of
@@ -536,19 +539,24 @@ who_reply(
             [#activity{last = Last}] -> max(0, erlang:system_time(second) - Last);
             [] -> 0
         end,
-    emit_who(Requester, Server, #{
-        channel => Channel,
-        user => User,
-        ip => visible_ip(Member, Requester),
-        host => Host,
-        server => Server,
-        nick => Nick,
-        flags => Status,
-        hop => 0,
-        idle => Idle,
-        account => briskd_state_v3:account(Member#client.pid),
-        real => Real
-    }).
+    emit_who(
+        Requester,
+        Server,
+        #{
+            channel => Channel,
+            user => User,
+            ip => visible_ip(Member, Requester),
+            host => Host,
+            server => Server,
+            nick => Nick,
+            flags => Status,
+            hop => 0,
+            idle => Idle,
+            account => briskd_state_v3:account(Member#client.pid),
+            real => Real
+        },
+        Whox
+    ).
 
 %% WHOX `i`: the address is shown to the user and to IRC operators only.
 visible_ip(#client{pid = Pid, host = Host}, #client{pid = Requester}) ->
@@ -807,16 +815,24 @@ reported. The caller sends 369 RPL_ENDOFWHOWAS.
 -spec whowas_reply(binary(), all | integer(), #client{}, binary()) -> [binary()].
 whowas_reply(Nick, Count, Client, Server) ->
     Folded = briskd_wire:fold(Nick),
+    Matched =
+        case binary:match(Nick, [<<"*">>, <<"?">>]) of
+            nomatch ->
+                mnesia:dirty_select(whowas, [
+                    {{whowas, {Folded, '_', '_'}, '_', '_', '_', '_', '_', '_'}, [], ['$_']}
+                ]);
+            _ ->
+                [
+                    Entry
+                 || Key <- mnesia:dirty_all_keys(whowas),
+                    [Entry = #whowas{nick = StoredNick}] <- [mnesia:dirty_read(whowas, Key)],
+                    briskd_wire:fold(StoredNick) =:= Folded orelse
+                        briskd_state:wildcard_match(Nick, StoredNick)
+                ]
+        end,
     History = lists:sort(
         fun(#whowas{time = Left}, #whowas{time = Right}) -> Left > Right end,
-        [
-            Entry
-         || Key <- mnesia:dirty_all_keys(whowas),
-            [Entry = #whowas{nick = StoredNick}] <- [mnesia:dirty_read(whowas, Key)],
-            %% A nickname may be a mask with `*` and `?` (RFC 2812 3.6.3).
-            briskd_wire:fold(StoredNick) =:= Folded orelse
-                briskd_state:wildcard_match(Nick, StoredNick)
-        ]
+        Matched
     ),
     Results =
         case Count of

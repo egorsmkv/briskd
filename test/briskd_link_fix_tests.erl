@@ -275,8 +275,7 @@ history_ids(Key) ->
     ].
 
 peer_batches(Peer) ->
-    {dictionary, Dict} = process_info(state_pid(), dictionary),
-    [K || {{briskd_peer_batch, P, _} = K, _} <- Dict, P =:= Peer].
+    ets:select(briskd_peer_batches, [{{{batch, Peer, '$1'}, '_', '_'}, [], ['$1']}]).
 
 %%% Peer MODE +o/+v whose target is a local member
 
@@ -499,8 +498,3 @@ line_end(Acc, Needle) ->
 
 has(Bin, Needle) ->
     binary:match(Bin, Needle) =/= nomatch.
-
-state_pid() ->
-    case whereis(briskd_state) of
-        Pid when is_pid(Pid) -> Pid
-    end.

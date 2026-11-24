@@ -28,6 +28,8 @@ have members in the channel. The burst for a new peer is built by
     expire_peer_batches/0,
     import_remote_join/3,
     import_remote_nick/3,
+    index_remote_member/2,
+    peer_item_count/2,
     receive_remote_invite/4,
     import_remote_njoin/3,
     flush_netjoin/1,
@@ -55,6 +57,7 @@ have members in the channel. The burst for a new peer is built by
     remote_nick_exists/1,
     remote_source/2,
     trusted_server/2,
+    remote_user_channels/1,
     remote_user_local_recipients/1,
     remote_user_visible_to_requester/3,
     receive_remote_kill/3,
@@ -66,6 +69,10 @@ have members in the channel. The burst for a new peer is built by
     sweep_remote_channels/0,
     server_burst_lines/1,
     set_remote_away/3,
+    track_peer_item/3,
+    unindex_remote_channel/2,
+    unindex_remote_member/2,
+    untrack_peer_item/2,
     update_remote_modes/5,
     update_remote_topic/4
 ]).
@@ -522,6 +529,7 @@ write_remote_nick(Peer, Home, Distance, Key, Nick, User, Host, Token, Modes, Rea
             hop = Distance
         })
     ),
+    track_peer_item(user, Key, Peer),
     briskd_population:on_remote_user_put(Key, Modes).
 
 remote_nick_line(Prefix, Nick, Hop, User, Host, Token, Modes, Real) ->
@@ -544,14 +552,127 @@ local_server() ->
 
 peer_user_room(Peer) ->
     Max = maps:get(max_peer_users, briskd_config:current_or_empty(), 10000),
-    FoldedPeer = briskd_wire:fold(Peer),
-    Count = length([
-        K
-     || K <- briskd_state:table_keys(remote_client),
-        [#remote_client{peer = P}] <- [mnesia:dirty_read(remote_client, K)],
-        briskd_wire:fold(P) =:= FoldedPeer
-    ]),
-    Count < Max.
+    peer_item_count(user, Peer) < Max.
+
+-doc """
+Record that remote user `NickKey` belongs to remote channel `ChannelKey` in
+`briskd_remote_membership`.
+""".
+-spec index_remote_member(binary(), binary()) -> ok.
+index_remote_member(NickKey, ChannelKey) ->
+    case ets:whereis(briskd_remote_membership) of
+        undefined -> ok;
+        _ -> true = ets:insert(briskd_remote_membership, {NickKey, ChannelKey})
+    end,
+    ok.
+
+-doc """
+Remove `{NickKey, ChannelKey}` from `briskd_remote_membership`.
+""".
+-spec unindex_remote_member(binary(), binary()) -> ok.
+unindex_remote_member(NickKey, ChannelKey) ->
+    case ets:whereis(briskd_remote_membership) of
+        undefined -> ok;
+        _ -> true = ets:delete_object(briskd_remote_membership, {NickKey, ChannelKey})
+    end,
+    ok.
+
+-doc """
+Remove all member entries for remote channel `ChannelKey` from
+`briskd_remote_membership`.
+""".
+-spec unindex_remote_channel(binary(), map()) -> ok.
+unindex_remote_channel(ChannelKey, Members) ->
+    lists:foreach(
+        fun(NickKey) -> unindex_remote_member(NickKey, ChannelKey) end,
+        maps:keys(Members)
+    ).
+
+-doc """
+Folded channel keys that remote user `NickKey` is currently a member of.
+""".
+-spec remote_user_channels(binary()) -> [binary()].
+remote_user_channels(NickKey) ->
+    case ets:whereis(briskd_remote_membership) of
+        undefined ->
+            briskd_state:table_keys(remote_channel);
+        _ ->
+            lists:usort([ChanKey || {_, ChanKey} <- ets:lookup(briskd_remote_membership, NickKey)])
+    end.
+
+-doc """
+Idempotently record ownership of a remote `user`, `server`, or `service` by
+`Peer` in `briskd_peer_counts`.
+""".
+-spec track_peer_item(user | server | service, binary(), binary()) -> ok.
+track_peer_item(Type, Key, Peer) ->
+    case ets:whereis(briskd_peer_counts) of
+        undefined ->
+            ok;
+        _ ->
+            FoldPeer = briskd_wire:fold(Peer),
+            case ets:lookup(briskd_peer_counts, {item, Type, Key}) of
+                [{_, FoldPeer}] ->
+                    ok;
+                [{_, OldPeer}] ->
+                    dec_peer_count(Type, OldPeer),
+                    inc_peer_count(Type, FoldPeer),
+                    ets:insert(briskd_peer_counts, {{item, Type, Key}, FoldPeer}),
+                    ok;
+                [] ->
+                    inc_peer_count(Type, FoldPeer),
+                    ets:insert(briskd_peer_counts, {{item, Type, Key}, FoldPeer}),
+                    ok
+            end
+    end.
+
+-doc """
+Remove ownership tracking for a deleted remote `user`, `server`, or `service`.
+""".
+-spec untrack_peer_item(user | server | service, binary()) -> ok.
+untrack_peer_item(Type, Key) ->
+    case ets:whereis(briskd_peer_counts) of
+        undefined ->
+            ok;
+        _ ->
+            case ets:take(briskd_peer_counts, {item, Type, Key}) of
+                [{_, FoldPeer}] -> dec_peer_count(Type, FoldPeer);
+                [] -> ok
+            end
+    end.
+
+-doc """
+Number of tracked `user`, `server`, or `service` entries owned by `Peer`.
+""".
+-spec peer_item_count(user | server | service, binary()) -> non_neg_integer().
+peer_item_count(Type, Peer) ->
+    case ets:whereis(briskd_peer_counts) of
+        undefined ->
+            0;
+        _ ->
+            case ets:lookup(briskd_peer_counts, {count, Type, briskd_wire:fold(Peer)}) of
+                [{_, N}] when is_integer(N), N > 0 -> N;
+                _ -> 0
+            end
+    end.
+
+inc_peer_count(Type, FoldPeer) ->
+    _ = ets:update_counter(
+        briskd_peer_counts, {count, Type, FoldPeer}, {2, 1}, {{count, Type, FoldPeer}, 0}
+    ),
+    ok.
+
+dec_peer_count(Type, FoldPeer) ->
+    case ets:lookup(briskd_peer_counts, {count, Type, FoldPeer}) of
+        [{_, N}] when N > 1 ->
+            _ = ets:update_counter(briskd_peer_counts, {count, Type, FoldPeer}, {2, -1}),
+            ok;
+        [{_, _}] ->
+            true = ets:delete(briskd_peer_counts, {count, Type, FoldPeer}),
+            ok;
+        [] ->
+            ok
+    end.
 
 -doc """
 Apply a nickname change by a remote user.
@@ -590,6 +711,8 @@ rename_remote_nick(Peer, Prefix, Nick) ->
                     mnesia:dirty_write(
                         briskd_wire:retain_fields(Remote#remote_client{key = NewKey, nick = Nick})
                     ),
+                    untrack_peer_item(user, OldKey),
+                    track_peer_item(user, NewKey, Remote#remote_client.peer),
                     briskd_population:on_remote_user_rename(
                         OldKey, NewKey, Remote#remote_client.modes
                     ),
@@ -647,6 +770,7 @@ remove_remote_nick(Peer, Prefix, Reason) ->
             show_remote_event(Key, Prefix, <<"QUIT">>, Reason),
             relay_except(Peer, briskd_wire:line(Prefix, <<"QUIT">>, [], Reason)),
             mnesia:dirty_delete(remote_client, Key),
+            untrack_peer_item(user, Key),
             briskd_population:on_remote_user_delete(Key),
             briskd_state_monitor:offline(Nick),
             briskd_state_meta:forget_remote(Key),
@@ -914,7 +1038,9 @@ rename_remote_memberships(Peer, OldKey, NewKey) ->
                                 Channel#remote_channel{
                                     members = Remaining#{NewKey => {Peer, Roles}}
                                 }
-                            );
+                            ),
+                            unindex_remote_member(OldKey, ChannelKey),
+                            index_remote_member(NewKey, ChannelKey);
                         _ ->
                             ok
                     end;
@@ -922,7 +1048,7 @@ rename_remote_memberships(Peer, OldKey, NewKey) ->
                     ok
             end
         end,
-        briskd_state:table_keys(remote_channel)
+        remote_user_channels(OldKey)
     ).
 
 remove_remote_memberships(Peer, NickKey) ->
@@ -932,6 +1058,7 @@ remove_remote_memberships(Peer, NickKey) ->
                 [#remote_channel{members = Members} = Channel] ->
                     case Members of
                         #{NickKey := {Peer, _Roles}} ->
+                            unindex_remote_member(NickKey, ChannelKey),
                             Remaining = maps:remove(NickKey, Members),
                             case map_size(Remaining) of
                                 0 ->
@@ -951,7 +1078,7 @@ remove_remote_memberships(Peer, NickKey) ->
                     ok
             end
         end,
-        briskd_state:table_keys(remote_channel)
+        remote_user_channels(NickKey)
     ).
 
 -doc """
@@ -991,6 +1118,7 @@ import_remote_njoin(Peer, Name, Members) ->
                     mnesia:dirty_write(Existing#remote_channel{members = NewMembers}),
                     briskd_population:on_channel_put(Key),
                     Joined = [K || {K, _} <- Parsed, not maps:is_key(K, Previous)],
+                    lists:foreach(fun(K) -> index_remote_member(K, Key) end, Joined),
                     show_netjoin(Name, Joined, Peer),
                     relay_except(
                         Peer, briskd_wire:line(local_server(), <<"NJOIN">>, [Name], Members)
@@ -1011,15 +1139,29 @@ import_remote_njoin(Peer, Name, Members) ->
 show_netjoin(_Name, [], _Peer) ->
     ok;
 show_netjoin(Name, Joined, Peer) ->
-    Pending =
-        case get({briskd_netjoin, Peer}) of
-            undefined ->
-                erlang:send_after(1000, self(), {flush_netjoin, Peer}),
-                [];
-            List ->
-                List
-        end,
-    put({briskd_netjoin, Peer}, lists:reverse([{Name, Key} || Key <- Joined], Pending)),
+    Entry = [{Name, Key} || Key <- Joined],
+    case ets:whereis(briskd_peer_batches) of
+        undefined ->
+            Pending =
+                case get({briskd_netjoin, Peer}) of
+                    undefined ->
+                        erlang:send_after(1000, self(), {flush_netjoin, Peer}),
+                        [];
+                    List ->
+                        List
+                end,
+            put({briskd_netjoin, Peer}, lists:reverse(Entry, Pending));
+        _ ->
+            Pending =
+                case ets:lookup(briskd_peer_batches, {netjoin, Peer}) of
+                    [] ->
+                        erlang:send_after(1000, self(), {flush_netjoin, Peer}),
+                        [];
+                    [{_, List}] ->
+                        List
+                end,
+            ets:insert(briskd_peer_batches, {{netjoin, Peer}, lists:reverse(Entry, Pending)})
+    end,
     ok.
 
 -doc """
@@ -1031,7 +1173,17 @@ joins are pending for `Peer`.
 """.
 -spec flush_netjoin(binary()) -> ok.
 flush_netjoin(Peer) ->
-    case erase({briskd_netjoin, Peer}) of
+    Pending =
+        case ets:whereis(briskd_peer_batches) of
+            undefined ->
+                erase({briskd_netjoin, Peer});
+            _ ->
+                case ets:take(briskd_peer_batches, {netjoin, Peer}) of
+                    [{_, List}] -> List;
+                    [] -> undefined
+                end
+        end,
+    case Pending of
         undefined ->
             ok;
         Reversed ->
@@ -1080,6 +1232,7 @@ import_remote_join(Peer, Prefix, Name) ->
                     mnesia:dirty_write(
                         Channel#remote_channel{members = Members#{NickKey => {Peer, [member]}}}
                     ),
+                    index_remote_member(NickKey, Key),
                     briskd_population:on_channel_put(Key),
                     broadcast_remote_join(Name, NickKey),
                     relay_except(Peer, briskd_wire:line(Prefix, <<"JOIN">>, [Name], none)),
@@ -1111,6 +1264,7 @@ remove_remote_channel_member(Peer, Prefix, Name, Reason) ->
             case Members of
                 #{NickKey := {Peer, _Roles}} ->
                     broadcast_remote_channel_event(Name, Prefix, <<"PART">>, Reason),
+                    unindex_remote_member(NickKey, Channel#remote_channel.key),
                     Remaining = maps:remove(NickKey, Members),
                     case map_size(Remaining) of
                         0 ->
@@ -1229,6 +1383,7 @@ apply_remote_kick(Peer, Prefix, Name, Nick, Reason, RemoteChannel) ->
     end.
 
 remove_remote_channel_member_record(_Peer, NickKey, #remote_channel{key = Key} = Channel) ->
+    unindex_remote_member(NickKey, Key),
     Members = maps:remove(NickKey, Channel#remote_channel.members),
     case map_size(Members) of
         0 ->
@@ -2095,7 +2250,7 @@ remote_user_visible_to_requester(NickKey, Modes, Client) ->
                         false
                 end
             end,
-            briskd_state:table_keys(remote_channel)
+            Client#client.channels
         ).
 
 -doc """
@@ -2108,7 +2263,7 @@ to show a remote user's `QUIT` and user mode changes.
 remote_user_local_recipients(NickKey) ->
     lists:usort([
         Pid
-     || ChannelKey <- briskd_state:table_keys(remote_channel),
+     || ChannelKey <- remote_user_channels(NickKey),
         [#remote_channel{members = RemoteMembers, flags = RemoteFlags}] <-
             [mnesia:dirty_read(remote_channel, ChannelKey)],
         maps:is_key(NickKey, RemoteMembers),
@@ -2450,15 +2605,14 @@ peer's open batches when its link is lost.
 """.
 -spec receive_remote_batch(binary(), binary(), [binary()], list()) -> ok | {error, term()}.
 receive_remote_batch(Peer, Prefix, [<<"+", Ref/binary>>, <<"draft/multiline">>, Target | _], Tags) ->
-    Open = peer_batch_keys(Peer),
-    Full =
-        length(Open) >= ?MAX_PEER_BATCHES andalso
-            not lists:member({briskd_peer_batch, Peer, Ref}, Open),
+    Open = peer_batch_refs(Peer),
+    Full = length(Open) >= ?MAX_PEER_BATCHES andalso not lists:member(Ref, Open),
     case remote_source(Peer, Prefix) of
         {ok, _} when Full ->
             {error, too_many_batches};
         {ok, _} ->
-            put({briskd_peer_batch, Peer, briskd_wire:retain(Ref)}, #{
+            OpenedAt = erlang:monotonic_time(second),
+            Batch = #{
                 prefix => Prefix,
                 target => briskd_wire:retain(Target),
                 tags => trusted_server_tags(Tags) ++ briskd_cap:client_tags(Tags),
@@ -2466,14 +2620,15 @@ receive_remote_batch(Peer, Prefix, [<<"+", Ref/binary>>, <<"draft/multiline">>, 
                 lines => [],
                 bytes => 0,
                 count => 0,
-                opened_at => erlang:monotonic_time(second)
-            }),
+                opened_at => OpenedAt
+            },
+            put_peer_batch(Peer, briskd_wire:retain(Ref), OpenedAt, Batch),
             ok;
         error ->
             {error, unknown_remote_source}
     end;
 receive_remote_batch(Peer, Prefix, [<<"-", Ref/binary>> | _], _Tags) ->
-    case erase({briskd_peer_batch, Peer, Ref}) of
+    case take_peer_batch(Peer, Ref) of
         #{prefix := Prefix, command := Command, lines := [_ | _] = Lines} = Batch when
             Command =/= undefined
         ->
@@ -2496,7 +2651,17 @@ partial batches for a link that is gone.
 """.
 -spec forget_peer_batches(binary()) -> ok.
 forget_peer_batches(Peer) ->
-    lists:foreach(fun erase/1, peer_batch_keys(Peer)).
+    case ets:whereis(briskd_peer_batches) of
+        undefined ->
+            lists:foreach(
+                fun(Ref) -> erase({briskd_peer_batch, Peer, Ref}) end, peer_batch_refs(Peer)
+            );
+        _ ->
+            _ = ets:select_delete(briskd_peer_batches, [
+                {{{batch, Peer, '_'}, '_', '_'}, [], [true]}
+            ]),
+            ok
+    end.
 
 -doc """
 Discard any peer `draft/multiline` batch left open for more than 60 seconds.
@@ -2505,21 +2670,74 @@ Called from `m:briskd_state`'s one-second tick.
 -spec expire_peer_batches() -> ok.
 expire_peer_batches() ->
     Cutoff = erlang:monotonic_time(second) - 60,
-    lists:foreach(
-        fun
-            ({briskd_peer_batch, _, _} = Key) ->
-                case get(Key) of
-                    #{opened_at := Opened} when Opened =< Cutoff -> erase(Key);
-                    _ -> ok
-                end;
-            (_) ->
-                ok
-        end,
-        get_keys()
-    ).
+    case ets:whereis(briskd_peer_batches) of
+        undefined ->
+            lists:foreach(
+                fun
+                    ({briskd_peer_batch, _, _} = Key) ->
+                        case get(Key) of
+                            #{opened_at := Opened} when Opened =< Cutoff -> erase(Key);
+                            _ -> ok
+                        end;
+                    (_) ->
+                        ok
+                end,
+                get_keys()
+            );
+        _ ->
+            _ = ets:select_delete(briskd_peer_batches, [
+                {{{batch, '_', '_'}, '$1', '_'}, [{'=<', '$1', Cutoff}], [true]}
+            ]),
+            ok
+    end.
 
-peer_batch_keys(Peer) ->
-    [Key || {briskd_peer_batch, P, _} = Key <- get_keys(), P =:= Peer].
+peer_batch_refs(Peer) ->
+    case ets:whereis(briskd_peer_batches) of
+        undefined ->
+            [Ref || {briskd_peer_batch, P, Ref} <- get_keys(), P =:= Peer];
+        _ ->
+            ets:select(briskd_peer_batches, [
+                {{{batch, Peer, '$1'}, '_', '_'}, [], ['$1']}
+            ])
+    end.
+
+get_peer_batch(Peer, Ref) ->
+    case ets:whereis(briskd_peer_batches) of
+        undefined ->
+            get({briskd_peer_batch, Peer, Ref});
+        _ ->
+            case ets:lookup(briskd_peer_batches, {batch, Peer, Ref}) of
+                [{_, _OpenedAt, Batch}] -> Batch;
+                [] -> undefined
+            end
+    end.
+
+put_peer_batch(Peer, Ref, OpenedAt, Batch) ->
+    case ets:whereis(briskd_peer_batches) of
+        undefined ->
+            put({briskd_peer_batch, Peer, Ref}, Batch);
+        _ ->
+            ets:insert(briskd_peer_batches, {{batch, Peer, Ref}, OpenedAt, Batch})
+    end,
+    ok.
+
+take_peer_batch(Peer, Ref) ->
+    case ets:whereis(briskd_peer_batches) of
+        undefined ->
+            erase({briskd_peer_batch, Peer, Ref});
+        _ ->
+            case ets:take(briskd_peer_batches, {batch, Peer, Ref}) of
+                [{_, _OpenedAt, Batch}] -> Batch;
+                [] -> undefined
+            end
+    end.
+
+erase_peer_batch(Peer, Ref) ->
+    case ets:whereis(briskd_peer_batches) of
+        undefined -> erase({briskd_peer_batch, Peer, Ref});
+        _ -> ets:delete(briskd_peer_batches, {batch, Peer, Ref})
+    end,
+    ok.
 
 -doc """
 Add one `PRIVMSG` or `NOTICE` line to an open peer `draft/multiline` batch.
@@ -2535,14 +2753,15 @@ remote_batch_line(Peer, Prefix, Command, [Target, Text | _], Tags) when
 ->
     {_, Ref} = lists:keyfind(<<"batch">>, 1, Tags),
     {MaxBytes, MaxLines} = briskd_cap:multiline_limits(),
-    case get({briskd_peer_batch, Peer, Ref}) of
+    case get_peer_batch(Peer, Ref) of
         #{
             prefix := Prefix,
             target := BatchTarget,
             command := Previous,
             bytes := Bytes,
             count := Count,
-            lines := Lines
+            lines := Lines,
+            opened_at := OpenedAt
         } = Batch when Count < MaxLines ->
             Concat = lists:keymember(<<"draft/multiline-concat">>, 1, Tags),
             Separator =
@@ -2559,19 +2778,24 @@ remote_batch_line(Peer, Prefix, Command, [Target, Text | _], Tags) when
                     NewBytes =< MaxBytes
             of
                 true ->
-                    put({briskd_peer_batch, Peer, Ref}, Batch#{
-                        command => Command,
-                        lines => [{Concat, briskd_wire:retain(Text)} | Lines],
-                        bytes => NewBytes,
-                        count => Count + 1
-                    }),
+                    put_peer_batch(
+                        Peer,
+                        Ref,
+                        OpenedAt,
+                        Batch#{
+                            command => Command,
+                            lines => [{Concat, briskd_wire:retain(Text)} | Lines],
+                            bytes => NewBytes,
+                            count => Count + 1
+                        }
+                    ),
                     ok;
                 false ->
-                    erase({briskd_peer_batch, Peer, Ref}),
+                    erase_peer_batch(Peer, Ref),
                     {error, invalid_multiline}
             end;
         #{} ->
-            erase({briskd_peer_batch, Peer, Ref}),
+            erase_peer_batch(Peer, Ref),
             {error, invalid_multiline};
         undefined ->
             {error, unknown_batch}

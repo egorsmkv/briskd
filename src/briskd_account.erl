@@ -1,5 +1,8 @@
 -module(briskd_account).
 -export([
+    init_indexes/0,
+    index_account/1,
+    unindex_account/1,
     email_key/1,
     max_accounts/0,
     min_password/0,
@@ -133,12 +136,111 @@ email_key(Email) when is_binary(Email) ->
     end.
 
 -doc """
+Create and populate the secondary ETS indexes for account email addresses
+(`briskd_account_email`) and client certificate fingerprints
+(`briskd_account_certfp`). Called by `m:briskd_state` at startup.
+""".
+-spec init_indexes() -> ok.
+init_indexes() ->
+    ensure_bag(briskd_account_email),
+    ensure_bag(briskd_account_certfp),
+    lists:foreach(
+        fun(Key) ->
+            case mnesia:dirty_read(account, Key) of
+                [#account{} = Account] -> index_account(Account);
+                [] -> ok
+            end
+        end,
+        briskd_state:table_keys(account)
+    ),
+    ok.
+
+ensure_bag(Name) ->
+    case ets:whereis(Name) of
+        undefined ->
+            _ = ets:new(Name, [named_table, public, bag, {read_concurrency, true}]),
+            ok;
+        _ ->
+            true = ets:delete_all_objects(Name),
+            ok
+    end.
+
+-doc """
+Record `Account`'s email address and certificate fingerprints in the secondary
+ETS indexes (`briskd_account_email` and `briskd_account_certfp`).
+""".
+-spec index_account(#account{}) -> ok.
+index_account(#account{key = Key, email = Email, certfps = Fps}) ->
+    case ets:whereis(briskd_account_email) of
+        undefined ->
+            ok;
+        _ ->
+            case Email of
+                Bin when is_binary(Bin) ->
+                    ets:insert(briskd_account_email, {email_key(Bin), Key});
+                undefined ->
+                    ok
+            end
+    end,
+    case ets:whereis(briskd_account_certfp) of
+        undefined ->
+            ok;
+        _ ->
+            lists:foreach(
+                fun(Fp) -> ets:insert(briskd_account_certfp, {string:lowercase(Fp), Key}) end,
+                Fps
+            )
+    end,
+    ok.
+
+-doc """
+Remove an account (given as `#account{}` or its folded `Key`) from the
+secondary ETS indexes (`briskd_account_email` and `briskd_account_certfp`).
+""".
+-spec unindex_account(binary() | #account{}) -> ok.
+unindex_account(Key) when is_binary(Key) ->
+    case mnesia:dirty_read(account, Key) of
+        [#account{} = Account] -> unindex_account(Account);
+        [] -> ok
+    end;
+unindex_account(#account{key = Key, email = Email, certfps = Fps}) ->
+    case ets:whereis(briskd_account_email) of
+        undefined ->
+            ok;
+        _ ->
+            case Email of
+                Bin when is_binary(Bin) ->
+                    ets:delete_object(briskd_account_email, {email_key(Bin), Key});
+                undefined ->
+                    ok
+            end
+    end,
+    case ets:whereis(briskd_account_certfp) of
+        undefined ->
+            ok;
+        _ ->
+            lists:foreach(
+                fun(Fp) ->
+                    ets:delete_object(briskd_account_certfp, {string:lowercase(Fp), Key})
+                end,
+                Fps
+            )
+    end,
+    ok.
+
+-doc """
 Look up a usable (verified) account by email address (case-insensitive).
 """.
 -spec find_by_email(binary()) -> {ok, #account{}} | error.
 find_by_email(Email) when is_binary(Email) ->
     Target = email_key(Email),
-    find_verified_email(briskd_state:table_keys(account), Target).
+    case ets:whereis(briskd_account_email) of
+        undefined ->
+            find_verified_email(briskd_state:table_keys(account), Target);
+        _ ->
+            Keys = [Key || {_, Key} <- ets:lookup(briskd_account_email, Target)],
+            find_verified_email(Keys, Target)
+    end.
 
 find_verified_email([], _Target) ->
     error;
@@ -241,6 +343,7 @@ force_verify(Name) ->
         [#account{} = Account] ->
             Verified = Account#account{pending = undefined},
             mnesia:dirty_write(Verified),
+            index_account(Verified),
             {ok, Verified};
         [] ->
             {error, no_such_account}
@@ -260,13 +363,18 @@ import(#account{key = Key, created = Created} = Incoming) ->
     case mnesia:dirty_read(account, Key) of
         [#account{pending = undefined, created = Existing}] when Existing =< Created ->
             kept;
-        [_] ->
-            mnesia:dirty_write(Incoming#account{pending = undefined}),
+        [#account{} = Old] ->
+            unindex_account(Old),
+            Stored = Incoming#account{pending = undefined},
+            mnesia:dirty_write(Stored),
+            index_account(Stored),
             stored;
         [] ->
             case room_available() of
                 true ->
-                    mnesia:dirty_write(Incoming#account{pending = undefined}),
+                    Stored = Incoming#account{pending = undefined},
+                    mnesia:dirty_write(Stored),
+                    index_account(Stored),
                     stored;
                 false ->
                     kept
@@ -288,6 +396,7 @@ verify(Name, Code) ->
                 true ->
                     Verified = Account#account{pending = undefined},
                     mnesia:dirty_write(Verified),
+                    index_account(Verified),
                     {ok, Verified};
                 false ->
                     error
@@ -305,7 +414,12 @@ verify_by_email(Email, Code) when is_binary(Email), is_binary(Code) ->
     Target = email_key(Email),
     CodeHash = crypto:hash(sha256, string:trim(Code)),
     Now = erlang:system_time(millisecond),
-    find_and_verify_email(briskd_state:table_keys(account), Target, CodeHash, Now).
+    Keys =
+        case ets:whereis(briskd_account_email) of
+            undefined -> briskd_state:table_keys(account);
+            _ -> [Key || {_, Key} <- ets:lookup(briskd_account_email, Target)]
+        end,
+    find_and_verify_email(Keys, Target, CodeHash, Now).
 
 find_and_verify_email([], _Target, _CodeHash, _Now) ->
     error;
@@ -321,6 +435,7 @@ find_and_verify_email([Key | Rest], Target, CodeHash, Now) ->
                 true ->
                     Verified = Account#account{pending = undefined},
                     mnesia:dirty_write(Verified),
+                    index_account(Verified),
                     {ok, Verified};
                 false ->
                     find_and_verify_email(Rest, Target, CodeHash, Now)
@@ -411,7 +526,8 @@ prune_expired_pending() ->
     lists:foreach(
         fun(Key) ->
             case mnesia:dirty_read(account, Key) of
-                [#account{pending = {_, Expires}}] when Now > Expires ->
+                [#account{pending = {_, Expires}} = Expired] when Now > Expires ->
+                    unindex_account(Expired),
                     mnesia:dirty_delete(account, Key);
                 _ ->
                     ok
@@ -457,8 +573,10 @@ store_new(Name, Email, Verifier, CertFps, Pending) ->
                 server_key := ServerKey
             } =
                 Verifier,
+            Key = briskd_wire:fold(Name),
+            unindex_account(Key),
             Account = #account{
-                key = briskd_wire:fold(Name),
+                key = Key,
                 name = briskd_wire:retain(Name),
                 salt = Salt,
                 iterations = Iterations,
@@ -476,6 +594,7 @@ store_new(Name, Email, Verifier, CertFps, Pending) ->
                     end
             },
             mnesia:dirty_write(Account),
+            index_account(Account),
             {ok, Account}
     end.
 
@@ -586,23 +705,42 @@ set_email(Name, Email) ->
         [] ->
             {error, no_such_account};
         [#account{} = Account] ->
-            InUse =
-                Email =/= undefined andalso
-                    lists:any(
-                        fun(#account{key = K, email = E}) ->
-                            K =/= Key andalso is_binary(E) andalso email_key(E) =:= email_key(Email)
-                        end,
-                        list_all()
-                    ),
+            InUse = Email =/= undefined andalso email_in_use(Key, email_key(Email)),
             case InUse of
                 true ->
                     {error, email_in_use};
                 false ->
                     Updated = Account#account{email = retain_email(Email)},
+                    unindex_account(Account),
                     mnesia:dirty_write(Updated),
+                    index_account(Updated),
                     {ok, Updated}
             end
     end.
+
+email_in_use(SelfKey, Target) ->
+    Now = erlang:system_time(millisecond),
+    Candidates =
+        case ets:whereis(briskd_account_email) of
+            undefined ->
+                list_all();
+            _ ->
+                [
+                    A
+                 || {_, K} <- ets:lookup(briskd_account_email, Target),
+                    [#account{} = A] <- [mnesia:dirty_read(account, K)],
+                    case A#account.pending of
+                        undefined -> true;
+                        {_, Expires} -> Now =< Expires
+                    end
+                ]
+        end,
+    lists:any(
+        fun(#account{key = K, email = E}) ->
+            K =/= SelfKey andalso is_binary(E) andalso email_key(E) =:= Target
+        end,
+        Candidates
+    ).
 
 retain_email(undefined) -> undefined;
 retain_email(Email) -> briskd_wire:retain(Email).
@@ -651,6 +789,7 @@ add_certfp(Name, Text) ->
                 {false, _, false} ->
                     Updated = Account#account{certfps = Fps ++ [Fp]},
                     mnesia:dirty_write(Updated),
+                    index_account(Updated),
                     {ok, Updated}
             end
     end.
@@ -665,8 +804,10 @@ remove_certfp(Name, Text) ->
         {[#account{certfps = Fps} = Account], {ok, Fp}} ->
             case lists:member(Fp, Fps) of
                 true ->
+                    unindex_account(Account),
                     Updated = Account#account{certfps = lists:delete(Fp, Fps)},
                     mnesia:dirty_write(Updated),
+                    index_account(Updated),
                     {ok, Updated};
                 false ->
                     {error, no_such_certfp}
@@ -677,15 +818,20 @@ remove_certfp(Name, Text) ->
 
 -doc """
 Find the usable account that lists a client certificate fingerprint
-(compared lowercase), for SASL EXTERNAL. Scans the whole table.
+(compared lowercase), for SASL EXTERNAL.
 """.
 -spec by_certfp(binary()) -> {ok, #account{}} | error.
 by_certfp(Fingerprint) ->
     Wanted = string:lowercase(Fingerprint),
+    Keys =
+        case ets:whereis(briskd_account_certfp) of
+            undefined -> briskd_state:table_keys(account);
+            _ -> [Key || {_, Key} <- ets:lookup(briskd_account_certfp, Wanted)]
+        end,
     case
         [
             Account
-         || Key <- briskd_state:table_keys(account),
+         || Key <- Keys,
             [#account{certfps = Fps, pending = undefined} = Account] <- [
                 mnesia:dirty_read(account, Key)
             ],

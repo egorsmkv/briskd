@@ -228,9 +228,22 @@ prune_empty_channels() ->
     Max = maps:get(
         max_empty_channels, briskd_config:current_or_empty(), 1000
     ),
+    case ets:whereis(briskd_empty_channels) of
+        undefined ->
+            prune_empty_keys(briskd_state:table_keys(channel), Max);
+        _ ->
+            case ets:info(briskd_empty_channels, size) > Max of
+                false ->
+                    ok;
+                true ->
+                    prune_empty_keys([Key || {Key, _} <- ets:tab2list(briskd_empty_channels)], Max)
+            end
+    end.
+
+prune_empty_keys(Keys, Max) ->
     Empty = [
         {has_retained_state(Channel), empty_since(Key, Created), Key, Channel}
-     || Key <- briskd_state:table_keys(channel),
+     || Key <- Keys,
         [#channel{members = Members, created = Created} = Channel] <- [
             mnesia:dirty_read(channel, Key)
         ],
@@ -395,6 +408,47 @@ reop_channels(Server) ->
     Ttl = maps:get(
         empty_channel_ttl, briskd_config:current_or_empty(), 86400
     ),
+    case {ets:whereis(briskd_safe_channels), ets:whereis(briskd_empty_channels)} of
+        {undefined, _} ->
+            reop_scan_all(Server, Now, Ttl);
+        {_, undefined} ->
+            reop_scan_all(Server, Now, Ttl);
+        {_, _} ->
+            reop_indexed(Server, Now, Ttl)
+    end.
+
+reop_indexed(Server, Now, Ttl) ->
+    lists:foreach(
+        fun({_Short, SafeName}) ->
+            case mnesia:dirty_read(channel, briskd_wire:fold(SafeName)) of
+                [#channel{flags = Flags, members = Members} = Channel] when
+                    map_size(Members) > 0, is_map_key($r, Flags)
+                ->
+                    maybe_reop(Channel, Server);
+                _ ->
+                    ok
+            end
+        end,
+        ets:tab2list(briskd_safe_channels)
+    ),
+    case Ttl > 0 of
+        true ->
+            lists:foreach(
+                fun({Key, _Since}) ->
+                    case mnesia:dirty_read(channel, Key) of
+                        [#channel{members = Members} = Channel] when map_size(Members) =:= 0 ->
+                            maybe_expire_empty(Channel, Now, Ttl);
+                        _ ->
+                            clear_channel_empty(Key)
+                    end
+                end,
+                ets:tab2list(briskd_empty_channels)
+            );
+        false ->
+            ok
+    end.
+
+reop_scan_all(Server, Now, Ttl) ->
     lists:foreach(
         fun(Key) ->
             case mnesia:dirty_read(channel, Key) of
@@ -566,10 +620,10 @@ find_safe_short(Short) ->
                             {ok, Existing};
                         [] ->
                             ets:delete(briskd_safe_channels, Wanted),
-                            scan_safe_short(Wanted)
+                            none
                     end;
                 [] ->
-                    scan_safe_short(Wanted)
+                    none
             end
     end.
 
@@ -998,6 +1052,7 @@ kick_remote_member(
         Key, <<"KICK">>, channel_origin_prefix(Channel, Client), [Actual], Reason, KickMeta
     ),
     briskd_state_link:propagate_channel_kick(Client, Canonical, Actual, Reason),
+    briskd_state_link:unindex_remote_member(NickKey, RemoteKey),
     Left = maps:remove(NickKey, Remote),
     case map_size(Left) of
         0 ->

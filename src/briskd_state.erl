@@ -527,6 +527,10 @@ init(#{name := Name} = Config) ->
     ensure_ets(briskd_e2ee_bound),
     ensure_ets(briskd_safe_channels),
     ensure_ets(briskd_empty_channels),
+    ensure_bag_read(briskd_remote_membership),
+    ensure_ets_read(briskd_peer_counts),
+    ensure_ets(briskd_peer_batches),
+    ensure_bag_read(briskd_account_sessions),
     ok = briskd_flood:init(),
     briskd_config:store(Config),
     persistent_term:put({?MODULE, config_path}, maps:get(config_path, Config)),
@@ -596,6 +600,7 @@ init(#{name := Name} = Config) ->
     {atomic, ok} = mnesia:clear_table(remote_channel),
     {atomic, ok} = mnesia:clear_table(known_server),
     {atomic, ok} = mnesia:clear_table(service),
+    ok = briskd_account:init_indexes(),
     ok = briskd_population:init(),
     erlang:send_after(1000, self(), reop_tick),
     erlang:send_after(?SWEEP_MS, self(), sweep_tick),
@@ -767,9 +772,20 @@ ensure_bag(Name) ->
 
 -spec ensure_ets(atom()) -> ok.
 ensure_ets(Name) ->
+    ensure_ets_opts(Name, [set]).
+
+-spec ensure_ets_read(atom()) -> ok.
+ensure_ets_read(Name) ->
+    ensure_ets_opts(Name, [set, {read_concurrency, true}]).
+
+-spec ensure_bag_read(atom()) -> ok.
+ensure_bag_read(Name) ->
+    ensure_ets_opts(Name, [bag, {read_concurrency, true}]).
+
+ensure_ets_opts(Name, Opts) ->
     case ets:whereis(Name) of
         undefined ->
-            _ = ets:new(Name, [named_table, public, set]),
+            _ = ets:new(Name, [named_table, public | Opts]),
             ok;
         _ ->
             true = ets:delete_all_objects(Name),

@@ -80,7 +80,8 @@ live() ->
         Port = listener_port(),
         population_and_lusers(Port),
         motd_and_rehash(Port, Config, Motd, Db),
-        chunked_queries_and_labels(Port)
+        chunked_queries_and_labels(Port),
+        indexes_and_queries(Port)
     after
         _ = application:stop(briskd),
         os:unsetenv("BRISKD_CONFIG"),
@@ -133,6 +134,8 @@ population_and_lusers(Port) ->
         <<":peer.test NICK ruser 1 r peer.test 1 +io :Remote">>,
         <<":ruser!r@peer.test JOIN #shared">>
     ]),
+    ?assertEqual([{<<"ruser">>, <<"#shared">>}], ets:lookup(briskd_remote_membership, <<"ruser">>)),
+    ?assertEqual(1, briskd_state_link:peer_item_count(user, <<"peer.test">>)),
     PopRemote = briskd_population:snapshot(),
     ?assertEqual(1, PopRemote#population.remote_users),
     ?assertEqual(2, PopRemote#population.invisible_users),
@@ -140,14 +143,24 @@ population_and_lusers(Port) ->
     ?assertEqual(2, PopRemote#population.channels),
     ?assertEqual(3, PopRemote#population.max_global),
 
+    %% Remote nick rename moves briskd_remote_membership and preserves peer_counts.
+    peer_lines(Peer, [<<":ruser!r@peer.test NICK ruser2">>]),
+    ?assertEqual([], ets:lookup(briskd_remote_membership, <<"ruser">>)),
+    ?assertEqual(
+        [{<<"ruser2">>, <<"#shared">>}], ets:lookup(briskd_remote_membership, <<"ruser2">>)
+    ),
+    ?assertEqual(1, briskd_state_link:peer_item_count(user, <<"peer.test">>)),
+
     %% Unmatched mask must never emit "-1 servers" in 255.
     Masked = cmd(Alice, <<"LUSERS nomatch.*">>),
     ?assert(has(Masked, <<"There are 0 users and 0 invisible on 0 servers">>)),
     ?assert(has(Masked, <<"I have 2 clients and 0 servers">>)),
 
-    %% Drop peer: remote population clears, maxima remain at peak.
+    %% Drop peer: remote population clears, maxima remain at peak, indexes clear.
     gen_tcp:close(Peer),
     ok = wait_until(fun() -> (briskd_population:snapshot())#population.servers =:= 1 end),
+    ?assertEqual([], ets:lookup(briskd_remote_membership, <<"ruser2">>)),
+    ?assertEqual(0, briskd_state_link:peer_item_count(user, <<"peer.test">>)),
     PopSplit = briskd_population:snapshot(),
     ?assertEqual(0, PopSplit#population.remote_users),
     ?assertEqual(1, PopSplit#population.invisible_users),
@@ -234,6 +247,58 @@ chunked_queries_and_labels(Port) ->
     after
         lists:foreach(fun(P) -> P ! stop end, Fakes)
     end.
+
+indexes_and_queries(Port) ->
+    Fp = binary:copy(<<"ab">>, 32),
+    {ok, _} = briskd_account:create(
+        <<"idxacct">>, <<"Idx@Example.Org">>, <<"secretpass1">>, [Fp], undefined
+    ),
+    ?assertMatch({ok, _}, briskd_account:find_by_email(<<"idx@example.org">>)),
+    ?assertMatch({ok, _}, briskd_account:by_certfp(Fp)),
+    ?assertMatch({ok, _}, briskd_account:set_email(<<"idxacct">>, <<"new@example.org">>)),
+    ?assertEqual(error, briskd_account:find_by_email(<<"idx@example.org">>)),
+    ?assertMatch({ok, _}, briskd_account:find_by_email(<<"NEW@EXAMPLE.ORG">>)),
+
+    S1 = register_sasl(Port, <<"idxone">>, <<"idxacct">>, <<"secretpass1">>),
+    S2 = register_sasl(Port, <<"idxtwo">>, <<"idxacct">>, <<"secretpass1">>),
+    ?assertEqual(2, length(briskd_conn:account_pids(<<"idxacct">>))),
+    _ = cmd(S1, <<"MARKREAD #markchan timestamp=2026-01-01T00:00:00.000Z">>),
+    Synced = recv_until(S2, <<"MARKREAD #markchan timestamp=2026-01-01T00:00:00.000Z">>),
+    ?assert(has(Synced, <<"MARKREAD #markchan timestamp=2026-01-01T00:00:00.000Z">>)),
+
+    Who = cmd(S1, <<"WHO idxone %tna,42">>),
+    ?assert(has(Who, <<" 354 idxone 42 idxone idxacct">>)),
+    ?assert(has(Who, <<" 315 idxone idxone :End of WHO list">>)),
+
+    gen_tcp:close(S2),
+    ok = wait_until(fun() -> length(briskd_conn:account_pids(<<"idxacct">>)) =:= 1 end),
+    Whowas = cmd(S1, <<"WHOWAS idxtwo">>),
+    ?assert(has(Whowas, <<" 314 idxone idxtwo ">>)),
+    ?assert(has(Whowas, <<" 369 idxone idxtwo :End of WHOWAS">>)),
+
+    {ok, _} = briskd_ctl:run(["delete-account", "idxacct", "--json"]),
+    ?assertEqual(error, briskd_account:find_by_email(<<"new@example.org">>)),
+    ?assertEqual(error, briskd_account:by_certfp(Fp)),
+    ?assertEqual([], briskd_conn:account_pids(<<"idxacct">>)),
+    gen_tcp:close(S1).
+
+register_sasl(Port, Nick, Account, Password) ->
+    Sock = connect(Port),
+    send(Sock, <<"CAP LS 302">>),
+    _ = recv_until(Sock, <<"CAP * LS">>),
+    send(Sock, <<"CAP REQ :sasl draft/read-marker">>),
+    _ = recv_until(Sock, <<"CAP * ACK">>),
+    send(Sock, <<"AUTHENTICATE PLAIN">>),
+    _ = recv_until(Sock, <<"AUTHENTICATE +">>),
+    Payload = base64:encode(<<0, Account/binary, 0, Password/binary>>),
+    send(Sock, <<"AUTHENTICATE ", Payload/binary>>),
+    _ = recv_until(Sock, <<" 903 ">>),
+    send(Sock, <<"CAP END">>),
+    send(Sock, <<"NICK ", Nick/binary>>),
+    send(Sock, <<"USER ", Nick/binary, " 0 * :", Nick/binary>>),
+    Welcome = cmd(Sock, <<"PING :sasl">>),
+    ?assert(has(Welcome, <<" 001 ", Nick/binary, " ">>)),
+    Sock.
 
 %%% Helpers
 

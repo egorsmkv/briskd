@@ -65,6 +65,7 @@ Subcommands:
 ]).
 -include("briskd_state.hrl").
 -include("briskd_account.hrl").
+-include("briskd_population.hrl").
 
 -define(MAX_CTL_BYTES, 65536).
 
@@ -496,55 +497,44 @@ handle_state_action({delete_account, Name}, Server) ->
     case mnesia:dirty_read(account, Key) of
         [] ->
             {error, {no_such_account, Name}};
-        [#account{name = Actual}] ->
+        [#account{name = Actual} = Account] ->
             lists:foreach(
                 fun(Pid) ->
-                    case briskd_state_v3:account(Pid) of
-                        Logged when is_binary(Logged) ->
-                            case briskd_wire:fold(Logged) =:= Key of
-                                true ->
-                                    case mnesia:dirty_read(client, Pid) of
-                                        [#client{} = Client] ->
-                                            briskd_state_v3:logout(Client, Server);
-                                        [] ->
-                                            ok
-                                    end;
-                                false ->
-                                    ok
-                            end;
-                        _ ->
+                    case mnesia:dirty_read(client, Pid) of
+                        [#client{} = Client] ->
+                            briskd_state_v3:logout(Client, Server);
+                        [] ->
                             ok
                     end
                 end,
-                briskd_state_client:pids()
+                briskd_conn:account_pids(Key)
             ),
+            MarkerKeys = mnesia:dirty_select(read_marker, [
+                {{read_marker, {Key, '$1'}, '_'}, [], [{{Key, '$1'}}]}
+            ]),
             lists:foreach(
-                fun
-                    ({Acct, _} = MarkerKey) when Acct =:= Key ->
-                        mnesia:dirty_delete(read_marker, MarkerKey);
-                    (_) ->
-                        ok
-                end,
-                briskd_state:table_keys(read_marker)
+                fun(MarkerKey) -> mnesia:dirty_delete(read_marker, MarkerKey) end,
+                MarkerKeys
             ),
+            DevKeys = mnesia:dirty_select(e2ee_device, [
+                {{e2ee_device, {Key, '$1'}, '_', '_', '_', '_', '_', '_', '_', '_', '_'}, [], [
+                    {{Key, '$1'}}
+                ]}
+            ]),
             lists:foreach(
-                fun
-                    ({Acct, _} = DevKey) when Acct =:= Key ->
-                        mnesia:dirty_delete(e2ee_device, DevKey);
-                    (_) ->
-                        ok
-                end,
-                mnesia:dirty_all_keys(e2ee_device)
+                fun(DevKey) -> mnesia:dirty_delete(e2ee_device, DevKey) end,
+                DevKeys
             ),
+            QKeys = mnesia:dirty_select(e2ee_queue, [
+                {{e2ee_queue, {Key, '$1', '$2'}, '_', '_', '_', '_', '_', '_'}, [], [
+                    {{Key, '$1', '$2'}}
+                ]}
+            ]),
             lists:foreach(
-                fun
-                    ({Acct, _, _} = QKey) when Acct =:= Key ->
-                        mnesia:dirty_delete(e2ee_queue, QKey);
-                    (_) ->
-                        ok
-                end,
-                mnesia:dirty_all_keys(e2ee_queue)
+                fun(QKey) -> mnesia:dirty_delete(e2ee_queue, QKey) end,
+                QKeys
             ),
+            briskd_account:unindex_account(Account),
             mnesia:dirty_delete(account, Key),
             %% Channels saved for rejoin at its next login (account_rejoin).
             case ets:whereis(briskd_account_channels) of
@@ -857,17 +847,29 @@ cmd_status(Format) ->
             StartedIso = list_to_binary(
                 persistent_term:get({briskd_state, started}, "unknown")
             ),
-            Clients = [
-                C
-             || Pid <- briskd_state_client:pids(),
-                [#client{} = C] <- [mnesia:dirty_read(client, Pid)]
-            ],
-            Registered = [C || C <- Clients, briskd_state_client:ready(C)],
-            Operators = [
-                C
-             || #client{pid = P} = C <- Registered,
-                maps:is_key($o, briskd_state_client:user_modes(P))
-            ],
+            {SessionsCount, RegisteredCount, OperatorsCount} =
+                case ets:whereis(briskd_population) of
+                    undefined ->
+                        Clients = [
+                            C
+                         || Pid <- briskd_state_client:pids(),
+                            [#client{} = C] <- [mnesia:dirty_read(client, Pid)]
+                        ],
+                        Reg = [C || C <- Clients, briskd_state_client:ready(C)],
+                        Ops = [
+                            C
+                         || #client{pid = P} = C <- Reg,
+                            maps:is_key($o, briskd_state_client:user_modes(P))
+                        ],
+                        {length(Clients), length(Reg), length(Ops)};
+                    _ ->
+                        Pop = briskd_population:snapshot(),
+                        {
+                            Pop#population.local_users + Pop#population.unknown_users,
+                            Pop#population.local_users,
+                            Pop#population.operators
+                        }
+                end,
             Map = #{
                 status => <<"running">>,
                 name => maps:get(name, Config, <<"irc.local">>),
@@ -879,10 +881,10 @@ cmd_status(Format) ->
                 log_level => atom_to_binary(maps:get(level, Config, info)),
                 log_format => maps:get(log_format, Config, <<"json">>),
                 listeners => active_listeners(),
-                sessions => length(Clients),
+                sessions => SessionsCount,
                 max_clients => maps:get(max_clients, Config, 10000),
-                registered_users => length(Registered),
-                operators_online => length(Operators),
+                registered_users => RegisteredCount,
+                operators_online => OperatorsCount,
                 remote_users => table_size(remote_client),
                 channels => table_size(channel),
                 remote_channels => table_size(remote_channel),

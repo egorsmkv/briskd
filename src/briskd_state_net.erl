@@ -201,8 +201,11 @@ split(Lost, Reason, Except) ->
             case mnesia:dirty_read(service, Key) of
                 [#service{server = Server}] ->
                     case lists:member(briskd_wire:fold(Server), Folds) of
-                        true -> mnesia:dirty_delete(service, Key);
-                        false -> ok
+                        true ->
+                            mnesia:dirty_delete(service, Key),
+                            briskd_state_link:untrack_peer_item(service, Key);
+                        false ->
+                            ok
                     end;
                 _ ->
                     ok
@@ -212,13 +215,15 @@ split(Lost, Reason, Except) ->
     ),
     lists:foreach(
         fun(Name) ->
-            mnesia:dirty_delete(known_server, briskd_wire:fold(Name)),
+            ServerKey = briskd_wire:fold(Name),
+            mnesia:dirty_delete(known_server, ServerKey),
+            briskd_state_link:untrack_peer_item(server, ServerKey),
             Line = briskd_wire:line(local_name(), <<"SQUIT">>, [Name], Reason),
             _ = briskd_links:send_except(Except, Line),
-            case briskd_wire:fold(Name) =:= briskd_wire:fold(Lost) of
+            case ServerKey =:= briskd_wire:fold(Lost) of
                 true ->
-                    ets:delete(?INBOUND, briskd_wire:fold(Name)),
-                    ets:delete(briskd_outbound_ready, briskd_wire:fold(Name));
+                    ets:delete(?INBOUND, ServerKey),
+                    ets:delete(briskd_outbound_ready, ServerKey);
                 false ->
                     ok
             end
@@ -873,6 +878,10 @@ store_service(Name, Dist, Type, Info, Home, Peer) ->
                     peer = Peer
                 })
             ),
+            case is_binary(Peer) of
+                true -> briskd_state_link:track_peer_item(service, Key, Peer);
+                false -> briskd_state_link:untrack_peer_item(service, Key)
+            end,
             ok
     end.
 
@@ -928,6 +937,7 @@ drop_remote_user(#remote_client{key = Key, nick = Nick, user = User, host = Host
         )
     end),
     mnesia:dirty_delete(remote_client, Key),
+    briskd_state_link:untrack_peer_item(user, Key),
     briskd_population:on_remote_user_delete(Key),
     briskd_state_monitor:offline(Nick),
     briskd_state_meta:forget_remote(Key),
@@ -942,6 +952,7 @@ drop_memberships(NickKey) ->
                 [#remote_channel{name = Name, members = Members} = Channel] ->
                     case maps:is_key(NickKey, Members) of
                         true ->
+                            briskd_state_link:unindex_remote_member(NickKey, ChannelKey),
                             Remaining = maps:remove(NickKey, Members),
                             case map_size(Remaining) of
                                 0 ->
@@ -965,15 +976,16 @@ drop_memberships(NickKey) ->
                     ok
             end
         end,
-        briskd_state:table_keys(remote_channel)
+        briskd_state_link:remote_user_channels(NickKey)
     ).
 
 store_server(#{
     name := Name, hop := Hop, token := Token, adjacent := Adjacent, parent := Parent, info := Info
 }) ->
+    Key = briskd_wire:fold(Name),
     mnesia:dirty_write(
         briskd_wire:retain_fields(#known_server{
-            key = briskd_wire:fold(Name),
+            key = Key,
             name = Name,
             hop = Hop,
             token = Token,
@@ -982,6 +994,10 @@ store_server(#{
             info = Info
         })
     ),
+    case Key =:= briskd_wire:fold(Adjacent) of
+        true -> ok;
+        false -> briskd_state_link:track_peer_item(server, Key, Adjacent)
+    end,
     briskd_population:on_server_change().
 
 announce_server(Map, Except) ->
@@ -1108,15 +1124,7 @@ peer_server_room(Peer, Name) ->
             Max = maps:get(
                 max_peer_servers, briskd_config:current_or_empty(), 100
             ),
-            FoldedPeer = briskd_wire:fold(Peer),
-            Count = length([
-                K
-             || K <- briskd_state:table_keys(known_server),
-                K =/= FoldedPeer,
-                [#known_server{adjacent = Adjacent}] <- [mnesia:dirty_read(known_server, K)],
-                briskd_wire:fold(Adjacent) =:= FoldedPeer
-            ]),
-            Count < Max
+            briskd_state_link:peer_item_count(server, Peer) < Max
     end.
 
 peer_service_room(Peer, Name) ->
@@ -1128,15 +1136,7 @@ peer_service_room(Peer, Name) ->
             Max = maps:get(
                 max_peer_services, briskd_config:current_or_empty(), 100
             ),
-            FoldedPeer = briskd_wire:fold(Peer),
-            Count = length([
-                K
-             || K <- briskd_state:table_keys(service),
-                [#service{peer = P}] <- [mnesia:dirty_read(service, K)],
-                is_binary(P),
-                briskd_wire:fold(P) =:= FoldedPeer
-            ]),
-            Count < Max
+            briskd_state_link:peer_item_count(service, Peer) < Max
     end.
 
 local_name() ->
