@@ -65,10 +65,6 @@
 ]).
 -include("briskd_state.hrl").
 -include("briskd_account.hrl").
-%% Used only by record_info(fields, ...) when the Mnesia tables are created,
-%% which ELP's unused-include check does not count.
-% elp:ignore W0020 (record_info/2 use)
--include("briskd_e2ee.hrl").
 
 -moduledoc """
 Single-writer owner of this server's IRC protocol state, and the entry point
@@ -76,52 +72,19 @@ that sessions and links call to apply commands.
 
 `briskd_state` is a registered `gen_server`. Sessions (`m:briskd_session`) and
 links (`m:briskd_link`) parse lines and call `command/4` or `server_command/5`;
-this process applies the effect and writes replies straight to client
-sockets through `m:briskd_state_send`. The `briskd_state_*` modules
-(`m:briskd_state_client`, `m:briskd_state_channel`, `m:briskd_state_link`,
-`m:briskd_state_net`, `m:briskd_state_v3`, `m:briskd_state_history`, and the
-others) are libraries that run inside this process, so every protocol write
-is serialized here and ordering per nick and channel is the order of calls.
-Client commands follow RFC 2812 / RFC 1459, channel rules RFC 2811, and peer
-messages RFC 2813; IRCv3 commands are dispatched to their own modules.
+this process serializes mutations and delegates implementation details to
+focused helper modules:
 
-## Mnesia tables
-
-`init/1` creates (or loads and migrates) these `disc_copies` tables:
-`client`, `channel`, `channel_history`, `channel_meta`, `activity`, `whowas`,
-`user_modes`, `remote_client`, `remote_channel`, `known_server`, `service`,
-`account`, `read_marker`, `e2ee_device`, `e2ee_queue`, and `direct_history`.
-On every start it clears `client`, `activity`, `user_modes`, and all imported
-peer state (`remote_client`, `remote_channel`, `known_server`, `service`).
-`whowas`, safe `!` channels (with their metadata), `account`, `read_marker`,
-`e2ee_device`, and `e2ee_queue` always survive a restart. The JSON `retention`
-setting decides the rest:
-
-- `channels` (default): every channel row is kept with membership cleared,
-  together with its history and metadata, plus direct-message history; history
-  and metadata of channels that no longer exist are dropped.
-- `transient`: ordinary channels, their metadata, and both history tables are
-  deleted; safe channels and their metadata are kept with their membership
-  cleared.
-
-Configured `channels` entries are then created when no row exists. See
-`docs/mnesia.md` for backup, restore, and migration.
-
-## ETS tables and configuration
-
-Named ETS tables are created (or emptied) at startup and are transient:
-`briskd_caps` (negotiated capabilities, `m:briskd_cap`), `briskd_conn`
-(per-connection IRCv3 state, `m:briskd_conn`), `briskd_nicks` (folded-nick
-index), `briskd_safe_channels` (safe-channel short-name index), `briskd_monitor`
-(MONITOR watcher bag), `briskd_chan_meta` and `briskd_remote_meta` (metadata),
-`briskd_holds` (nick and channel holds after a split or nick change),
-`briskd_admins`, `briskd_attached` (multiclient), `briskd_account_channels`
-(account rejoin), `briskd_e2ee_bound` (bound E2EE devices), `briskd_flood`
-(per-client flood token buckets and per-host `REGISTER` rate limits,
-`m:briskd_flood`), `briskd_inbound_peers`, `briskd_outbound_ready`, and the
-`briskd_command_stats` / `briskd_connection_stats` counters used by `STATS`.
-Validated configuration, operator credentials, and link secrets are published
-in `persistent_term` and replaced on `REHASH`.
+- `m:briskd_state_schema`: Mnesia schema bootstrap, migrations, ETS setup, and
+  channel seeding.
+- `m:briskd_state_dispatch`: client command admission, flood limits,
+  labeled-response wrapping, and command routing.
+- `m:briskd_state_peer`: RFC 2813 server-link routing, line batches, and peer
+  disconnect/DOWN handling.
+- `m:briskd_state_redact`: OTP `format_status/1` secret redaction.
+- `m:briskd_state_client`, `m:briskd_state_channel`, `m:briskd_state_link`,
+  `m:briskd_state_net`, `m:briskd_state_v3`, `m:briskd_state_history`, and
+  `m:briskd_state_queries`: protocol domain state libraries.
 
 ## Timers and lifecycle
 
@@ -130,8 +93,7 @@ A `reop_tick` message every second reopens operatorless safe channels after
 and expires nick/channel holds, E2EE queues, `REGISTER` rate-limit windows,
 and stale open peer batches. Each session is monitored when it connects; its
 `'DOWN'` removes the client, its memberships, and its IRCv3, E2EE, and flood
-state. `format_status/1` redacts secrets in `PASS`, `OPER`, `AUTHENTICATE`,
-`REGISTER`, `VERIFY`, and `WEBIRC` commands.
+state. `format_status/1` delegates to `m:briskd_state_redact`.
 """.
 
 -doc """
@@ -193,13 +155,6 @@ command(Command, Params, Bytes) -> command(Command, Params, Bytes, []).
 -doc """
 Apply a client command, with its IRCv3 message tags, on behalf of the calling
 session.
-
-`Params` are the parsed parameters and `Bytes` is the wire line size (counted
-for `STATS m` and connection statistics). Replies are written directly to
-the client; a `label` tag wraps them per labeled-response. Returns `quit`
-when the session must close, `starttls` when it must start the TLS
-handshake, and `ok` otherwise. Unregistered clients get 451 for commands
-that need registration.
 """.
 -spec command(binary(), [binary()], non_neg_integer(), [{binary(), undefined | binary()}]) ->
     ok | quit | starttls.
@@ -209,9 +164,6 @@ command(Command, Params, Bytes, Tags) ->
 -doc """
 Apply a command from a secondary connection attached to `Primary`
 (the opt-in multiclient feature).
-
-The command runs as the primary client. Returns `quit` when the caller is
-not attached to `Primary` or the primary is gone.
 """.
 -spec command_as(pid(), binary(), [binary()], non_neg_integer(), list()) -> ok | quit.
 command_as(Primary, Command, Params, Bytes, Tags) ->
@@ -229,10 +181,7 @@ ctl(Action) ->
 
 -doc """
 Set the admin override of the feature control `Key` (`m:briskd_overrides`) to
-the value `Text` names, and apply it as `REHASH` would. Returns the
-controls as they are now, or `{error, Reason}`: `unknown_control`,
-`invalid_value`, or `not_configured` (a subsystem the configuration file
-does not set up).
+the value `Text` names, and apply it as `REHASH` would.
 """.
 -spec set_control(binary(), binary()) -> {ok, [map()]} | {error, atom()}.
 set_control(Key, Text) ->
@@ -253,33 +202,26 @@ controls() ->
 -doc """
 Answer an over-long tagged line from the calling session with
 `417 ERR_INPUTTOOLONG`, honouring its `label` tag. The line is not applied.
-
-The line still costs one flood token, the same as any other client line.
-`quit` means the session was disconnected for excess flood.
 """.
 -spec input_too_long([{binary(), undefined | binary()}]) -> ok | quit.
 input_too_long(Tags) -> gen_server:call(?MODULE, {input_too_long, Tags}, command_timeout()).
 
 -doc """
 Return whether the calling session is registered: `NICK`, `USER`, and any
-required `PASS` are accepted and the welcome has been sent (not held by
-`CAP` negotiation).
+required `PASS` are accepted and the welcome has been sent.
 """.
 -spec registered() -> boolean().
 registered() -> gen_server:call(?MODULE, registered, command_timeout()).
 
 -doc """
-Return the RFC 2813 burst lines for a newly authenticated link: known
-servers, local and remote users, IRCv3 account state, channels, synchronized
-accounts, metadata, and read markers.
+Return the RFC 2813 burst lines for a newly authenticated link.
 """.
 -spec server_burst() -> [binary()].
 server_burst() -> gen_server:call(?MODULE, server_burst, command_timeout()).
 
 -doc """
 Record a directly connected peer after its `PASS`/`SERVER` handshake
-succeeds. Writes a hop-1 `known_server` row and indexes the calling link
-process under the folded name as an `inbound` or `outbound` peer.
+succeeds.
 """.
 -spec register_adjacent(binary(), binary(), inbound | outbound) ->
     ok | {error, duplicate_peer}.
@@ -288,8 +230,6 @@ register_adjacent(Name, Token, Kind) ->
 
 -doc """
 Apply an untagged message received from the authenticated peer `Peer`.
-
-Same as `server_command(Peer, Prefix, Command, Params, [])`.
 """.
 -spec server_command(binary(), undefined | binary(), binary(), [binary()]) -> ok | {error, term()}.
 server_command(Peer, Prefix, Command, Params) ->
@@ -297,13 +237,6 @@ server_command(Peer, Prefix, Command, Params) ->
 
 -doc """
 Apply a message received from the authenticated peer `Peer` (RFC 2813).
-
-`Prefix` is the source prefix, or `undefined` when the line had none (the
-link's own server is then the source). `Tags` are the client-only tags kept
-for relay to local recipients. With `utf8_only` set, invalid UTF-8 in the
-parameters is replaced by U+FFFD before delivery. Unknown commands are
-ignored. Returns `{error, Reason}` when the message breaks link rules; the
-caller then drops the link.
 """.
 -spec server_command(
     binary(), undefined | binary(), binary(), [binary()], [{binary(), undefined | binary()}]
@@ -317,24 +250,7 @@ server_command(Peer, Prefix, Command, Params, Tags) ->
 
 -doc """
 Apply consecutive messages from the authenticated peer `Peer` in one
-request, in order, as `server_command/5` applies each.
-
-The request is a priority message (EEP 76) to an alias of this process, so
-it is handled before queued client commands. A link carries the traffic of
-every user behind it; queued behind thousands of client calls, a batch per
-pass was not enough to drain it, and the peer's sender dropped the link at its
-send timeout. Each link has at most one batch outstanding, so clients are
-served while it reads the next. The caller waits up to the command deadline
-(60 seconds by default) and exits like a timed-out `gen_server:call/3`.
-
-Each element is `{Prefix, Command, Params, Tags}`. The first message that
-breaks link rules stops the batch and its `{error, Reason}` is returned; the
-caller then drops the link, so the rest are not applied. One call per peer
-line gave a link the same share of this process as one client while it
-carries the traffic of every user behind it, so under load the peer's sender
-blocked until its send timeout dropped the link. Link workers send every
-complete line of a read at once, at most `LINK_MAX_BATCH` per call
-(`include/briskd_link.hrl`).
+priority request (EEP 76), in order.
 """.
 -spec server_commands(
     binary(),
@@ -362,8 +278,7 @@ server_commands(Peer, Lines) ->
     end.
 
 %% The state process's priority alias (EEP 76, OTP 28+), cached by the
-%% caller together with the state pid it belongs to, so a caller that
-%% outlives a restarted state process asks again.
+%% caller together with the state pid it belongs to.
 peer_alias() ->
     State = whereis(?MODULE),
     case get(briskd_peer_alias) of
@@ -377,49 +292,14 @@ peer_alias() ->
     end.
 
 -doc """
-Whether a command from an authenticated peer is applied by this process
-(through `server_command/5` or `server_commands/2`). Link workers handle
-`PING`, `PONG`, and `ERROR` themselves and ignore other commands.
+Whether a command from an authenticated peer is applied by this process.
 """.
 -spec peer_command(binary()) -> boolean().
 peer_command(Command) ->
-    lists:member(Command, [
-        <<"NICK">>,
-        <<"QUIT">>,
-        <<"AWAY">>,
-        <<"NJOIN">>,
-        <<"JOIN">>,
-        <<"PART">>,
-        <<"TOPIC">>,
-        <<"KICK">>,
-        <<"MODE">>,
-        <<"PRIVMSG">>,
-        <<"NOTICE">>,
-        <<"TAGMSG">>,
-        <<"SERVER">>,
-        <<"SQUIT">>,
-        <<"INVITE">>,
-        <<"SERVICE">>,
-        <<"SQUERY">>,
-        <<"KILL">>,
-        <<"ACCOUNT">>,
-        <<"SETNAME">>,
-        <<"CHGHOST">>,
-        <<"REDACT">>,
-        <<"ACCOUNTSYNC">>,
-        <<"METADATA">>,
-        <<"MARKREAD">>,
-        <<"E2EE">>,
-        <<"CALL">>,
-        <<"BATCH">>
-    ]).
+    briskd_state_peer:peer_command(Command).
 
 -doc """
-Treat the loss of the link to `Peer` as a netsplit: remove the users,
-services, servers, and channel memberships reachable only through it and tell
-the remaining peers.
-
-A missing state process during shutdown is ignored. Other failures propagate.
+Treat the loss of the link to `Peer` as a netsplit.
 """.
 -spec server_disconnect(binary()) -> ok.
 server_disconnect(Peer) ->
@@ -433,7 +313,6 @@ server_disconnect(Peer) ->
 
 -doc """
 Register a new IRC account from the public WebUI sign-up page.
-Returns `{ok, created | verification_required, AccountName}` or `{error, Reason}`.
 """.
 -spec signup_account(binary(), undefined | binary(), binary(), binary()) ->
     {ok, created | verification_required, binary()} | {error, atom()}.
@@ -444,7 +323,6 @@ signup_account(Name, Email, Password, PeerIP) when
 
 -doc """
 Verify a pending account registration via the web verification link.
-Returns `{ok, AccountName}` on success or `error` when invalid or expired.
 """.
 -spec verify_account(binary(), binary()) -> {ok, binary()} | error.
 verify_account(Name, Code) when is_binary(Name), is_binary(Code) ->
@@ -452,7 +330,6 @@ verify_account(Name, Code) when is_binary(Name), is_binary(Code) ->
 
 -doc """
 Verify a pending account registration via email address and verification code.
-Returns `{ok, AccountName}` on success or `error` when invalid or expired.
 """.
 -spec verify_account_by_email(binary(), binary()) -> {ok, binary()} | error.
 verify_account_by_email(Email, Code) when is_binary(Email), is_binary(Code) ->
@@ -478,427 +355,39 @@ complete_password_reset(Email, Code, NewPassword, PeerIP) when
 
 -doc """
 Check an inbound server's name (RFC 1459 folded) and shared password against
-the configured `server_links`. The password comparison uses
-`briskd_config:secret_match/2`. Runs in the caller's process.
+the configured `server_links`. Runs in the caller's process.
 """.
 -spec authenticate_server_link(binary(), binary()) -> boolean().
 authenticate_server_link(Name, Password) ->
-    Links = persistent_term:get({?MODULE, server_links}, []),
-    lists:any(
-        fun(#{name := Expected, password := Secret}) ->
-            briskd_wire:fold(Name) =:= briskd_wire:fold(Expected) andalso
-                briskd_config:secret_match(Password, Secret)
-        end,
-        Links
-    ).
+    briskd_state_peer:authenticate_server_link(Name, Password).
 
 -doc false.
 -spec init(map()) -> {ok, binary()}.
 init(#{name := Name} = Config) ->
     %% Priority alias for batches of server-link input (server_commands/2).
     put(briskd_peer_alias, erlang:alias([priority])),
-    Started = calendar:system_time_to_rfc3339(erlang:system_time(second), [{unit, second}]),
-    persistent_term:put({?MODULE, started}, Started),
-    persistent_term:put({?MODULE, started_at}, erlang:monotonic_time(second)),
-    persistent_term:put({?MODULE, started_at_system}, erlang:system_time(second)),
-    %% Sessions that received the full welcome: the local user count for
-    %% LUSERS, kept as they register and leave instead of counted by a scan
-    %% of every client on each registration (briskd_state_info).
-    briskd_ready_clients = ets:new(briskd_ready_clients, [named_table, public, set]),
-    %% Session -> channels it was invited to (briskd_state_channel:prune_invited/1).
-    briskd_invites = ets:new(briskd_invites, [named_table, public, bag]),
-    ok = briskd_metrics:init(),
-    ok = briskd_info:init_info(),
-    briskd_connection_stats = ets:new(briskd_connection_stats, [
-        named_table, public, set, {write_concurrency, true}
-    ]),
-    ensure_ets(briskd_caps),
-    ensure_ets(briskd_nicks),
-    ensure_ets(briskd_inbound_peers),
-    ensure_ets(briskd_outbound_ready),
-    ensure_ets(briskd_holds),
-    ok = briskd_oper:init(),
-    ensure_ets(briskd_conn),
-    ensure_ets(briskd_chan_meta),
-    ensure_bag(briskd_monitor),
-    ensure_ets(briskd_attached),
-    ensure_ets(briskd_account_channels),
-    ensure_ets(briskd_remote_meta),
-    ensure_ets(briskd_e2ee_bound),
-    ensure_ets(briskd_safe_channels),
-    ensure_ets(briskd_empty_channels),
-    ensure_bag_read(briskd_remote_membership),
-    ensure_ets_read(briskd_peer_counts),
-    ensure_ets(briskd_peer_batches),
-    ensure_bag_read(briskd_account_sessions),
-    ok = briskd_flood:init(),
-    briskd_config:store(Config),
-    persistent_term:put({?MODULE, config_path}, maps:get(config_path, Config)),
-    persistent_term:put({?MODULE, motd_file}, maps:get(motd_file, Config, null)),
-    persistent_term:put({?MODULE, client_password}, maps:get(client_password, Config, null)),
-    persistent_term:put({?MODULE, server_links}, maps:get(server_links, Config, [])),
-    persistent_term:put({?MODULE, admin}, maps:get(admin, Config, #{})),
-    store_accounts(Config),
-    persistent_term:put({?MODULE, reop_delay}, maps:get(reop_delay, Config, 30)),
-    table(client, record_info(fields, client), [{index, [nick]}]),
-    table(channel, record_info(fields, channel), []),
-    table(channel_history, record_info(fields, channel_history), []),
-    table(channel_message, record_info(fields, channel_message), [{type, ordered_set}]),
-    table(channel_meta, record_info(fields, channel_meta), []),
-    table(activity, record_info(fields, activity), []),
-    table(whowas, record_info(fields, whowas), []),
-    table(user_modes, record_info(fields, user_modes), []),
-    table(remote_client, record_info(fields, remote_client), []),
-    table(remote_channel, record_info(fields, remote_channel), []),
-    table(known_server, record_info(fields, known_server), []),
-    table(service, record_info(fields, service), []),
-    table(account, record_info(fields, account), []),
-    table(read_marker, record_info(fields, read_marker), []),
-    %% End-to-end encryption broker (briskd_e2ee): device bundles and the
-    %% per-device offline queue, durable under every retention policy.
-    table(e2ee_device, record_info(fields, e2ee_device), []),
-    table(e2ee_queue, record_info(fields, e2ee_queue), [{type, ordered_set}]),
-    table(direct_history, record_info(fields, direct_history), []),
-    table(direct_message, record_info(fields, direct_message), [{type, ordered_set}]),
-    %% Admin overrides of features (briskd_overrides), durable.
-    table(setting, record_info(fields, setting), []),
-    ok = mnesia:wait_for_tables(
-        [
-            setting,
-            account,
-            read_marker,
-            e2ee_device,
-            e2ee_queue,
-            direct_history,
-            direct_message,
-            client,
-            channel,
-            channel_history,
-            channel_message,
-            channel_meta,
-            activity,
-            whowas,
-            user_modes,
-            remote_client,
-            remote_channel,
-            known_server,
-            service
-        ],
-        5000
-    ),
-    %% The file's settings with the admin panel's overrides applied.
-    briskd_config:store_base(Config),
-    Effective = briskd_overrides:apply(Config, briskd_overrides:all()),
-    briskd_config:store(Effective),
-    ok = briskd_rehash:init(Effective),
-    {atomic, ok} = mnesia:clear_table(client),
-    reset_channels(),
-    seed_channels(),
-    {atomic, ok} = mnesia:clear_table(activity),
-    {atomic, ok} = mnesia:clear_table(user_modes),
-    {atomic, ok} = mnesia:clear_table(remote_client),
-    {atomic, ok} = mnesia:clear_table(remote_channel),
-    {atomic, ok} = mnesia:clear_table(known_server),
-    {atomic, ok} = mnesia:clear_table(service),
-    ok = briskd_account:init_indexes(),
-    ok = briskd_population:init(),
+    ok = briskd_state_schema:init_storage(Config),
     erlang:send_after(1000, self(), reop_tick),
     erlang:send_after(?SWEEP_MS, self(), sweep_tick),
     {ok, Name}.
 
-table(Table, Fields, Options) ->
-    case mnesia:create_table(Table, [{attributes, Fields}, {storage(Table), [node()]} | Options]) of
-        {atomic, ok} ->
-            ok;
-        {aborted, {already_exists, Table}} ->
-            ok = load_table(Table, Fields, Options),
-            ensure_table_shape(Table, Fields),
-            ensure_storage(Table)
-    end.
-
-%% Tables cleared on every start (sessions, presence, and imported peer
-%% state) are kept in memory only: as disc_copies every write went through
-%% the Mnesia transaction log, including the `activity` row written for
-%% every client command, for data no restart keeps. Everything else (WHOWAS,
-%% channels and their history, accounts, ...) stays on disk.
-storage(Table) when
-    Table =:= client;
-    Table =:= activity;
-    Table =:= user_modes;
-    Table =:= remote_client;
-    Table =:= remote_channel;
-    Table =:= known_server;
-    Table =:= service
-->
-    ram_copies;
-storage(_Table) ->
-    disc_copies.
-
-%% An existing schema entry is not readable until its local copy is loaded.
-load_table(Table, Fields, Options) ->
-    case mnesia:force_load_table(Table) of
-        yes ->
-            ok;
-        Error ->
-            logger:warning("Replacing unloaded Mnesia table ~p after ~p", [Table, Error]),
-            replace_table(Table, Fields, Options)
-    end.
-
-replace_table(Table, Fields, Options) ->
-    case mnesia:delete_table(Table) of
-        {atomic, ok} ->
-            ok;
-        {aborted, Reason} ->
-            logger:warning("Mnesia delete_table ~p returned ~p", [Table, Reason])
-    end,
-    case mnesia:create_table(Table, [{attributes, Fields}, {storage(Table), [node()]} | Options]) of
-        {atomic, ok} -> ok;
-        {aborted, {already_exists, Table}} -> ok
-    end.
-
-%% An existing table keeps the storage type it was created with: convert it
-%% (transient tables written to disk by earlier releases become ram_copies).
-ensure_storage(Table) ->
-    Wanted = storage(Table),
-    case mnesia:table_info(Table, storage_type) of
-        Wanted ->
-            ok;
-        _ ->
-            {atomic, ok} = mnesia:change_table_copy_type(Table, node(), Wanted),
-            ok
-    end.
-
-%% Channel rows gain fields over time; every missing trailing field is
-%% `undefined` (creator, opless_since, created).
-ensure_table_shape(channel, Fields) ->
-    case mnesia:table_info(channel, attributes) of
-        Fields ->
-            ok;
-        OldFields ->
-            Width = length(Fields) + 1,
-            {atomic, ok} = mnesia:transform_table(
-                channel,
-                fun(Old) ->
-                    List = tuple_to_list(Old),
-                    list_to_tuple(List ++ lists:duplicate(Width - length(List), undefined))
-                end,
-                Fields
-            ),
-            logger:info("Migrated Mnesia channel table from ~p", [OldFields])
-    end;
-ensure_table_shape(client, Fields) ->
-    case mnesia:table_info(client, attributes) of
-        Fields ->
-            ok;
-        OldFields ->
-            {atomic, ok} = mnesia:transform_table(
-                client,
-                fun(Old) -> list_to_tuple(tuple_to_list(Old) ++ [undefined]) end,
-                Fields
-            ),
-            logger:info("Migrated Mnesia client table from ~p", [OldFields])
-    end;
-ensure_table_shape(account, Fields) ->
-    migrate_appended(account, Fields, undefined);
-ensure_table_shape(remote_channel, Fields) ->
-    migrate_appended(remote_channel, Fields, #{});
-ensure_table_shape(remote_client, Fields) ->
-    migrate_appended(remote_client, Fields, undefined);
-ensure_table_shape(e2ee_device, Fields) ->
-    migrate_appended(e2ee_device, Fields, []);
-ensure_table_shape(Table, Fields) ->
-    case mnesia:table_info(Table, attributes) of
-        Fields -> ok;
-        OldFields -> logger:warning("Leaving Mnesia table ~p unchanged from ~p", [Table, OldFields])
-    end.
-
-%% Append missing record fields. New remote-channel fields default to a map.
-%% A migrated remote client gets `server = undefined` and `hop = 1`.
-migrate_appended(Table, Fields, Default) ->
-    case attributes(Table) of
-        Fields ->
-            ok;
-        OldFields when is_list(OldFields) ->
-            Width = length(Fields) + 1,
-            case
-                mnesia:transform_table(
-                    Table,
-                    fun(Old) ->
-                        List = tuple_to_list(Old),
-                        Missing = Width - length(List),
-                        Pads = pads(Table, Missing, Default),
-                        list_to_tuple(List ++ Pads)
-                    end,
-                    Fields
-                )
-            of
-                {atomic, ok} ->
-                    logger:info("Migrated Mnesia ~p table from ~p", [Table, OldFields]);
-                {aborted, Reason} ->
-                    recreate_transient_table(Table, Fields, Reason)
-            end;
-        Other ->
-            recreate_transient_table(Table, Fields, Other)
-    end.
-
-attributes(Table) ->
-    try mnesia:table_info(Table, attributes) of
-        Fields when is_list(Fields) -> Fields;
-        Other -> Other
-    catch
-        exit:Reason -> Reason
-    end.
-
-%% Remote tables are cleared on startup, so a broken disc copy can be replaced.
-recreate_transient_table(Table, Fields, Reason) ->
-    logger:warning("Recreating transient Mnesia table ~p after ~p", [Table, Reason]),
-    replace_table(Table, Fields, []).
-
-pads(remote_client, Missing, _Default) when Missing >= 2 ->
-    [undefined, 1 | lists:duplicate(Missing - 2, undefined)];
-pads(_Table, Missing, Default) ->
-    lists:duplicate(Missing, Default).
-
--spec ensure_bag(atom()) -> ok.
-ensure_bag(Name) ->
-    case ets:whereis(Name) of
-        undefined ->
-            _ = ets:new(Name, [named_table, public, bag]),
-            ok;
-        _ ->
-            true = ets:delete_all_objects(Name),
-            ok
-    end.
-
--spec ensure_ets(atom()) -> ok.
-ensure_ets(Name) ->
-    ensure_ets_opts(Name, [set]).
-
--spec ensure_ets_read(atom()) -> ok.
-ensure_ets_read(Name) ->
-    ensure_ets_opts(Name, [set, {read_concurrency, true}]).
-
--spec ensure_bag_read(atom()) -> ok.
-ensure_bag_read(Name) ->
-    ensure_ets_opts(Name, [bag, {read_concurrency, true}]).
-
-ensure_ets_opts(Name, Opts) ->
-    case ets:whereis(Name) of
-        undefined ->
-            _ = ets:new(Name, [named_table, public | Opts]),
-            ok;
-        _ ->
-            true = ets:delete_all_objects(Name),
-            ok
-    end.
-
-reset_channels() ->
-    case retention() of
-        channels ->
-            lists:foreach(
-                fun(Key) ->
-                    case mnesia:dirty_read(channel, Key) of
-                        [#channel{} = Channel] ->
-                            mnesia:dirty_write(cleared_membership(Channel));
-                        [] ->
-                            ok
-                    end
-                end,
-                table_keys(channel)
-            ),
-            ok = briskd_state_history:init_storage(),
-            lists:foreach(
-                fun(Key) ->
-                    case mnesia:dirty_read(channel, Key) of
-                        [] -> briskd_state_history:delete_channel_history(Key);
-                        [_] -> ok
-                    end
-                end,
-                briskd_state_history:history_channels()
-            ),
-            ok;
-        transient ->
-            lists:foreach(
-                fun(Key) ->
-                    case mnesia:dirty_read(channel, Key) of
-                        [#channel{name = <<$!, _/binary>>} = Channel] ->
-                            mnesia:dirty_write(cleared_membership(Channel));
-                        [_Channel] ->
-                            mnesia:dirty_delete(channel, Key);
-                        [] ->
-                            ok
-                    end
-                end,
-                table_keys(channel)
-            ),
-            {atomic, ok} = mnesia:clear_table(channel_history),
-            {atomic, ok} = mnesia:clear_table(channel_message),
-            {atomic, ok} = mnesia:clear_table(direct_history),
-            {atomic, ok} = mnesia:clear_table(direct_message),
-            ok = briskd_state_history:init_storage(),
-            ok
-    end,
-    briskd_state_meta:restore_channels(),
-    briskd_state_channel:index_safe_channels().
-
-cleared_membership(Channel) ->
-    Channel#channel{members = #{}, invited = [], opless_since = undefined}.
-
 -doc """
 Publish `OPER` credentials and the configured channel keys from `Config`
 in `persistent_term`.
-
-Administrator entries join the operator list so `OPER` and `STATS o` accept
-them; their names are also stored separately so a successful `OPER` can be
-told apart from an ordinary operator. Called at startup and by `REHASH`.
 """.
 -spec store_accounts(map()) -> ok.
 store_accounts(Config) ->
-    ok = briskd_oper:store_accounts(Config),
-    persistent_term:put(
-        {?MODULE, predefined_channels},
-        [maps:get(key, Channel) || Channel <- maps:get(channels, Config, [])]
-    ),
-    ok.
+    briskd_state_schema:store_accounts(Config).
 
 -doc """
 Create each channel from the JSON `channels` setting that has no row.
-
-An existing row, including one kept by `channels` retention, keeps its
-topic, modes, key, and limit. Called at startup and by `REHASH`.
 """.
 -spec seed_channels() -> ok.
 seed_channels() ->
-    Config = briskd_config:current_or_empty(),
-    lists:foreach(fun seed_channel/1, maps:get(channels, Config, [])).
-
-seed_channel(#{
-    key := Key, name := Name, topic := Topic, flags := Flags, limit := Limit, password := Password
-}) ->
-    case mnesia:dirty_read(channel, Key) of
-        [_] ->
-            ok;
-        [] ->
-            mnesia:dirty_write(#channel{
-                key = Key,
-                name = Name,
-                topic = Topic,
-                flags = Flags,
-                lists = #{},
-                members = #{},
-                invited = [],
-                limit = Limit,
-                password = Password,
-                creator = undefined,
-                opless_since = undefined,
-                created = erlang:system_time(second)
-            }),
-            briskd_population:on_channel_put(Key)
-    end.
+    briskd_state_schema:seed_channels().
 
 -doc """
 True after the session `Pid` used `OPER` with an `administrators` entry.
-Reads the `briskd_admins` ETS table; safe to call from any process.
 """.
 -spec administrator(pid()) -> boolean().
 administrator(Pid) when is_pid(Pid) ->
@@ -923,49 +412,38 @@ Every key of the Mnesia table `Table`, typed by the table's record key.
     (read_marker) -> [{binary(), binary()}];
     (direct_history) -> [{dm_party(), dm_party()}].
 table_keys(Table) ->
-    stored_keys(mnesia:dirty_all_keys(Table)).
-
-%% mnesia:dirty_all_keys/1 returns [term()]; the key type of each table is the
-%% key field of its record (include/*.hrl), which table_keys/1 states.
--spec stored_keys([term()]) -> dynamic().
-stored_keys(Keys) ->
-    Keys.
+    briskd_state_schema:table_keys(Table).
 
 -doc """
 True when the folded channel key `Key` names a channel from the JSON
-`channels` setting. Such a channel is kept when its last member leaves.
+`channels` setting.
 """.
 -spec predefined_channel(binary()) -> boolean().
 predefined_channel(Key) when is_binary(Key) ->
-    lists:member(Key, persistent_term:get({?MODULE, predefined_channels}, [])).
+    briskd_state_schema:predefined_channel(Key).
 
 -doc """
 Configured `retention` policy.
-
-`channels` (default) keeps ordinary channels and message history across
-restarts; `transient` deletes them at startup and when a channel empties. Both
-clear client sessions and imported peer state.
 """.
 -spec retention() -> transient | channels.
 retention() ->
-    maps:get(retention, briskd_config:current(), channels).
+    briskd_state_schema:retention().
 
 -doc """
 Longest accepted nickname in bytes: the `nicklen` setting, default 9 from
-RFC 1459. Advertised as `NICKLEN` in RPL_ISUPPORT.
+RFC 1459.
 """.
 -spec nicklen() -> pos_integer().
 nicklen() ->
-    maps:get(nicklen, briskd_config:current_or_empty(), 9).
+    briskd_state_schema:nicklen().
 
 -doc """
 The `history_limit` setting (default 100): how many messages, and separately
-how many events, are kept per channel or direct conversation. Advertised as
-`CHATHISTORY` in RPL_ISUPPORT.
+how many events, are kept per channel or direct conversation.
 """.
 -spec history_limit() -> pos_integer().
 history_limit() ->
-    maps:get(history_limit, briskd_config:current(), 100).
+    briskd_state_schema:history_limit().
 
 -doc false.
 handle_call({connect, Host}, From, Server) ->
@@ -992,12 +470,7 @@ handle_call(registered, {Pid, _}, Server) ->
 handle_call(server_burst, _, Server) ->
     {reply, briskd_state_link:server_burst_lines(Server), Server};
 handle_call({register_adjacent, Name, Token, Kind}, {Pid, _}, Server) ->
-    %% Both inbound sessions and outbound link workers register here, and
-    %% briskd_state_net:register_adjacent/4 records the caller as {Pid, Name}.
     Result = briskd_state_net:register_adjacent(Name, Token, Kind, Pid),
-    %% A link process that dies without its own cleanup (killed, or a crash
-    %% outside its callbacks) still splits the peer: see peer_down/2.
-    %% A rejected duplicate is not monitored and is not recorded.
     case Result of
         ok -> erlang:monitor(process, Pid);
         {error, duplicate_peer} -> ok
@@ -1034,33 +507,30 @@ handle_call({reset_control, Key}, _From, Server) ->
     {reply, Reply, Server};
 handle_call(peer_alias, _From, Server) ->
     {reply, get(briskd_peer_alias), Server};
-handle_call({server_command, Peer, Prefix0, Command, Params, Tags}, From, Server) ->
-    case burst_command(Command) of
-        true -> ok;
-        false -> briskd_state_link:flush_netjoin(Peer)
-    end,
-    %% RFC 2813 3.3: a line without a prefix comes from the link itself, so
-    %% every handler below sees a binary source and never `undefined`.
-    Prefix = link_source(Peer, Prefix0),
-    briskd_state_send:set_source(briskd_state_v3:remote_source_info(Prefix)),
-    %% UTF8ONLY: text from peers reaches local clients only as valid UTF-8;
-    %% invalid bytes become U+FFFD.
-    Safe =
-        case maps:get(utf8_only, briskd_config:current(), false) of
-            true -> [briskd_websocket:utf8_safe(P) || P <- Params];
-            false -> Params
-        end,
-    try
-        server_call({server_command, Peer, Prefix, Command, Safe, Tags}, From, Server)
-    after
-        briskd_state_send:clear_source()
-    end;
-handle_call(Request, From, Server) ->
-    other_call(Request, From, Server).
+handle_call({server_command, Peer, Prefix, Command, Params, Tags}, _From, Server) ->
+    {reply, briskd_state_peer:handle_server_command(Peer, Prefix, Command, Params, Tags), Server};
+handle_call({signup_account, Name, Email, Password, PeerIP}, _, Server) ->
+    {reply, briskd_state_v3:signup_account_web(Name, Email, Password, PeerIP), Server};
+handle_call({verify_account, Name, Code}, _, Server) ->
+    {reply, briskd_state_v3:verify_account_web(Name, Code), Server};
+handle_call({verify_account_by_email, Email, Code}, _, Server) ->
+    {reply, briskd_state_v3:verify_account_email_web(Email, Code), Server};
+handle_call({request_password_reset, Email, RecoveryUrl, PeerIP}, _, Server) ->
+    {reply, briskd_state_v3:request_password_reset_web(Email, RecoveryUrl, PeerIP), Server};
+handle_call({complete_password_reset, Email, Code, NewPassword, PeerIP}, _, Server) ->
+    {reply, briskd_state_v3:complete_password_reset_web(Email, Code, NewPassword, PeerIP), Server};
+handle_call({server_disconnect, Peer}, {Pid, _}, Server) ->
+    briskd_state_peer:disconnect_peer(Peer, Pid),
+    {reply, ok, Server};
+handle_call({input_too_long, Tags}, {Pid, _}, Server) ->
+    briskd_state_dispatch:handle_input_too_long(Tags, Pid, Server);
+handle_call({command_as, Primary, Command, Params, Bytes, Tags}, From, Server) ->
+    briskd_state_dispatch:handle_command_as(Primary, Command, Params, Bytes, Tags, From, Server);
+handle_call({command, Command, Params, Bytes, Tags}, From, Server) ->
+    briskd_state_dispatch:handle_command(Command, Params, Bytes, Tags, From, Server).
 
 %% Rebuild the effective configuration from the file's and the stored
-%% overrides after one changed, and apply it as REHASH does (clients learn
-%% of added or withdrawn capabilities). Audited; operators get a WALLOPS.
+%% overrides after one changed, and apply it as REHASH does.
 apply_overrides(Key, Value, Server) ->
     Effective = briskd_overrides:effective(
         briskd_config:current(), briskd_config:base(), briskd_overrides:all()
@@ -1079,357 +549,6 @@ apply_overrides(Key, Value, Server) ->
         Server
     ).
 
-%% Apply a peer's lines in order until one fails (see server_commands/2).
-apply_server_lines(_Peer, [], _From, Server) ->
-    {reply, ok, Server};
-apply_server_lines(Peer, [{Prefix, Command, Params, Tags} | Rest], From, Server0) ->
-    case handle_call({server_command, Peer, Prefix, Command, Params, Tags}, From, Server0) of
-        {reply, ok, Server} -> apply_server_lines(Peer, Rest, From, Server);
-        {reply, Error, Server} -> {reply, Error, Server}
-    end.
-
-%% Commands that may appear inside a peer's burst between NJOIN lines.
-burst_command(Command) ->
-    lists:member(Command, [
-        <<"NJOIN">>,
-        <<"NICK">>,
-        <<"SERVER">>,
-        <<"MODE">>,
-        <<"SERVICE">>,
-        <<"ACCOUNT">>,
-        <<"ACCOUNTSYNC">>,
-        <<"METADATA">>,
-        <<"MARKREAD">>,
-        <<"E2EE">>,
-        <<"AWAY">>
-    ]).
-
-server_call({server_command, Peer, Prefix, <<"BATCH">>, Params, Tags}, _, Server) when
-    is_binary(Prefix)
-->
-    {reply, briskd_state_link:receive_remote_batch(Peer, Prefix, Params, Tags), Server};
-server_call({server_command, Peer, Prefix, Command, Params, Tags}, _, Server) when
-    is_binary(Prefix),
-    (Command =:= <<"PRIVMSG">> orelse Command =:= <<"NOTICE">>),
-    is_list(Tags),
-    Tags =/= []
-->
-    case lists:keymember(<<"batch">>, 1, Tags) of
-        true ->
-            {reply, briskd_state_link:remote_batch_line(Peer, Prefix, Command, Params, Tags),
-                Server};
-        false ->
-            other_call(
-                {server_command, Peer, Prefix, Command, Params, Tags}, {self(), make_ref()}, Server
-            )
-    end;
-server_call({server_command, Peer, Prefix, <<"ACCOUNT">>, Params, _Tags}, _, Server) when
-    is_binary(Prefix)
-->
-    {reply, briskd_state_v3:receive_remote_account(Peer, Prefix, Params), Server};
-server_call({server_command, Peer, Prefix, <<"SETNAME">>, Params, _Tags}, _, Server) when
-    is_binary(Prefix)
-->
-    {reply, briskd_state_v3:receive_remote_setname(Peer, Prefix, Params), Server};
-server_call({server_command, Peer, Prefix, <<"CHGHOST">>, Params, _Tags}, _, Server) when
-    is_binary(Prefix)
-->
-    {reply, briskd_state_v3:receive_remote_chghost(Peer, Prefix, Params), Server};
-server_call({server_command, Peer, Prefix, <<"REDACT">>, Params, _Tags}, _, Server) when
-    is_binary(Prefix)
-->
-    {reply, briskd_state_history:receive_remote_redact(Peer, Prefix, Params), Server};
-server_call({server_command, Peer, Prefix, <<"ACCOUNTSYNC">>, Params, _Tags}, _, Server) ->
-    {reply, briskd_state_sync:receive_accountsync(Peer, link_source(Peer, Prefix), Params), Server};
-server_call({server_command, Peer, Prefix, <<"METADATA">>, Params, _Tags}, _, Server) when
-    is_binary(Prefix)
-->
-    {reply, briskd_state_sync:receive_metadata(Peer, Prefix, Params), Server};
-server_call({server_command, Peer, Prefix, <<"E2EE">>, Params, Tags}, _, Server) ->
-    {reply, briskd_e2ee:receive_link(Peer, link_source(Peer, Prefix), Params, Tags), Server};
-server_call({server_command, Peer, Prefix, <<"CALL">>, Params, _Tags}, _, Server) when
-    is_binary(Prefix)
-->
-    %% Voice-call signalling between users on different servers.
-    {reply, briskd_calls:receive_link(Peer, Prefix, Params), Server};
-server_call({server_command, Peer, Prefix, <<"MARKREAD">>, Params, _Tags}, _, Server) ->
-    {reply, briskd_state_sync:receive_markread(Peer, link_source(Peer, Prefix), Params), Server};
-server_call(Request, From, Server) ->
-    other_call(Request, From, Server).
-
-other_call({server_command, Peer, Prefix, <<"NJOIN">>, [Name, Members]}, _, Server) ->
-    case briskd_state_link:trusted_server(Peer, link_source(Peer, Prefix)) of
-        true -> {reply, briskd_state_link:import_remote_njoin(Peer, Name, Members), Server};
-        false -> {reply, {error, unknown_remote_source}, Server}
-    end;
-other_call({server_command, Peer, Prefix, <<"JOIN">>, [Name | _]}, _, Server) when
-    is_binary(Prefix)
-->
-    {reply, briskd_state_link:import_remote_join(Peer, Prefix, Name), Server};
-other_call({server_command, Peer, Prefix, <<"PART">>, [Name | Rest]}, _, Server) when
-    is_binary(Prefix)
-->
-    Reason =
-        case Rest of
-            [Text | _] -> Text;
-            [] -> none
-        end,
-    {reply, briskd_state_link:remove_remote_channel_member(Peer, Prefix, Name, Reason), Server};
-other_call({server_command, Peer, Prefix, <<"TOPIC">>, [Name, Text]}, _, Server) when
-    is_binary(Prefix)
-->
-    {reply, briskd_state_link:update_remote_topic(Peer, Prefix, Name, Text), Server};
-other_call({server_command, Peer, Prefix, <<"KICK">>, [Name, Nick | Rest]}, _, Server) when
-    is_binary(Prefix)
-->
-    Reason =
-        case Rest of
-            [Text | _] -> Text;
-            [] -> none
-        end,
-    {reply, briskd_state_link:receive_remote_kick(Peer, Prefix, Name, Nick, Reason), Server};
-other_call({server_command, Peer, Prefix, <<"NICK">>, [Nick]}, _, Server) when
-    is_binary(Prefix)
-->
-    {reply, briskd_state_link:rename_remote_nick(Peer, Prefix, Nick), Server};
-other_call({server_command, Peer, Prefix, <<"QUIT">>, Params}, _, Server) when
-    is_binary(Prefix)
-->
-    Reason =
-        case Params of
-            [Text | _] -> Text;
-            [] -> <<"QUIT">>
-        end,
-    {reply, briskd_state_link:remove_remote_nick(Peer, Prefix, Reason), Server};
-other_call({server_command, Peer, Prefix, <<"AWAY">>, Params}, _, Server) when
-    is_binary(Prefix)
-->
-    {reply, briskd_state_link:set_remote_away(Peer, Prefix, Params), Server};
-other_call({server_command, Peer, Prefix, <<"NICK">>, Params}, _, Server) when
-    is_binary(Prefix), length(Params) =:= 7
-->
-    {reply, briskd_state_link:import_remote_nick(Peer, Prefix, Params), Server};
-other_call({server_command, Peer, Prefix, <<"MODE">>, [Name, Modes | Args]}, _, Server) ->
-    {reply, briskd_state_link:update_remote_modes(Peer, Prefix, Name, Modes, Args), Server};
-other_call({server_command, Peer, Prefix, Command, Params, Tags}, _, Server) when
-    is_binary(Prefix),
-    (Command =:= <<"PRIVMSG">> orelse Command =:= <<"NOTICE">> orelse Command =:= <<"TAGMSG">>)
-->
-    {reply, briskd_state_link:receive_remote_message(Peer, Prefix, Command, Params, Tags), Server};
-other_call({server_command, Peer, Prefix, Command, Params, _Tags}, From, Server) ->
-    other_call({server_command, Peer, Prefix, Command, Params}, From, Server);
-other_call({server_command, Peer, Prefix, <<"SERVER">>, [Name, Hop, Token, Info | _]}, _, Server) ->
-    {reply, briskd_state_net:introduce_server(Peer, Prefix, Name, Hop, Token, Info), Server};
-other_call({server_command, Peer, _Prefix, <<"SQUIT">>, [Target | Rest]}, _, Server) ->
-    Reason =
-        case Rest of
-            [Text | _] -> Text;
-            [] -> <<"SQUIT">>
-        end,
-    %% A peer may only split itself or a server it introduced (RFC 2813
-    %% 4.1.6); any other target would let it remove servers it does not route.
-    %% An unknown target is a stale SQUIT that crossed a split and is ignored.
-    case behind_peer(Peer, Target) of
-        true ->
-            %% Close the adjacent socket when the target is that peer. The
-            %% pids are captured inside drop_server before the rows go away.
-            briskd_state_net:drop_server(Target, Reason, Peer),
-            {reply, ok, Server};
-        unknown ->
-            {reply, ok, Server};
-        false ->
-            logger:warning(#{event => squit_rejected, peer => Peer, target => Target}),
-            {reply, {error, squit_not_behind_peer}, Server}
-    end;
-other_call({server_command, Peer, Prefix, <<"INVITE">>, [Nick, Name | _]}, _, Server) ->
-    {reply, briskd_state_link:receive_remote_invite(Peer, Prefix, Nick, Name), Server};
-other_call({server_command, Peer, Prefix, <<"SERVICE">>, Params}, _, Server) ->
-    {reply, briskd_state_net:import_service(Peer, Prefix, Params), Server};
-other_call({server_command, Peer, Prefix, <<"SQUERY">>, Params}, _, Server) when
-    is_binary(Prefix)
-->
-    {reply, briskd_state_net:remote_squery(Peer, Prefix, Params), Server};
-other_call({server_command, Peer, Prefix, <<"KILL">>, [Nick | Rest]}, _, Server) ->
-    Source = link_source(Peer, Prefix),
-    %% A server this peer may speak for can KILL. A user can KILL only with
-    %% user mode +o, which an honest peer sets from OPER. Any nick on the
-    %% link is not enough: that let a non-operator remove local users.
-    Operator =
-        case briskd_state_link:remote_source(Peer, Source) of
-            {ok, #remote_client{modes = Modes}} -> maps:is_key($o, Modes);
-            error -> false
-        end,
-    case briskd_state_link:trusted_server(Peer, Source) orelse Operator of
-        true ->
-            Reason =
-                case Rest of
-                    [Text | _] -> Text;
-                    [] -> <<"KILL">>
-                end,
-            {reply, briskd_state_link:receive_remote_kill(Peer, Nick, Reason), Server};
-        false ->
-            Reply =
-                case briskd_state_link:remote_source(Peer, Source) of
-                    {ok, #remote_client{}} -> {error, remote_kill_requires_operator};
-                    error -> {error, unknown_remote_source}
-                end,
-            {reply, Reply, Server}
-    end;
-other_call({server_command, _Peer, _Prefix, _Command, _Params}, _, Server) ->
-    {reply, ok, Server};
-other_call({signup_account, Name, Email, Password, PeerIP}, _, Server) ->
-    {reply, briskd_state_v3:signup_account_web(Name, Email, Password, PeerIP), Server};
-other_call({verify_account, Name, Code}, _, Server) ->
-    {reply, briskd_state_v3:verify_account_web(Name, Code), Server};
-other_call({verify_account_by_email, Email, Code}, _, Server) ->
-    {reply, briskd_state_v3:verify_account_email_web(Email, Code), Server};
-other_call({request_password_reset, Email, RecoveryUrl, PeerIP}, _, Server) ->
-    {reply, briskd_state_v3:request_password_reset_web(Email, RecoveryUrl, PeerIP), Server};
-other_call({complete_password_reset, Email, Code, NewPassword, PeerIP}, _, Server) ->
-    {reply, briskd_state_v3:complete_password_reset_web(Email, Code, NewPassword, PeerIP), Server};
-other_call({server_disconnect, Peer}, {Pid, _}, Server) ->
-    disconnect_peer(Peer, Pid),
-    {reply, ok, Server};
-other_call({input_too_long, Tags}, {Pid, _}, Server) ->
-    Client = briskd_state_client:client(Pid),
-    %% One line token, and no message or join token: the line was not a command.
-    case briskd_flood:check_command(Pid, <<"PING">>, [], [], briskd_state_client:ready(Client)) of
-        {flood, Category} ->
-            flood_quit(Client, Category, Server);
-        allow ->
-            Label = briskd_cap:label(briskd_cap:state(Pid), Tags),
-            ok = briskd_state_send:begin_label(Pid, Label),
-            try
-                briskd_state_send:numeric(
-                    Client, Server, <<"417">>, [], <<"Input line was too long">>
-                )
-            after
-                briskd_state_send:end_label(Server)
-            end,
-            {reply, ok, Server}
-    end;
-other_call({command_as, Primary, Command, Params, Bytes, Tags}, {Caller, Ref}, Server) ->
-    case ets:lookup(briskd_attached, Caller) of
-        [{Caller, Primary}] ->
-            case mnesia:dirty_read(client, Primary) of
-                [_] -> other_call({command, Command, Params, Bytes, Tags}, {Primary, Ref}, Server);
-                [] -> {reply, quit, Server}
-            end;
-        _ ->
-            {reply, quit, Server}
-    end;
-other_call({command, Command, Params, Bytes, Tags}, {Pid, Ref}, Server) ->
-    case mnesia:dirty_read(client, Pid) of
-        [_] ->
-            client_command(Command, Params, Bytes, Tags, {Pid, Ref}, Server);
-        [] ->
-            %% multiclient: finish_attach/2 dropped this connection's client
-            %% row, but lines the session read before it saw {attach, Holder}
-            %% still arrive as plain commands. Run them as the holder; a
-            %% connection with no client row and no holder is closed.
-            case ets:lookup(briskd_attached, Pid) of
-                [{Pid, Holder}] ->
-                    other_call(
-                        {command_as, Holder, Command, Params, Bytes, Tags}, {Pid, Ref}, Server
-                    );
-                [] ->
-                    {reply, quit, Server}
-            end
-    end.
-
-client_command(Command, Params, Bytes, Tags, {Pid, _} = From, Server) ->
-    count_command(Pid, Command, Bytes),
-    Client = briskd_state_client:client(Pid),
-    briskd_log:client_command(Client#client.nick, Command, Params),
-    case
-        briskd_flood:check_command(
-            Pid, Command, Params, Tags, briskd_state_client:ready(Client)
-        )
-    of
-        {flood, Category} ->
-            flood_quit(Client, Category, Server);
-        allow ->
-            run_client_command(Command, Params, Tags, Client, From, Server)
-    end.
-
-flood_quit(#client{pid = Pid} = Client, Category, Server) ->
-    logger:warning(#{
-        event => flood_exceeded,
-        nick => Client#client.nick,
-        host => Client#client.host,
-        category => Category
-    }),
-    briskd_state_send:send(
-        Pid,
-        Server,
-        <<"ERROR">>,
-        [],
-        [<<"Closing Link: ">>, Client#client.host, <<" (Excess Flood)">>]
-    ),
-    briskd_state_client:disconnect(Client, <<"Excess Flood">>, Server),
-    {reply, quit, Server}.
-
-run_client_command(Command, Params, Tags, #client{pid = Pid} = Client, From, Server) ->
-    Label =
-        case welcomed_cap_end(Client, Command, Params) of
-            true -> undefined;
-            false -> command_label(Pid, Command, Params, Tags)
-        end,
-    ok = briskd_state_send:begin_label(Pid, Label),
-    briskd_state_send:set_source(briskd_state_v3:source_info(Client)),
-    Reply =
-        try
-            dispatch(Command, Params, Client, Server, Tags)
-        catch
-            Class:Reason:Stack ->
-                _ = briskd_deferred:take(),
-                end_reply(Server),
-                erlang:raise(Class, Reason, Stack)
-        end,
-    case briskd_deferred:take() of
-        none ->
-            end_reply(Server),
-            case Reply of
-                quit -> ok;
-                %% PONG is not a liveness answer here, so it must not refresh
-                %% the idle timer on its own.
-                _ when Command =:= <<"PONG">> -> ok;
-                _ -> briskd_state_client:touch_activity(Pid)
-            end,
-            {reply, Reply, Server};
-        {Work, Then} ->
-            %% Costly work (PBKDF2) runs in a worker; the reply follows when
-            %% it finishes (briskd_deferred:resume/3 from handle_info 'DOWN').
-            briskd_deferred:start(From, Pid, Work, Then, Server)
-    end.
-
-end_reply(Server) ->
-    briskd_state_send:end_label(Server),
-    briskd_state_send:clear_source().
-
-%% `true` when Target is the adjacent Peer or a known server reached through
-%% it, `false` for the local server or a server routed through another link,
-%% and `unknown` for a name that is not a known server.
-behind_peer(Peer, Target) ->
-    Folded = briskd_wire:fold(Peer),
-    Local = briskd_wire:fold(maps:get(name, briskd_config:current())),
-    case briskd_wire:fold(Target) of
-        Folded ->
-            true;
-        Local ->
-            false;
-        Key ->
-            case mnesia:dirty_read(known_server, Key) of
-                [#known_server{adjacent = Adjacent}] -> briskd_wire:fold(Adjacent) =:= Folded;
-                [] -> unknown
-            end
-    end.
-
-%% A server message without a prefix comes from the link it arrived on
-%% (RFC 2813 3.3), so relays name that server as the source.
-link_source(Peer, undefined) -> Peer;
-link_source(_Peer, Prefix) -> Prefix.
-
 -doc false.
 handle_cast(_, State) -> {noreply, State}.
 
@@ -1439,10 +558,10 @@ handle_info({'DOWN', Ref, process, Pid, Reason}, State) ->
         handled -> {noreply, State};
         not_ours -> session_down(Pid, State)
     end;
-handle_info({peer_lines, {Pid, Ref} = From, Peer, Lines}, Server0) when
+handle_info({peer_lines, {Pid, Ref}, Peer, Lines}, Server) when
     is_pid(Pid), is_reference(Ref), is_binary(Peer), is_list(Lines)
 ->
-    {reply, Reply, Server} = apply_server_lines(Peer, Lines, From, Server0),
+    Reply = briskd_state_peer:apply_server_lines(Peer, Lines, Server),
     Pid ! {Ref, Reply},
     {noreply, Server};
 handle_info({flush_netjoin, Peer}, Server) ->
@@ -1469,7 +588,7 @@ handle_info(_, State) ->
 
 %% A session process ended: drop its attachment and client state.
 session_down(Pid, State) ->
-    peer_down(Pid),
+    briskd_state_peer:peer_down(Pid),
     ets:delete(briskd_attached, Pid),
     ok = briskd_e2ee:session_down(Pid),
     case mnesia:dirty_read(client, Pid) of
@@ -1480,727 +599,12 @@ session_down(Pid, State) ->
     end,
     {noreply, State}.
 
-%% Netsplit cleanup when `Caller` still owns a direction of `Peer`.
-%% A caller that owns nothing (the registration was already removed, or a
-%% newer link holds the name) leaves the peer in place.
-disconnect_peer(Peer, Caller) ->
-    case briskd_state_net:release_link(Peer, Caller) of
-        absent ->
-            ok;
-        kept ->
-            ok;
-        split ->
-            briskd_state_link:flush_netjoin(Peer),
-            briskd_state_link:forget_peer_batches(Peer),
-            briskd_state_net:split(Peer, <<"Netsplit ", Peer/binary>>, Peer)
-    end.
-
-%% A registered link process went away. A link that ends normally calls
-%% server_disconnect/1 first, which removes its registration, so this only
-%% acts for one that died without it.
-peer_down(Pid) ->
-    Peers =
-        [Name || {_, {P, Name}} <- ets:tab2list(briskd_inbound_peers), P =:= Pid] ++
-            [Name || {_, {P, Name}} <- ets:tab2list(briskd_outbound_ready), P =:= Pid],
-    lists:foreach(
-        fun(Peer) ->
-            logger:warning(#{event => link_process_down, peer => Peer}),
-            disconnect_peer(Peer, Pid)
-        end,
-        Peers
-    ).
-
 -doc """
 Redact secrets from status and crash reports.
-
-Secrets in `PASS`, `OPER`, `AUTHENTICATE`, `REGISTER`, `VERIFY`, and `WEBIRC`
-commands (including those sent through an attached `multiclient` session) are
-replaced by `redacted` in the current message and in the `sys` log. Other
-state is returned unchanged.
 """.
 -spec format_status(map()) -> map().
 format_status(Status) ->
-    maps:map(fun redact_status/2, Status).
-
-redact_status(message, Message) ->
-    redact_command(Message);
-redact_status(log, Log) when is_list(Log) ->
-    [redact_log_event(Event) || Event <- Log];
-redact_status(_, Value) ->
-    Value.
-
-redact_log_event({Type, Message}) ->
-    {Type, redact_command(Message)};
-redact_log_event({Type, Message, Extra}) ->
-    {Type, redact_command(Message), Extra};
-redact_log_event(Event) ->
-    Event.
-
-redact_command({'$gen_call', From, Request}) ->
-    {'$gen_call', From, redact_command(Request)};
-redact_command({ctl, {create_account, Name, _Password, Email}}) ->
-    {ctl, {create_account, Name, redacted, Email}};
-redact_command({command_as, Primary, Command, Params, Bytes, Tags}) ->
-    {command, _, Redacted, _, _} = redact_command({command, Command, Params, Bytes, Tags}),
-    {command_as, Primary, Command, Redacted, Bytes, Tags};
-redact_command({command, <<"RECLAIM">>, [_Secret | Rest], Bytes, Tags}) ->
-    {command, <<"RECLAIM">>, [redacted | Rest], Bytes, Tags};
-redact_command({command, <<"RECLAIM">>, [_Secret | Rest], Bytes}) ->
-    {command, <<"RECLAIM">>, [redacted | Rest], Bytes};
-redact_command({command, <<"PASS">>, [_Password | Rest], Bytes, Tags}) ->
-    {command, <<"PASS">>, [redacted | Rest], Bytes, Tags};
-redact_command({command, <<"PASS">>, [_Password | Rest], Bytes}) ->
-    {command, <<"PASS">>, [redacted | Rest], Bytes};
-redact_command({command, <<"OPER">>, [Name, _Password | Rest], Bytes, Tags}) ->
-    {command, <<"OPER">>, [Name, redacted | Rest], Bytes, Tags};
-redact_command({command, <<"OPER">>, [Name, _Password | Rest], Bytes}) ->
-    {command, <<"OPER">>, [Name, redacted | Rest], Bytes};
-redact_command({command, <<"AUTHENTICATE">>, [_ | _], Bytes, Tags}) ->
-    {command, <<"AUTHENTICATE">>, [redacted], Bytes, Tags};
-redact_command({command, <<"AUTHENTICATE">>, [_ | _], Bytes}) ->
-    {command, <<"AUTHENTICATE">>, [redacted], Bytes};
-redact_command({command, <<"REGISTER">>, [Account, Email, _Password | Rest], Bytes, Tags}) ->
-    {command, <<"REGISTER">>, [Account, Email, redacted | Rest], Bytes, Tags};
-redact_command({command, <<"REGISTER">>, [Account, Email, _Password | Rest], Bytes}) ->
-    {command, <<"REGISTER">>, [Account, Email, redacted | Rest], Bytes};
-redact_command({signup_account, Account, Email, _Password, PeerIP}) ->
-    {signup_account, Account, Email, redacted, PeerIP};
-redact_command({verify_account, Account, _Code}) ->
-    {verify_account, Account, redacted};
-redact_command({verify_account_by_email, Email, _Code}) ->
-    {verify_account_by_email, Email, redacted};
-redact_command({complete_password_reset, Email, _Code, _NewPassword, PeerIP}) ->
-    {complete_password_reset, Email, redacted, redacted, PeerIP};
-redact_command({ctl, {reset_password, Name, _Password}}) ->
-    {ctl, {reset_password, Name, redacted}};
-redact_command({command, <<"VERIFY">>, [Account, _Code | Rest], Bytes, Tags}) ->
-    {command, <<"VERIFY">>, [Account, redacted | Rest], Bytes, Tags};
-redact_command({command, <<"VERIFY">>, [Account, _Code | Rest], Bytes}) ->
-    {command, <<"VERIFY">>, [Account, redacted | Rest], Bytes};
-redact_command({command, <<"WEBIRC">>, [_Password | Rest], Bytes, Tags}) ->
-    {command, <<"WEBIRC">>, [redacted | Rest], Bytes, Tags};
-redact_command({command, <<"WEBIRC">>, [_Password | Rest], Bytes}) ->
-    {command, <<"WEBIRC">>, [redacted | Rest], Bytes};
-redact_command(Message) ->
-    Message.
-
-%% Lines inside a client batch, and the opening BATCH, are answered when the
-%% batch closes. The closing BATCH uses the label from the opening line.
-command_label(_Pid, <<"BATCH">>, [<<"+", _/binary>> | _], _Tags) ->
-    undefined;
-command_label(Pid, <<"BATCH">>, [<<"-", _/binary>> | _], _Tags) ->
-    case briskd_state_batch:label(Pid) of
-        undefined -> undefined;
-        Stored -> briskd_cap:label(briskd_cap:state(Pid), [{<<"label">>, Stored}])
-    end;
-command_label(Pid, Command, _Params, Tags) when
-    Command =:= <<"PRIVMSG">>; Command =:= <<"NOTICE">>
-->
-    case lists:keymember(<<"batch">>, 1, Tags) of
-        true -> undefined;
-        false -> briskd_cap:label(briskd_cap:state(Pid), Tags)
-    end;
-command_label(Pid, _Command, _Params, Tags) ->
-    briskd_cap:label(briskd_cap:state(Pid), Tags).
-
-welcomed_cap_end(Client, <<"CAP">>, [<<"END">> | _]) ->
-    briskd_cap:welcomed(Client#client.pid);
-welcomed_cap_end(_, _, _) ->
-    false.
-
-%% UTF8ONLY: with `utf8_only` set, a command whose parameters are not valid
-%% UTF-8 is rejected with `FAIL <command> INVALID_UTF8` and not applied, so
-%% no non-UTF-8 text (messages, topics, realnames, reasons) is relayed.
-%% Credentials are exempt because they are never relayed.
-dispatch(Command, Params, Client, Server, Tags) ->
-    case utf8_rejected(Command, Params) of
-        true ->
-            briskd_state_send:fail(
-                Client#client.pid,
-                Command,
-                <<"INVALID_UTF8">>,
-                [],
-                <<"Message rejected, your IRC software MUST use UTF-8 encoding on this network">>
-            );
-        false ->
-            dispatch_command(Command, Params, Client, Server, Tags)
-    end.
-
-utf8_rejected(Command, _Params) when
-    Command =:= <<"PASS">>;
-    Command =:= <<"OPER">>;
-    Command =:= <<"AUTHENTICATE">>;
-    Command =:= <<"REGISTER">>;
-    Command =:= <<"WEBIRC">>
-->
-    false;
-utf8_rejected(_Command, Params) ->
-    maps:get(utf8_only, briskd_config:current(), false) andalso
-        not lists:all(fun briskd_state_v3:valid_utf8/1, Params).
-
-%% Route commands accepted before registration and enforce registration for the rest.
-dispatch_command(<<"QUIT">>, Params, Client, Server, _Tags) ->
-    Reason =
-        case Params of
-            [Text | _] -> Text;
-            [] -> <<"Client quit">>
-        end,
-    %% RFC 2812 3.1.7: the server acknowledges QUIT with ERROR. The session
-    %% flushes it before closing the socket.
-    briskd_state_send:send(
-        Client#client.pid,
-        Server,
-        <<"ERROR">>,
-        [],
-        [<<"Closing Link: ">>, Client#client.host, <<" (Quit: ">>, Reason, <<")">>]
-    ),
-    briskd_state_client:disconnect(Client, Reason, Server),
-    quit;
-dispatch_command(<<"PASS">>, Params, Client, Server, _Tags) ->
-    briskd_state_client:pass(Params, Client, Server);
-dispatch_command(<<"RECLAIM">>, Params, Client, Server, _Tags) ->
-    briskd_state_net:reclaim(Params, Client, Server);
-dispatch_command(<<"PING">>, [Token | _], Client, Server, _Tags) ->
-    briskd_state_send:send(Client#client.pid, Server, <<"PONG">>, [Server], Token);
-dispatch_command(<<"PING">>, [], Client, Server, _Tags) ->
-    briskd_state_send:numeric(Client, Server, <<"409">>, [], <<"No origin specified">>);
-dispatch_command(<<"PONG">>, _, _, _, _Tags) ->
-    ok;
-dispatch_command(<<"CAP">>, Params, Client, Server, _Tags) ->
-    briskd_state_net:cap(Client, Server, Params);
-dispatch_command(<<"STARTTLS">>, _Params, Client, Server, _Tags) ->
-    briskd_state_v3:starttls(Client, Server);
-dispatch_command(<<"AUTHENTICATE">>, Params, Client, Server, _Tags) ->
-    briskd_state_v3:authenticate(Params, Client, Server);
-dispatch_command(<<"REGISTER">>, Params, Client, Server, _Tags) ->
-    briskd_state_v3:register(Params, Client, Server);
-dispatch_command(<<"VERIFY">>, Params, Client, Server, _Tags) ->
-    briskd_state_v3:verify(Params, Client, Server);
-dispatch_command(<<"WEBIRC">>, Params, Client, Server, _Tags) ->
-    briskd_state_v3:webirc(Params, Client, Server);
-dispatch_command(<<"ISUPPORT">>, Params, Client, Server, _Tags) ->
-    briskd_state_v3:isupport(Params, Client, Server);
-dispatch_command(<<"AWAY">>, Params, Client, Server, Tags) ->
-    case briskd_state_client:ready(Client) of
-        true -> registered_command(<<"AWAY">>, Params, Client, Server, Tags);
-        false -> briskd_state_v3:pre_away(Params, Client, Server)
-    end;
-dispatch_command(<<"METADATA">>, [<<"*">> | _] = Params, Client, Server, _Tags) ->
-    briskd_state_meta:metadata(Params, Client, Server);
-dispatch_command(<<"NICK">>, [Nick | _], Client, Server, _Tags) ->
-    case briskd_state_net:nick_blocked(Nick, Client) of
-        true ->
-            briskd_state_send:numeric(
-                Client, Server, <<"437">>, [Nick], <<"Nick/channel is temporarily unavailable">>
-            );
-        false ->
-            change_nick(Nick, Client, Server)
-    end;
-dispatch_command(<<"NICK">>, [], Client, Server, _Tags) ->
-    briskd_state_send:numeric(Client, Server, <<"431">>, [], <<"No nickname given">>);
-dispatch_command(<<"USER">>, [_, _, _, <<>>], #client{user = undefined} = Client, Server, _Tags) ->
-    briskd_state_send:numeric(Client, Server, <<"461">>, [<<"USER">>], <<"Not enough parameters">>);
-dispatch_command(
-    <<"USER">>, [User, Mode, _, Real], #client{user = undefined} = Client, Server, _Tags
-) ->
-    case
-        {
-            re:run(User, <<"^[A-Za-z0-9_.-]{1,32}$">>, [{capture, none}, dollar_endonly]),
-            briskd_state_client:initial_user_modes(Mode)
-        }
-    of
-        {match, {ok, Modes}} ->
-            mnesia:dirty_write(#user_modes{pid = Client#client.pid, modes = Modes}),
-            briskd_state_client:save_identity(
-                Client, Client#client{user = User, real = Real}, Server
-            );
-        {nomatch, _} ->
-            %% ERR_INVALIDUSERNAME (468)
-            briskd_state_send:numeric(
-                Client, Server, <<"468">>, [], <<"Your username is not valid">>
-            );
-        {_, error} ->
-            briskd_state_send:numeric(
-                Client, Server, <<"461">>, [<<"USER">>], <<"Invalid user mode mask">>
-            )
-    end;
-dispatch_command(<<"USER">>, _, Client, Server, _Tags) ->
-    case Client#client.user of
-        undefined ->
-            briskd_state_send:numeric(
-                Client, Server, <<"461">>, [<<"USER">>], <<"Not enough parameters">>
-            );
-        _ ->
-            briskd_state_send:numeric(Client, Server, <<"462">>, [], <<"You may not reregister">>)
-    end;
-dispatch_command(Command, Params, Client, Server, Tags) ->
-    case briskd_state_client:ready(Client) of
-        true ->
-            registered_command(Command, Params, Client, Server, Tags);
-        false ->
-            briskd_state_send:numeric(Client, Server, <<"451">>, [], <<"You have not registered">>)
-    end.
-
-%% Implement commands that require a fully registered client.
-registered_command(Command, Params, Client, Server, Tags) when
-    Command =:= <<"PRIVMSG">>; Command =:= <<"NOTICE">>; Command =:= <<"TAGMSG">>
-->
-    case briskd_state_batch:in_batch({Command, Params, Tags}, Client) of
-        true -> ok;
-        false -> briskd_state_channel:deliver(Command, Params, Client, Server, Tags)
-    end;
-registered_command(<<"BATCH">>, Params, Client, Server, Tags) ->
-    briskd_state_batch:batch(Params, Tags, Client, Server);
-registered_command(Command, Params, Client, Server, _Tags) ->
-    registered_command(Command, Params, Client, Server).
-
-registered_command(<<"AWAY">>, [<<>> | _], #client{} = Client, Server) ->
-    registered_command(<<"AWAY">>, [], Client, Server);
-registered_command(<<"AWAY">>, [], #client{} = Client, Server) ->
-    case Client#client.away of
-        undefined ->
-            briskd_state_send:numeric(
-                Client, Server, <<"305">>, [], <<"You are no longer marked as being away">>
-            );
-        _ ->
-            mnesia:dirty_write(Client#client{away = undefined}),
-            briskd_state_link:propagate_away(Client, none),
-            briskd_state_v3:notify(Client, <<"away-notify">>, <<"AWAY">>, [], none, false),
-            briskd_state_send:numeric(
-                Client, Server, <<"305">>, [], <<"You are no longer marked as being away">>
-            )
-    end,
-    ok;
-registered_command(<<"AWAY">>, [Raw | _], #client{} = Client, Server) ->
-    Message =
-        case Raw of
-            <<"*">> -> <<"Away">>;
-            _ -> Raw
-        end,
-    mnesia:dirty_write(Client#client{away = briskd_wire:retain(Message)}),
-    briskd_state_link:propagate_away(Client, Message),
-    briskd_state_v3:notify(Client, <<"away-notify">>, <<"AWAY">>, [], Message, false),
-    briskd_state_send:numeric(
-        Client, Server, <<"306">>, [], <<"You have been marked as being away">>
-    ),
-    ok;
-registered_command(<<"JOIN">>, [<<"0">> | _], Client, _) ->
-    lists:foreach(
-        fun(Key) -> briskd_state_channel:leave(Key, Client, <<"PART">>, none, true) end,
-        Client#client.channels
-    );
-registered_command(<<"JOIN">>, [Names | Rest], Client, Server) ->
-    Keys =
-        case Rest of
-            [Passwords | _] -> binary:split(Passwords, <<",">>, [global]);
-            [] -> []
-        end,
-    briskd_state_channel:join_channels(
-        briskd_state_channel:split(Names), Keys, Client#client.pid, Server
-    );
-registered_command(<<"PART">>, [Names | Rest], Client, Server) ->
-    Reason =
-        case Rest of
-            [Text | _] -> Text;
-            [] -> none
-        end,
-    lists:foreach(
-        fun(Name) ->
-            Key = briskd_wire:fold(Name),
-            Current = briskd_state_client:client(Client#client.pid),
-            case {mnesia:dirty_read(channel, Key), lists:member(Key, Current#client.channels)} of
-                {[], _} ->
-                    briskd_state_send:numeric(
-                        Current, Server, <<"403">>, [Name], <<"No such channel">>
-                    );
-                {_, false} ->
-                    briskd_state_send:numeric(
-                        Current, Server, <<"442">>, [Name], <<"You're not on that channel">>
-                    );
-                {_, true} ->
-                    briskd_state_channel:leave(Key, Current, <<"PART">>, Reason, true)
-            end
-        end,
-        briskd_state_channel:split(Names)
-    );
-registered_command(<<"KICK">>, [Name, Nicks | Rest], Client, Server) ->
-    Reason =
-        case Rest of
-            [Text | _] -> Text;
-            [] -> Client#client.nick
-        end,
-    Channels = briskd_state_channel:split(Name),
-    Targets = briskd_state_channel:split(Nicks),
-    case {Channels, Targets} of
-        {[Channel], [_ | _]} ->
-            briskd_state_channel:kick(Channel, Targets, Reason, Client, Server);
-        {ChannelList, TargetList} when
-            length(ChannelList) =:= length(TargetList),
-            length(ChannelList) > 1
-        ->
-            lists:foreach(
-                fun({Channel, Target}) ->
-                    briskd_state_channel:kick(Channel, [Target], Reason, Client, Server)
-                end,
-                lists:zip(ChannelList, TargetList)
-            );
-        _ ->
-            briskd_state_send:numeric(
-                Client, Server, <<"461">>, [<<"KICK">>], <<"Invalid channel/user list">>
-            )
-    end;
-registered_command(<<"KICK">>, _, Client, Server) ->
-    briskd_state_send:numeric(Client, Server, <<"461">>, [<<"KICK">>], <<"Not enough parameters">>);
-registered_command(<<"SETNAME">>, Params, Client, Server) ->
-    briskd_state_v3:setname(Params, Client, Server);
-registered_command(<<"CHGHOST">>, Params, Client, Server) ->
-    briskd_state_v3:chghost(Params, Client, Server);
-registered_command(<<"MONITOR">>, Params, Client, Server) ->
-    briskd_state_monitor:monitor(Params, Client, Server);
-registered_command(<<"CHATHISTORY">>, Params, Client, Server) ->
-    briskd_state_history:chathistory(Params, Client, Server);
-registered_command(<<"SEARCH">>, Params, Client, Server) ->
-    briskd_state_search:search(Params, Client, Server);
-registered_command(<<"MARKREAD">>, Params, Client, Server) ->
-    briskd_state_history:markread(Params, Client, Server);
-registered_command(<<"REDACT">>, Params, Client, Server) ->
-    briskd_state_history:redact(Params, Client, Server);
-registered_command(<<"CALL">>, Params, Client, Server) ->
-    case briskd_calls:enabled() of
-        true ->
-            briskd_calls:command(Params, Client, Server);
-        false ->
-            briskd_state_send:numeric(
-                Client, Server, <<"421">>, [<<"CALL">>], <<"Unknown command">>
-            )
-    end;
-registered_command(<<"E2EE">>, Params, Client, Server) ->
-    case briskd_e2ee:enabled() of
-        true ->
-            briskd_e2ee:command(Params, Client, Server);
-        false ->
-            briskd_state_send:numeric(
-                Client, Server, <<"421">>, [<<"E2EE">>], <<"Unknown command">>
-            )
-    end;
-registered_command(<<"METADATA">>, Params, Client, Server) ->
-    briskd_state_meta:metadata(Params, Client, Server);
-registered_command(<<"RENAME">>, Params, Client, Server) ->
-    briskd_state_channel:rename(Params, Client, Server);
-registered_command(<<"KNOCK">>, [Name | Rest], Client, Server) ->
-    briskd_state_channel:knock(Name, Rest, Client, Server);
-registered_command(<<"KNOCK">>, [], Client, Server) ->
-    briskd_state_send:numeric(
-        Client, Server, <<"461">>, [<<"KNOCK">>], <<"Not enough parameters">>
-    );
-registered_command(<<"INVITE">>, [<<C, _/binary>> = Name, Nick | _], Client, Server) when
-    C =:= $#
-->
-    %% `INVITE <channel> <nick>` (parameters reversed; a `#` never starts a
-    %% nickname, so this is unambiguous). An existing channel is handled as
-    %% the RFC order; for a channel that does not exist, which RFC 1459/2812
-    %% allow, both users see the INVITE in the order the client used.
-    case mnesia:dirty_read(channel, briskd_wire:fold(Name)) of
-        [_] ->
-            briskd_state_channel:invite(Nick, Name, Client, Server);
-        [] ->
-            case briskd_state_client:find_nick(Nick) of
-                #client{pid = Target} = Found ->
-                    case briskd_state_client:ready(Found) of
-                        true ->
-                            Prefix = briskd_state_send:prefix(Client),
-                            briskd_state_send:send(
-                                Client#client.pid, Prefix, <<"INVITE">>, [Name, Nick], none
-                            ),
-                            briskd_state_send:send(
-                                Target, Prefix, <<"INVITE">>, [Name, Nick], none
-                            );
-                        false ->
-                            briskd_state_send:numeric(
-                                Client, Server, <<"401">>, [Nick], <<"No such nick">>
-                            )
-                    end;
-                undefined ->
-                    briskd_state_send:numeric(Client, Server, <<"401">>, [Nick], <<"No such nick">>)
-            end
-    end;
-registered_command(<<"INVITE">>, [Nick, Name | _], Client, Server) ->
-    briskd_state_channel:invite(Nick, Name, Client, Server);
-registered_command(<<"INVITE">>, _, Client, Server) ->
-    briskd_state_send:numeric(
-        Client, Server, <<"461">>, [<<"INVITE">>], <<"Not enough parameters">>
-    );
-registered_command(<<"MODE">>, [Target | Rest], Client, Server) ->
-    briskd_state_channel:mode_command(Target, Rest, Client, Server);
-registered_command(<<"OPER">>, [Name, Password | _], Client, Server) ->
-    briskd_oper:oper(Name, Password, Client, Server);
-registered_command(<<"OPER">>, _, Client, Server) ->
-    briskd_state_send:numeric(Client, Server, <<"461">>, [<<"OPER">>], <<"Not enough parameters">>);
-registered_command(<<"KILL">>, Params, Client, Server) ->
-    briskd_oper:kill(Params, Client, Server);
-registered_command(<<"CONNECT">>, Params, Client, Server) ->
-    briskd_state_net:oper_command(<<"CONNECT">>, Params, Client, Server);
-registered_command(<<"SQUIT">>, Params, Client, Server) ->
-    briskd_state_net:oper_command(<<"SQUIT">>, Params, Client, Server);
-registered_command(<<"DIE">>, Params, Client, Server) ->
-    briskd_state_net:oper_command(<<"DIE">>, Params, Client, Server);
-registered_command(<<"RESTART">>, Params, Client, Server) ->
-    briskd_state_net:oper_command(<<"RESTART">>, Params, Client, Server);
-registered_command(<<"SERVICE">>, Params, Client, Server) ->
-    briskd_state_net:oper_command(<<"SERVICE">>, Params, Client, Server);
-registered_command(<<"WALLOPS">>, Params, Client, Server) ->
-    %% RFC 2812 3.7.1: an operator's WALLOPS goes to users with mode +w.
-    briskd_oper:wallops(Params, Client, Server);
-registered_command(<<"REHASH">>, _, Client, Server) ->
-    briskd_rehash:rehash(Client, Server);
-registered_command(<<"SUMMON">>, _, Client, Server) ->
-    briskd_state_send:numeric(Client, Server, <<"445">>, [], <<"SUMMON has been disabled">>);
-registered_command(<<"USERS">>, Params, Client, Server) ->
-    briskd_info:users_disabled(Params, Client, Server);
-registered_command(<<"TOPIC">>, [Name | Rest], Client, Server) ->
-    briskd_state_channel:topic(Name, Rest, Client, Server);
-registered_command(<<"NAMES">>, Params, Client, Server) ->
-    case Params of
-        [Names | _] ->
-            lists:foreach(
-                fun(Name) -> briskd_state_channel:names(Name, Client, Server) end,
-                briskd_state_channel:split(Names)
-            );
-        [] ->
-            %% Channels oldest first (then by name), so the listing is stable.
-            Ordered = lists:sort([
-                {Created, Key}
-             || Key <- table_keys(channel),
-                [#channel{created = Created}] <- [mnesia:dirty_read(channel, Key)]
-            ]),
-            lists:foreach(
-                fun({_, Key}) -> briskd_state_channel:names_listing(Key, Client, Server) end,
-                Ordered
-            ),
-            %% Remote-only channels; keys are unique, so `--` keeps each once.
-            lists:foreach(
-                fun(Key) -> briskd_state_link:remote_names_listing(Key, Client, Server) end,
-                table_keys(remote_channel) -- table_keys(channel)
-            ),
-            briskd_state_channel:names_unattached(Client, Server),
-            briskd_state_send:numeric(Client, Server, <<"366">>, [<<"*">>], <<"End of NAMES list">>)
-    end;
-registered_command(<<"LIST">>, Params, Client, Server) ->
-    Keys =
-        case Params of
-            [Names | _] -> [briskd_wire:fold(Name) || Name <- briskd_state_channel:split(Names)];
-            [] -> table_keys(channel)
-        end,
-    Entries = lists:foldl(
-        fun(Key, Acc) ->
-            case mnesia:dirty_read(channel, Key) of
-                [#channel{name = Name, topic = Topic, members = Members, flags = Flags}] ->
-                    Visible =
-                        maps:is_key(Client#client.pid, Members) orelse
-                            not (maps:is_key($p, Flags) orelse maps:is_key($s, Flags)),
-                    case Visible of
-                        true -> [{Name, integer_to_binary(map_size(Members)), Topic} | Acc];
-                        false -> Acc
-                    end;
-                [] ->
-                    Acc
-            end
-        end,
-        [],
-        Keys
-    ),
-    briskd_state_send:send_safelist(Client, Server, lists:reverse(Entries));
-registered_command(<<"TIME">>, Params, Client, Server) ->
-    briskd_info:time(Params, Client, Server);
-registered_command(<<"TRACE">>, Params, Client, Server) ->
-    briskd_query:trace(Params, Client, Server);
-registered_command(<<"STATS">>, Params, Client, Server) ->
-    briskd_query:stats(Params, Client, Server);
-registered_command(<<"SERVLIST">>, Params, Client, Server) ->
-    {Mask, Type} =
-        case Params of
-            [GivenMask, GivenType | _] -> {GivenMask, GivenType};
-            [GivenMask] -> {GivenMask, <<"*">>};
-            [] -> {<<"*">>, <<"*">>}
-        end,
-    briskd_state_net:servlist(Mask, Type, Client, Server);
-registered_command(<<"SQUERY">>, Params, Client, Server) ->
-    briskd_state_net:squery(Params, Client, Server);
-registered_command(<<"VERSION">>, Params, Client, Server) ->
-    briskd_info:version(Params, Client, Server);
-registered_command(<<"INFO">>, Params, Client, Server) ->
-    briskd_info:info(Params, Client, Server);
-registered_command(<<"ADMIN">>, Params, Client, Server) ->
-    briskd_info:admin(Params, Client, Server);
-registered_command(<<"LINKS">>, Params, Client, Server) ->
-    briskd_info:links(Params, Client, Server);
-registered_command(<<"LUSERS">>, Params, Client, Server) ->
-    briskd_info:lusers(Params, Client, Server);
-registered_command(<<"ISON">>, [], Client, Server) ->
-    briskd_state_send:numeric(Client, Server, <<"461">>, [<<"ISON">>], <<"Not enough parameters">>);
-registered_command(<<"ISON">>, [<<>> | _], Client, Server) ->
-    briskd_state_send:numeric(Client, Server, <<"461">>, [<<"ISON">>], <<"Not enough parameters">>);
-registered_command(<<"ISON">>, Nicks, Client, Server) ->
-    briskd_state_queries:ison(Nicks, Client, Server);
-registered_command(<<"USERHOST">>, [], Client, Server) ->
-    briskd_state_send:numeric(
-        Client, Server, <<"461">>, [<<"USERHOST">>], <<"Not enough parameters">>
-    );
-registered_command(<<"USERHOST">>, Nicks, Client, Server) ->
-    briskd_state_queries:userhost(Nicks, Client, Server);
-registered_command(<<"WHO">>, Params, Client, Server) ->
-    briskd_state_queries:who(Params, Client, Server);
-registered_command(<<"WHOIS">>, [_ | _] = Args, Client, Server) ->
-    case Args of
-        [NickMasks] ->
-            lists:foreach(
-                fun(Nick) -> briskd_state_queries:whois(Nick, Client, Server) end,
-                briskd_state_channel:split(NickMasks)
-            );
-        [Target, NickMasks | _] ->
-            %% RFC 2812 3.6.2: the target may also be a nickname, meaning the
-            %% server that user is on; this server answers for every user it knows.
-            KnownNick =
-                briskd_state_client:find_nick(Target) =/= undefined orelse
-                    mnesia:dirty_read(remote_client, briskd_wire:fold(Target)) =/= [],
-            case KnownNick orelse briskd_info:query_local_server([Target], Server) of
-                true ->
-                    lists:foreach(
-                        fun(Nick) -> briskd_state_queries:whois(Nick, Client, Server) end,
-                        briskd_state_channel:split(NickMasks)
-                    );
-                {false, Unknown} ->
-                    briskd_state_send:numeric(
-                        Client, Server, <<"402">>, [Unknown], <<"No such server">>
-                    )
-            end
-    end;
-registered_command(<<"WHOWAS">>, [], Client, Server) ->
-    %% RFC 1459/2812: RPL_ENDOFWHOWAS ends every reply, even an error.
-    briskd_state_send:numeric(Client, Server, <<"431">>, [], <<"No nickname given">>),
-    briskd_state_send:numeric(Client, Server, <<"369">>, [<<"*">>], <<"End of WHOWAS">>);
-registered_command(<<"WHOWAS">>, [NickMasks | Rest], Client, Server) ->
-    {Count, Target} = briskd_state_queries:whowas_options(Rest),
-    case
-        briskd_info:query_local_server(
-            case Target of
-                undefined -> [];
-                Given when is_binary(Given) -> [Given]
-            end,
-            Server
-        )
-    of
-        {false, Unknown} ->
-            briskd_state_send:numeric(Client, Server, <<"402">>, [Unknown], <<"No such server">>);
-        true ->
-            Nicks = briskd_state_channel:split(NickMasks),
-            Matched = lists:append([
-                briskd_state_queries:whowas_reply(Nick, Count, Client, Server)
-             || Nick <- Nicks
-            ]),
-            %% A mask that resolved to exactly one nickname ends with that
-            %% nickname; otherwise the query as given.
-            EndParam =
-                case lists:usort([briskd_wire:fold(N) || N <- Matched]) of
-                    [_] when length(Nicks) =:= 1 -> hd(Matched);
-                    _ -> NickMasks
-                end,
-            briskd_state_send:numeric(Client, Server, <<"369">>, [EndParam], <<"End of WHOWAS">>)
-    end;
-registered_command(<<"MOTD">>, Params, Client, Server) ->
-    briskd_motd:motd(Params, Client, Server);
-registered_command(Command, [], Client, Server) when
-    Command =:= <<"JOIN">>;
-    Command =:= <<"PART">>;
-    Command =:= <<"TOPIC">>;
-    Command =:= <<"WHOIS">>;
-    Command =:= <<"MODE">>;
-    Command =:= <<"KICK">>
-->
-    briskd_state_send:numeric(Client, Server, <<"461">>, [Command], <<"Not enough parameters">>);
-registered_command(Command, _, Client, Server) ->
-    briskd_state_send:numeric(Client, Server, <<"421">>, [Command], <<"Unknown command">>).
-
-change_nick(Nick, Client, Server) ->
-    case
-        {
-            briskd_wire:nickname(Nick, briskd_state:nicklen()),
-            briskd_wire:fold(Nick),
-            briskd_state_client:find_nick(Nick),
-            briskd_state_link:remote_nick_exists(Nick)
-        }
-    of
-        {_, <<"anonymous">>, _, _} ->
-            briskd_state_send:numeric(Client, Server, <<"432">>, [Nick], <<"Erroneous nickname">>);
-        {false, _, _, _} ->
-            briskd_state_send:numeric(Client, Server, <<"432">>, [Nick], <<"Erroneous nickname">>);
-        {true, _, #client{pid = Holder} = HolderClient, _} when Holder =/= Client#client.pid ->
-            case briskd_state_v3:attachable(Client, HolderClient) of
-                true ->
-                    briskd_state_v3:prepare_attach(Client, HolderClient, Nick);
-                false ->
-                    nick_in_use(Client, Nick, Server)
-            end;
-        {true, _, _, true} ->
-            nick_in_use(Client, Nick, Server);
-        {true, _, _, false} when Nick =:= Client#client.nick ->
-            ok;
-        {true, _, _, false} ->
-            case briskd_state_client:ready(Client) of
-                true ->
-                    {NickTags, NickMeta} = briskd_state_history:event_tags(),
-                    briskd_state_send:broadcast(
-                        briskd_state_channel:nick_recipients(Client),
-                        briskd_state_send:prefix(Client),
-                        <<"NICK">>,
-                        [],
-                        Nick,
-                        NickTags
-                    ),
-                    briskd_state_link:propagate_nick_change(Client, Nick),
-                    briskd_state_history:note_user_event(
-                        Client#client.channels,
-                        <<"NICK">>,
-                        briskd_state_send:prefix(Client),
-                        Nick,
-                        NickMeta
-                    );
-                false ->
-                    ok
-            end,
-            case briskd_state_client:ready(Client) andalso Client#client.nick =/= <<"*">> of
-                true -> briskd_state_net:hold_nick(Client#client.nick, Client);
-                false -> ok
-            end,
-            briskd_state_client:save_identity(Client, Client#client{nick = Nick}, Server),
-            CaseOnly = briskd_wire:fold(Client#client.nick) =:= briskd_wire:fold(Nick),
-            case briskd_state_client:ready(Client) andalso not CaseOnly of
-                true ->
-                    Renamed = briskd_state_client:client(Client#client.pid),
-                    briskd_state_monitor:offline(Client#client.nick),
-                    briskd_state_monitor:online(
-                        Nick, iolist_to_binary(briskd_state_send:prefix(Renamed))
-                    );
-                false ->
-                    ok
-            end
-    end.
-
-nick_in_use(Client, Nick, Server) ->
-    remember_wanted_nick(Client, Nick),
-    briskd_state_send:numeric(
-        Client, Server, <<"433">>, [Nick], <<"Nickname is already in use">>
-    ).
-
-%% Before registration, a refused NICK is remembered so `REGISTER *` can name
-%% the nickname the client asked for (draft/account-registration).
-remember_wanted_nick(#client{pid = Pid, nick = <<"*">>}, Nick) ->
-    briskd_conn:put(Pid, wanted_nick, briskd_wire:retain(Nick));
-remember_wanted_nick(_Client, _Nick) ->
-    ok.
-
-count_command(Pid, Command, MessageBytes) ->
-    briskd_metrics:count_command(Pid, Command, MessageBytes).
+    briskd_state_redact:format_status(Status).
 
 %% Public lookups and replies used by query handlers. The implementations
 %% live with the state they read.
@@ -2212,8 +616,7 @@ Find a local client by nickname under the RFC 1459 case mapping
 find_nick(A0) -> briskd_state_client:find_nick(A0).
 
 -doc """
-True when the client is registered and its welcome has been sent. While
-`CAP` negotiation holds the welcome the client is not ready.
+True when the client is registered and its welcome has been sent.
 """.
 -spec ready(#client{}) -> boolean().
 ready(A0) -> briskd_state_client:ready(A0).
@@ -2225,23 +628,19 @@ User modes of the local client with pid `Pid`, as a set of mode characters.
 user_modes(A0) -> briskd_state_client:user_modes(A0).
 
 -doc """
-True when `Requester` may see `Target` in queries: the target is the
-requester, or it is registered and either not `+i` or shares a channel with
-the requester.
+True when `Requester` may see `Target` in queries.
 """.
 -spec user_visible(#client{}, #client{}) -> boolean().
 user_visible(A0, A1) -> briskd_state_client:user_visible(A0, A1).
 
 -doc """
-True when the channel member `Pid` is visible to `Requester`: the requester
-is in `Members` (the channel's member map), or `user_visible/2` holds.
+True when the channel member `Pid` is visible to `Requester`.
 """.
 -spec visible_member(pid(), #client{}, #{pid() => [channel_role()]}) -> boolean().
 visible_member(A0, A1, A2) -> briskd_state_channel:visible_member(A0, A1, A2).
 
 -doc """
-Match an IRC mask (`*`, `?`) against a value under the RFC 1459 case
-mapping. See `briskd_state_channel:wildcard_match/2`.
+Match an IRC mask (`*`, `?`) against a value under the RFC 1459 case mapping.
 """.
 -spec wildcard_match(binary(), binary()) -> boolean().
 wildcard_match(A0, A1) -> briskd_state_channel:wildcard_match(A0, A1).
@@ -2254,8 +653,7 @@ reported it.
 remote_channel_flags(A0) -> briskd_state_link:remote_channel_flags(A0).
 
 -doc """
-True when a remote user (folded nick key and user modes) is visible to the
-local `Requester`: it is not `+i`, or it shares a channel with the requester.
+True when a remote user (folded nick key and user modes) is visible to `Requester`.
 """.
 -spec remote_user_visible_to_requester(binary(), #{char() => true}, #client{}) -> boolean().
 remote_user_visible_to_requester(A0, A1, A2) ->

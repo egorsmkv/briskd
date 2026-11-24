@@ -280,6 +280,15 @@ indexes_and_queries(Port) ->
     ?assertEqual(error, briskd_account:find_by_email(<<"new@example.org">>)),
     ?assertEqual(error, briskd_account:by_certfp(Fp)),
     ?assertEqual([], briskd_conn:account_pids(<<"idxacct">>)),
+
+    %% Direct checks for decomposed briskd_state_* submodules.
+    ?assertEqual(true, briskd_state_peer:peer_command(<<"NICK">>)),
+    ?assertEqual(true, briskd_state_peer:burst_command(<<"NJOIN">>)),
+    ?assertEqual(true, is_integer(briskd_state_schema:nicklen())),
+    ?assertEqual(
+        #{message => {command, <<"PASS">>, [redacted], 8, []}},
+        briskd_state_redact:format_status(#{message => {command, <<"PASS">>, [<<"s">>], 8, []}})
+    ),
     gen_tcp:close(S1).
 
 register_sasl(Port, Nick, Account, Password) ->
