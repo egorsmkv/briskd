@@ -20,7 +20,7 @@ Subcommands:
   and Mnesia.
 - `check-config [<path>]`: offline or online validation of a JSON config file
   (`m:briskd_config`) and its TLS certificate/key pairs (`m:briskd_certs`).
-- `rehash`: live reload of the configuration file (`briskd_state_info:rehash_server/1`).
+- `rehash`: live reload of the configuration file (`briskd_rehash:rehash_server/1`).
 - `reload-certs`: synchronous TLS certificate reload (`briskd_certs:check_now/0`).
 - `log-level [<level>]`: read or update the live log level.
 - `clients`: list connected local clients.
@@ -381,7 +381,7 @@ Called only from `briskd_state:handle_call({ctl, Action}, ...)`.
 """.
 -spec handle_state_action(state_action(), binary()) -> {ok, map()} | {error, term()}.
 handle_state_action(rehash, Server) ->
-    case briskd_state_info:rehash_server(Server) of
+    case briskd_rehash:rehash_server(Server) of
         {ok, Path} -> {ok, #{status => <<"rehashed">>, config_path => Path}};
         {error, Reason} -> {error, Reason}
     end;

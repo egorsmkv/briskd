@@ -89,6 +89,7 @@ register_adjacent_new(Name, Token, Kind, Pid) ->
         inbound -> ets:insert(?INBOUND, {briskd_wire:fold(Name), {Pid, Name}});
         outbound -> ets:insert(briskd_outbound_ready, {briskd_wire:fold(Name), {Pid, Name}})
     end,
+    briskd_population:on_server_change(),
     ok.
 
 -doc """
@@ -224,6 +225,7 @@ split(Lost, Reason, Except) ->
         end,
         [Name || Name <- lost_names(Lost)]
     ),
+    briskd_population:on_server_change(),
     ok.
 
 -doc """
@@ -661,11 +663,7 @@ remote_squery(Peer, Prefix, [Name, Text | _] = Params) when Text =/= <<>> ->
         [#service{peer = ServicePeer, name = ServiceName}] ->
             case briskd_state_link:remote_source(Peer, Prefix) of
                 {ok, _} when ServicePeer =:= undefined ->
-                    Operators = [
-                        Pid
-                     || Pid <- briskd_state_client:pids(),
-                        maps:is_key($o, briskd_state_client:user_modes(Pid))
-                    ],
+                    Operators = briskd_oper:local_operators(),
                     briskd_state_send:broadcast(
                         Operators, Prefix, <<"NOTICE">>, [ServiceName], Text
                     );
@@ -879,11 +877,7 @@ store_service(Name, Dist, Type, Info, Home, Peer) ->
     end.
 
 deliver_local_service(ServiceName, Text, Client, Server) ->
-    Operators = [
-        Pid
-     || Pid <- briskd_state_client:pids(),
-        maps:is_key($o, briskd_state_client:user_modes(Pid))
-    ],
+    Operators = briskd_oper:local_operators(),
     briskd_state_send:broadcast(
         Operators,
         briskd_state_send:prefix(Client),
@@ -934,6 +928,7 @@ drop_remote_user(#remote_client{key = Key, nick = Nick, user = User, host = Host
         )
     end),
     mnesia:dirty_delete(remote_client, Key),
+    briskd_population:on_remote_user_delete(Key),
     briskd_state_monitor:offline(Nick),
     briskd_state_meta:forget_remote(Key),
     ok = briskd_e2ee:forget_remote(Key),
@@ -951,6 +946,7 @@ drop_memberships(NickKey) ->
                             case map_size(Remaining) of
                                 0 ->
                                     mnesia:dirty_delete(remote_channel, ChannelKey),
+                                    briskd_population:on_channel_delete(ChannelKey),
                                     case mnesia:dirty_read(channel, ChannelKey) of
                                         [] -> hold(channel, Name);
                                         _ -> ok
@@ -985,7 +981,8 @@ store_server(#{
             parent = Parent,
             info = Info
         })
-    ).
+    ),
+    briskd_population:on_server_change().
 
 announce_server(Map, Except) ->
     _ = briskd_links:send_except(Except, intro_line(local_name(), Map)).

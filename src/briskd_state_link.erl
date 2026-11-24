@@ -521,7 +521,8 @@ write_remote_nick(Peer, Home, Distance, Key, Nick, User, Host, Token, Modes, Rea
             server = Home,
             hop = Distance
         })
-    ).
+    ),
+    briskd_population:on_remote_user_put(Key, Modes).
 
 remote_nick_line(Prefix, Nick, Hop, User, Host, Token, Modes, Real) ->
     briskd_wire:line(
@@ -589,6 +590,9 @@ rename_remote_nick(Peer, Prefix, Nick) ->
                     mnesia:dirty_write(
                         briskd_wire:retain_fields(Remote#remote_client{key = NewKey, nick = Nick})
                     ),
+                    briskd_population:on_remote_user_rename(
+                        OldKey, NewKey, Remote#remote_client.modes
+                    ),
                     rename_remote_memberships(Peer, OldKey, NewKey),
                     briskd_state_meta:rename_remote(OldKey, NewKey),
                     ok = briskd_e2ee:remote_renamed(OldKey, NewKey),
@@ -643,6 +647,7 @@ remove_remote_nick(Peer, Prefix, Reason) ->
             show_remote_event(Key, Prefix, <<"QUIT">>, Reason),
             relay_except(Peer, briskd_wire:line(Prefix, <<"QUIT">>, [], Reason)),
             mnesia:dirty_delete(remote_client, Key),
+            briskd_population:on_remote_user_delete(Key),
             briskd_state_monitor:offline(Nick),
             briskd_state_meta:forget_remote(Key),
             ok = briskd_e2ee:forget_remote(Key),
@@ -776,6 +781,7 @@ store_remote_topic(Peer, Prefix, Key, Name, Topic) ->
     Remote = ensure_remote_channel(Key, Name),
     Flags = (Remote#remote_channel.flags)#{topic => briskd_wire:retain(Topic)},
     mnesia:dirty_write(briskd_wire:retain_fields(Remote#remote_channel{flags = Flags})),
+    briskd_population:on_channel_put(Key),
     case mnesia:dirty_read(channel, Key) of
         [#channel{name = Canonical, members = Members, flags = ChannelFlags} = Channel] ->
             mnesia:dirty_write(Channel#channel{topic = briskd_wire:retain(Topic)}),
@@ -929,7 +935,8 @@ remove_remote_memberships(Peer, NickKey) ->
                             Remaining = maps:remove(NickKey, Members),
                             case map_size(Remaining) of
                                 0 ->
-                                    mnesia:dirty_delete(remote_channel, ChannelKey);
+                                    mnesia:dirty_delete(remote_channel, ChannelKey),
+                                    briskd_population:on_channel_delete(ChannelKey);
                                 _ ->
                                     mnesia:dirty_write(
                                         briskd_wire:retain_fields(Channel#remote_channel{
@@ -982,6 +989,7 @@ import_remote_njoin(Peer, Name, Members) ->
                         Parsed
                     ),
                     mnesia:dirty_write(Existing#remote_channel{members = NewMembers}),
+                    briskd_population:on_channel_put(Key),
                     Joined = [K || {K, _} <- Parsed, not maps:is_key(K, Previous)],
                     show_netjoin(Name, Joined, Peer),
                     relay_except(
@@ -1072,6 +1080,7 @@ import_remote_join(Peer, Prefix, Name) ->
                     mnesia:dirty_write(
                         Channel#remote_channel{members = Members#{NickKey => {Peer, [member]}}}
                     ),
+                    briskd_population:on_channel_put(Key),
                     broadcast_remote_join(Name, NickKey),
                     relay_except(Peer, briskd_wire:line(Prefix, <<"JOIN">>, [Name], none)),
                     ok
@@ -1105,7 +1114,8 @@ remove_remote_channel_member(Peer, Prefix, Name, Reason) ->
                     Remaining = maps:remove(NickKey, Members),
                     case map_size(Remaining) of
                         0 ->
-                            mnesia:dirty_delete(remote_channel, Channel#remote_channel.key);
+                            mnesia:dirty_delete(remote_channel, Channel#remote_channel.key),
+                            briskd_population:on_channel_delete(Channel#remote_channel.key);
                         _ ->
                             mnesia:dirty_write(
                                 briskd_wire:retain_fields(Channel#remote_channel{
@@ -1222,7 +1232,8 @@ remove_remote_channel_member_record(_Peer, NickKey, #remote_channel{key = Key} =
     Members = maps:remove(NickKey, Channel#remote_channel.members),
     case map_size(Members) of
         0 ->
-            mnesia:dirty_delete(remote_channel, Key);
+            mnesia:dirty_delete(remote_channel, Key),
+            briskd_population:on_channel_delete(Key);
         _ ->
             mnesia:dirty_write(briskd_wire:retain_fields(Channel#remote_channel{members = Members}))
     end,
@@ -1421,6 +1432,7 @@ update_remote_channel_modes(Peer, Prefix, Name, ModeString, Args) ->
                     of
                         {ok, Updated, [], LocalRoles} ->
                             mnesia:dirty_write(Updated),
+                            briskd_population:on_channel_put(Key),
                             synchronize_local_channel(Updated),
                             apply_local_roles(Key, LocalRoles),
                             relay_except(
@@ -1693,6 +1705,7 @@ update_remote_user_modes(Peer, Prefix, Nick, ModeString) ->
         {ok, #remote_client{key = Key, modes = Modes} = Remote} ->
             Updated = apply_remote_user_modes(binary_to_list(ModeString), undefined, Modes),
             mnesia:dirty_write(briskd_wire:retain_fields(Remote#remote_client{modes = Updated})),
+            briskd_population:on_remote_user_put(Key, Updated),
             briskd_state_send:broadcast(
                 remote_user_local_recipients(Key), Prefix, <<"MODE">>, [Nick, ModeString], none
             ),
@@ -2331,6 +2344,7 @@ sweep_remote_channels() ->
             case mnesia:dirty_read(remote_channel, Key) of
                 [#remote_channel{members = Members}] when map_size(Members) =:= 0 ->
                     mnesia:dirty_delete(remote_channel, Key),
+                    briskd_population:on_channel_delete(Key),
                     Removed + 1;
                 [#remote_channel{invited = Invited} = Row] when map_size(Invited) > 0 ->
                     mnesia:dirty_write(Row#remote_channel{invited = #{}}),
@@ -2340,7 +2354,7 @@ sweep_remote_channels() ->
             end
         end,
         0,
-        mnesia:dirty_all_keys(remote_channel)
+        briskd_state:table_keys(remote_channel)
     ).
 
 -doc """

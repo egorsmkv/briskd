@@ -507,9 +507,8 @@ init(#{name := Name} = Config) ->
     briskd_ready_clients = ets:new(briskd_ready_clients, [named_table, public, set]),
     %% Session -> channels it was invited to (briskd_state_channel:prune_invited/1).
     briskd_invites = ets:new(briskd_invites, [named_table, public, bag]),
-    briskd_command_stats = ets:new(briskd_command_stats, [
-        named_table, public, set, {write_concurrency, true}
-    ]),
+    ok = briskd_metrics:init(),
+    ok = briskd_info:init_info(),
     briskd_connection_stats = ets:new(briskd_connection_stats, [
         named_table, public, set, {write_concurrency, true}
     ]),
@@ -518,7 +517,7 @@ init(#{name := Name} = Config) ->
     ensure_ets(briskd_inbound_peers),
     ensure_ets(briskd_outbound_ready),
     ensure_ets(briskd_holds),
-    ensure_ets(briskd_admins),
+    ok = briskd_oper:init(),
     ensure_ets(briskd_conn),
     ensure_ets(briskd_chan_meta),
     ensure_bag(briskd_monitor),
@@ -585,7 +584,9 @@ init(#{name := Name} = Config) ->
     ),
     %% The file's settings with the admin panel's overrides applied.
     briskd_config:store_base(Config),
-    briskd_config:store(briskd_overrides:apply(Config, briskd_overrides:all())),
+    Effective = briskd_overrides:apply(Config, briskd_overrides:all()),
+    briskd_config:store(Effective),
+    ok = briskd_rehash:init(Effective),
     {atomic, ok} = mnesia:clear_table(client),
     reset_channels(),
     seed_channels(),
@@ -595,6 +596,7 @@ init(#{name := Name} = Config) ->
     {atomic, ok} = mnesia:clear_table(remote_channel),
     {atomic, ok} = mnesia:clear_table(known_server),
     {atomic, ok} = mnesia:clear_table(service),
+    ok = briskd_population:init(),
     erlang:send_after(1000, self(), reop_tick),
     erlang:send_after(?SWEEP_MS, self(), sweep_tick),
     {ok, Name}.
@@ -836,10 +838,7 @@ told apart from an ordinary operator. Called at startup and by `REHASH`.
 """.
 -spec store_accounts(map()) -> ok.
 store_accounts(Config) ->
-    Operators = maps:get(operators, Config, []),
-    Administrators = maps:get(administrators, Config, []),
-    persistent_term:put({?MODULE, operators}, Operators ++ Administrators),
-    persistent_term:put({?MODULE, administrators}, [Nick || {Nick, _} <- Administrators]),
+    ok = briskd_oper:store_accounts(Config),
     persistent_term:put(
         {?MODULE, predefined_channels},
         [maps:get(key, Channel) || Channel <- maps:get(channels, Config, [])]
@@ -877,7 +876,8 @@ seed_channel(#{
                 creator = undefined,
                 opless_since = undefined,
                 created = erlang:system_time(second)
-            })
+            }),
+            briskd_population:on_channel_put(Key)
     end.
 
 -doc """
@@ -886,10 +886,7 @@ Reads the `briskd_admins` ETS table; safe to call from any process.
 """.
 -spec administrator(pid()) -> boolean().
 administrator(Pid) when is_pid(Pid) ->
-    case ets:whereis(briskd_admins) of
-        undefined -> false;
-        _ -> ets:lookup(briskd_admins, Pid) =/= []
-    end.
+    briskd_oper:administrator(Pid).
 
 -doc """
 Every key of the Mnesia table `Table`, typed by the table's record key.
@@ -964,6 +961,7 @@ handle_call({connect, Host, Info}, {Pid, _}, Server) ->
     briskd_state_client:touch_activity(Pid),
     briskd_state_client:put_connection_stats(Pid, #{}),
     mnesia:dirty_write(#user_modes{pid = Pid}),
+    briskd_population:on_client_connect(Pid),
     logger:info(#{event => client_connected, peer => Host}),
     {reply, ok, Server};
 handle_call({tls_upgraded, Info}, {Pid, _}, Server) ->
@@ -1058,7 +1056,7 @@ apply_overrides(Key, Value, Server) ->
             false -> <<"off">>;
             N when is_integer(N) -> integer_to_binary(N)
         end,
-    briskd_state_info:apply_effective(
+    briskd_rehash:apply_effective(
         Effective,
         #{event => admin_feature_changed, control => Key, value => Value},
         [<<"Admin panel set ">>, Key, <<" to ">>, Shown],
@@ -1919,11 +1917,11 @@ registered_command(<<"INVITE">>, _, Client, Server) ->
 registered_command(<<"MODE">>, [Target | Rest], Client, Server) ->
     briskd_state_channel:mode_command(Target, Rest, Client, Server);
 registered_command(<<"OPER">>, [Name, Password | _], Client, Server) ->
-    briskd_state_info:oper(Name, Password, Client, Server);
+    briskd_oper:oper(Name, Password, Client, Server);
 registered_command(<<"OPER">>, _, Client, Server) ->
     briskd_state_send:numeric(Client, Server, <<"461">>, [<<"OPER">>], <<"Not enough parameters">>);
 registered_command(<<"KILL">>, Params, Client, Server) ->
-    briskd_state_info:kill(Params, Client, Server);
+    briskd_oper:kill(Params, Client, Server);
 registered_command(<<"CONNECT">>, Params, Client, Server) ->
     briskd_state_net:oper_command(<<"CONNECT">>, Params, Client, Server);
 registered_command(<<"SQUIT">>, Params, Client, Server) ->
@@ -1934,42 +1932,15 @@ registered_command(<<"RESTART">>, Params, Client, Server) ->
     briskd_state_net:oper_command(<<"RESTART">>, Params, Client, Server);
 registered_command(<<"SERVICE">>, Params, Client, Server) ->
     briskd_state_net:oper_command(<<"SERVICE">>, Params, Client, Server);
-registered_command(<<"WALLOPS">>, [Text | _], #client{pid = Pid} = Client, Server) ->
+registered_command(<<"WALLOPS">>, Params, Client, Server) ->
     %% RFC 2812 3.7.1: an operator's WALLOPS goes to users with mode +w.
-    case maps:is_key($o, briskd_state_client:user_modes(Pid)) of
-        true ->
-            Recipients = [
-                P
-             || P <- table_keys(user_modes),
-                [#client{} = C] <- [mnesia:dirty_read(client, P)],
-                briskd_state_client:ready(C),
-                maps:is_key($w, briskd_state_client:user_modes(P))
-            ],
-            briskd_state_send:broadcast(
-                Recipients, briskd_state_send:prefix(Client), <<"WALLOPS">>, [], Text
-            ),
-            briskd_state_link:server_broadcast(
-                briskd_wire:line(briskd_state_send:prefix(Client), <<"WALLOPS">>, [], Text)
-            );
-        false ->
-            briskd_state_send:numeric(
-                Client,
-                Server,
-                <<"481">>,
-                [],
-                <<"Permission Denied- You're not an IRC operator">>
-            )
-    end;
-registered_command(<<"WALLOPS">>, [], Client, Server) ->
-    briskd_state_send:numeric(
-        Client, Server, <<"461">>, [<<"WALLOPS">>], <<"Not enough parameters">>
-    );
+    briskd_oper:wallops(Params, Client, Server);
 registered_command(<<"REHASH">>, _, Client, Server) ->
-    briskd_state_info:rehash(Client, Server);
+    briskd_rehash:rehash(Client, Server);
 registered_command(<<"SUMMON">>, _, Client, Server) ->
     briskd_state_send:numeric(Client, Server, <<"445">>, [], <<"SUMMON has been disabled">>);
 registered_command(<<"USERS">>, Params, Client, Server) ->
-    briskd_state_info:users_disabled(Params, Client, Server);
+    briskd_info:users_disabled(Params, Client, Server);
 registered_command(<<"TOPIC">>, [Name | Rest], Client, Server) ->
     briskd_state_channel:topic(Name, Rest, Client, Server);
 registered_command(<<"NAMES">>, Params, Client, Server) ->
@@ -2024,22 +1995,11 @@ registered_command(<<"LIST">>, Params, Client, Server) ->
     ),
     briskd_state_send:send_safelist(Client, Server, lists:reverse(Entries));
 registered_command(<<"TIME">>, Params, Client, Server) ->
-    case briskd_state_info:query_local_server(Params, Server) of
-        true ->
-            briskd_state_send:numeric(
-                Client,
-                Server,
-                <<"391">>,
-                [Server],
-                calendar:system_time_to_rfc3339(erlang:system_time(second), [{unit, second}])
-            );
-        {false, Target} ->
-            briskd_state_send:numeric(Client, Server, <<"402">>, [Target], <<"No such server">>)
-    end;
+    briskd_info:time(Params, Client, Server);
 registered_command(<<"TRACE">>, Params, Client, Server) ->
-    briskd_state_info:trace(Params, Client, Server);
+    briskd_query:trace(Params, Client, Server);
 registered_command(<<"STATS">>, Params, Client, Server) ->
-    briskd_state_info:stats(Params, Client, Server);
+    briskd_query:stats(Params, Client, Server);
 registered_command(<<"SERVLIST">>, Params, Client, Server) ->
     {Mask, Type} =
         case Params of
@@ -2051,22 +2011,15 @@ registered_command(<<"SERVLIST">>, Params, Client, Server) ->
 registered_command(<<"SQUERY">>, Params, Client, Server) ->
     briskd_state_net:squery(Params, Client, Server);
 registered_command(<<"VERSION">>, Params, Client, Server) ->
-    case briskd_state_info:query_local_server(Params, Server) of
-        true ->
-            briskd_state_send:numeric(
-                Client, Server, <<"351">>, [briskd_app:vsn(), Server], <<"Erlang/OTP IRC server">>
-            );
-        {false, Target} ->
-            briskd_state_send:numeric(Client, Server, <<"402">>, [Target], <<"No such server">>)
-    end;
+    briskd_info:version(Params, Client, Server);
 registered_command(<<"INFO">>, Params, Client, Server) ->
-    briskd_state_info:info(Params, Client, Server);
+    briskd_info:info(Params, Client, Server);
 registered_command(<<"ADMIN">>, Params, Client, Server) ->
-    briskd_state_info:admin(Params, Client, Server);
+    briskd_info:admin(Params, Client, Server);
 registered_command(<<"LINKS">>, Params, Client, Server) ->
-    briskd_state_info:links(Params, Client, Server);
+    briskd_info:links(Params, Client, Server);
 registered_command(<<"LUSERS">>, Params, Client, Server) ->
-    briskd_state_info:lusers(Params, Client, Server);
+    briskd_info:lusers(Params, Client, Server);
 registered_command(<<"ISON">>, [], Client, Server) ->
     briskd_state_send:numeric(Client, Server, <<"461">>, [<<"ISON">>], <<"Not enough parameters">>);
 registered_command(<<"ISON">>, [<<>> | _], Client, Server) ->
@@ -2094,7 +2047,7 @@ registered_command(<<"WHOIS">>, [_ | _] = Args, Client, Server) ->
             KnownNick =
                 briskd_state_client:find_nick(Target) =/= undefined orelse
                     mnesia:dirty_read(remote_client, briskd_wire:fold(Target)) =/= [],
-            case KnownNick orelse briskd_state_info:query_local_server([Target], Server) of
+            case KnownNick orelse briskd_info:query_local_server([Target], Server) of
                 true ->
                     lists:foreach(
                         fun(Nick) -> briskd_state_queries:whois(Nick, Client, Server) end,
@@ -2113,7 +2066,7 @@ registered_command(<<"WHOWAS">>, [], Client, Server) ->
 registered_command(<<"WHOWAS">>, [NickMasks | Rest], Client, Server) ->
     {Count, Target} = briskd_state_queries:whowas_options(Rest),
     case
-        briskd_state_info:query_local_server(
+        briskd_info:query_local_server(
             case Target of
                 undefined -> [];
                 Given when is_binary(Given) -> [Given]
@@ -2139,7 +2092,7 @@ registered_command(<<"WHOWAS">>, [NickMasks | Rest], Client, Server) ->
             briskd_state_send:numeric(Client, Server, <<"369">>, [EndParam], <<"End of WHOWAS">>)
     end;
 registered_command(<<"MOTD">>, Params, Client, Server) ->
-    briskd_state_info:motd(Params, Client, Server);
+    briskd_motd:motd(Params, Client, Server);
 registered_command(Command, [], Client, Server) when
     Command =:= <<"JOIN">>;
     Command =:= <<"PART">>;
@@ -2231,92 +2184,7 @@ remember_wanted_nick(_Client, _Nick) ->
     ok.
 
 count_command(Pid, Command, MessageBytes) ->
-    case supported_command(Command) of
-        true ->
-            _ = ets:update_counter(
-                briskd_command_stats,
-                Command,
-                [{2, 1}, {3, MessageBytes}],
-                {Command, 0, 0}
-            ),
-            ok;
-        false ->
-            ok
-    end,
-    briskd_state_client:update_connection_stats(Pid, recv_messages, recv_bytes, MessageBytes).
-
-supported_command(Command) ->
-    lists:member(
-        Command,
-        [
-            <<"ADMIN">>,
-            <<"AUTHENTICATE">>,
-            <<"AWAY">>,
-            <<"BATCH">>,
-            <<"CALL">>,
-            <<"CAP">>,
-            <<"CHATHISTORY">>,
-            <<"CHGHOST">>,
-            <<"E2EE">>,
-            <<"ISUPPORT">>,
-            <<"MARKREAD">>,
-            <<"METADATA">>,
-            <<"MONITOR">>,
-            <<"RECLAIM">>,
-            <<"REDACT">>,
-            <<"REGISTER">>,
-            <<"RENAME">>,
-            <<"SEARCH">>,
-            <<"SETNAME">>,
-            <<"STARTTLS">>,
-            <<"VERIFY">>,
-            <<"WEBIRC">>,
-            <<"CONNECT">>,
-            <<"DIE">>,
-            <<"INVITE">>,
-            <<"INFO">>,
-            <<"ISON">>,
-            <<"JOIN">>,
-            <<"KICK">>,
-            <<"KILL">>,
-            <<"LINKS">>,
-            <<"LIST">>,
-            <<"LUSERS">>,
-            <<"MODE">>,
-            <<"MOTD">>,
-            <<"NAMES">>,
-            <<"NICK">>,
-            <<"OPER">>,
-            <<"PART">>,
-            <<"PING">>,
-            <<"PONG">>,
-            <<"PRIVMSG">>,
-            <<"QUIT">>,
-            <<"REHASH">>,
-            <<"RESTART">>,
-            <<"SERVICE">>,
-            <<"SERVLIST">>,
-            <<"SQUERY">>,
-            <<"SQUIT">>,
-            <<"STATS">>,
-            <<"SUMMON">>,
-            <<"TAGMSG">>,
-            <<"TIME">>,
-            <<"TOPIC">>,
-            <<"TRACE">>,
-            <<"USER">>,
-            <<"USERHOST">>,
-            <<"USERS">>,
-            <<"VERSION">>,
-            <<"WHO">>,
-            <<"WHOIS">>,
-            <<"WHOWAS">>,
-            <<"WALLOPS">>,
-            <<"NOTICE">>,
-            <<"PASS">>,
-            <<"KNOCK">>
-        ]
-    ).
+    briskd_metrics:count_command(Pid, Command, MessageBytes).
 
 %% Public lookups and replies used by query handlers. The implementations
 %% live with the state they read.

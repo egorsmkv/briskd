@@ -126,6 +126,7 @@ drop_channel_row(#channel{key = Key, name = Name}) ->
     clear_channel_empty(Key),
     briskd_state_meta:drop_channel(Key),
     mnesia:dirty_delete(channel, Key),
+    briskd_population:on_channel_delete(Key),
     briskd_state_history:delete_channel_history(Key).
 
 note_channel_empty(Key) ->
@@ -735,6 +736,7 @@ finish_join(
         members = NewMembers,
         invited = lists:delete(Pid, Invited)
     }),
+    briskd_population:on_channel_put(Key),
     clear_channel_empty(Key),
     index_safe_channel(Canonical),
     mnesia:dirty_write(Client#client{channels = [Key | Channels]}),
@@ -998,8 +1000,11 @@ kick_remote_member(
     briskd_state_link:propagate_channel_kick(Client, Canonical, Actual, Reason),
     Left = maps:remove(NickKey, Remote),
     case map_size(Left) of
-        0 -> mnesia:dirty_delete(remote_channel, RemoteKey);
-        _ -> mnesia:dirty_write(RemoteChannel#remote_channel{members = Left})
+        0 ->
+            mnesia:dirty_delete(remote_channel, RemoteKey),
+            briskd_population:on_channel_delete(RemoteKey);
+        _ ->
+            mnesia:dirty_write(RemoteChannel#remote_channel{members = Left})
     end.
 
 -doc """
@@ -2099,6 +2104,9 @@ change_user_modes([Mode | Rest], Action, Modes, Nick, Client, Server) when
     case New =/= Modes of
         true ->
             mnesia:dirty_write(#user_modes{pid = Client#client.pid, modes = New}),
+            briskd_population:on_local_mode_change(
+                Client#client.pid, briskd_state_client:ready(Client), New
+            ),
             Sign =
                 case Action of
                     add -> $+;
@@ -2128,6 +2136,7 @@ change_user_modes([$o | Rest], remove, Modes, Nick, #client{pid = Pid} = Client,
         true ->
             mnesia:dirty_write(#user_modes{pid = Pid, modes = New}),
             _ = ets:whereis(briskd_admins) =/= undefined andalso ets:delete(briskd_admins, Pid),
+            briskd_population:on_local_mode_change(Pid, briskd_state_client:ready(Client), New),
             logger:info(#{event => oper_dropped, nick => Nick}),
             Prefix = briskd_state_send:prefix(Client),
             briskd_state_send:send(Pid, Prefix, <<"MODE">>, [Nick, <<"-o">>], none),
@@ -2605,6 +2614,7 @@ admin_create(Name, Topic, Server) ->
                         topic_by = TopicBy,
                         topic_at = TopicAt
                     }),
+                    briskd_population:on_channel_put(Key),
                     note_channel_empty(Key),
                     {ok, Name}
             end
@@ -2881,6 +2891,8 @@ apply_rename(
         false ->
             mnesia:dirty_delete(channel, OldKey),
             mnesia:dirty_write(Renamed),
+            briskd_population:on_channel_delete(OldKey),
+            briskd_population:on_channel_put(NewKey),
             lists:foreach(
                 fun(Pid) ->
                     case mnesia:dirty_read(client, Pid) of

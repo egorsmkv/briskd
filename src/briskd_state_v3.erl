@@ -1548,10 +1548,10 @@ holder and `{attach, Holder}` to the connection.
 finish_attach(#client{pid = Pid, nick = Nick}, Holder) ->
     ets:insert(briskd_attached, {Pid, Holder}),
     logger:info(#{event => session_attached, nick => Nick}),
-    ets:delete(briskd_ready_clients, Pid),
     mnesia:dirty_delete(client, Pid),
     mnesia:dirty_delete(activity, Pid),
     mnesia:dirty_delete(user_modes, Pid),
+    briskd_population:on_client_disconnect(Pid),
     briskd_cap:disconnect(Pid),
     briskd_conn:delete(Pid),
     ok = briskd_flood:disconnect(Pid),

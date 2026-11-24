@@ -277,8 +277,10 @@ rehash(Port, Alice, Dir, Config) ->
     Motd = cmd(Alice, <<"MOTD">>),
     ?assert(has(Motd, <<" 372 alice :- Second edition">>)),
     ?assertNot(has(Motd, <<"Welcome">>)),
-    %% An empty MOTD file has a start and an end and no text lines.
+    %% An empty MOTD file takes effect after REHASH (cached until reload).
     ok = file:write_file(Motd2, <<>>),
+    ?assert(has(cmd(Alice, <<"MOTD">>), <<" 372 alice :- Second edition">>)),
+    ?assert(has(cmd(Alice, <<"REHASH">>), <<" 382 ">>)),
     Empty = cmd(Alice, <<"MOTD">>),
     ?assert(has(Empty, <<" 375 ">>)),
     ?assertNot(has(Empty, <<" 372 ">>)),

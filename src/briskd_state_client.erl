@@ -202,20 +202,19 @@ send_attach_welcome(Client, Holder, Server) ->
     %% The session stops its registration timer without asking (briskd_session).
     Client#client.pid ! registered,
     welcome_numerics(Client, Server),
-    briskd_state_info:motd([], Client, Server),
+    briskd_motd:motd([], Client, Server),
     briskd_state_v3:finish_attach(Client, Holder).
 
 send_full_welcome(#client{nick = Nick, user = User, host = Host} = Client, Server) ->
     briskd_conn:put(Client#client.pid, signon, erlang:system_time(second)),
-    true = ets:insert(briskd_ready_clients, {Client#client.pid}),
     %% The session stops its registration timer without asking (briskd_session).
     Client#client.pid ! registered,
-    _ = briskd_state_info:note_user_counts(),
+    _ = briskd_population:on_client_registered(Client#client.pid, user_modes(Client#client.pid)),
     briskd_state_link:propagate_introduction(Client, Server),
     briskd_state_v3:registered(Client, Server),
     logger:info(#{event => client_registered, nick => Nick, user => User, host => Host}),
     welcome_numerics(Client, Server),
-    briskd_state_info:motd([], Client, Server),
+    briskd_motd:motd([], Client, Server),
     briskd_state_v3:rejoin_on_login(Client, Server).
 
 welcome_numerics(Client, Server) ->
@@ -470,14 +469,10 @@ disconnect(#client{pid = Pid, channels = Channels} = Client, Reason, Server) ->
         Channels
     ),
     ok = forget_nick(Pid, Client#client.nick),
-    ets:delete(briskd_ready_clients, Pid),
     mnesia:dirty_delete(client, Pid),
     mnesia:dirty_delete(activity, Pid),
     mnesia:dirty_delete(user_modes, Pid),
-    case ets:whereis(briskd_admins) of
-        undefined -> ok;
-        _ -> ets:delete(briskd_admins, Pid)
-    end,
+    briskd_population:on_client_disconnect(Pid),
     briskd_state_v3:disconnect(Client),
     briskd_cap:disconnect(Pid),
     ok = briskd_flood:disconnect(Pid),

@@ -43,6 +43,7 @@ start_link(Config) -> supervisor:start_link({local, ?MODULE}, ?MODULE, Config).
 
 -doc false.
 init(Config) ->
+    ok = briskd_population:init_table(),
     Children = [
         #{id => briskd_state, start => {briskd_state, start_link, [Config]}},
         #{
@@ -90,6 +91,14 @@ init(Config) ->
     %% The statistics sampler for the admin Stats tab, last: it depends on
     %% nothing after it and its restart affects nothing else.
     Stats = [#{id => briskd_stats, start => {briskd_stats, start_link, []}}],
+    %% Bounded query workers for TRACE and STATS l, isolated from briskd_state.
+    QuerySup = [
+        #{
+            id => briskd_query_sup,
+            start => {briskd_query_sup, start_link, []},
+            type => supervisor
+        }
+    ],
     %% The message search indexer, when `search` is configured; last, so a
     %% restart rebuilds the index without touching anything else.
     Search = [
@@ -98,5 +107,5 @@ init(Config) ->
     ],
     {ok, {
         #{strategy => rest_for_one},
-        Children ++ Listeners ++ Certs ++ Ctl ++ Calls ++ Bots ++ Stats ++ Search
+        Children ++ Listeners ++ Certs ++ Ctl ++ Calls ++ Bots ++ Stats ++ QuerySup ++ Search
     }}.
