@@ -32,7 +32,12 @@
     redact/3,
     replay_entries/4,
     replay_on_join/3,
-    parse_timestamp/1
+    parse_timestamp/1,
+    conversations/1,
+    dm_key/2,
+    normalize/1,
+    party/1,
+    playable/2
 ]).
 -include("briskd_state.hrl").
 -include("briskd_account.hrl").
@@ -252,6 +257,8 @@ params_list(Params) -> Params.
 %% Messages a client may receive from history. Without draft/event-playback
 %% PRIVMSG, NOTICE, and persistent reaction TAGMSGs (for message-tags clients)
 %% are replayed.
+-doc "Filter history entries to those playable for `Pid`.".
+-spec playable(pid(), [map()]) -> [map()].
 playable(Pid, Entries) ->
     case briskd_cap:enabled(Pid, <<"draft/event-playback">>) of
         true ->
@@ -357,11 +364,18 @@ erase_account(Folded) ->
     #{channel => Channel, direct => Direct}.
 
 %% A conversation participant: `{account, Folded}` or `{nick, Folded}`.
+-doc "Normalize a DM participant to `{account, Folded}` or `{nick, Folded}`.".
+-spec party({undefined | binary(), binary()}) -> dm_party().
 party({undefined, Nick}) -> {nick, briskd_wire:fold(Nick)};
 party({Account, _Nick}) -> {account, briskd_wire:fold(Account)}.
 
+-doc "Canonical sorted pair key for a direct-message conversation.".
+-spec dm_key(dm_party(), dm_party()) -> {dm_party(), dm_party()}.
 dm_key(A, B) ->
-    list_to_tuple(lists:sort([A, B])).
+    case A =< B of
+        true -> {A, B};
+        false -> {B, A}
+    end.
 
 prune_direct_conversations({account, _} = Party, KeepingKey) ->
     Max = maps:get(
@@ -588,6 +602,8 @@ has(Tab, Conv) ->
 
 %% Every conversation in `Tab`; `z` sorts after both classes, so the next
 %% key after {Conv, z, 0} is the next conversation's first.
+-doc "Every conversation key present in Mnesia table `Tab`.".
+-spec conversations(channel_message | direct_message) -> [term()].
 conversations(Tab) ->
     conversations(Tab, mnesia:dirty_first(Tab), []).
 
@@ -612,6 +628,8 @@ dm_latest_time(Pair) ->
 dm_conversations() ->
     [P || {_, _} = P <- conversations(direct_message)].
 
+-doc "Normalize legacy tuple entries or map entries to the current map shape.".
+-spec normalize(term()) -> map().
 normalize({Command, Prefix, Text}) ->
     #{
         cmd => Command,
@@ -625,774 +643,75 @@ normalize({Command, Prefix, Text}) ->
 normalize(Entry) when is_map(Entry) ->
     Entry.
 
--doc """
-Find a `PRIVMSG`, `NOTICE`, or `TAGMSG` entry by `msgid` in a channel
-(`{channel, FoldedName}`) or direct-message (`{direct, PairKey}`) history.
-""".
+-doc "Find a `PRIVMSG`, `NOTICE`, or `TAGMSG` entry by `msgid` in stored history.".
 -spec find({channel, binary()} | {direct, tuple()}, binary()) -> {ok, map()} | error.
 find(Source, MsgId) ->
-    case
-        [
-            E
-         || #{msgid := Id, cmd := Cmd} = E <- entries(Source),
-            Id =:= MsgId,
-            Cmd =:= <<"PRIVMSG">> orelse Cmd =:= <<"NOTICE">> orelse Cmd =:= <<"TAGMSG">>
-        ]
-    of
-        [Entry | _] -> {ok, Entry};
-        [] -> error
-    end.
+    briskd_history_query:find(Source, MsgId).
 
-entries({channel, Key}) -> channel_entries(Key);
-entries({direct, Key}) -> dm_entries(Key).
-
-remove(Source, MsgId) ->
-    Kept = [E || E <- entries(Source), maps:get(msgid, E) =/= MsgId],
-    case Source of
-        {channel, Key} -> replace_channel(Key, Kept);
-        {direct, Key} -> replace(direct_message, Key, Kept)
-    end,
-    ok.
-
-%%% Replay
-
--doc """
-Replay stored channel history, oldest first, to a joining client under
-`channels` retention, in a `chathistory` batch when the client has `batch`.
-Without draft/event-playback only `PRIVMSG` and `NOTICE` are replayed.
-Clients with draft/chathistory fetch history themselves and get nothing.
-""".
+-doc "Replay stored channel history, oldest first, to a joining client.".
 -spec replay_on_join(binary(), binary(), pid()) -> ok.
 replay_on_join(Key, Name, Pid) ->
-    case
-        briskd_state:retention() =:= channels andalso
-            not briskd_cap:enabled(Pid, <<"draft/chathistory">>)
-    of
-        true ->
-            case playable(Pid, lists:reverse(channel_entries(Key))) of
-                [] ->
-                    ok;
-                Entries ->
-                    briskd_state_send:with_batch(Pid, <<"chathistory">>, [Name], [], fun() ->
-                        replay_entries(Pid, Name, Entries, server())
-                    end)
-            end;
-        false ->
-            ok
-    end.
+    briskd_history_query:replay_on_join(Key, Name, Pid).
 
--doc """
-Send entries (oldest first) to `Pid` with their stored `msgid`, `time`,
-`account`, and client-only tags. `Name` is the channel, or `undefined` to
-use each entry's stored target. Multiline entries are sent as
-draft/multiline batches. `_Server` is unused.
-""".
+-doc "Send entries (oldest first) to `Pid` with their stored tags.".
 -spec replay_entries(pid(), undefined | binary(), [map()], binary()) -> ok.
-replay_entries(Pid, Name, Entries, _Server) ->
-    lists:foreach(fun(Entry) -> replay(Pid, Name, Entry) end, Entries).
+replay_entries(Pid, Name, Entries, Server) ->
+    briskd_history_query:replay_entries(Pid, Name, Entries, Server).
 
-replay(Pid, Name, #{cmd := Command, prefix := Prefix, text := Text} = Entry) ->
-    Target =
-        case Name of
-            undefined -> maps:get(target, Entry);
-            _ -> Name
-        end,
-    Tags = entry_tags(Entry),
-    Middle =
-        case maps:get(notarget, Entry, false) of
-            true -> [];
-            false -> [Target | maps:get(params, Entry, [])]
-        end,
-    case Text of
-        {multiline, Lines} ->
-            briskd_state_batch:deliver_multiline(Pid, Prefix, Command, Target, Lines, Tags, replay);
-        _ ->
-            briskd_state_send:send(Pid, Prefix, Command, Middle, Text, Tags)
-    end.
-
-entry_tags(#{msgid := MsgId, time := Time, tags := Tags} = Entry) ->
-    Id =
-        case MsgId of
-            undefined -> [];
-            _ -> [{<<"msgid">>, MsgId}]
-        end,
-    Stamp =
-        case Time of
-            0 -> [];
-            _ -> [{<<"time">>, briskd_state_send:time_value(Time)}]
-        end,
-    Account =
-        case maps:get(account, Entry, undefined) of
-            undefined -> [];
-            Name -> [{<<"account">>, Name}]
-        end,
-    Tags ++ Id ++ Stamp ++ Account.
-
-%%% CHATHISTORY
-
--doc """
-`CHATHISTORY <subcommand> ...` (draft/chathistory).
-
-Supports `BEFORE`, `AFTER`, `LATEST`, `AROUND`, and `BETWEEN` with
-`timestamp=` or `msgid=` references, and `TARGETS` with two timestamps. The
-limit is capped by `history_limit`. Results go in a `chathistory` batch
-(`draft/chathistory-targets` for `TARGETS`); a batch with fewer entries
-than the limit carries `draft/chathistory-end`. Channel history is readable
-only by current members, direct history only by a logged-in client.
-
-Errors are `FAIL CHATHISTORY` with `INVALID_PARAMS`, `INVALID_TARGET`, or
-`INVALID_MSGREFTYPE`; no parameters gets 461.
-""".
+-doc "`CHATHISTORY <subcommand> ...` (draft/chathistory).".
 -spec chathistory([binary()], #client{}, binary()) -> ok.
-chathistory([Sub | Rest], #client{pid = Pid} = Client, Server) ->
-    Upper = briskd_wire:upper(Sub),
-    Max = limit(),
-    case {Upper, Rest} of
-        {<<"TARGETS">>, [A, B, Limit]} ->
-            case {parse_selector(A), parse_selector(B), parse_limit(Limit, Max)} of
-                {{time, T1}, {time, T2}, {ok, N}} ->
-                    targets(Client, T1, T2, N);
-                _ ->
-                    invalid(Pid, Upper)
-            end;
-        {_, [Target, Sel, Limit]} when
-            Upper =:= <<"BEFORE">>;
-            Upper =:= <<"AFTER">>;
-            Upper =:= <<"LATEST">>;
-            Upper =:= <<"AROUND">>
-        ->
-            with_target(Client, Upper, Target, fun(Name, Entries) ->
-                case {selector(Upper, Sel, Entries), parse_limit(Limit, Max)} of
-                    {{ok, Position}, {ok, N}} ->
-                        send_history(Pid, Name, select(Upper, Position, Entries, N), N);
-                    {msgreftype, _} ->
-                        msgreftype(Pid, Upper, Target);
-                    {error, _} ->
-                        invalid(Pid, Upper);
-                    {_, error} ->
-                        invalid(Pid, Upper)
-                end
-            end);
-        {<<"BETWEEN">>, [Target, SelA, SelB, Limit]} ->
-            with_target(Client, Upper, Target, fun(Name, Entries) ->
-                case
-                    {
-                        selector(Upper, SelA, Entries),
-                        selector(Upper, SelB, Entries),
-                        parse_limit(Limit, Max)
-                    }
-                of
-                    {{ok, PA}, {ok, PB}, {ok, N}} ->
-                        send_history(Pid, Name, between(PA, PB, Entries, N), N);
-                    {msgreftype, _, _} ->
-                        msgreftype(Pid, Upper, Target);
-                    {_, msgreftype, _} ->
-                        msgreftype(Pid, Upper, Target);
-                    _ ->
-                        invalid(Pid, Upper)
-                end
-            end);
-        {Known, _} when
-            Known =:= <<"BEFORE">>;
-            Known =:= <<"AFTER">>;
-            Known =:= <<"LATEST">>;
-            Known =:= <<"AROUND">>;
-            Known =:= <<"BETWEEN">>;
-            Known =:= <<"TARGETS">>
-        ->
-            briskd_state_send:fail(
-                Pid, <<"CHATHISTORY">>, <<"INVALID_PARAMS">>, [Known], <<"Insufficient parameters">>
-            );
-        _ ->
-            briskd_state_send:fail(
-                Pid, <<"CHATHISTORY">>, <<"INVALID_PARAMS">>, [Sub], <<"Unknown command">>
-            )
-    end,
-    _ = Server,
-    ok;
-chathistory([], Client, Server) ->
-    briskd_state_send:numeric(
-        Client, Server, <<"461">>, [<<"CHATHISTORY">>], <<"Not enough parameters">>
-    ).
+chathistory(Params, Client, Server) ->
+    briskd_history_query:chathistory(Params, Client, Server).
 
-msgreftype(Pid, Sub, Target) ->
-    briskd_state_send:fail(
-        Pid,
-        <<"CHATHISTORY">>,
-        <<"INVALID_MSGREFTYPE">>,
-        [Sub, Target],
-        <<"Unknown message reference type">>
-    ).
-
-invalid(Pid, Sub) ->
-    briskd_state_send:fail(
-        Pid, <<"CHATHISTORY">>, <<"INVALID_PARAMS">>, [Sub], <<"Invalid parameters">>
-    ).
-
-%% Resolve a target the client may read, then call Fun with oldest-first entries.
-with_target(#client{pid = Pid} = Client, Sub, Target, Fun) ->
-    case access(Client, Target) of
-        {ok, Name, Source} ->
-            Fun(Name, playable(Pid, lists:reverse(entries(Source))));
-        error ->
-            briskd_state_send:fail(
-                Pid,
-                <<"CHATHISTORY">>,
-                <<"INVALID_TARGET">>,
-                [Sub, Target],
-                <<"Messages could not be retrieved">>
-            )
-    end.
-
-%% Channel history is readable by current members. Direct history needs the
-%% requester to be logged in; the peer is the target's account, or an account
-%% of that name when the target is offline.
-access(#client{pid = Pid}, Target) ->
-    case briskd_wire:channel(Target) of
-        true ->
-            case mnesia:dirty_read(channel, briskd_wire:fold(Target)) of
-                [#channel{key = Key, name = Name, members = Members}] when
-                    is_map_key(Pid, Members)
-                ->
-                    {ok, Name, {channel, Key}};
-                _ ->
-                    error
-            end;
-        false ->
-            case briskd_state_v3:account(Pid) of
-                undefined ->
-                    error;
-                Mine ->
-                    Theirs = party({peer_account(Target), Target}),
-                    {ok, Target, {direct, dm_key(party({Mine, <<>>}), Theirs)}}
-            end
-    end.
-
-peer_account(Nick) ->
-    case briskd_state_client:find_nick(Nick) of
-        #client{pid = Pid} ->
-            briskd_state_v3:account(Pid);
-        undefined ->
-            case briskd_state_v3:remote_account(briskd_wire:fold(Nick)) of
-                undefined ->
-                    case briskd_account:find(Nick) of
-                        {ok, #account{name = Name}} -> Name;
-                        error -> undefined
-                    end;
-                Account ->
-                    Account
-            end
-    end.
-
-%% A selector resolves to a position: `{before_index, I}` style is avoided by
-%% returning a time and, for msgid, the entry's index so equal times work.
-selector(<<"LATEST">>, <<"*">>, _Entries) ->
-    {ok, latest};
-selector(Sub, Sel, Entries) ->
-    case parse_selector(Sel) of
-        {time, T} ->
-            {ok, {time, T}};
-        {msgid, Id} ->
-            case index_of(Id, Entries, 1) of
-                {ok, I} ->
-                    {ok, {index, I}};
-                error when Sub =:= <<"LATEST">> ->
-                    %% Per IRCv3 draft/chathistory, an unknown msgid in LATEST
-                    %% falls back to `*` (return the latest messages).
-                    {ok, latest};
-                error ->
-                    error
-            end;
-        msgreftype ->
-            msgreftype;
-        error ->
-            error
-    end.
-
-index_of(_Id, [], _I) -> error;
-index_of(Id, [#{msgid := Id} | _], I) -> {ok, I};
-index_of(Id, [_ | Rest], I) -> index_of(Id, Rest, I + 1).
-
-parse_selector(<<"timestamp=", Value/binary>>) ->
-    case parse_timestamp(Value) of
-        {ok, T} -> {time, T};
-        error -> error
-    end;
-parse_selector(<<"msgid=", Id/binary>>) when Id =/= <<>> ->
-    {msgid, Id};
-parse_selector(Other) ->
-    %% A well-formed `key=value` with an unsupported key is a reference type
-    %% this server does not offer (MSGREFTYPES=timestamp,msgid).
-    case binary:split(Other, <<"=">>) of
-        [Key, _] when Key =/= <<>> -> msgreftype;
-        _ -> error
-    end.
-
--doc """
-Parse an RFC 3339 timestamp such as `YYYY-MM-DDThh:mm:ss[.sss]Z` to
-milliseconds since the epoch. Returns `error` for anything else.
-""".
+-doc "Parse an RFC 3339 timestamp to milliseconds since the epoch.".
 -spec parse_timestamp(binary()) -> {ok, integer()} | error.
 parse_timestamp(Value) ->
-    try calendar:rfc3339_to_system_time(binary_to_list(Value), [{unit, millisecond}]) of
-        Millis -> {ok, Millis}
-    catch
-        error:_ -> error
-    end.
+    briskd_history_query:parse_timestamp(Value).
 
-parse_limit(Raw, Max) ->
-    try binary_to_integer(Raw) of
-        N when N > 0 -> {ok, min(N, Max)};
-        _ -> error
-    catch
-        error:badarg -> error
-    end.
-
-%% Entries are oldest first. Each list element is tagged with its index.
-indexed(Entries) ->
-    lists:enumerate(Entries).
-
-before_pos({index, I}, {J, _}) -> J < I;
-before_pos({time, T}, {_, #{time := Time}}) -> Time < T.
-
-after_pos({index, I}, {J, _}) -> J > I;
-after_pos({time, T}, {_, #{time := Time}}) -> Time > T.
-
-select(<<"LATEST">>, latest, Entries, N) ->
-    last_n(Entries, N);
-select(<<"LATEST">>, Pos, Entries, N) ->
-    last_n([E || {_, E} = X <- indexed(Entries), after_pos(Pos, X)], N);
-select(<<"BEFORE">>, Pos, Entries, N) ->
-    last_n([E || {_, E} = X <- indexed(Entries), before_pos(Pos, X)], N);
-select(<<"AFTER">>, Pos, Entries, N) ->
-    lists:sublist([E || {_, E} = X <- indexed(Entries), after_pos(Pos, X)], N);
-select(<<"AROUND">>, Pos, Entries, N) ->
-    %% The reference message is included: up to (N-1) div 2 before it, then
-    %% the reference and the messages after it.
-    Before = last_n([E || {_, E} = X <- indexed(Entries), before_pos(Pos, X)], (N - 1) div 2),
-    After = lists:sublist(
-        [E || {_, E} = X <- indexed(Entries), not before_pos(Pos, X)], N - length(Before)
-    ),
-    Before ++ After.
-
-between(PA, PB, Entries, N) ->
-    Indexed = indexed(Entries),
-    case position_order(PA, PB, Indexed) of
-        forward ->
-            lists:sublist(
-                [E || {_, E} = X <- Indexed, after_pos(PA, X), before_pos(PB, X)], N
-            );
-        backward ->
-            last_n([E || {_, E} = X <- Indexed, after_pos(PB, X), before_pos(PA, X)], N)
-    end.
-
-position_order(PA, PB, Indexed) ->
-    case {key(PA, Indexed), key(PB, Indexed)} of
-        {A, B} when A =< B -> forward;
-        _ -> backward
-    end.
-
-key({index, I}, Indexed) ->
-    {_, #{time := T}} = lists:keyfind(I, 1, Indexed),
-    {T, I};
-key({time, T}, _Indexed) ->
-    {T, 0}.
-
-last_n(List, N) ->
-    lists:nthtail(max(0, length(List) - N), List).
-
-send_history(Pid, Name, Selected, Limit) ->
-    Server = server(),
-    End =
-        case length(Selected) < Limit of
-            true -> [{<<"draft/chathistory-end">>, undefined}];
-            false -> []
-        end,
-    ReplayName =
-        case briskd_wire:channel(Name) of
-            true -> Name;
-            false -> undefined
-        end,
-    briskd_state_send:with_batch(Pid, <<"chathistory">>, [Name], End, fun() ->
-        replay_entries(Pid, ReplayName, Selected, Server)
-    end),
-    ok.
-
-targets(#client{pid = Pid, channels = Keys}, From, To, N) ->
-    Channels = [
-        {Name, latest_time(channel_entries(Key))}
-     || Key <- Keys,
-        [#channel{name = Name}] <- [mnesia:dirty_read(channel, Key)]
-    ],
-    Direct =
-        case briskd_state_v3:account(Pid) of
-            undefined ->
-                [];
-            Account ->
-                Mine = briskd_wire:fold(Account),
-                Me = {account, Mine},
-                [
-                    {other_party(Mine, Entries), latest_time(Entries)}
-                 || {A, B} = Pair <- dm_conversations(),
-                    A =:= Me orelse B =:= Me,
-                    Entries <- [dm_entries(Pair)],
-                    Entries =/= []
-                ]
-        end,
-    %% Bounds are exclusive. A later first timestamp selects backwards in
-    %% time, keeping the newest matches.
-    Candidates = lists:keysort(2, [{T, Time} || {T, Time} <- Channels ++ Direct, Time > 0]),
-    Matches =
-        case From =< To of
-            true ->
-                lists:sublist([C || {_, Time} = C <- Candidates, Time > From, Time < To], N);
-            false ->
-                last_n([C || {_, Time} = C <- Candidates, Time < From, Time > To], N)
-        end,
-    briskd_state_send:with_batch(Pid, <<"draft/chathistory-targets">>, [], [], fun() ->
-        lists:foreach(
-            fun({Target, Time}) ->
-                briskd_state_send:send(
-                    Pid,
-                    server(),
-                    <<"CHATHISTORY">>,
-                    [<<"TARGETS">>, Target, briskd_state_send:time_value(Time)],
-                    none
-                )
-            end,
-            Matches
-        )
-    end),
-    ok.
-
-%% Time of the newest PRIVMSG or NOTICE; events do not make a target active.
-latest_time([#{cmd := Cmd, time := T} | _]) when Cmd =:= <<"PRIVMSG">>; Cmd =:= <<"NOTICE">> -> T;
-latest_time([_ | Rest]) -> latest_time(Rest);
-latest_time([]) -> 0.
-
-%% The conversation partner is the latest entry's sender or recipient that is
-%% not the requester's own account.
-other_party(Mine, [#{account := Sender, target := Target, prefix := Prefix} | _]) ->
-    case Sender =/= undefined andalso briskd_wire:fold(Sender) =:= Mine of
-        true -> Target;
-        false -> hd(binary:split(Prefix, <<"!">>))
-    end.
-
-%%% Message search (m:briskd_search, m:briskd_state_search)
-
--doc """
-Fold `Fun(Table, Conversation, Seq, Entry, Acc)` over every stored message
-(the `msg` class: `PRIVMSG`, `NOTICE`, `TAGMSG`) of every channel and direct
-conversation. `m:briskd_search` rebuilds its index with it; it reads one
-conversation at a time.
-""".
+-doc "Fold `Fun` over every stored message in channel and direct history.".
 -spec fold_messages(
     fun((channel_message | direct_message, term(), pos_integer(), map(), Acc) -> Acc), Acc
 ) -> Acc.
 fold_messages(Fun, Acc0) ->
-    lists:foldl(
-        fun(Tab, Acc1) ->
-            lists:foldl(
-                fun(Conv, Acc2) ->
-                    Rows = mnesia:dirty_select(Tab, [
-                        {{Tab, {Conv, msg, '$1'}, '$2'}, [], [{{'$1', '$2'}}]}
-                    ]),
-                    lists:foldl(
-                        fun
-                            ({Seq, Entry}, Acc3) when is_integer(Seq), Seq > 0 ->
-                                Fun(Tab, Conv, Seq, normalize(Entry), Acc3);
-                            (_, Acc3) ->
-                                Acc3
-                        end,
-                        Acc2,
-                        Rows
-                    )
-                end,
-                Acc1,
-                conversations(Tab)
-            )
-        end,
-        Acc0,
-        [channel_message, direct_message]
-    ).
+    briskd_history_query:fold_messages(Fun, Acc0).
 
--doc """
-The conversations `Client` may search for `Target`, as
-`{IndexName, {Table, Conversation}, ReplayName}`: a channel the client is a
-member of; a nickname or account, for the direct conversation with it (the
-client must be logged in); or `*`, for every channel the client is in and
-every direct conversation of its account. `ReplayName` is the channel name
-to deliver a result to, or `undefined` for a direct message (delivered to its
-stored target). The same rules as `CHATHISTORY` (`access/2`).
-""".
+-doc "The conversations `Client` may search for `Target`.".
 -spec search_scope(#client{}, binary()) ->
     {ok, [{binary(), {channel_message | direct_message, term()}, binary() | undefined}]}
     | error.
-search_scope(#client{pid = Pid, channels = Keys}, <<"*">>) ->
-    Channels = [
-        {briskd_search:conv_id(channel_message, Key), {channel_message, Key}, Name}
-     || Key <- Keys,
-        [#channel{name = Name}] <- [mnesia:dirty_read(channel, Key)]
-    ],
-    Direct =
-        case briskd_state_v3:account(Pid) of
-            undefined ->
-                [];
-            Account ->
-                Me = {account, briskd_wire:fold(Account)},
-                [
-                    {briskd_search:conv_id(direct_message, Pair), {direct_message, Pair}, undefined}
-                 || {A, B} = Pair <- dm_conversations(),
-                    A =:= Me orelse B =:= Me
-                ]
-        end,
-    {ok, Channels ++ Direct};
 search_scope(Client, Target) ->
-    case access(Client, Target) of
-        {ok, Name, {channel, Key}} ->
-            {ok, [{briskd_search:conv_id(channel_message, Key), {channel_message, Key}, Name}]};
-        {ok, _Name, {direct, Pair}} ->
-            {ok, [{briskd_search:conv_id(direct_message, Pair), {direct_message, Pair}, undefined}]};
-        error ->
-            error
-    end.
+    briskd_history_query:search_scope(Client, Target).
 
--doc """
-The stored message `Seq` of conversation `{Table, Conversation}`, if it is
-still in history.
-""".
+-doc "The stored message `Seq` of `{Table, Conversation}`, if still present.".
 -spec search_entry({channel_message | direct_message, term()}, pos_integer()) ->
     {ok, map()} | error.
-search_entry({Tab, Conv}, Seq) ->
-    case mnesia:dirty_read(Tab, {Conv, msg, Seq}) of
-        [{_, _, Entry}] -> {ok, normalize(Entry)};
-        [] -> error
-    end.
+search_entry(Conv, Seq) ->
+    briskd_history_query:search_entry(Conv, Seq).
 
-%%% MARKREAD
-
--doc """
-`MARKREAD <target> [timestamp=...]` (draft/read-marker).
-
-Without a timestamp, replies with the stored marker (`*` when none). A
-timestamp later than the stored one is saved and sent to every connection
-of the same account with read-marker; an older one gets the stored value
-back. Markers are stored per account in Mnesia (and synchronized to peers)
-or, without an account, per connection. Errors are `FAIL MARKREAD` with
-`NEED_MORE_PARAMS` or `INVALID_PARAMS`.
-""".
+-doc "`MARKREAD <target> [timestamp=...]` (draft/read-marker).".
 -spec markread([binary()], #client{}, binary()) -> ok.
-markread([], #client{pid = Pid}, _Server) ->
-    briskd_state_send:fail(
-        Pid, <<"MARKREAD">>, <<"NEED_MORE_PARAMS">>, [], <<"Missing parameters">>
-    );
-markread([Target | Rest], #client{pid = Pid} = Client, Server) ->
-    %% Only a channel or nickname can carry a marker, so a client cannot
-    %% create stored rows for arbitrary strings.
-    case valid_marker_target(Target) of
-        true ->
-            markread_valid([Target | Rest], Client, Server);
-        false ->
-            briskd_state_send:fail(
-                Pid, <<"MARKREAD">>, <<"INVALID_PARAMS">>, [Target], <<"Invalid target">>
-            )
-    end.
+markread(Params, Client, Server) ->
+    briskd_history_markread:markread(Params, Client, Server).
 
--doc """
-True when `Target` may carry a read marker: a valid channel name or a valid
-nickname (`briskd_wire:channel/1`, `briskd_wire:nickname/2`).
-""".
+-doc "True when `Target` may carry a read marker.".
 -spec valid_marker_target(binary()) -> boolean().
 valid_marker_target(Target) ->
-    briskd_wire:channel(Target) orelse briskd_wire:nickname(Target, briskd_state:nicklen()).
+    briskd_history_markread:valid_marker_target(Target).
 
-markread_valid([Target], #client{pid = Pid}, Server) ->
-    send_marker(Pid, Server, Target, get_marker(Pid, Target));
-markread_valid([Target, <<"timestamp=", Value/binary>> | _], #client{pid = Pid}, Server) ->
-    case parse_timestamp(Value) of
-        {ok, Time} ->
-            Stored = get_marker(Pid, Target),
-            case Stored =:= undefined orelse Time > Stored of
-                true ->
-                    put_marker(Pid, Target, Time),
-                    lists:foreach(
-                        fun(Other) -> send_marker(Other, Server, Target, Time) end,
-                        same_account(Pid)
-                    );
-                false ->
-                    send_marker(Pid, Server, Target, Stored)
-            end;
-        error ->
-            briskd_state_send:fail(
-                Pid, <<"MARKREAD">>, <<"INVALID_PARAMS">>, [Value], <<"Invalid parameters">>
-            )
-    end;
-markread_valid([_Target, Other | _], #client{pid = Pid}, _Server) ->
-    briskd_state_send:fail(
-        Pid, <<"MARKREAD">>, <<"INVALID_PARAMS">>, [Other], <<"Invalid parameters">>
-    ).
-
--doc """
-After `JOIN`, send the channel's read marker (`MARKREAD <channel> <value>`)
-to a client with draft/read-marker.
-""".
+-doc "After `JOIN`, send the channel's read marker to a draft/read-marker client.".
 -spec markread_on_join(pid(), binary(), binary()) -> ok.
 markread_on_join(Pid, Name, Server) ->
-    case briskd_cap:enabled(Pid, <<"draft/read-marker">>) of
-        true -> send_marker(Pid, Server, Name, get_marker(Pid, Name));
-        false -> ok
-    end.
+    briskd_history_markread:markread_on_join(Pid, Name, Server).
 
-send_marker(Pid, Server, Target, Time) ->
-    Value =
-        case Time of
-            undefined -> <<"*">>;
-            _ -> <<"timestamp=", (briskd_state_send:time_value(Time))/binary>>
-        end,
-    briskd_state_send:send(Pid, Server, <<"MARKREAD">>, [Target, Value], none).
-
-get_marker(Pid, Target) ->
-    case briskd_state_v3:account(Pid) of
-        undefined ->
-            maps:get(briskd_wire:fold(Target), briskd_conn:get(Pid, markread, #{}), undefined);
-        Account ->
-            case
-                mnesia:dirty_read(read_marker, {briskd_wire:fold(Account), briskd_wire:fold(Target)})
-            of
-                [#read_marker{time = Time}] -> Time;
-                [] -> undefined
-            end
-    end.
-
-put_marker(Pid, Target, Time) ->
-    FoldedTarget = briskd_wire:fold(Target),
-    case briskd_state_v3:account(Pid) of
-        undefined ->
-            Markers0 = briskd_conn:get(Pid, markread, #{}),
-            Markers1 = trim_conn_markers(Markers0, FoldedTarget, max_read_markers()),
-            briskd_conn:put(Pid, markread, Markers1#{FoldedTarget => Time});
-        Account ->
-            Folded = briskd_wire:fold(Account),
-            store_account_marker(Folded, FoldedTarget, Time),
-            briskd_state_sync:markread(Folded, FoldedTarget, Time)
-    end.
-
-max_read_markers() ->
-    maps:get(max_read_markers, briskd_config:current_or_empty(), 500).
-
-trim_conn_markers(Markers, Target, Max) ->
-    case maps:is_key(Target, Markers) orelse map_size(Markers) < Max of
-        true ->
-            Markers;
-        false ->
-            Sorted = lists:sort([{T, K} || K := T <- Markers]),
-            DropCount = map_size(Markers) - (Max - 1),
-            DropKeys = [K || {_, K} <- lists:sublist(Sorted, DropCount)],
-            maps:without(DropKeys, Markers)
-    end.
-
-store_account_marker(FoldedAccount, FoldedTarget, Time) ->
-    Key = {FoldedAccount, FoldedTarget},
-    case mnesia:dirty_read(read_marker, Key) of
-        [_] ->
-            ok;
-        [] ->
-            Max = max_read_markers(),
-            Existing = mnesia:dirty_select(read_marker, [
-                {{read_marker, {FoldedAccount, '$1'}, '$2'}, [], [{{'$2', '$1'}}]}
-            ]),
-            Excess = length(Existing) - (Max - 1),
-            case Excess > 0 of
-                true ->
-                    Oldest = lists:sublist(lists:sort(Existing), Excess),
-                    lists:foreach(
-                        fun({_, OldTarget}) ->
-                            mnesia:dirty_delete(read_marker, {FoldedAccount, OldTarget})
-                        end,
-                        Oldest
-                    );
-                false ->
-                    ok
-            end
-    end,
-    mnesia:dirty_write(#read_marker{key = Key, time = Time}).
-
--doc """
-Move every account's read marker from folded channel name `OldKey` to
-`NewKey` after a channel rename.
-""".
+-doc "Move every account's read marker from `OldKey` to `NewKey` after channel rename.".
 -spec rename_markers(binary(), binary()) -> ok.
 rename_markers(OldKey, NewKey) ->
-    Rows = mnesia:dirty_select(read_marker, [
-        {{read_marker, {'$1', OldKey}, '$2'}, [], [{{'$1', '$2'}}]}
-    ]),
-    lists:foreach(
-        fun
-            ({Account, Time}) when is_binary(Account), is_integer(Time) ->
-                mnesia:dirty_delete(read_marker, {Account, OldKey}),
-                mnesia:dirty_write(#read_marker{key = {Account, NewKey}, time = Time});
-            (_) ->
-                ok
-        end,
-        Rows
-    ),
-    case ets:whereis(briskd_conn) of
-        undefined ->
-            ok;
-        _ ->
-            lists:foreach(
-                fun({Pid, Map}) ->
-                    case maps:get(markread, Map, undefined) of
-                        Markers when is_map(Markers), is_map_key(OldKey, Markers) ->
-                            Time = maps:get(OldKey, Markers),
-                            Updated = (maps:remove(OldKey, Markers))#{NewKey => Time},
-                            briskd_conn:put(Pid, markread, Updated);
-                        _ ->
-                            ok
-                    end
-                end,
-                ets:tab2list(briskd_conn)
-            )
-    end.
+    briskd_history_markread:rename_markers(OldKey, NewKey).
 
--doc """
-Apply a read marker received from another server. Returns `unchanged` when
-the stored marker is already at or past `Time`; otherwise stores it, tells
-this server's read-marker clients of that account, and returns `updated`.
-""".
+-doc "Apply a read marker received from another server.".
 -spec remote_marker(binary(), binary(), integer()) -> updated | unchanged.
 remote_marker(Account, Target, Time) ->
-    Key = {briskd_wire:fold(Account), briskd_wire:fold(Target)},
-    case mnesia:dirty_read(read_marker, Key) of
-        [#read_marker{time = Stored}] when Stored >= Time ->
-            unchanged;
-        _ ->
-            store_account_marker(element(1, Key), element(2, Key), Time),
-            Server = server(),
-            lists:foreach(
-                fun(Pid) ->
-                    case briskd_cap:enabled(Pid, <<"draft/read-marker">>) of
-                        true -> send_marker(Pid, Server, Target, Time);
-                        false -> ok
-                    end
-                end,
-                briskd_conn:account_pids(element(1, Key))
-            ),
-            updated
-    end.
-
-%% Connections that share the requester's account and negotiated read-marker.
-same_account(Pid) ->
-    case briskd_state_v3:account(Pid) of
-        undefined ->
-            [Pid];
-        Account ->
-            [
-                Other
-             || Other <- briskd_conn:account_pids(Account),
-                Other =:= Pid orelse briskd_cap:enabled(Other, <<"draft/read-marker">>)
-            ]
-    end.
+    briskd_history_markread:remote_marker(Account, Target, Time).
 
 %%% REDACT
 
@@ -1441,12 +760,12 @@ redaction_enabled() ->
 redact_channel(Target, MsgId, Reason, #client{pid = Pid} = Client, _Server) ->
     case mnesia:dirty_read(channel, briskd_wire:fold(Target)) of
         [#channel{key = Key, name = Name, members = Members}] when is_map_key(Pid, Members) ->
-            case find({channel, Key}, MsgId) of
+            case briskd_history_query:find({channel, Key}, MsgId) of
                 {ok, Entry} ->
                     Operator = lists:member(operator, maps:get(Pid, Members)),
                     case Operator orelse own_entry(Pid, Client, Entry) of
                         true ->
-                            remove({channel, Key}, MsgId),
+                            briskd_history_query:remove({channel, Key}, MsgId),
                             Prefix = briskd_state_send:prefix(Client),
                             Recipients = [
                                 P
@@ -1476,13 +795,13 @@ redact_channel(Target, MsgId, Reason, #client{pid = Pid} = Client, _Server) ->
     end.
 
 redact_direct(Target, MsgId, Reason, #client{pid = Pid} = Client, _Server) ->
-    case access(Client, Target) of
+    case briskd_history_query:access(Client, Target) of
         {ok, _Name, {direct, Key} = Source} ->
-            case find(Source, MsgId) of
+            case briskd_history_query:find(Source, MsgId) of
                 {ok, Entry} ->
                     case own_entry(Pid, Client, Entry) of
                         true ->
-                            remove({direct, Key}, MsgId),
+                            briskd_history_query:remove({direct, Key}, MsgId),
                             Prefix = briskd_state_send:prefix(Client),
                             Self = [Pid || briskd_cap:enabled(Pid, <<"draft/message-redaction">>)],
                             briskd_state_send:broadcast(
@@ -1589,7 +908,12 @@ receive_remote_redact(Peer, Prefix, [Target, MsgId | Rest]) ->
                 #{NickKey := {Peer, Roles}} ->
                     Operator = lists:member(operator, Roles),
                     case
-                        remote_redact_allowed(Operator, Remote, Prefix, find({channel, Key}, MsgId))
+                        remote_redact_allowed(
+                            Operator,
+                            Remote,
+                            Prefix,
+                            briskd_history_query:find({channel, Key}, MsgId)
+                        )
                     of
                         true -> apply_remote_redact(Peer, Prefix, Target, MsgId, Reason);
                         false -> {error, redact_forbidden}
@@ -1638,7 +962,7 @@ remote_redact_allowed(false, #remote_client{account = Mine}, Prefix, {ok, Entry}
 apply_remote_redact(Peer, Prefix, Target, MsgId, Reason) ->
     case mnesia:dirty_read(channel, briskd_wire:fold(Target)) of
         [#channel{key = Key, name = Name, members = Members}] ->
-            remove({channel, Key}, MsgId),
+            briskd_history_query:remove({channel, Key}, MsgId),
             Recipients = [
                 P
              || P <- maps:keys(Members), briskd_cap:enabled(P, <<"draft/message-redaction">>)
@@ -1651,6 +975,3 @@ apply_remote_redact(Peer, Prefix, Target, MsgId, Reason) ->
         Peer, briskd_wire:line(Prefix, <<"REDACT">>, [Target, MsgId], Reason)
     ),
     ok.
-
-server() ->
-    maps:get(name, briskd_config:current()).

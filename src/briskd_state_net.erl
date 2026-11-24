@@ -45,7 +45,6 @@ them over immediately.
 ]).
 -include("briskd_state.hrl").
 
--define(HOLDS, briskd_holds).
 -define(INBOUND, briskd_inbound_peers).
 
 -doc """
@@ -309,69 +308,26 @@ drop_server(Name, Reason, Except) ->
 -doc """
 Hold a nickname lost in a split or collision so it cannot be taken at once
 (RFC 2813 section 5.7).
-
-The hold lasts `resource_delay` seconds from the configuration, defaulting
-to `briskd_route:resource_delay_seconds/0`; a delay of 0 disables holds. The
-deadline is stored in the `briskd_holds` ETS table under the folded name, in
-monotonic seconds.
 """.
 -spec hold_nick(binary()) -> ok.
 hold_nick(Nick) ->
-    hold(nick, Nick).
+    briskd_net_holds:hold_nick(Nick).
 
 -doc """
-Hold the nickname a local client gave up (quit, lost connection, or nick
-change), like `hold_nick/1`, but owned by that client: a later connection
-that presents the same `RECLAIM` secret, or is logged in to the same
-account, may take it back at once (`nick_blocked/2`). Everyone else waits
-out the delay. This is what lets a WebIRC page reload keep its nickname.
+Hold the nickname a local client gave up, owned by that client's `RECLAIM`
+secret or account.
 """.
 -spec hold_nick(binary(), #client{}) -> ok.
 hold_nick(Nick, Client) ->
-    hold(nick, Nick, hold_owner(Client)).
-
-%% Who may take back a nickname held for a local client: the hash of its
-%% RECLAIM secret, and its account, if logged in. Without either, the hold
-%% has no owner.
-hold_owner(#client{pid = Pid}) ->
-    case {briskd_conn:get(Pid, reclaim), briskd_state_v3:account(Pid)} of
-        {undefined, undefined} -> undefined;
-        {Token, Account} -> #{token => Token, account => Account}
-    end.
+    briskd_net_holds:hold_nick(Nick, Client).
 
 -doc """
 Handle `RECLAIM <secret>`: remember the SHA-256 of a client-chosen secret
-for this connection, so a nickname it later gives up can be taken back by a
-connection presenting the same secret (`hold_nick/2`). A server extension
-used by WebIRC, which keeps the secret for the browser tab; send it before
-`NICK`. The secret is 16 to 64 characters of letters, digits, `-`, and `_`.
-A missing secret gets 461; an invalid one `FAIL RECLAIM INVALID_SECRET`.
-Success has no reply. The secret is never stored or logged.
+for this connection.
 """.
 -spec reclaim([binary()], #client{}, binary()) -> ok.
-reclaim([Secret | _], #client{pid = Pid}, _Server) ->
-    case valid_secret(Secret) of
-        true ->
-            briskd_conn:put(Pid, reclaim, crypto:hash(sha256, Secret));
-        false ->
-            briskd_state_send:fail(
-                Pid, <<"RECLAIM">>, <<"INVALID_SECRET">>, [], <<"Invalid reclaim secret">>
-            )
-    end;
-reclaim([], Client, Server) ->
-    briskd_state_send:numeric(
-        Client, Server, <<"461">>, [<<"RECLAIM">>], <<"Not enough parameters">>
-    ).
-
-valid_secret(Secret) ->
-    byte_size(Secret) >= 16 andalso byte_size(Secret) =< 64 andalso
-        lists:all(
-            fun(C) ->
-                (C >= $a andalso C =< $z) orelse (C >= $A andalso C =< $Z) orelse
-                    (C >= $0 andalso C =< $9) orelse C =:= $- orelse C =:= $_
-            end,
-            binary_to_list(Secret)
-        ).
+reclaim(Params, Client, Server) ->
+    briskd_net_holds:reclaim(Params, Client, Server).
 
 -doc """
 Hold a channel name whose last remote member was lost, under the same rules
@@ -379,359 +335,78 @@ as `hold_nick/1` (the RFC 2811 channel delay).
 """.
 -spec hold_channel(binary()) -> ok.
 hold_channel(Name) ->
-    hold(channel, Name).
+    briskd_net_holds:hold_channel(Name).
 
 -doc """
 True while a hold set by `hold_nick/1` is still in force for `Nick`.
-
-An expired hold found here is deleted.
 """.
 -spec nick_blocked(binary()) -> boolean().
 nick_blocked(Nick) ->
-    blocked(nick, Nick).
+    briskd_net_holds:nick_blocked(Nick).
 
 -doc """
-True while `Nick` is held against `Client` (numeric 437). A hold owned by
-the same `RECLAIM` secret or account (`hold_nick/2`) does not block
-`Client`; it is released instead, so the nickname is theirs again.
+True while `Nick` is held against `Client` (numeric 437).
 """.
 -spec nick_blocked(binary(), #client{}) -> boolean().
-nick_blocked(Nick, #client{pid = Pid}) ->
-    Key = {nick, briskd_wire:fold(Nick)},
-    case ets:lookup(?HOLDS, Key) of
-        [{_, _Until, #{token := OwnerToken, account := OwnerAccount}}] ->
-            Token = briskd_conn:get(Pid, reclaim),
-            SameToken =
-                is_binary(OwnerToken) andalso is_binary(Token) andalso
-                    crypto:hash_equals(OwnerToken, Token),
-            Account = briskd_state_v3:account(Pid),
-            SameAccount =
-                is_binary(OwnerAccount) andalso is_binary(Account) andalso
-                    briskd_wire:fold(OwnerAccount) =:= briskd_wire:fold(Account),
-            case SameToken orelse SameAccount of
-                true ->
-                    true = ets:delete(?HOLDS, Key),
-                    false;
-                false ->
-                    blocked(nick, Nick)
-            end;
-        _ ->
-            blocked(nick, Nick)
-    end.
+nick_blocked(Nick, Client) ->
+    briskd_net_holds:nick_blocked(Nick, Client).
 
 -doc """
 True while a hold set by `hold_channel/1` is still in force for `Name`.
-
-An expired hold found here is deleted.
 """.
 -spec channel_blocked(binary()) -> boolean().
 channel_blocked(Name) ->
-    blocked(channel, Name).
+    briskd_net_holds:channel_blocked(Name).
 
 -doc """
 Handle a client `CAP` command (IRCv3 capability negotiation).
-
-- `LS [version]` records the requested version, suspends registration until
-  `CAP END`, and lists the advertised capabilities from `m:briskd_cap`; values
-  (`name=value`) are shown only to clients that asked for version 302.
-- `LIST` lists the enabled capabilities.
-- `REQ` applies the request atomically with `briskd_cap:request/2` and answers
-  `ACK` or `NAK`. The reply is formatted with the capabilities in force before
-  the request; the new set applies from the next line.
-- `END` finishes negotiation and sends the welcome burst when registration is
-  otherwise complete.
-
-An unknown subcommand gets numeric 410 and a missing one 461. A reply that
-does not fit one line continues with `*` only for `LS` and `LIST` at
-version 302; an older client gets one line, and names that do not fit are
-left out.
 """.
 -spec cap(#client{}, binary(), [binary()]) -> ok.
-cap(#client{pid = Pid, nick = Nick} = Client, Server, [Sub | Rest]) ->
-    case Sub of
-        <<"LS">> ->
-            briskd_cap:note_ls(Pid, [Sub | Rest]),
-            briskd_cap:hold(Pid),
-            send_cap_list(Pid, Nick, Server, <<"LS">>, ls_tokens(Pid));
-        <<"LIST">> ->
-            send_cap_list(Pid, Nick, Server, <<"LIST">>, briskd_cap:list_names(Pid));
-        <<"REQ">> ->
-            briskd_cap:hold(Pid),
-            %% The ACK is sent with the capabilities in force before the
-            %% request; the new set applies from the next line on.
-            Before = briskd_cap:state(Pid),
-            {Kind, Text} = briskd_cap:request(Pid, Rest),
-            After = briskd_cap:state(Pid),
-            Reply =
-                case Kind of
-                    ack -> <<"ACK">>;
-                    nak -> <<"NAK">>
-                end,
-            briskd_cap:restore(Pid, Before),
-            briskd_state_send:send(Pid, Server, <<"CAP">>, [Nick, Reply], Text),
-            briskd_cap:restore(Pid, After);
-        <<"END">> ->
-            case briskd_cap:finish(Pid, briskd_state_client:identified(Client)) of
-                welcome ->
-                    briskd_state_client:send_welcome(briskd_state_client:client(Pid), Server);
-                _ ->
-                    ok
-            end;
-        _ ->
-            briskd_state_send:numeric(Client, Server, <<"410">>, [Sub], <<"Invalid CAP command">>)
-    end;
-cap(Client, Server, []) ->
-    briskd_state_send:numeric(Client, Server, <<"461">>, [<<"CAP">>], <<"Not enough parameters">>).
-
-%% CAP LS tokens. Values are only shown to clients that asked for version 302.
-ls_tokens(Pid) ->
-    Values = maps:get(version, briskd_cap:state(Pid)) >= 302,
-    [cap_token(Name, Value, Values) || {Name, Value} <- briskd_cap:advertised(Pid)].
-
-cap_token(Name, undefined, _) -> Name;
-cap_token(Name, _Value, false) -> Name;
-cap_token(Name, Value, true) -> <<Name/binary, "=", Value/binary>>.
+cap(Client, Server, Params) ->
+    briskd_net_cap:cap(Client, Server, Params).
 
 -doc """
 Tell `cap-notify` clients about capabilities whose advertisement changed.
-
-`Before` maps each client pid to its earlier advertised list, and `Server` is
-the reply prefix. A capability that disappears is sent as `CAP DEL` (never for
-`sts`) and is disabled. A new capability, or one whose value changed, is sent
-as `CAP NEW`.
 """.
 -spec notify_cap_changes(#{pid() => [{binary(), undefined | binary()}]}, binary()) -> ok.
 notify_cap_changes(Before, Server) ->
-    maps:foreach(
-        fun(Pid, Old) ->
-            case briskd_cap:enabled(Pid, <<"cap-notify">>) of
-                true -> notify_cap_change(Pid, Old, briskd_cap:advertised(Pid), Server);
-                false -> ok
-            end
-        end,
-        Before
-    ).
-
-notify_cap_change(Pid, Old, New, Server) ->
-    Nick =
-        case mnesia:dirty_read(client, Pid) of
-            [#client{nick = N}] -> N;
-            [] -> <<"*">>
-        end,
-    Removed = [
-        Name
-     || {Name, _} <- Old, not lists:keymember(Name, 1, New), Name =/= <<"sts">>
-    ],
-    Added = [Pair || Pair <- New, not lists:member(Pair, Old)],
-    case Removed of
-        [] ->
-            ok;
-        _ ->
-            briskd_cap:disable(Pid, Removed),
-            send_cap_list(Pid, Nick, Server, <<"DEL">>, Removed)
-    end,
-    case Added of
-        [] ->
-            ok;
-        _ ->
-            Values = maps:get(version, briskd_cap:state(Pid)) >= 302,
-            send_cap_list(
-                Pid, Nick, Server, <<"NEW">>, [cap_token(N, V, Values) || {N, V} <- Added]
-            )
-    end.
-
-send_cap_list(Pid, Nick, Server, Sub, Names) ->
-    %% The `*` continuation exists only for LS and LIST.
-    Multiline =
-        maps:get(version, briskd_cap:state(Pid)) >= 302 andalso
-            (Sub =:= <<"LS">> orelse Sub =:= <<"LIST">>),
-    Budget = cap_budget(Server, Nick, Sub, Multiline),
-    Bodies =
-        case Multiline orelse (Sub =/= <<"LS">> andalso Sub =/= <<"LIST">>) of
-            true ->
-                briskd_cap:pack(Names, Budget);
-            false ->
-                %% Before 302 a client reads one LS/LIST line only: names that
-                %% do not fit are left out rather than sent on a second line.
-                [hd(briskd_cap:pack(Names, Budget))]
-        end,
-    Last = length(Bodies),
-    lists:foreach(
-        fun({Index, Body}) ->
-            Middle =
-                case Multiline andalso Index < Last of
-                    true -> [Nick, Sub, <<"*">>];
-                    false -> [Nick, Sub]
-                end,
-            briskd_state_send:send(Pid, Server, <<"CAP">>, Middle, Body)
-        end,
-        lists:enumerate(Bodies)
-    ).
-
-%% Bytes left for the capability list after `:server CAP nick SUB [* ] :`.
-cap_budget(Server, Nick, Sub, Multiline) ->
-    Star =
-        case Multiline of
-            true -> 2;
-            false -> 0
-        end,
-    512 - (11 + Star + byte_size(Server) + byte_size(Nick) + byte_size(Sub)).
+    briskd_net_cap:notify_cap_changes(Before, Server).
 
 -doc """
 Answer `SERVLIST` (RFC 2812 section 3.5.1).
-
-Sends numeric 234 (`RPL_SERVLIST`) for every known service whose name matches
-the wildcard `Mask` and whose type equals `Type` (any type when `Type` is
-`*`), then 235 (`RPL_SERVLISTEND`).
 """.
 -spec servlist(binary(), binary(), #client{}, binary()) -> ok.
 servlist(Mask, Type, Client, Server) ->
-    lists:foreach(
-        fun(
-            #service{
-                name = Name, server = Home, distribution = Dist, type = ServiceType, info = Info
-            }
-        ) ->
-            Matches =
-                briskd_state_channel:wildcard_match(Mask, Name) andalso
-                    (Type =:= <<"*">> orelse Type =:= ServiceType),
-            case Matches of
-                true ->
-                    briskd_state_send:numeric(
-                        Client,
-                        Server,
-                        <<"234">>,
-                        [Name, Home, Dist, ServiceType, <<"1">>],
-                        Info
-                    );
-                false ->
-                    ok
-            end
-        end,
-        services()
-    ),
-    briskd_state_send:numeric(
-        Client, Server, <<"235">>, [Mask, Type], <<"End of service listing">>
-    ).
+    briskd_net_service:servlist(Mask, Type, Client, Server).
 
 -doc """
 Handle a client `SQUERY` (RFC 2812 section 3.5.2).
-
-Replies 411 without a target, 412 without text, and 401 for an unknown
-service. A service registered on this server delivers the text as a `NOTICE`
-from the client to every local operator (user mode `+o`), with 401 when no
-operator is online. A remote service gets the `SQUERY` forwarded to the peer
-it was learned from.
 """.
 -spec squery([binary()], #client{}, binary()) -> ok.
-squery([], Client, Server) ->
-    briskd_state_send:numeric(Client, Server, <<"411">>, [], <<"No recipient given (SQUERY)">>);
-squery([_Service], Client, Server) ->
-    briskd_state_send:numeric(Client, Server, <<"412">>, [], <<"No text to send">>);
-squery([_Service, <<>> | _], Client, Server) ->
-    briskd_state_send:numeric(Client, Server, <<"412">>, [], <<"No text to send">>);
-squery([Name, Text | _], Client, Server) ->
-    case mnesia:dirty_read(service, briskd_wire:fold(Name)) of
-        [] ->
-            briskd_state_send:numeric(
-                Client, Server, <<"401">>, [Name], <<"No such nick/channel">>
-            );
-        [#service{peer = undefined, name = ServiceName}] ->
-            deliver_local_service(ServiceName, Text, Client, Server);
-        [#service{peer = Peer, name = ServiceName}] ->
-            Line = briskd_wire:line(
-                briskd_state_send:prefix(Client), <<"SQUERY">>, [ServiceName], Text
-            ),
-            _ = briskd_links:send(Peer, Line),
-            ok
-    end.
+squery(Params, Client, Server) ->
+    briskd_net_service:squery(Params, Client, Server).
 
 -doc """
 Handle an `SQUERY` (RFC 2812 section 3.5.2) that arrived from the peer `Peer`.
-
-`Prefix` must be a remote user reached through `Peer`
-(`briskd_state_link:remote_source/2`). A service registered on this server
-delivers the text as a `NOTICE` from that user to every local operator, as a
-local `SQUERY` does; no 401 is routed back when no operator is online. A
-service learned from another peer gets the `SQUERY` forwarded there, never
-back to `Peer`. Any other target goes to
-`briskd_state_link:receive_remote_message/4` as before.
-
-Errors: `unknown_remote_source` and those of
-`briskd_state_link:receive_remote_message/4`.
 """.
 -spec remote_squery(binary(), binary(), [binary()]) -> ok | {error, atom()}.
-remote_squery(Peer, Prefix, [Name, Text | _] = Params) when Text =/= <<>> ->
-    case mnesia:dirty_read(service, briskd_wire:fold(Name)) of
-        [] ->
-            briskd_state_link:receive_remote_message(Peer, Prefix, <<"SQUERY">>, Params);
-        [#service{peer = ServicePeer, name = ServiceName}] ->
-            case briskd_state_link:remote_source(Peer, Prefix) of
-                {ok, _} when ServicePeer =:= undefined ->
-                    Operators = briskd_oper:local_operators(),
-                    briskd_state_send:broadcast(
-                        Operators, Prefix, <<"NOTICE">>, [ServiceName], Text
-                    );
-                {ok, _} ->
-                    case briskd_route:should_forward(Peer, ServicePeer) of
-                        true ->
-                            Line = briskd_wire:line(Prefix, <<"SQUERY">>, [ServiceName], Text),
-                            _ = briskd_links:send(ServicePeer, Line),
-                            ok;
-                        false ->
-                            ok
-                    end;
-                error ->
-                    {error, unknown_remote_source}
-            end
-    end;
 remote_squery(Peer, Prefix, Params) ->
-    briskd_state_link:receive_remote_message(Peer, Prefix, <<"SQUERY">>, Params).
+    briskd_net_service:remote_squery(Peer, Prefix, Params).
 
 -doc """
 Import a `SERVICE` introduction (RFC 2813 section 4.1.4) from the peer
 `Peer`.
-
-Accepts the RFC 2813 form `<name> <reserved> <distribution> <type>
-<reserved> :<info>` and a shorter `<name> <distribution> <type> :<info>`.
-The home server is `Prefix`, or `Peer` when there is no prefix. Returns
-`{error, invalid_service}` for a bad parameter list or service name and
-`{error, nickname_collision}` when a local or remote user holds the name.
-The service is stored but not relayed to other peers.
 """.
 -spec import_service(binary(), binary(), [binary()]) -> ok | {error, atom()}.
 import_service(Peer, Prefix, Params) ->
-    case service_params(Params) of
-        error ->
-            {error, invalid_service};
-        {Name, Dist, Type, Info} ->
-            Home =
-                case Prefix of
-                    undefined -> Peer;
-                    _ -> Prefix
-                end,
-            case
-                briskd_state_link:trusted_server(Peer, Home) andalso
-                    briskd_wire:nickname(Name, briskd_state:nicklen())
-            of
-                false ->
-                    {error, invalid_service};
-                true ->
-                    case peer_service_room(Peer, Name) of
-                        false -> {error, too_many_remote_services};
-                        true -> store_service(Name, Dist, Type, Info, Home, Peer)
-                    end
-            end
-    end.
+    briskd_net_service:import_service(Peer, Prefix, Params).
 
 -doc """
 Number of known services, local and imported.
 """.
 -spec service_count() -> non_neg_integer().
 service_count() ->
-    case mnesia:table_info(service, size) of
-        Size when is_integer(Size), Size >= 0 -> Size
-    end.
+    briskd_net_service:service_count().
 
 -doc """
 `SERVER` lines for every known server, nearest first, for a new peer's burst
@@ -762,153 +437,10 @@ links_entries() ->
 
 -doc """
 Run an operator-only server command for a local client.
-
-A client without user mode `+o` gets numeric 481. The caller passes only
-these commands:
-
-- `SQUIT <server> [:<reason>]` runs `split/3` locally and confirms with a
-  `NOTICE`; 402 for an unknown server.
-- `CONNECT <server>` asks `briskd_links:connect_peer/1` to connect a configured
-  peer and confirms with a `NOTICE`; 402 for a name that is not configured.
-- `SERVICE <name> <distribution> <type> [:<info>]` registers a local service
-  and replies 234, or 432 for a bad name and 433 for a name in use.
-- `DIE` and `RESTART` call `init:stop/0` and `init:restart/0` from a new
-  process.
-
-A command missing its required parameters gets 461.
 """.
 -spec oper_command(binary(), [binary()], #client{}, binary()) -> ok.
-oper_command(Command, Params, #client{pid = Pid} = Client, Server) ->
-    case maps:is_key($o, briskd_state_client:user_modes(Pid)) of
-        false ->
-            briskd_state_send:numeric(Client, Server, <<"481">>, [], <<"Permission Denied">>);
-        true ->
-            oper_command_allowed(Command, Params, Client, Server)
-    end.
-
-oper_command_allowed(<<"SQUIT">>, [Target | Rest], Client, Server) ->
-    Reason =
-        case Rest of
-            [Text | _] -> Text;
-            [] -> <<"SQUIT">>
-        end,
-    case mnesia:dirty_read(known_server, briskd_wire:fold(Target)) of
-        [] ->
-            briskd_state_send:numeric(Client, Server, <<"402">>, [Target], <<"No such server">>);
-        [#known_server{name = Name}] ->
-            drop_server(Name, Reason, undefined),
-            briskd_state_send:send(
-                Client#client.pid,
-                Server,
-                <<"NOTICE">>,
-                [Client#client.nick],
-                <<"SQUIT ", Name/binary>>
-            )
-    end;
-oper_command_allowed(<<"SQUIT">>, _, Client, Server) ->
-    briskd_state_send:numeric(
-        Client, Server, <<"461">>, [<<"SQUIT">>], <<"Not enough parameters">>
-    );
-oper_command_allowed(<<"CONNECT">>, [Target | _], Client, Server) ->
-    case configured_peer(Target) of
-        {ok, Name} ->
-            _ = briskd_links:connect_peer(Name),
-            briskd_state_send:send(
-                Client#client.pid,
-                Server,
-                <<"NOTICE">>,
-                [Client#client.nick],
-                <<"Connect attempt for ", Name/binary>>
-            );
-        error ->
-            briskd_state_send:numeric(Client, Server, <<"402">>, [Target], <<"No such server">>)
-    end;
-oper_command_allowed(<<"CONNECT">>, _, Client, Server) ->
-    briskd_state_send:numeric(
-        Client, Server, <<"461">>, [<<"CONNECT">>], <<"Not enough parameters">>
-    );
-oper_command_allowed(<<"SERVICE">>, [Name, Dist, Type | Rest], Client, Server) ->
-    Info =
-        case Rest of
-            [Text | _] -> Text;
-            [] -> <<"service">>
-        end,
-    case briskd_wire:nickname(Name, briskd_state:nicklen()) of
-        true ->
-            case store_service(Name, Dist, Type, Info, local_name(), undefined) of
-                ok ->
-                    briskd_state_send:numeric(
-                        Client, Server, <<"234">>, [Name, local_name(), Dist, Type, <<"0">>], Info
-                    );
-                {error, nickname_collision} ->
-                    briskd_state_send:numeric(
-                        Client, Server, <<"433">>, [Name], <<"Nickname is already in use">>
-                    )
-            end;
-        false ->
-            briskd_state_send:numeric(Client, Server, <<"432">>, [Name], <<"Erroneous nickname">>)
-    end;
-oper_command_allowed(<<"SERVICE">>, _, Client, Server) ->
-    briskd_state_send:numeric(
-        Client, Server, <<"461">>, [<<"SERVICE">>], <<"Not enough parameters">>
-    );
-%% RFC 2812 DIE shuts the node down. RESTART restarts the runtime. Both are
-%% operator-only; a non-operator already received numeric 481.
-oper_command_allowed(<<"DIE">>, _, _Client, _Server) ->
-    erlang:spawn(fun init:stop/0),
-    ok;
-oper_command_allowed(<<"RESTART">>, _, _Client, _Server) ->
-    erlang:spawn(fun init:restart/0),
-    ok.
-
-store_service(Name, Dist, Type, Info, Home, Peer) ->
-    Key = briskd_wire:fold(Name),
-    case briskd_state_client:find_nick(Name) =/= undefined orelse remote_nick(Name) of
-        true ->
-            {error, nickname_collision};
-        false ->
-            mnesia:dirty_write(
-                briskd_wire:retain_fields(#service{
-                    key = Key,
-                    name = Name,
-                    distribution = Dist,
-                    type = Type,
-                    info = Info,
-                    server = Home,
-                    peer = Peer
-                })
-            ),
-            case is_binary(Peer) of
-                true -> briskd_state_link:track_peer_item(service, Key, Peer);
-                false -> briskd_state_link:untrack_peer_item(service, Key)
-            end,
-            ok
-    end.
-
-deliver_local_service(ServiceName, Text, Client, Server) ->
-    Operators = briskd_oper:local_operators(),
-    briskd_state_send:broadcast(
-        Operators,
-        briskd_state_send:prefix(Client),
-        <<"NOTICE">>,
-        [ServiceName],
-        Text
-    ),
-    case Operators of
-        [] ->
-            briskd_state_send:numeric(
-                Client, Server, <<"401">>, [ServiceName], <<"No such nick/channel">>
-            );
-        _ ->
-            ok
-    end.
-
-service_params([Name, _Reserved, Dist, Type, _Reserved2, Info | _]) ->
-    {Name, Dist, Type, Info};
-service_params([Name, Dist, Type, Info | _]) ->
-    {Name, Dist, Type, Info};
-service_params(_) ->
-    error.
+oper_command(Command, Params, Client, Server) ->
+    briskd_net_service:oper_command(Command, Params, Client, Server).
 
 lost_names(Lost) ->
     Known = lost_known(Lost),
@@ -929,7 +461,7 @@ lost_client(#remote_client{server = Server, peer = Peer}, Folds) ->
     lists:member(briskd_wire:fold(Home), Folds).
 
 drop_remote_user(#remote_client{key = Key, nick = Nick, user = User, host = Host}, Reason) ->
-    hold(nick, Nick),
+    hold_nick(Nick),
     Prefix = <<Nick/binary, "!", User/binary, "@", Host/binary>>,
     briskd_state_send:with_source(briskd_state_v3:remote_source_info(Prefix), fun() ->
         briskd_state_send:broadcast(
@@ -959,7 +491,7 @@ drop_memberships(NickKey) ->
                                     mnesia:dirty_delete(remote_channel, ChannelKey),
                                     briskd_population:on_channel_delete(ChannelKey),
                                     case mnesia:dirty_read(channel, ChannelKey) of
-                                        [] -> hold(channel, Name);
+                                        [] -> hold_channel(Name);
                                         _ -> ok
                                     end;
                                 _ ->
@@ -1034,55 +566,6 @@ known_maps() ->
         ] <- [mnesia:dirty_read(known_server, Key)]
     ].
 
-services() ->
-    [
-        Service
-     || Key <- briskd_state:table_keys(service),
-        [#service{} = Service] <- [mnesia:dirty_read(service, Key)]
-    ].
-
-%% `resource_delay` (seconds) overrides the default delay; 0 disables holds.
-%% A hold is {{Kind, Folded}, Until} in monotonic seconds, or
-%% {{Kind, Folded}, Until, Owner} when a local client owns it (hold/3).
-hold(Kind, Name) ->
-    hold(Kind, Name, undefined).
-
-hold(Kind, Name, Owner) ->
-    Delay = maps:get(
-        resource_delay,
-        briskd_config:current_or_empty(),
-        briskd_route:resource_delay_seconds()
-    ),
-    case Delay of
-        0 ->
-            ok;
-        _ ->
-            Until = erlang:monotonic_time(second) + Delay,
-            Key = {Kind, briskd_wire:fold(Name)},
-            case Owner of
-                undefined -> ets:insert(?HOLDS, {Key, Until});
-                _ -> ets:insert(?HOLDS, {Key, Until, Owner})
-            end,
-            ok
-    end.
-
-blocked(Kind, Name) ->
-    Key = {Kind, briskd_wire:fold(Name)},
-    Now = erlang:monotonic_time(second),
-    case ets:lookup(?HOLDS, Key) of
-        [Hold] ->
-            Until = element(2, Hold),
-            case briskd_route:nick_delay_blocked(Key, Now, #{Key => Until}) of
-                true ->
-                    true;
-                false ->
-                    true = ets:delete(?HOLDS, Key),
-                    false
-            end;
-        [] ->
-            false
-    end.
-
 -doc """
 Drop nickname and channel holds whose delay has passed.
 
@@ -1091,12 +574,7 @@ about again do not accumulate.
 """.
 -spec expire_holds() -> ok.
 expire_holds() ->
-    Now = erlang:monotonic_time(second),
-    _ = ets:select_delete(?HOLDS, [
-        {{'_', '$1'}, [{'=<', '$1', Now}], [true]},
-        {{'_', '$1', '_'}, [{'=<', '$1', Now}], [true]}
-    ]),
-    ok.
+    briskd_net_holds:expire_holds().
 
 -doc """
 The configured `server_links` entry whose name equals `Target` under the
@@ -1112,9 +590,6 @@ configured_peer(Target) ->
         false -> error
     end.
 
-remote_nick(Name) ->
-    mnesia:dirty_read(remote_client, briskd_wire:fold(Name)) =/= [].
-
 peer_server_room(Peer, Name) ->
     Key = briskd_wire:fold(Name),
     case mnesia:dirty_read(known_server, Key) of
@@ -1125,18 +600,6 @@ peer_server_room(Peer, Name) ->
                 max_peer_servers, briskd_config:current_or_empty(), 100
             ),
             briskd_state_link:peer_item_count(server, Peer) < Max
-    end.
-
-peer_service_room(Peer, Name) ->
-    Key = briskd_wire:fold(Name),
-    case mnesia:dirty_read(service, Key) of
-        [#service{peer = Peer}] ->
-            true;
-        _ ->
-            Max = maps:get(
-                max_peer_services, briskd_config:current_or_empty(), 100
-            ),
-            briskd_state_link:peer_item_count(service, Peer) < Max
     end.
 
 local_name() ->

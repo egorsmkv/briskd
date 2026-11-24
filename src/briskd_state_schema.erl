@@ -3,7 +3,7 @@
 Mnesia schema bootstrap, migrations, ETS table initialization, configuration
 snapshot keys, and channel seeding for `m:briskd_state`.
 
-All functions execute during `briskd_state:init/1`, `REHASH`, or read-only
+All functions execute during `m:briskd_state` startup, `REHASH`, or read-only
 accessors inside the `m:briskd_state` ownership boundary. `persistent_term`
 keys remain namespaced under `briskd_state` so runtime readers keep an unchanged
 contract.

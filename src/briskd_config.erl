@@ -27,14 +27,17 @@ table in the [Configuration guide](configuration.html). Notable checks:
 The module also provides `secret_match/2` for comparing configured passwords.
 """.
 -export([
+    boolean_setting/2,
     current/0,
     current_or_empty/0,
     load/1,
     parse_log_level/1,
+    retain_secret/1,
     secret_match/2,
     store/1,
     base/0,
-    store_base/1
+    store_base/1,
+    text_value/3
 ]).
 
 %% Listener port, or `null` when that listener is off.
@@ -362,6 +365,8 @@ it answers.
 
 -export_type([
     config/0,
+    credential/0,
+    webirc_gateway/0,
     channel_entry/0,
     server_link/0,
     admin_info/0,
@@ -502,14 +507,18 @@ load(Path) ->
         Retention = retention(maps:get(<<"retention">>, Json, <<"channels">>)),
         HistoryLimit = history_limit(maps:get(<<"history_limit">>, Json, 100)),
         NickLen = nicklen(maps:get(<<"nicklen">>, Json, 9)),
-        Operators = operators(maps:get(<<"operators">>, Json, [])),
-        Administrators = administrators(maps:get(<<"administrators">>, Json, []), NickLen),
-        ok = distinct_accounts(Operators, Administrators),
-        Channels = channels(maps:get(<<"channels">>, Json, [])),
-        ServerLinks = server_links(maps:get(<<"server_links">>, Json, []), Name),
-        Providers = ai_providers(maps:get(<<"ai_providers">>, Json, #{})),
-        Bots = bots(maps:get(<<"bots">>, Json, []), Providers, NickLen),
-        Admin = admin_info(Json),
+        Operators = briskd_config_subsystems:operators(maps:get(<<"operators">>, Json, [])),
+        Administrators = briskd_config_subsystems:administrators(
+            maps:get(<<"administrators">>, Json, []), NickLen
+        ),
+        ok = briskd_config_subsystems:distinct_accounts(Operators, Administrators),
+        Channels = briskd_config_subsystems:channels(maps:get(<<"channels">>, Json, [])),
+        ServerLinks = briskd_config_subsystems:server_links(
+            maps:get(<<"server_links">>, Json, []), Name
+        ),
+        Providers = briskd_config_subsystems:ai_providers(maps:get(<<"ai_providers">>, Json, #{})),
+        Bots = briskd_config_subsystems:bots(maps:get(<<"bots">>, Json, []), Providers, NickLen),
+        Admin = briskd_config_subsystems:admin_info(Json),
         Network = network_name(maps:get(<<"network">>, Json, Name)),
         ServerInfo = text_value(Json, <<"server_info">>, <<"Erlang/OTP IRC server">>),
         {ok, #{
@@ -517,14 +526,14 @@ load(Path) ->
             shutdown_grace => shutdown_grace(maps:get(<<"shutdown_grace">>, Json, 5)),
             max_sendq => max_sendq(maps:get(<<"max_sendq">>, Json, 10000)),
             flood => flood(maps:get(<<"flood">>, Json, #{})),
-            dronebl => dronebl(maps:get(<<"dronebl">>, Json, false)),
-            webui => webui(maps:get(<<"webui">>, Json, null)),
+            dronebl => briskd_config_subsystems:dronebl(maps:get(<<"dronebl">>, Json, false)),
+            webui => briskd_config_subsystems:webui(maps:get(<<"webui">>, Json, null)),
             e2ee => e2ee(maps:get(<<"e2ee">>, Json, null)),
-            voice => voice(maps:get(<<"voice">>, Json, null)),
-            files => files(maps:get(<<"files">>, Json, null)),
-            calls => calls(maps:get(<<"calls">>, Json, null)),
-            search => search(maps:get(<<"search">>, Json, null)),
-            features => features(maps:get(<<"features">>, Json, #{})),
+            voice => briskd_config_subsystems:voice(maps:get(<<"voice">>, Json, null)),
+            files => briskd_config_subsystems:files(maps:get(<<"files">>, Json, null)),
+            calls => briskd_config_subsystems:calls(maps:get(<<"calls">>, Json, null)),
+            search => briskd_config_subsystems:search(maps:get(<<"search">>, Json, null)),
+            features => briskd_config_subsystems:features(maps:get(<<"features">>, Json, #{})),
             max_accounts => positive_limit(maps:get(<<"max_accounts">>, Json, 100000)),
             max_empty_channels => positive_limit(maps:get(<<"max_empty_channels">>, Json, 1000)),
             empty_channel_ttl => empty_channel_ttl(maps:get(<<"empty_channel_ttl">>, Json, 86400)),
@@ -565,7 +574,7 @@ load(Path) ->
             utf8_only => boolean_setting(utf8_only, maps:get(<<"utf8_only">>, Json, false)),
             chathistory => boolean_setting(chathistory, maps:get(<<"chathistory">>, Json, true)),
             monitor_limit => positive_limit(maps:get(<<"monitor_limit">>, Json, 100)),
-            webirc => webirc(maps:get(<<"webirc">>, Json, [])),
+            webirc => briskd_config_subsystems:webirc(maps:get(<<"webirc">>, Json, [])),
             account_verification => account_verification(
                 maps:get(<<"account_verification">>, Json, null)
             ),
@@ -753,6 +762,8 @@ resource_delay(Value) -> erlang:error({invalid_resource_delay, Value}).
 password_min(Value) when is_integer(Value), Value >= 1, Value =< 300 -> Value;
 password_min(Value) -> erlang:error({invalid_account_password_min, Value}).
 
+-doc "Validate a boolean configuration value under `Key`.".
+-spec boolean_setting(atom(), term()) -> boolean().
 boolean_setting(_Key, Value) when is_boolean(Value) -> Value;
 boolean_setting(Key, Value) -> erlang:error({invalid_boolean, Key, Value}).
 
@@ -894,28 +905,10 @@ verify_url(Url) when is_binary(Url), byte_size(Url) =< 2048 ->
 verify_url(Value) ->
     erlang:error({invalid_verify_url, Value}).
 
-%% Trusted WebIRC gateways. `hosts` lists gateway IP addresses that may send
-%% WEBIRC with `password`. A missing `hosts` list does not trust any address.
-webirc(Entries) when is_list(Entries) ->
-    [
-        begin
-            Password = maps:get(<<"password">>, Entry),
-            true = is_binary(Password) andalso byte_size(Password) > 0,
-            Hosts = maps:get(<<"hosts">>, Entry),
-            true = is_list(Hosts) andalso Hosts =/= [],
-            Parsed = [
-                begin
-                    {ok, Address} = inet:parse_address(binary_to_list(Host)),
-                    Address
-                end
-             || Host <- Hosts
-            ],
-            #{password => Password, hosts => Parsed}
-        end
-     || Entry <- Entries
-    ];
-webirc(Value) ->
-    erlang:error({invalid_webirc, Value}).
+-doc "Copy a configured binary secret onto the process heap so it does not pin a file buffer.".
+-spec retain_secret(undefined | binary()) -> undefined | binary().
+retain_secret(undefined) -> undefined;
+retain_secret(Secret) -> briskd_wire:retain(Secret).
 
 positive_limit(Value) when is_integer(Value), Value > 0, Value =< 1000000 -> Value.
 
@@ -942,751 +935,10 @@ history_limit(Value) ->
 optional_secret(null) -> null;
 optional_secret(Secret) when is_binary(Secret), byte_size(Secret) > 0 -> Secret.
 
-server_links(Entries, LocalName) when is_list(Entries) ->
-    Parsed =
-        [
-            begin
-                Name = maps:get(<<"name">>, Entry),
-                Host = maps:get(<<"host">>, Entry),
-                Port = maps:get(<<"port">>, Entry),
-                Password = maps:get(<<"password">>, Entry),
-                TLS = maps:get(<<"tls">>, Entry, false),
-                match = re:run(Name, <<"^[A-Za-z0-9][A-Za-z0-9.-]{0,62}$">>, [
-                    {capture, none}, dollar_endonly
-                ]),
-                false = briskd_wire:fold(Name) =:= briskd_wire:fold(LocalName),
-                true =
-                    is_binary(Host) andalso byte_size(Host) > 0 andalso byte_size(Host) =< 253 andalso
-                        binary:match(Host, [<<0>>, <<" ">>, <<"\r">>, <<"\n">>]) =:= nomatch,
-                true = is_integer(Port) andalso Port > 0 andalso Port =< 65535,
-                true =
-                    is_binary(Password) andalso byte_size(Password) > 0 andalso
-                        byte_size(Password) =< 400,
-                true = is_boolean(TLS),
-                #{name => Name, host => Host, port => Port, password => Password, tls => TLS}
-            end
-         || Entry <- Entries
-        ],
-    Names = [briskd_wire:fold(maps:get(name, Link)) || Link <- Parsed],
-    true = length(Names) =:= length(lists:usort(Names)),
-    Parsed.
-
-admin_info(Json) ->
-    #{
-        name => text_value(Json, <<"admin_name">>, <<"IRC server administrator">>),
-        location1 => text_value(Json, <<"admin_location1">>, <<"Not configured">>),
-        location2 => text_value(Json, <<"admin_location2">>, <<"Not configured">>),
-        email => text_value(Json, <<"admin_email">>, <<"Not configured">>)
-    }.
-
+-doc "Read a non-empty binary text field from `Json` with a fallback default.".
+-spec text_value(map(), binary(), binary()) -> binary().
 text_value(Json, Key, Default) ->
     case maps:get(Key, Json, Default) of
         Value when is_binary(Value), byte_size(Value) > 0 -> Value;
         _ -> erlang:error({invalid_text_setting, Key})
     end.
-
-operators(Entries) when is_list(Entries) ->
-    Parsed =
-        [
-            begin
-                Name = maps:get(<<"name">>, Entry),
-                Password = maps:get(<<"password">>, Entry),
-                true = byte_size(Name) > 0 andalso byte_size(Name) =< 32,
-                true = byte_size(Password) > 0,
-                {briskd_wire:fold(Name), Password}
-            end
-         || Entry <- Entries
-        ],
-    Keys = [Name || {Name, _} <- Parsed],
-    true = length(Keys) =:= length(lists:usort(Keys)),
-    Parsed.
-
-%% Administrator accounts use OPER. `nick` is the OPER parameter, folded with
-%% RFC 1459 rules. It does not have to equal the client's current nickname.
-%% The same folded name cannot appear twice or also appear in `operators`.
-administrators(Entries, NickLen) when is_list(Entries) ->
-    administrators(Entries, NickLen, [], []);
-administrators(Value, _NickLen) ->
-    erlang:error({invalid_administrators, Value}).
-
-administrators([], _NickLen, _Seen, Acc) ->
-    lists:reverse(Acc);
-administrators([Entry | Rest], NickLen, Seen, Acc) ->
-    Account = administrator(Entry, NickLen),
-    {Nick, _Password} = Account,
-    case lists:member(Nick, Seen) of
-        true -> erlang:error({duplicate_administrator, Nick});
-        false -> administrators(Rest, NickLen, [Nick | Seen], [Account | Acc])
-    end.
-
-administrator(Entry, NickLen) when is_map(Entry) ->
-    Nick =
-        case maps:get(<<"nick">>, Entry, undefined) of
-            Given when is_binary(Given) -> Given;
-            Other -> erlang:error({invalid_administrator, Other})
-        end,
-    Password = maps:get(<<"password">>, Entry, undefined),
-    case briskd_wire:nickname(Nick, NickLen) of
-        true -> ok;
-        false -> erlang:error({invalid_administrator, Nick})
-    end,
-    case is_binary(Password) andalso byte_size(Password) > 0 andalso byte_size(Password) =< 400 of
-        true -> {briskd_wire:fold(Nick), Password};
-        false -> erlang:error({invalid_administrator, Nick})
-    end;
-administrator(_, _NickLen) ->
-    erlang:error({invalid_administrator, invalid}).
-
-distinct_accounts(Operators, Administrators) ->
-    OperatorNames = [Name || {Name, _} <- Operators],
-    case [Nick || {Nick, _} <- Administrators, lists:member(Nick, OperatorNames)] of
-        [] -> ok;
-        [Nick | _] -> erlang:error({duplicate_administrator, Nick})
-    end.
-
-%% Predefined channels are created when no row exists. Safe `!` names are
-%% rejected because their identifier is assigned by the server.
-channels(Entries) when is_list(Entries) ->
-    channels(Entries, [], []);
-channels(Value) ->
-    erlang:error({invalid_channels, Value}).
-
-channels([], _Seen, Acc) ->
-    lists:reverse(Acc);
-channels([Entry | Rest], Seen, Acc) ->
-    Channel = channel_entry(Entry),
-    Key = maps:get(key, Channel),
-    case lists:member(Key, Seen) of
-        true -> erlang:error({duplicate_channel, maps:get(name, Channel)});
-        false -> channels(Rest, [Key | Seen], [Channel | Acc])
-    end.
-
-channel_entry(Entry) when is_map(Entry) ->
-    Name =
-        case maps:get(<<"name">>, Entry, undefined) of
-            Given when is_binary(Given) -> Given;
-            Other -> erlang:error({invalid_channel, channel_label(Other)})
-        end,
-    case briskd_wire:channel(Name) andalso binary:first(Name) =/= $! of
-        true -> ok;
-        false -> erlang:error({invalid_channel, channel_label(Name)})
-    end,
-    Topic = channel_topic(maps:get(<<"topic">>, Entry, <<>>)),
-    Password = channel_key(maps:get(<<"key">>, Entry, null)),
-    Limit = channel_limit(maps:get(<<"limit">>, Entry, null)),
-    Flags = channel_flags(Name, maps:get(<<"modes">>, Entry, <<>>)),
-    #{
-        key => briskd_wire:fold(Name),
-        name => briskd_wire:retain(Name),
-        topic => briskd_wire:retain(Topic),
-        password => retain_secret(Password),
-        limit => Limit,
-        flags => Flags
-    };
-channel_entry(_) ->
-    erlang:error({invalid_channel, invalid}).
-
-channel_label(Name) when is_binary(Name), byte_size(Name) =< 50 -> Name;
-channel_label(_) -> invalid.
-
-channel_topic(<<>>) ->
-    <<>>;
-channel_topic(Topic) when is_binary(Topic), byte_size(Topic) =< 390 ->
-    case binary:match(Topic, [<<0>>, <<"\r">>, <<"\n">>]) of
-        nomatch -> Topic;
-        _ -> erlang:error({invalid_channel_topic, invalid})
-    end;
-channel_topic(_) ->
-    erlang:error({invalid_channel_topic, invalid}).
-
-channel_key(null) ->
-    undefined;
-channel_key(Key) when is_binary(Key), byte_size(Key) > 0, byte_size(Key) =< 64 ->
-    case binary:match(Key, [<<0>>, <<" ">>, <<",">>, <<":">>, <<"\r">>, <<"\n">>]) of
-        nomatch -> Key;
-        _ -> erlang:error({invalid_channel_key, invalid})
-    end;
-channel_key(_) ->
-    erlang:error({invalid_channel_key, invalid}).
-
-channel_limit(null) ->
-    undefined;
-channel_limit(Limit) when is_integer(Limit), Limit >= 1, Limit =< 2147483647 ->
-    Limit;
-channel_limit(Limit) ->
-    erlang:error({invalid_channel_limit, Limit}).
-
-channel_flags(Name, <<$+, Modes/binary>>) ->
-    channel_flags(Name, Modes);
-channel_flags(_Name, <<$-, _/binary>> = Modes) ->
-    erlang:error({invalid_channel_modes, Modes});
-channel_flags(Name, Modes) when is_binary(Modes), byte_size(Modes) =< 16 ->
-    Flags = mode_letters(Modes, binary:first(Name), #{}),
-    case binary:first(Name) of
-        $+ -> Flags#{$t => true};
-        _ -> Flags
-    end;
-channel_flags(_Name, _Modes) ->
-    erlang:error({invalid_channel_modes, invalid}).
-
-mode_letters(<<>>, _Type, Flags) ->
-    Flags;
-mode_letters(<<Letter, Rest/binary>>, Type, Flags) ->
-    case allowed_channel_mode(Letter, Type) andalso not is_map_key(Letter, Flags) of
-        true ->
-            case exclusive_mode(Letter, Flags) of
-                true -> mode_letters(Rest, Type, Flags#{Letter => true});
-                false -> erlang:error({invalid_channel_modes, Letter})
-            end;
-        false ->
-            erlang:error({invalid_channel_modes, Letter})
-    end.
-
-allowed_channel_mode($a, $&) ->
-    true;
-allowed_channel_mode($a, _) ->
-    false;
-allowed_channel_mode(Letter, Type) when
-    Type =:= $# orelse Type =:= $& orelse Type =:= $+,
-    Letter =:= $i orelse Letter =:= $m orelse Letter =:= $n orelse Letter =:= $p orelse
-        Letter =:= $s orelse Letter =:= $t orelse Letter =:= $q orelse Letter =:= $K
-->
-    true;
-allowed_channel_mode(_, _) ->
-    false.
-
-exclusive_mode($p, Flags) ->
-    not is_map_key($s, Flags);
-exclusive_mode($s, Flags) ->
-    not is_map_key($p, Flags);
-exclusive_mode(_, _) ->
-    true.
-
-retain_secret(undefined) -> undefined;
-retain_secret(Secret) -> briskd_wire:retain(Secret).
-
-%% DroneBL DNSBL lookup and temporary IP banning. Accepts a boolean shorthand
-%% (`false` / `true`) or an object with fine-grained options.
-dronebl(false) ->
-    dronebl(#{<<"enabled">> => false});
-dronebl(true) ->
-    dronebl(#{<<"enabled">> => true});
-dronebl(Map) when is_map(Map) ->
-    Enabled = boolean_setting(dronebl_enabled, maps:get(<<"enabled">>, Map, false)),
-    Zone = dronebl_zone(maps:get(<<"zone">>, Map, <<"dnsbl.dronebl.org">>)),
-    TimeoutMs = dronebl_int(timeout_ms, maps:get(<<"timeout_ms">>, Map, 3000), 100, 30000),
-    BanTtl = dronebl_int(ban_ttl, maps:get(<<"ban_ttl">>, Map, 3600), 60, 604800),
-    CacheTtl = dronebl_int(cache_ttl, maps:get(<<"cache_ttl">>, Map, 300), 0, 86400),
-    Types = dronebl_types(maps:get(<<"types">>, Map, <<"all">>)),
-    SkipPrivate = boolean_setting(
-        dronebl_skip_private, maps:get(<<"skip_private">>, Map, true)
-    ),
-    MaxEntries = dronebl_int(max_entries, maps:get(<<"max_entries">>, Map, 10000), 100, 1000000),
-    MaxInFlight = dronebl_int(max_in_flight, maps:get(<<"max_in_flight">>, Map, 64), 1, 1024),
-    #{
-        enabled => Enabled,
-        zone => Zone,
-        timeout_ms => TimeoutMs,
-        ban_ttl => BanTtl,
-        cache_ttl => CacheTtl,
-        types => Types,
-        skip_private => SkipPrivate,
-        max_entries => MaxEntries,
-        max_in_flight => MaxInFlight
-    };
-dronebl(Value) ->
-    erlang:error({invalid_dronebl, Value}).
-
-dronebl_zone(Zone) when is_binary(Zone), byte_size(Zone) > 0, byte_size(Zone) =< 253 ->
-    case re:run(Zone, <<"^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$">>, [{capture, none}]) of
-        match -> Zone;
-        nomatch -> erlang:error({invalid_dronebl_zone, Zone})
-    end;
-dronebl_zone(Zone) ->
-    erlang:error({invalid_dronebl_zone, Zone}).
-
-dronebl_int(_Key, Value, Min, Max) when is_integer(Value, Min, Max) ->
-    Value;
-dronebl_int(Key, Value, _Min, _Max) ->
-    erlang:error({invalid_dronebl, Key, Value}).
-
-dronebl_types(<<"all">>) ->
-    all;
-dronebl_types(List) when is_list(List), List =/= [] ->
-    true = lists:all(fun(Code) -> is_integer(Code, 2, 255) end, List),
-    lists:usort(List);
-dronebl_types(Value) ->
-    erlang:error({invalid_dronebl_types, Value}).
-
-%% Admin WebUI HTTP listener. Disabled when `null` or `false`. Requires an
-%% explicit `port` and non-empty `password`; binds to loopback by default.
-webui(null) ->
-    null;
-webui(false) ->
-    null;
-webui(Map) when is_map(Map) ->
-    Bind = maps:get(<<"bind">>, Map, <<"127.0.0.1">>),
-    true = is_binary(Bind),
-    {ok, IP} = inet:parse_address(binary_to_list(Bind)),
-    Port = maps:get(<<"port">>, Map),
-    true = is_integer(Port, 0, 65535),
-    Username = maps:get(<<"username">>, Map, <<"admin">>),
-    true =
-        is_binary(Username) andalso byte_size(Username) > 0 andalso byte_size(Username) =< 128 andalso
-            binary:match(Username, [<<0>>, <<":">>, <<"\r">>, <<"\n">>]) =:= nomatch,
-    Password = maps:get(<<"password">>, Map),
-    true =
-        is_binary(Password) andalso byte_size(Password) > 0 andalso byte_size(Password) =< 256 andalso
-            binary:match(Password, [<<0>>, <<"\r">>, <<"\n">>]) =:= nomatch,
-    TermsUrl = webui_url(
-        terms_url, maps:get(<<"terms_url">>, Map, <<"https://example.com/terms">>)
-    ),
-    PrivacyUrl = webui_url(
-        privacy_url, maps:get(<<"privacy_url">>, Map, <<"https://example.com/privacy">>)
-    ),
-    #{
-        ip => IP,
-        port => Port,
-        username => briskd_wire:retain(Username),
-        password => retain_secret(Password),
-        terms_url => TermsUrl,
-        privacy_url => PrivacyUrl
-    };
-webui(Value) ->
-    erlang:error({invalid_webui, Value}).
-
-webui_url(_Key, Url) when is_binary(Url), byte_size(Url) =< 2048 ->
-    nomatch = binary:match(Url, [
-        <<0>>, <<" ">>, <<"\r">>, <<"\n">>, <<"\"">>, <<"'">>, <<"<">>, <<">">>
-    ]),
-    case Url of
-        <<"https://", Rest/binary>> when byte_size(Rest) > 0 -> briskd_wire:retain(Url);
-        <<"http://", Rest/binary>> when byte_size(Rest) > 0 -> briskd_wire:retain(Url);
-        _ -> erlang:error({invalid_webui_url, Url})
-    end;
-webui_url(Key, Value) ->
-    erlang:error({invalid_webui_url, Key, Value}).
-
-%% Voice messages (OPUS) stored in S3-compatible object storage (e.g. RustFS).
-%% Disabled when `null` or `false`.
-voice(null) ->
-    null;
-voice(false) ->
-    null;
-voice(Map) when is_map(Map) ->
-    Endpoint = webui_url(endpoint, maps:get(<<"endpoint">>, Map)),
-    Region = voice_token(region, maps:get(<<"region">>, Map, <<"us-east-1">>), 1, 64),
-    Bucket = voice_bucket(maps:get(<<"bucket">>, Map, <<"briskd-voice">>)),
-    AccessKey = voice_secret(access_key_id, maps:get(<<"access_key_id">>, Map)),
-    SecretKey = voice_secret(secret_access_key, maps:get(<<"secret_access_key">>, Map)),
-    MaxBytes = voice_int(max_bytes, maps:get(<<"max_bytes">>, Map, 1048576), 1024, 20971520),
-    MaxDuration = voice_int(max_duration, maps:get(<<"max_duration">>, Map, 120), 1, 600),
-    #{
-        endpoint => Endpoint,
-        region => Region,
-        bucket => Bucket,
-        access_key_id => AccessKey,
-        secret_access_key => SecretKey,
-        max_bytes => MaxBytes,
-        max_duration => MaxDuration
-    };
-voice(Value) ->
-    erlang:error({invalid_voice, Value}).
-
-voice_token(_Key, Val, Min, Max) when
-    is_binary(Val), byte_size(Val) >= Min, byte_size(Val) =< Max
-->
-    case re:run(Val, <<"^[A-Za-z0-9._-]+$">>, [{capture, none}]) of
-        match -> briskd_wire:retain(Val);
-        nomatch -> erlang:error({invalid_voice_token, Val})
-    end;
-voice_token(Key, Val, _Min, _Max) ->
-    erlang:error({invalid_voice, Key, Val}).
-
-voice_bucket(Bucket) when is_binary(Bucket), byte_size(Bucket) >= 3, byte_size(Bucket) =< 63 ->
-    case re:run(Bucket, <<"^[a-z0-9][a-z0-9.-]*[a-z0-9]$">>, [{capture, none}]) of
-        match -> briskd_wire:retain(Bucket);
-        nomatch -> erlang:error({invalid_voice_bucket, Bucket})
-    end;
-voice_bucket(Bucket) ->
-    erlang:error({invalid_voice_bucket, Bucket}).
-
-voice_secret(_Key, Val) when is_binary(Val), byte_size(Val) > 0, byte_size(Val) =< 256 ->
-    nomatch = binary:match(Val, [<<0>>, <<"\r">>, <<"\n">>]),
-    retain_secret(Val);
-voice_secret(Key, _Val) ->
-    erlang:error({invalid_voice, Key}).
-
-voice_int(_Key, Val, Min, Max) when is_integer(Val, Min, Max) ->
-    Val;
-voice_int(Key, Val, _Min, _Max) ->
-    erlang:error({invalid_voice, Key, Val}).
-
-%% File sharing stored in S3-compatible object storage (e.g. RustFS).
-%% Disabled when `null` or `false`.
-files(null) ->
-    null;
-files(false) ->
-    null;
-files(Map) when is_map(Map) ->
-    Endpoint = webui_url(endpoint, maps:get(<<"endpoint">>, Map)),
-    Region = voice_token(region, maps:get(<<"region">>, Map, <<"us-east-1">>), 1, 64),
-    Bucket = voice_bucket(maps:get(<<"bucket">>, Map, <<"briskd-files">>)),
-    AccessKey = voice_secret(access_key_id, maps:get(<<"access_key_id">>, Map)),
-    SecretKey = voice_secret(secret_access_key, maps:get(<<"secret_access_key">>, Map)),
-    MaxBytes = files_int(max_bytes, maps:get(<<"max_bytes">>, Map, 10485760), 1024, 104857600),
-    #{
-        endpoint => Endpoint,
-        region => Region,
-        bucket => Bucket,
-        access_key_id => AccessKey,
-        secret_access_key => SecretKey,
-        max_bytes => MaxBytes
-    };
-files(Value) ->
-    erlang:error({invalid_files, Value}).
-
-files_int(_Key, Val, Min, Max) when is_integer(Val, Min, Max) ->
-    Val;
-files_int(Key, Val, _Min, _Max) ->
-    erlang:error({invalid_files, Key, Val}).
-
-%% Optional messenger feature toggles. All default to true; set any to false
-%% to disable it server-wide.
-features(Map) when is_map(Map) ->
-    #{
-        reactions => boolean_setting(reactions, maps:get(<<"reactions">>, Map, true)),
-        replies => boolean_setting(replies, maps:get(<<"replies">>, Map, true)),
-        typing => boolean_setting(typing, maps:get(<<"typing">>, Map, true)),
-        editing => boolean_setting(editing, maps:get(<<"editing">>, Map, true)),
-        redaction => boolean_setting(redaction, maps:get(<<"redaction">>, Map, true)),
-        link_previews => boolean_setting(link_previews, maps:get(<<"link_previews">>, Map, true))
-    };
-features(Value) ->
-    erlang:error({invalid_features, Value}).
-
-%%% AI assistant bots (`ai_providers` and `bots`)
-
--define(MAX_BOTS, 50).
--define(MAX_BOT_CHANNELS, 50).
--define(MAX_SYSTEM_PROMPT_BYTES, 16384).
-
-%% `ai_providers` maps a name to an OpenAI-compatible endpoint. Errors name
-%% the provider and field but never carry the API key.
-ai_providers(Map) when is_map(Map), map_size(Map) =< 20 ->
-    maps:fold(
-        fun(Name, Entry, Acc) ->
-            case re:run(Name, <<"^[A-Za-z0-9_-]{1,32}$">>, [{capture, none}]) of
-                match -> Acc#{Name => ai_provider(Name, Entry)};
-                nomatch -> erlang:error({invalid_ai_provider_name, Name})
-            end
-        end,
-        #{},
-        Map
-    );
-ai_providers(Value) ->
-    erlang:error({invalid_ai_providers, Value}).
-
-ai_provider(Name, Entry) when is_map(Entry) ->
-    BaseUrl = webui_url(base_url, maps:get(<<"base_url">>, Entry, undefined)),
-    Trimmed = string:trim(BaseUrl, trailing, "/"),
-    {ApiKey, MissingEnv} = provider_key(Name, Entry),
-    #{
-        name => Name,
-        base_url => iolist_to_binary(Trimmed),
-        api_key => ApiKey,
-        missing_key_env => MissingEnv,
-        model => model_name(Name, maps:get(<<"model">>, Entry, undefined)),
-        timeout => bot_int(Name, timeout, maps:get(<<"timeout">>, Entry, 60), 1, 600) * 1000
-    };
-ai_provider(Name, _) ->
-    erlang:error({invalid_ai_provider, Name}).
-
-%% Either `api_key` or `api_key_env` (an environment variable read at load);
-%% neither means the endpoint needs no key (e.g. a local server). Returns
-%% `{Key, MissingEnv}`: an unset or empty `api_key_env` is not a configuration
-%% error, so the server still starts; `briskd_bots` skips the provider's bots
-%% and logs `bot_disabled` naming the variable.
-provider_key(Name, Entry) ->
-    case {maps:get(<<"api_key">>, Entry, null), maps:get(<<"api_key_env">>, Entry, null)} of
-        {null, null} ->
-            {undefined, undefined};
-        {Key, null} when is_binary(Key), byte_size(Key) > 0, byte_size(Key) =< 512 ->
-            case binary:match(Key, [<<0>>, <<"\r">>, <<"\n">>, <<" ">>]) of
-                nomatch -> {retain_secret(Key), undefined};
-                _ -> erlang:error({invalid_ai_provider, Name, api_key})
-            end;
-        {null, Var} when is_binary(Var) ->
-            case re:run(Var, <<"^[A-Za-z_][A-Za-z0-9_]{0,63}$">>, [{capture, none}]) of
-                match -> ok;
-                nomatch -> erlang:error({invalid_ai_provider, Name, api_key_env})
-            end,
-            case os:getenv(binary_to_list(Var)) of
-                Value when is_list(Value), Value =/= [], length(Value) =< 512 ->
-                    {retain_secret(unicode:characters_to_binary(Value)), undefined};
-                false ->
-                    {undefined, briskd_wire:retain(Var)};
-                [] ->
-                    {undefined, briskd_wire:retain(Var)};
-                _ ->
-                    erlang:error({invalid_ai_provider, Name, api_key_env})
-            end;
-        _ ->
-            erlang:error({invalid_ai_provider, Name, api_key})
-    end.
-
-model_name(Owner, Model) when is_binary(Model), byte_size(Model) > 0, byte_size(Model) =< 200 ->
-    case re:run(Model, <<"^[A-Za-z0-9._:/@+-]+$">>, [{capture, none}]) of
-        match -> briskd_wire:retain(Model);
-        nomatch -> erlang:error({invalid_model, Owner, Model})
-    end;
-model_name(Owner, Model) ->
-    erlang:error({invalid_model, Owner, Model}).
-
-bots(Entries, Providers, NickLen) when is_list(Entries), length(Entries) =< ?MAX_BOTS ->
-    Bots = [bot(Entry, Providers, NickLen) || Entry <- Entries],
-    Folded = [briskd_wire:fold(maps:get(nick, B)) || B <- Bots],
-    case length(lists:usort(Folded)) =:= length(Folded) of
-        true -> Bots;
-        false -> erlang:error(duplicate_bot_nick)
-    end;
-bots(Value, _Providers, _NickLen) ->
-    erlang:error({invalid_bots, Value}).
-
-bot(Entry, Providers, NickLen) when is_map(Entry) ->
-    Nick = maps:get(<<"nick">>, Entry, undefined),
-    case is_binary(Nick) andalso briskd_wire:nickname(Nick, NickLen) of
-        true -> ok;
-        false -> erlang:error({invalid_bot_nick, Nick})
-    end,
-    ProviderName = maps:get(<<"provider">>, Entry, undefined),
-    Provider =
-        case Providers of
-            #{ProviderName := P} -> P;
-            #{} -> erlang:error({unknown_ai_provider, Nick, ProviderName})
-        end,
-    Model =
-        case maps:get(<<"model">>, Entry, null) of
-            null -> maps:get(model, Provider);
-            M -> model_name(Nick, M)
-        end,
-    #{
-        nick => briskd_wire:retain(Nick),
-        user => bot_user(Nick, maps:get(<<"user">>, Entry, <<"bot">>)),
-        realname => bot_text(Nick, realname, maps:get(<<"realname">>, Entry, <<"AI assistant">>)),
-        provider => Provider,
-        model => Model,
-        system_prompt => system_prompt(Nick, Entry),
-        channels => bot_channels(Nick, maps:get(<<"channels">>, Entry, [])),
-        respond_to => bot_choice(
-            Nick, respond_to, maps:get(<<"respond_to">>, Entry, <<"mention">>), [
-                mention, all
-            ]
-        ),
-        direct_messages => boolean_setting(
-            direct_messages, maps:get(<<"direct_messages">>, Entry, true)
-        ),
-        context => bot_choice(Nick, context, maps:get(<<"context">>, Entry, <<"conversation">>), [
-            conversation, channel
-        ]),
-        history_lines => bot_int(
-            Nick, history_lines, maps:get(<<"history_lines">>, Entry, 20), 0, 100
-        ),
-        max_tokens => bot_int(Nick, max_tokens, maps:get(<<"max_tokens">>, Entry, 512), 1, 32768),
-        temperature => bot_temperature(Nick, maps:get(<<"temperature">>, Entry, 0.7)),
-        max_reply_lines => bot_int(
-            Nick, max_reply_lines, maps:get(<<"max_reply_lines">>, Entry, 6), 1, 30
-        ),
-        requests_per_minute => bot_int(
-            Nick, requests_per_minute, maps:get(<<"requests_per_minute">>, Entry, 10), 1, 600
-        )
-    };
-bot(Entry, _Providers, _NickLen) ->
-    erlang:error({invalid_bot, Entry}).
-
-bot_user(_Nick, User) when is_binary(User) ->
-    case re:run(User, <<"^[A-Za-z0-9._-]{1,32}$">>, [{capture, none}]) of
-        match -> briskd_wire:retain(User);
-        nomatch -> erlang:error({invalid_bot_user, User})
-    end;
-bot_user(Nick, User) ->
-    erlang:error({invalid_bot, Nick, user, User}).
-
-bot_text(Nick, Key, Text) when is_binary(Text), byte_size(Text) > 0, byte_size(Text) =< 200 ->
-    case binary:match(Text, [<<0>>, <<"\r">>, <<"\n">>]) of
-        nomatch -> briskd_wire:retain(Text);
-        _ -> erlang:error({invalid_bot, Nick, Key})
-    end;
-bot_text(Nick, Key, _Text) ->
-    erlang:error({invalid_bot, Nick, Key}).
-
-%% `system_prompt` inline, or `system_prompt_file` read at load (relative
-%% paths resolve against the working directory); not both.
-system_prompt(Nick, Entry) ->
-    Prompt =
-        case
-            {
-                maps:get(<<"system_prompt">>, Entry, null),
-                maps:get(<<"system_prompt_file">>, Entry, null)
-            }
-        of
-            {null, null} ->
-                <<>>;
-            {Text, null} when is_binary(Text) ->
-                Text;
-            {null, Path} when is_binary(Path), byte_size(Path) > 0 ->
-                case file:read_file(Path) of
-                    {ok, Bytes} ->
-                        string:trim(Bytes);
-                    {error, Reason} ->
-                        erlang:error({invalid_system_prompt_file, Nick, Path, Reason})
-                end;
-            _ ->
-                erlang:error({invalid_bot, Nick, system_prompt})
-        end,
-    Bin = iolist_to_binary(Prompt),
-    case
-        byte_size(Bin) =< ?MAX_SYSTEM_PROMPT_BYTES andalso
-            is_binary(unicode:characters_to_binary(Bin))
-    of
-        true -> Bin;
-        false -> erlang:error({invalid_bot, Nick, system_prompt})
-    end.
-
-bot_channels(Nick, Channels) when is_list(Channels), length(Channels) =< ?MAX_BOT_CHANNELS ->
-    [
-        case is_binary(Channel) andalso briskd_wire:channel(Channel) of
-            true -> briskd_wire:retain(Channel);
-            false -> erlang:error({invalid_bot_channel, Nick, Channel})
-        end
-     || Channel <- Channels
-    ];
-bot_channels(Nick, Channels) ->
-    erlang:error({invalid_bot, Nick, channels, Channels}).
-
-bot_choice(Nick, Key, Value, Allowed) when is_binary(Value) ->
-    case [A || A <- Allowed, atom_to_binary(A) =:= Value] of
-        [Choice] -> Choice;
-        [] -> erlang:error({invalid_bot, Nick, Key, Value})
-    end;
-bot_choice(Nick, Key, Value, _Allowed) ->
-    erlang:error({invalid_bot, Nick, Key, Value}).
-
-%% Bounds are inclusive.
-bot_int(_Owner, _Key, Value, Min, Max) when is_integer(Value, Min, Max) ->
-    Value;
-bot_int(Owner, Key, Value, _Min, _Max) ->
-    erlang:error({invalid_bot, Owner, Key, Value}).
-
-bot_temperature(_Nick, Value) when is_number(Value), Value >= 0, Value =< 2 ->
-    float(Value);
-bot_temperature(Nick, Value) ->
-    erlang:error({invalid_bot, Nick, temperature, Value}).
-
-%%% Message search (`search`): the briskd-search service's base URL, an
-%%% optional bearer token (`token`, or `token_env` naming an environment
-%%% variable), the request timeout in milliseconds, and the most results one
-%%% SEARCH returns. Disabled when `null` or `false`. Bounds are inclusive.
-
-search(null) ->
-    null;
-search(false) ->
-    null;
-search(Map) when is_map(Map) ->
-    #{
-        url => strip_slash(webui_url(url, maps:get(<<"url">>, Map, undefined))),
-        token => search_token(Map),
-        timeout => search_int(timeout, maps:get(<<"timeout">>, Map, 3000), 100, 60000),
-        max_results => search_int(max_results, maps:get(<<"max_results">>, Map, 50), 1, 200)
-    };
-search(Value) ->
-    erlang:error({invalid_search, Value}).
-
-strip_slash(Url) ->
-    case binary:last(Url) of
-        $/ -> strip_slash(binary:part(Url, 0, byte_size(Url) - 1));
-        _ -> Url
-    end.
-
-search_token(Map) ->
-    case {maps:get(<<"token">>, Map, null), maps:get(<<"token_env">>, Map, null)} of
-        {null, null} ->
-            undefined;
-        {Token, null} when is_binary(Token) ->
-            search_token_value(Token);
-        {null, Var} when is_binary(Var) ->
-            case re:run(Var, <<"^[A-Za-z_][A-Za-z0-9_]{0,63}$">>, [{capture, none}]) of
-                match -> ok;
-                nomatch -> erlang:error({invalid_search, token_env})
-            end,
-            case os:getenv(binary_to_list(Var)) of
-                Value when is_list(Value), Value =/= [] ->
-                    search_token_value(unicode:characters_to_binary(Value));
-                _ ->
-                    erlang:error({invalid_search, token_env, unset})
-            end;
-        _ ->
-            erlang:error({invalid_search, token})
-    end.
-
-search_token_value(Token) when byte_size(Token) > 0, byte_size(Token) =< 512 ->
-    case binary:match(Token, [<<0>>, <<"\r">>, <<"\n">>, <<" ">>]) of
-        nomatch -> retain_secret(Token);
-        _ -> erlang:error({invalid_search, token})
-    end;
-search_token_value(_) ->
-    erlang:error({invalid_search, token}).
-
-search_int(_Key, Value, Min, Max) when is_integer(Value, Min, Max) ->
-    Value;
-search_int(Key, Value, _Min, _Max) ->
-    erlang:error({invalid_search, Key, Value}).
-
-%%% Voice calls relayed through rtpengine (`calls`). Disabled when `null` or
-%%% `false`. Bounds are inclusive.
-
-calls(null) ->
-    null;
-calls(false) ->
-    null;
-calls(Map) when is_map(Map) ->
-    #{
-        rtpengine => rtpengine_address(maps:get(<<"rtpengine">>, Map, undefined)),
-        ring_timeout => calls_int(ring_timeout, maps:get(<<"ring_timeout">>, Map, 45), 5, 300),
-        max_duration => calls_int(max_duration, maps:get(<<"max_duration">>, Map, 7200), 0, 86400),
-        max_calls => calls_int(max_calls, maps:get(<<"max_calls">>, Map, 100), 1, 10000),
-        calls_per_minute => calls_int(
-            calls_per_minute, maps:get(<<"calls_per_minute">>, Map, 6), 1, 120
-        ),
-        require_account => boolean_setting(
-            require_account, maps:get(<<"require_account">>, Map, false)
-        ),
-        %% Video calls: a description may carry one video section.
-        video => boolean_setting(video, maps:get(<<"video">>, Map, true))
-    };
-calls(Value) ->
-    erlang:error({invalid_calls, Value}).
-
-%% `host:port` of rtpengine's NG control socket (UDP); the host is a name or
-%% an IPv4 address.
-rtpengine_address(Value) when is_binary(Value) ->
-    case
-        re:run(Value, <<"^([A-Za-z0-9.-]{1,253}):([0-9]{1,5})$">>, [
-            {capture, all_but_first, binary}
-        ])
-    of
-        {match, [Host, PortBin]} ->
-            case binary_to_integer(PortBin) of
-                Port when is_integer(Port, 1, 65535) -> {briskd_wire:retain(Host), Port};
-                _ -> erlang:error({invalid_calls, rtpengine, Value})
-            end;
-        nomatch ->
-            erlang:error({invalid_calls, rtpengine, Value})
-    end;
-rtpengine_address(Value) ->
-    erlang:error({invalid_calls, rtpengine, Value}).
-
-calls_int(_Key, Value, Min, Max) when is_integer(Value, Min, Max) ->
-    Value;
-calls_int(Key, Value, _Min, _Max) ->
-    erlang:error({invalid_calls, Key, Value}).

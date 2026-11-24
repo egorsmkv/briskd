@@ -13,7 +13,27 @@
     envelope_tags/1,
     burst_lines/0,
     receive_link/4,
-    remote_renamed/2
+    remote_renamed/2,
+    account_devices/1,
+    account_name/1,
+    b64/1,
+    bound/2,
+    config/0,
+    consume/2,
+    delete_device/2,
+    device_id/1,
+    fail/4,
+    id_key/1,
+    id_keys/1,
+    key/1,
+    merge_prekeys/3,
+    non_neg/1,
+    pattern/2,
+    queued/2,
+    recipient/1,
+    reply/3,
+    seq/1,
+    server/0
 ]).
 
 -moduledoc """
@@ -95,11 +115,6 @@ Runs inside the `briskd_state` process; the tables are in
 -define(EXPIRE_EVERY, 60).
 %% Remembered ids of handed-out one-time prekeys per device.
 -define(MAX_USED, 1000).
-%% One-time prekeys per PREKEYS line over a link (stays within 512 octets).
--define(PREKEYS_PER_LINE, 6).
-%% Decoded size limits for a replicated envelope.
--define(MAX_BODY_BYTES, 8192).
--define(MAX_TAGS_BYTES, 4096).
 
 -doc "True when the `e2ee` configuration object is set.".
 -spec enabled() -> boolean().
@@ -245,7 +260,7 @@ publish(Account, DevText, IdentityText, SpkText, SignatureText, #client{pid = Pi
             used = Used
         },
         ok = mnesia:dirty_write(Device),
-        broadcast(device_line(Device)),
+        briskd_e2ee_sync:broadcast(briskd_e2ee_sync:device_line(Device)),
         logger:info(#{event => e2ee_device_published, account => Account, device => Dev}),
         reply(Pid, Server, [<<"PUBLISHED">>, integer_to_binary(Dev)])
     else
@@ -265,7 +280,10 @@ prekeys(Account, DevText, KeyTexts, #client{pid = Pid}, Server) ->
         Merged = merge_prekeys(Old, New, Used),
         true ?= length(Merged) =< Max orelse too_many,
         ok = mnesia:dirty_write(Device#e2ee_device{prekeys = Merged}),
-        lists:foreach(fun broadcast/1, prekeys_lines(Account, Dev, New)),
+        lists:foreach(
+            fun briskd_e2ee_sync:broadcast/1,
+            briskd_e2ee_sync:prekeys_lines(Account, Dev, New)
+        ),
         reply(Pid, Server, [
             <<"PREKEYS">>, integer_to_binary(Dev), integer_to_binary(length(Merged))
         ])
@@ -278,8 +296,14 @@ prekeys(Account, DevText, KeyTexts, #client{pid = Pid}, Server) ->
             fail(Pid, <<"INVALID_PARAMS">>, [Field], <<"Invalid device id or prekey">>)
     end.
 
-%% New keys replace stored keys with the same id; order stays oldest first.
-%% Ids already handed out are never stored again.
+-doc """
+Merge newly uploaded one-time prekeys into `Old`, replacing duplicates and
+skipping already-used ids in `Used`.
+""".
+-spec merge_prekeys(
+    [{non_neg_integer(), binary()}], [{non_neg_integer(), binary()}], [non_neg_integer()]
+) ->
+    [{non_neg_integer(), binary()}].
 merge_prekeys(Old, New, Used) ->
     Fresh = [Entry || {Id, _} = Entry <- lists:ukeysort(1, New), not lists:member(Id, Used)],
     NewIds = [Id || {Id, _} <- Fresh],
@@ -335,7 +359,9 @@ send_bundle(Pid, Server, #e2ee_device{key = {_, Dev}, prekeys = Prekeys} = Devic
         case Prekeys of
             [{Id, Key} | _] ->
                 consume(Device, Id),
-                broadcast(use_line(Device#e2ee_device.account, Dev, Id)),
+                briskd_e2ee_sync:broadcast(
+                    briskd_e2ee_sync:use_line(Device#e2ee_device.account, Dev, Id)
+                ),
                 [<<(integer_to_binary(Id))/binary, ":", (b64(Key))/binary>>];
             [] ->
                 []
@@ -358,7 +384,8 @@ send_bundle(Pid, Server, #e2ee_device{key = {_, Dev}, prekeys = Prekeys} = Devic
         ]
     ).
 
-%% Remove one prekey, remember its id, and tell a low device's owner.
+-doc "Consume one prekey id from `Device` and notify the device owner when low.".
+-spec consume(#e2ee_device{}, non_neg_integer()) -> ok.
 consume(
     #e2ee_device{key = {_, Dev}, account = Account, prekeys = Prekeys, used = Used} = Device, Id
 ) ->
@@ -388,7 +415,7 @@ bind(Account, DevText, #client{pid = Pid} = Client, Server) ->
         [_] ?= mnesia:dirty_read(e2ee_device, {Folded, Dev}),
         true = ets:match_delete(?BOUND, {'_', Pid}),
         true = ets:insert(?BOUND, {{Folded, Dev}, Pid}),
-        broadcast(bind_line(Client, Dev)),
+        briskd_e2ee_sync:broadcast(briskd_e2ee_sync:bind_line(Client, Dev)),
         Now = erlang:system_time(second),
         Queued = lists:filter(
             fun(#e2ee_queue{key = Key, expires = Expires}) ->
@@ -453,7 +480,10 @@ ack(Account, Ids, #client{pid = Pid}) ->
             lists:foreach(
                 fun(Seq) -> mnesia:dirty_delete(e2ee_queue, {Folded, Dev, Seq}) end, Seqs
             ),
-            lists:foreach(fun broadcast/1, ack_lines(Account, Dev, Seqs));
+            lists:foreach(
+                fun briskd_e2ee_sync:broadcast/1,
+                briskd_e2ee_sync:ack_lines(Account, Dev, Seqs)
+            );
         none ->
             fail(Pid, <<"NOT_BOUND">>, [], <<"BIND a device first">>)
     end.
@@ -464,7 +494,7 @@ remove(Account, DevText, #client{pid = Pid}, Server) ->
         Folded = briskd_wire:fold(Account),
         [_] ?= mnesia:dirty_read(e2ee_device, {Folded, Dev}),
         delete_device(Folded, Dev),
-        broadcast(delete_line(Account, Dev)),
+        briskd_e2ee_sync:broadcast(briskd_e2ee_sync:delete_line(Account, Dev)),
         logger:info(#{event => e2ee_device_removed, account => Account, device => Dev}),
         reply(Pid, Server, [<<"REMOVED">>, integer_to_binary(Dev)])
     else
@@ -474,6 +504,8 @@ remove(Account, DevText, #client{pid = Pid}, Server) ->
             fail(Pid, <<"INVALID_PARAMS">>, [Field], <<"Invalid device id">>)
     end.
 
+-doc "Delete an E2EE device record and all queued envelopes for it.".
+-spec delete_device(binary(), pos_integer()) -> ok.
 delete_device(Folded, Dev) ->
     ok = mnesia:dirty_delete(e2ee_device, {Folded, Dev}),
     lists:foreach(
@@ -498,161 +530,8 @@ the envelope was queued or refused; nothing else to deliver). Messages
 without the `dst` tag and the feature switched off always `pass`.
 """.
 -spec route(binary(), term(), #client{}, {[tuple()], [tuple()], binary()}) -> pass | handled.
-route(Target, Body, Client, {ClientTags, Tags, Command}) ->
-    case {enabled(), lists:keyfind(tag(dst), 1, ClientTags), queueable(Body)} of
-        {true, {_, DevText}, true} ->
-            case {device_id(DevText), recipient(Target)} of
-                {{ok, Dev}, {ok, Account, Endpoint}} ->
-                    queue_if_unbound(Account, Dev, Endpoint, Target, Body, Client, {Tags, Command});
-                %% A bad device id, a user without an account, or no such
-                %% user or account: normal delivery applies (or reports 401).
-                _ ->
-                    pass
-            end;
-        _ ->
-            pass
-    end.
-
-queueable(Text) when is_binary(Text) -> true;
-queueable(none) -> true;
-queueable({multiline, Lines}) when is_list(Lines) -> true;
-queueable(_) -> false.
-
-queue_if_unbound(
-    Account, Dev, Endpoint, Target, Body, #client{pid = Pid} = Client, {Tags, Command}
-) ->
-    Folded = briskd_wire:fold(Account),
-    case {bound(Account, Dev), mnesia:dirty_read(e2ee_device, {Folded, Dev})} of
-        {{ok, Holder}, _} ->
-            %% The device is online. Its connection may use another nickname
-            %% than the target (a second device of the same account): give
-            %% it its own copy unless normal delivery already reaches it.
-            case reaches(Endpoint, Holder) of
-                true -> ok;
-                false -> deliver_to(Holder, Target, Body, Client, {Tags, Command})
-            end;
-        {none, []} ->
-            fail(Pid, <<"UNKNOWN_DEVICE">>, [Target, integer_to_binary(Dev)], <<"No such device">>);
-        {none, [_]} ->
-            enqueue(Account, Dev, Target, Body, Client, {Tags, Command})
-    end,
-    case Endpoint of
-        offline -> handled;
-        _ -> pass
-    end.
-
-%% Normal delivery to the target reaches the device's connection: it is the
-%% target's own connection, or attached to it (multiclient mirrors).
-reaches({local, Pid}, Pid) ->
-    true;
-reaches({local, Primary}, Holder) when is_pid(Holder) ->
-    ets:lookup(briskd_attached, Holder) =:= [{Holder, Primary}];
-reaches({remote, Key}, {remote, Key}) ->
-    true;
-reaches(_, _) ->
-    false.
-
-%% A copy of the envelope for the bound connection: directly to a local
-%% session, or over the link to a remote user (addressed to that nickname).
-deliver_to(Holder, Target, Body, Client, {Tags, Command}) when is_pid(Holder) ->
-    Prefix = briskd_state_send:prefix(Client),
-    case Body of
-        {multiline, Lines} ->
-            briskd_state_batch:deliver_multiline(
-                Holder, Prefix, Command, Target, Lines, Tags, normal
-            );
-        _ ->
-            briskd_state_send:send(Holder, Prefix, Command, [Target], Body, Tags)
-    end;
-deliver_to({remote, NickKey}, _Target, Body, Client, {Tags, Command}) ->
-    case mnesia:dirty_read(remote_client, NickKey) of
-        [#remote_client{peer = Peer, nick = Nick}] ->
-            Prefix = briskd_state_send:prefix(Client),
-            lists:foreach(
-                fun(Line) -> _ = briskd_links:send(Peer, iolist_to_binary(Line)) end,
-                briskd_state_batch:link_lines(Prefix, Command, Nick, Body, Tags)
-            );
-        [] ->
-            ok
-    end.
-
-enqueue(Account, Dev, Target, Body, #client{pid = Pid} = Client, {Tags, Command}) ->
-    #{queue_limit := Limit, queue_ttl := Ttl} = config(),
-    Folded = briskd_wire:fold(Account),
-    Now = erlang:system_time(second),
-    LiveCount = length([
-        E
-     || #e2ee_queue{key = Key, expires = Exp} = E <- queued(Folded, Dev),
-        case Exp =< Now of
-            true ->
-                ok = mnesia:dirty_delete(e2ee_queue, Key),
-                false;
-            false ->
-                true
-        end
-    ]),
-    case {briskd_state_v3:account(Pid), LiveCount < Limit} of
-        {undefined, _} ->
-            fail(Pid, <<"ACCOUNT_REQUIRED">>, [Target], <<"Log in to queue encrypted messages">>);
-        {_, false} ->
-            fail(
-                Pid, <<"QUEUE_FULL">>, [Target, integer_to_binary(Dev)], <<"Device queue is full">>
-            );
-        {SenderAccount, true} ->
-            Prefix = iolist_to_binary(briskd_state_send:prefix(Client)),
-            StoredTags =
-                [{briskd_wire:retain(K), briskd_wire:retain(V)} || {K, V} <- Tags] ++
-                    [
-                        {briskd_wire:retain(K), briskd_wire:retain(V)}
-                     || {K, V} <- briskd_state_send:source_tags(Prefix),
-                        not lists:keymember(K, 1, Tags)
-                    ],
-            Seq = next_seq(Folded, Dev),
-            Entry = #e2ee_queue{
-                key = {Folded, Dev, Seq},
-                prefix = Prefix,
-                command = Command,
-                target = briskd_wire:retain(Target),
-                text = retain_body(Body),
-                tags = StoredTags,
-                expires = Now + Ttl
-            },
-            ok = mnesia:dirty_write(Entry),
-            broadcast(queue_line(Account, Entry)),
-            briskd_state_history:note_direct(
-                {SenderAccount, Client#client.nick},
-                {Account, Target},
-                Target,
-                briskd_state_history:entry(
-                    Command,
-                    Prefix,
-                    Body,
-                    case lists:keyfind(<<"msgid">>, 1, Tags) of
-                        {_, Id} -> Id;
-                        false -> briskd_state_send:msgid()
-                    end,
-                    erlang:system_time(millisecond),
-                    briskd_cap:client_tags(Tags),
-                    SenderAccount
-                )
-            ),
-            reply(Pid, server(), [
-                <<"QUEUED">>, Target, integer_to_binary(Dev), integer_to_binary(Seq)
-            ])
-    end.
-
-retain_body({multiline, Lines}) ->
-    {multiline, [{Concat, briskd_wire:retain(Text)} || {Concat, Text} <- Lines]};
-retain_body(Body) ->
-    briskd_wire:retain(Body).
-
-%% Unique, increasing per device: nanoseconds, bumped past the newest entry.
-next_seq(Folded, Dev) ->
-    Now = erlang:system_time(nanosecond),
-    case lists:reverse(queued(Folded, Dev)) of
-        [#e2ee_queue{key = {_, _, Last}} | _] when Last >= Now -> Last + 1;
-        _ -> Now
-    end.
+route(Target, Body, Client, Context) ->
+    briskd_e2ee_sync:route(Target, Body, Client, Context).
 
 -doc "Forget the device binding of a session that ended.".
 -spec session_down(pid()) -> ok.
@@ -702,41 +581,7 @@ connection. Sent after the users, so `BIND` prefixes name known users.
 """.
 -spec burst_lines() -> [iodata()].
 burst_lines() ->
-    Devices = mnesia:dirty_select(e2ee_device, [{pattern(e2ee_device, []), [], ['$_']}]),
-    DeviceLines = lists:append([
-        [device_line(D) | prekeys_lines(Account, Dev, Prekeys)]
-     || #e2ee_device{key = {_, Dev}, account = Account, prekeys = Prekeys} = D <- Devices
-    ]),
-    Accounts = #{Key => Account || #e2ee_device{key = {Key, _}, account = Account} <- Devices},
-    QueueLines = [
-        queue_line(maps:get(Folded, Accounts, Folded), Entry)
-     || #e2ee_queue{key = {Folded, _, _}} = Entry <- mnesia:dirty_select(e2ee_queue, [
-            {pattern(e2ee_queue, []), [], ['$_']}
-        ])
-    ],
-    BindLines = lists:append([
-        case Holder of
-            Pid when is_pid(Pid) ->
-                [
-                    bind_line(Client, Dev)
-                 || [#client{} = Client] <- [mnesia:dirty_read(client, Pid)]
-                ];
-            {remote, NickKey} ->
-                [
-                    briskd_wire:line(
-                        <<Nick/binary, "!", User/binary, "@", Host/binary>>,
-                        <<"E2EE">>,
-                        [<<"BIND">>, integer_to_binary(Dev)],
-                        none
-                    )
-                 || [#remote_client{nick = Nick, user = User, host = Host}] <- [
-                        mnesia:dirty_read(remote_client, NickKey)
-                    ]
-                ]
-        end
-     || {{_, Dev}, Holder} <- ets:tab2list(?BOUND)
-    ]),
-    [L || L <- DeviceLines ++ QueueLines ++ BindLines, L =/= []].
+    briskd_e2ee_sync:burst_lines().
 
 -doc """
 Apply one `E2EE` line from the peer `Peer` (`Prefix` is the source: a server,
@@ -747,199 +592,8 @@ without storing it.
 """.
 -spec receive_link(binary(), binary(), [binary()], [{binary(), undefined | binary()}]) ->
     ok | {error, term()}.
-receive_link(Peer, Prefix, [Sub | Params], Tags) ->
-    try link_command(briskd_wire:upper(Sub), Peer, Prefix, Params, Tags) of
-        {ok, Line} ->
-            briskd_state_link:relay_except(Peer, Line),
-            ok;
-        {error, _} = Error ->
-            Error
-    catch
-        error:Reason ->
-            logger:warning(#{event => e2ee_link_rejected, peer => Peer, reason => Reason}),
-            {error, {invalid_e2ee, Sub}}
-    end;
-receive_link(_Peer, _Prefix, [], _Tags) ->
-    {error, invalid_e2ee}.
-
-link_command(
-    <<"DEVICE">>, Peer, Prefix, [AccountText, DevText, UpdatedText, Identity, Spk, Sig], _
-) ->
-    true = briskd_state_link:trusted_server(Peer, Prefix),
-    {ok, Account} = account_name(AccountText),
-    {ok, Dev} = device_id(DevText),
-    {ok, Updated} = non_neg(UpdatedText),
-    {ok, IdentityKey} = key(Identity),
-    {ok, {SpkId, SpkKey}} = id_key(Spk),
-    {ok, Signature} = key(Sig),
-    Key = {briskd_wire:fold(Account), Dev},
-    Device0 = #e2ee_device{
-        key = Key,
-        account = briskd_wire:retain(Account),
-        identity = IdentityKey,
-        signed_prekey_id = SpkId,
-        signed_prekey = SpkKey,
-        signature = Signature,
-        updated = Updated
-    },
-    store(fun() ->
-        #{max_devices := MaxDevices} = config(),
-        case mnesia:dirty_read(e2ee_device, Key) of
-            [#e2ee_device{updated = Mine}] when Mine > Updated ->
-                ok;
-            [#e2ee_device{prekeys = Prekeys, used = Used}] ->
-                ok = mnesia:dirty_write(Device0#e2ee_device{prekeys = Prekeys, used = Used});
-            [] ->
-                case length(account_devices(Account)) < MaxDevices of
-                    true -> ok = mnesia:dirty_write(Device0);
-                    false -> ok
-                end
-        end
-    end),
-    {ok, device_line(Device0)};
-link_command(<<"PREKEYS">>, Peer, Prefix, [AccountText, DevText | KeyTexts], _) ->
-    true = briskd_state_link:trusted_server(Peer, Prefix),
-    {ok, Account} = account_name(AccountText),
-    {ok, Dev} = device_id(DevText),
-    {ok, New} = id_keys(KeyTexts),
-    true = New =/= [] andalso length(New) =< ?PREKEYS_PER_LINE * 2,
-    store(fun() ->
-        case mnesia:dirty_read(e2ee_device, {briskd_wire:fold(Account), Dev}) of
-            [#e2ee_device{prekeys = Old, used = Used} = Device] ->
-                #{max_prekeys := Max} = config(),
-                Merged = lists:sublist(merge_prekeys(Old, New, Used), Max),
-                ok = mnesia:dirty_write(Device#e2ee_device{prekeys = Merged});
-            [] ->
-                ok
-        end
-    end),
-    {ok, prekeys_line(Account, Dev, New)};
-link_command(<<"USE">>, Peer, Prefix, [AccountText, DevText, IdText], _) ->
-    true = briskd_state_link:trusted_server(Peer, Prefix),
-    {ok, Account} = account_name(AccountText),
-    {ok, Dev} = device_id(DevText),
-    {ok, Id} = non_neg(IdText),
-    store(fun() ->
-        case mnesia:dirty_read(e2ee_device, {briskd_wire:fold(Account), Dev}) of
-            [#e2ee_device{} = Device] -> consume(Device, Id);
-            [] -> ok
-        end
-    end),
-    {ok, use_line(Account, Dev, Id)};
-link_command(<<"DELETE">>, Peer, Prefix, [AccountText, DevText], _) ->
-    true = briskd_state_link:trusted_server(Peer, Prefix),
-    {ok, Account} = account_name(AccountText),
-    {ok, Dev} = device_id(DevText),
-    store(fun() -> delete_device(briskd_wire:fold(Account), Dev) end),
-    {ok, delete_line(Account, Dev)};
-link_command(
-    <<"QUEUE">>,
-    Peer,
-    Prefix,
-    [AccountText, DevText, SeqText, ExpiresText, Command, Target, Sender],
-    Tags
-) ->
-    true = briskd_state_link:trusted_server(Peer, Prefix),
-    {ok, Account} = account_name(AccountText),
-    {ok, Dev} = device_id(DevText),
-    {ok, Seq} = seq(SeqText),
-    {ok, Expires} = non_neg(ExpiresText),
-    true = lists:member(Command, [<<"PRIVMSG">>, <<"NOTICE">>, <<"TAGMSG">>]),
-    true = byte_size(Target) =< 64 andalso byte_size(Sender) =< 255,
-    {_, BodyText} = lists:keyfind(tag(body), 1, Tags),
-    {_, TagsText} = lists:keyfind(tag(tags), 1, Tags),
-    Folded = briskd_wire:fold(Account),
-    Entry = #e2ee_queue{
-        key = {Folded, Dev, Seq},
-        prefix = briskd_wire:retain(Sender),
-        command = Command,
-        target = briskd_wire:retain(Target),
-        text = decode_body(BodyText),
-        tags = decode_tags(TagsText),
-        expires = Expires
-    },
-    store(fun() ->
-        #{queue_limit := Limit} = config(),
-        Now = erlang:system_time(second),
-        Fresh = Expires > Now,
-        LiveCount = length([
-            E
-         || #e2ee_queue{key = K, expires = Exp} = E <- queued(Folded, Dev),
-            case Exp =< Now of
-                true ->
-                    ok = mnesia:dirty_delete(e2ee_queue, K),
-                    false;
-                false ->
-                    true
-            end
-        ]),
-        Room =
-            mnesia:dirty_read(e2ee_device, {Folded, Dev}) =/= [] andalso
-                (mnesia:dirty_read(e2ee_queue, {Folded, Dev, Seq}) =/= [] orelse
-                    LiveCount < Limit),
-        case Fresh andalso Room of
-            true -> ok = mnesia:dirty_write(Entry);
-            false -> ok
-        end
-    end),
-    {ok, queue_line(Account, Entry)};
-link_command(<<"ACK">>, Peer, Prefix, [AccountText, DevText, SeqsText], _) ->
-    true = briskd_state_link:trusted_server(Peer, Prefix),
-    {ok, Account} = account_name(AccountText),
-    {ok, Dev} = device_id(DevText),
-    Seqs = [
-        Seq
-     || Text <- binary:split(SeqsText, <<",">>, [global, trim_all]), {ok, Seq} <- [seq(Text)]
-    ],
-    true = Seqs =/= [],
-    Folded = briskd_wire:fold(Account),
-    store(fun() ->
-        lists:foreach(fun(Seq) -> mnesia:dirty_delete(e2ee_queue, {Folded, Dev, Seq}) end, Seqs)
-    end),
-    {ok, ack_line(Account, Dev, Seqs)};
-link_command(<<"BIND">>, Peer, Prefix, [DevText], _) ->
-    {ok, Dev} = device_id(DevText),
-    %% The source must be a user reached through this link, logged in.
-    %% The device row must already exist (a prior DEVICE line). A binding
-    %% held by a local session is not replaced.
-    case briskd_state_link:remote_source(Peer, Prefix) of
-        {ok, #remote_client{key = NickKey, account = Account}} when is_binary(Account) ->
-            Folded = briskd_wire:fold(Account),
-            case mnesia:dirty_read(e2ee_device, {Folded, Dev}) of
-                [] ->
-                    {error, e2ee_unknown_device};
-                [_] ->
-                    case ets:lookup(?BOUND, {Folded, Dev}) of
-                        [{_, Owner}] when is_pid(Owner) ->
-                            {error, e2ee_device_bound_locally};
-                        _ ->
-                            store(fun() ->
-                                true = ets:match_delete(?BOUND, {'_', {remote, NickKey}}),
-                                true = ets:insert(?BOUND, {{Folded, Dev}, {remote, NickKey}})
-                            end),
-                            {ok,
-                                briskd_wire:line(
-                                    Prefix, <<"E2EE">>, [<<"BIND">>, integer_to_binary(Dev)], none
-                                )}
-                    end
-            end;
-        {ok, #remote_client{}} ->
-            {error, e2ee_bind_without_account};
-        _ ->
-            {error, unknown_remote_source}
-    end;
-link_command(Sub, _Peer, _Prefix, _Params, _) ->
-    {error, {unknown_e2ee_command, Sub}}.
-
-%% Run a storage change only when this server has the feature on.
-store(Fun) ->
-    case enabled() of
-        true ->
-            _ = Fun(),
-            ok;
-        false ->
-            ok
-    end.
+receive_link(Peer, Prefix, Params, Tags) ->
+    briskd_e2ee_sync:receive_link(Peer, Prefix, Params, Tags).
 
 -doc """
 A remote user who bound a device changed nickname (`OldKey` and `NewKey` are
@@ -947,182 +601,21 @@ folded nicknames): move the binding to the new name.
 """.
 -spec remote_renamed(binary(), binary()) -> ok.
 remote_renamed(OldKey, NewKey) ->
-    case ets:whereis(?BOUND) of
-        undefined ->
-            ok;
-        _ ->
-            Moved = ets:match_object(?BOUND, {'_', {remote, OldKey}}),
-            lists:foreach(
-                fun({Key, _}) -> true = ets:insert(?BOUND, {Key, {remote, NewKey}}) end, Moved
-            ),
-            ok
-    end.
-
-device_line(#e2ee_device{key = {_, Dev}, account = Account} = D) ->
-    briskd_wire:line(
-        server(),
-        <<"E2EE">>,
-        [
-            <<"DEVICE">>,
-            Account,
-            integer_to_binary(Dev),
-            integer_to_binary(D#e2ee_device.updated),
-            b64(D#e2ee_device.identity),
-            <<
-                (integer_to_binary(D#e2ee_device.signed_prekey_id))/binary,
-                ":",
-                (b64(D#e2ee_device.signed_prekey))/binary
-            >>,
-            b64(D#e2ee_device.signature)
-        ],
-        none
-    ).
-
-prekeys_lines(Account, Dev, Prekeys) ->
-    [prekeys_line(Account, Dev, Chunk) || Chunk <- chunks(Prekeys, ?PREKEYS_PER_LINE)].
-
-prekeys_line(Account, Dev, Prekeys) ->
-    briskd_wire:line(
-        server(),
-        <<"E2EE">>,
-        [<<"PREKEYS">>, Account, integer_to_binary(Dev)] ++
-            [<<(integer_to_binary(Id))/binary, ":", (b64(Key))/binary>> || {Id, Key} <- Prekeys],
-        none
-    ).
-
-use_line(Account, Dev, Id) ->
-    briskd_wire:line(
-        server(),
-        <<"E2EE">>,
-        [<<"USE">>, Account, integer_to_binary(Dev), integer_to_binary(Id)],
-        none
-    ).
-
-delete_line(Account, Dev) ->
-    briskd_wire:line(server(), <<"E2EE">>, [<<"DELETE">>, Account, integer_to_binary(Dev)], none).
-
-ack_lines(Account, Dev, Seqs) ->
-    [ack_line(Account, Dev, Chunk) || Chunk <- chunks(Seqs, 15)].
-
-ack_line(Account, Dev, Seqs) ->
-    briskd_wire:line(
-        server(),
-        <<"E2EE">>,
-        [
-            <<"ACK">>,
-            Account,
-            integer_to_binary(Dev),
-            binary:join([integer_to_binary(S) || S <- Seqs], <<",">>)
-        ],
-        none
-    ).
-
-bind_line(Client, Dev) ->
-    briskd_wire:line(
-        briskd_state_send:prefix(Client), <<"E2EE">>, [<<"BIND">>, integer_to_binary(Dev)], none
-    ).
-
-%% The envelope body and its delivery tags travel in server tags (base64
-%% JSON), so the 512-octet line limit does not apply to them. An envelope
-%% too large for the 8191-byte tag section is not replicated (`[]`).
-queue_line(Account, #e2ee_queue{key = {_, Dev, Seq}} = Entry) ->
-    briskd_wire:message(
-        [
-            {tag(body), encode_body(Entry#e2ee_queue.text)},
-            {tag(tags), encode_tags(Entry#e2ee_queue.tags)}
-        ],
-        server(),
-        <<"E2EE">>,
-        [
-            <<"QUEUE">>,
-            Account,
-            integer_to_binary(Dev),
-            integer_to_binary(Seq),
-            integer_to_binary(Entry#e2ee_queue.expires),
-            Entry#e2ee_queue.command,
-            Entry#e2ee_queue.target,
-            Entry#e2ee_queue.prefix
-        ],
-        none
-    ).
-
-encode_body(none) ->
-    json_b64(#{<<"none">> => true});
-encode_body({multiline, Lines}) ->
-    json_b64(#{<<"ml">> => [[Concat, base64:encode(Text)] || {Concat, Text} <- Lines]});
-encode_body(Text) when is_binary(Text) ->
-    json_b64(#{<<"t">> => base64:encode(Text)}).
-
-decode_body(Encoded) ->
-    Json = base64:decode(Encoded),
-    true = byte_size(Json) =< ?MAX_BODY_BYTES * 2,
-    case json:decode(Json) of
-        #{<<"none">> := true} ->
-            none;
-        #{<<"t">> := Text} ->
-            bounded(base64:decode(Text));
-        #{<<"ml">> := Lines} when is_list(Lines), Lines =/= [] ->
-            Decoded = [
-                {Concat, base64:decode(Text)}
-             || [Concat, Text] <- Lines, is_boolean(Concat)
-            ],
-            true = length(Decoded) =:= length(Lines),
-            true = lists:sum([byte_size(T) || {_, T} <- Decoded]) =< ?MAX_BODY_BYTES,
-            {multiline, Decoded}
-    end.
-
-bounded(Bin) when byte_size(Bin) =< ?MAX_BODY_BYTES -> Bin.
-
-encode_tags(Tags) ->
-    json_b64([[base64:encode(K), tag_value(V)] || {K, V} <- Tags]).
-
-tag_value(undefined) -> null;
-tag_value(V) -> base64:encode(V).
-
-decode_tags(Encoded) ->
-    Json = base64:decode(Encoded),
-    true = byte_size(Json) =< ?MAX_TAGS_BYTES * 2,
-    Raw = json:decode(Json),
-    true = is_list(Raw),
-    Tags = [{base64:decode(K), untag_value(V)} || [K, V] <- Raw],
-    true = length(Tags) =:= length(Raw),
-    true = lists:sum([byte_size(K) + tag_size(V) || {K, V} <- Tags]) =< ?MAX_TAGS_BYTES,
-    Tags.
-
-untag_value(null) -> undefined;
-untag_value(V) -> base64:decode(V).
-
-tag_size(undefined) -> 0;
-tag_size(V) -> byte_size(V).
-
-json_b64(Term) ->
-    base64:encode(iolist_to_binary(json:encode(Term))).
-
-chunks([], _N) ->
-    [];
-chunks(List, N) when length(List) =< N ->
-    [List];
-chunks(List, N) ->
-    {Chunk, Rest} = lists:split(N, List),
-    [Chunk | chunks(Rest, N)].
-
-broadcast([]) ->
-    ok;
-broadcast(Line) ->
-    briskd_state_link:server_broadcast(Line).
+    briskd_e2ee_sync:remote_renamed(OldKey, NewKey).
 
 %%% Helpers
 
-%% A target's account: the logged-in user who has the nickname now, or else
-%% an account of that name.
 resolve(Target) ->
     case recipient(Target) of
         {ok, Account, _} -> {ok, Account};
         {error, _} = Error -> Error
     end.
 
-%% The endpoint is where normal delivery to Target goes: a local session,
-%% a remote user (folded nickname), or `offline` for an account name.
+%% A target's account: the logged-in user who has the nickname now, or else
+%% an account of that name.
+-doc "Resolve `Target` (nick or account) to `{ok, Account, Endpoint}` or `{error, Code}`.".
+-spec recipient(binary()) ->
+    {ok, binary(), {local, pid()} | {remote, binary()} | offline} | {error, binary()}.
 recipient(Target) ->
     case briskd_state_client:find_nick(Target) of
         #client{pid = Other} = Found ->
@@ -1146,22 +639,38 @@ recipient(Target) ->
             end
     end.
 
+-doc "Return all published `#e2ee_device{}` records for `Account`.".
+-spec account_devices(binary()) -> [#e2ee_device{}].
 account_devices(Account) ->
     Folded = briskd_wire:fold(Account),
-    mnesia:dirty_select(e2ee_device, [{pattern(e2ee_device, [{2, {Folded, '_'}}]), [], ['$_']}]).
+    [
+        D
+     || #e2ee_device{} = D <- mnesia:dirty_select(
+            e2ee_device, [{pattern(e2ee_device, [{2, {Folded, '_'}}]), [], ['$_']}]
+        )
+    ].
 
+-doc "Return all queued `#e2ee_queue{}` records for `{Folded, Dev}`.".
+-spec queued(binary(), pos_integer()) -> [#e2ee_queue{}].
 queued(Folded, Dev) ->
-    mnesia:dirty_select(e2ee_queue, [{pattern(e2ee_queue, [{2, {Folded, Dev, '_'}}]), [], ['$_']}]).
+    [
+        Q
+     || #e2ee_queue{} = Q <- mnesia:dirty_select(
+            e2ee_queue, [{pattern(e2ee_queue, [{2, {Folded, Dev, '_'}}]), [], ['$_']}]
+        )
+    ].
 
 %% A match-spec head for a record: '_' everywhere except the given positions.
 %% Built as a tuple because typed record fields cannot hold '_'.
+-doc "Build a Mnesia match-spec head tuple for `e2ee_device` or `e2ee_queue`.".
+-spec pattern(e2ee_device | e2ee_queue, [{pos_integer(), term()}]) -> tuple().
 pattern(e2ee_device, Fields) ->
     erlang:make_tuple(record_info(size, e2ee_device), '_', [{1, e2ee_device} | Fields]);
 pattern(e2ee_queue, Fields) ->
     erlang:make_tuple(record_info(size, e2ee_queue), '_', [{1, e2ee_queue} | Fields]).
 
-%% The connection bound to a device: a local pid still logged into that
-%% account, or a remote user (folded nickname) who still has that account.
+-doc "Look up the active local or remote connection bound to `{Account, Dev}`.".
+-spec bound(binary(), pos_integer()) -> {ok, pid() | {remote, binary()}} | none.
 bound(Account, Dev) ->
     Folded = briskd_wire:fold(Account),
     case ets:lookup(?BOUND, {Folded, Dev}) of
@@ -1211,6 +720,8 @@ fetch_allowed(Pid) ->
             rate_limited
     end.
 
+-doc "Parse a 1..2147483647 device id.".
+-spec device_id(term()) -> {ok, pos_integer()} | {error, binary()}.
 device_id(Text) when is_binary(Text) ->
     case string:to_integer(Text) of
         {Id, <<>>} when is_integer(Id), Id >= 1, Id =< 2147483647 -> {ok, Id};
@@ -1219,24 +730,32 @@ device_id(Text) when is_binary(Text) ->
 device_id(_) ->
     {error, <<"device">>}.
 
+-doc "Parse a non-negative queue sequence number.".
+-spec seq(binary()) -> {ok, non_neg_integer()} | error.
 seq(Text) ->
     case string:to_integer(Text) of
         {Seq, <<>>} when is_integer(Seq), Seq >= 0 -> {ok, Seq};
         _ -> error
     end.
 
+-doc "Parse a non-negative integer timestamp or id.".
+-spec non_neg(binary()) -> {ok, non_neg_integer()} | error.
 non_neg(Text) ->
     case string:to_integer(Text) of
         {N, <<>>} when is_integer(N), N >= 0 -> {ok, N};
         _ -> error
     end.
 
+-doc "Validate an account name.".
+-spec account_name(binary()) -> {ok, binary()} | error.
 account_name(Text) ->
     case briskd_account:valid_name(Text) of
         true -> {ok, Text};
         false -> error
     end.
 
+-doc "Decode a base64 E2EE public key or signature.".
+-spec key(binary()) -> {ok, binary()} | {error, binary()}.
 key(Text) when byte_size(Text) >= 4, byte_size(Text) =< ?MAX_KEY_CHARS ->
     try base64:decode(Text) of
         Bin -> {ok, Bin}
@@ -1246,6 +765,8 @@ key(Text) when byte_size(Text) >= 4, byte_size(Text) =< ?MAX_KEY_CHARS ->
 key(_) ->
     {error, <<"key">>}.
 
+-doc "Parse an `<id>:<base64-key>` prekey entry.".
+-spec id_key(binary()) -> {ok, {non_neg_integer(), binary()}} | {error, binary()}.
 id_key(Text) ->
     case binary:split(Text, <<":">>) of
         [IdText, KeyText] ->
@@ -1259,6 +780,8 @@ id_key(Text) ->
             {error, <<"key">>}
     end.
 
+-doc "Parse a list of `<id>:<base64-key>` prekey entries.".
+-spec id_keys([binary()]) -> {ok, [{non_neg_integer(), binary()}]} | {error, binary()}.
 id_keys(Texts) ->
     lists:foldr(
         fun
@@ -1274,20 +797,30 @@ id_keys(Texts) ->
         Texts
     ).
 
+-doc "Base64-encode raw E2EE key bytes.".
+-spec b64(binary()) -> binary().
 b64(Bin) ->
     base64:encode(Bin).
 
+-doc "Send an `E2EE` reply line to `Pid`.".
+-spec reply(pid(), binary(), [binary()]) -> ok.
 reply(Pid, Server, Middle) ->
     briskd_state_send:send(Pid, Server, <<"E2EE">>, Middle, none).
 
 reply(Pid, Server, Middle, Trailing) ->
     briskd_state_send:send(Pid, Server, <<"E2EE">>, Middle, Trailing).
 
+-doc "Send a `FAIL E2EE` reply to `Pid`.".
+-spec fail(pid(), binary(), [binary()], binary()) -> ok.
 fail(Pid, Code, Context, Text) ->
     briskd_state_send:fail(Pid, <<"E2EE">>, Code, Context, Text).
 
+-doc "Return the current `e2ee` configuration map or `null`.".
+-spec config() -> map() | null.
 config() ->
     maps:get(e2ee, briskd_config:current_or_empty(), null).
 
+-doc "Return the configured local server name.".
+-spec server() -> binary().
 server() ->
     maps:get(name, briskd_config:current_or_empty(), <<"irc.local">>).
