@@ -215,7 +215,7 @@ are not linked to an account: deleting the account does not delete them.
 ## Voice and video calls
 
 Calls are one person to one person. They show up only when the operator
-sets `calls` and rtpengine is reachable. Media is WebRTC to rtpengine, not
+sets `calls` and rtpflux is reachable. Media is WebRTC to rtpflux, not
 an IRC message; neither side learns the other's IP address. Setup, limits,
 and what a call looks like on the wire are in
 [Voice and video calls](calls.md).

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run the voice-call end-to-end test: briskd, rtpengine, and two WebRTC clients.
+# Run the voice-call end-to-end test: briskd, rtpflux, and two WebRTC clients.
 set -eu
 cd "$(dirname "$0")"
 # shellcheck disable=SC1091

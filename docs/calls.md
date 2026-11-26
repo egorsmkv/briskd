@@ -8,46 +8,67 @@ other (see [Calls across linked servers](#calls-across-linked-servers)).
 
 Calls are off unless the configuration has a `calls` object. The default is
 `null` (see [Configuration](configuration.md)). The required key is
-`rtpengine`, the `host:port` of [rtpengine](https://github.com/sipwise/rtpengine)'s
+`rtpflux`, the `host:port` of [rtpflux](https://github.com/RustedBytes/rtpflux)'s
 NG control socket. With `calls` set at startup, the server advertises
 `egorsmkv.github.io/calls` and starts the call process. Changing the
-rtpengine address or the process limits needs a restart (see
+rtpflux address or the process limits needs a restart (see
 [Setup](#setup)).
 
 The briskd carries signalling only. It forwards `CALL` lines between the two
-users (and across server links) and sends NG control messages to rtpengine.
+users (and across server links) and sends NG control messages to rtpflux.
 It does not relay RTP or other media. Each browser talks WebRTC (ICE,
-DTLS-SRTP, Opus audio, VP8/H.264 video) to rtpengine, and rtpengine forwards
+DTLS-SRTP, Opus audio, VP8/H.264 video) to rtpflux, and rtpflux forwards
 the media to the other side without transcoding. Neither user learns the
 other's IP address. On a call between servers, only the caller's server
-talks to rtpengine; the callee's server relays the `CALL` lines.
+talks to rtpflux; the callee's server relays the `CALL` lines.
 
 ## Setup
 
-1. Run rtpengine (12.x was tested) where browsers can reach it over UDP. The
-   repository has an image built from Debian's `rtpengine-daemon` package in
-   [`docker/rtpengine`](https://github.com/egorsmkv/briskd/tree/main/docker/rtpengine).
-   It runs in userspace mode (no kernel module) and takes:
+1. Run [rtpflux](https://github.com/RustedBytes/rtpflux) where browsers can
+   reach it over UDP. It speaks rtpengine's NG control protocol, so any relay
+   that speaks NG with the same WebRTC flags also works; rtpflux is the one
+   tested here. The repository has an image in
+   [`docker/rtpflux`](https://github.com/egorsmkv/briskd/tree/main/docker/rtpflux)
+   that builds a pinned rtpflux commit (rtpflux publishes no image or
+   release yet). It needs no kernel module or added capabilities, and takes:
 
    | Variable | Default | Meaning |
    | --- | --- | --- |
-   | `RTPENGINE_ADVERTISE` | container address | Address put in SDP; must be reachable by browsers (your public IP in production) |
-   | `RTPENGINE_NG_PORT` | `2223` | NG control port (UDP); keep it private |
-   | `RTPENGINE_PORT_MIN`, `RTPENGINE_PORT_MAX` | `30000`, `30100` | Media port range (UDP); open it in the firewall. A voice call uses two ports, a video call four |
-   | `RTPENGINE_LOG_LEVEL` | `6` | syslog level |
+   | `RTPFLUX_ADVERTISE` | container address | Address put in SDP; must be reachable by browsers (your public IP in production) |
+   | `RTPFLUX_NG_PORT` | `2223` | NG control port (UDP); keep it private |
+   | `RTPFLUX_PORT_MIN`, `RTPFLUX_PORT_MAX` | `30000`, `30100` | Media port range (UDP); open it in the firewall. A voice call uses two ports, a video call four |
+   | `RTPFLUX_LOG_LEVEL` | `info` | `error`, `warn`, `info`, `debug`, or `trace` |
 
-   A native installation works the same way, for example
-   `rtpengine --interface=10.0.0.5!203.0.113.7 --listen-ng=10.0.0.5:2223 --port-min=30000 --port-max=30100`.
+   The image writes an rtpflux TOML file from these and allows a quarter of
+   the port pairs as concurrent calls. A native installation uses the same
+   settings in `/etc/rtpflux/rtpflux.toml`, for example:
+
+   ```toml
+   [control]
+   listen = ["10.0.0.5:2223"]
+
+   [[interface]]
+   name = "default"
+   address = "10.0.0.5"
+   advertise = "203.0.113.7"
+
+   [ports]
+   min = 30000
+   max = 30100
+
+   [sessions]
+   max = 25
+   ```
 
 2. Point the server at the NG control port:
 
    ```json
-   "calls": { "rtpengine": "rtpengine:2223" }
+   "calls": { "rtpflux": "rtpflux:2223" }
    ```
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `rtpengine` | required | `host:port` of rtpengine's NG control socket (UDP) |
+| `rtpflux` | required | `host:port` of rtpflux's NG control socket (UDP). `rtpengine` is a deprecated name for this key; setting both is an error |
 | `ring_timeout` | `45` | Seconds a call may ring before it ends as `no-answer` (5..300) |
 | `max_duration` | `7200` | Longest call in seconds (0..86400; `0` means no limit) |
 | `max_calls` | `100` | Calls (ringing or active) at once on this server (1..10000) |
@@ -57,20 +78,20 @@ talks to rtpengine; the callee's server relays the `CALL` lines.
 
 With `calls` set, the server advertises the capability
 `egorsmkv.github.io/calls=v=1,ring=<ring_timeout>,hold,video` (`video` only
-when `video` is on). The call process keeps the rtpengine address,
+when `video` is on). The call process keeps the rtpflux address,
 `ring_timeout`, `max_duration`, `max_calls`, and `calls_per_minute` from
 startup, so changing those needs a restart. `require_account` and `video`
 are read from the current configuration: a `REHASH` changes those checks and
 the advertised capability value, but not a ring or duration timer the
 process already took from its startup limits.
 
-Video goes through rtpengine like audio: budget about 1 to 2.5 Mbit/s in each
-direction per video call on the rtpengine host (the browsers adapt to the
+Video goes through rtpflux like audio: budget about 1 to 2.5 Mbit/s in each
+direction per video call on the rtpflux host (the browsers adapt to the
 network), against tens of kbit/s for voice. `max_calls` caps both.
 
 WebRTC needs a secure context: serve WebIRC over HTTPS (`wss_port` or a TLS
 proxy) except on `localhost`. No STUN or TURN server is needed, since
-rtpengine terminates ICE on each leg; it must have an address that browsers
+rtpflux terminates ICE on each leg; it must have an address that browsers
 can reach directly.
 
 ## Using calls in WebIRC
@@ -159,7 +180,7 @@ CALL RESUME  <nick> <token>                           either side
 
 `<token>` (8 to 32 letters and digits) is chosen by the caller and names the
 call for both sides. `<nick>` is the other party. The server rewrites each
-description through rtpengine and delivers it to the other party with the
+description through rtpflux and delivers it to the other party with the
 sender's prefix:
 
 ```text
@@ -169,7 +190,7 @@ sender's prefix:
 `HOLD` and `RESUME` are accepted only in an active call and relayed to the
 other party. They are notices: the hold audio itself is ordinary media that
 the client sends instead of its microphone (`RTCRtpSender.replaceTrack`), so
-rtpengine and the media path are unchanged. A server whose capability value
+rtpflux and the media path are unchanged. A server whose capability value
 lacks `hold` does not relay them; WebIRC then still sends the hold audio.
 
 The server ends calls itself with a `HANGUP` from the server name and one of
@@ -193,7 +214,7 @@ Errors are standard replies, `FAIL CALL <code> [<token>] :<text>`:
 | `INVALID_SDP` | The description is not valid base64 SDP with audio and, where allowed, one video section (`not_audio`, `too_many_video`, `too_large`) |
 | `TIMEOUT` | A chunked description was not completed within 10 seconds |
 | `INVALID_STATE`, `UNKNOWN_CALL` | The command does not fit the call's state (for example `HOLD` before the call is answered), or no such call |
-| `MEDIA_ERROR` | rtpengine refused the description or did not answer |
+| `MEDIA_ERROR` | rtpflux refused the description or did not answer |
 
 ## Calls across linked servers
 
@@ -209,11 +230,11 @@ private message:
 ```
 
 - **The caller's server is the media anchor.** It passes the offer, and
-  later the callee's answer, through its own rtpengine, so each browser
-  still sees only that rtpengine's address. The callee's server never
-  contacts its rtpengine for the call; it checks its user (capability,
+  later the callee's answer, through its own rtpflux, so each browser
+  still sees only that rtpflux's address. The callee's server never
+  contacts its rtpflux for the call; it checks its user (capability,
   `require_account`, busy, `max_calls`, `calls_per_minute`) and relays.
-  rtpengine on the caller's server must therefore be reachable from the
+  rtpflux on the caller's server must therefore be reachable from the
   callee's browser, as it is for local calls.
 - **Both servers need `calls`.** A callee whose server has no `calls`
   configuration is refused with `TARGET_UNSUPPORTED`. With
@@ -232,14 +253,14 @@ private message:
 
 ## Server behavior
 
-`briskd_calls` owns the call table and a UDP socket to rtpengine. For each call
+`briskd_calls` owns the call table and a UDP socket to rtpflux. For each call
 it sends an NG `offer` (with `ICE=force`, `UDP/TLS/RTP/SAVPF`, `rtcp-mux`
 required, SDES off) and later an `answer`, and a `delete` when the call ends.
 NG requests are retried twice, one second apart; after that the call fails
 with `media-error`. Requests still in flight when a call ends are dropped, so
-a retry never reaches rtpengine after the `delete`. The `rtpengine` host is
+a retry never reaches rtpflux after the `delete`. The `rtpflux` host is
 resolved when the server starts and again for each new call, and NG replies
-are accepted only from that address and port; rtpengine must answer from the
+are accepted only from that address and port; rtpflux must answer from the
 address it is configured on (the default). A call ends when either user disconnects, and the other is
 told. Call state is kept in memory, so a server restart ends all calls.
 
@@ -250,10 +271,10 @@ lines are not included in command logging.
 
 ## Security notes
 
-- Each description is checked for shape and media type only. rtpengine runs
+- Each description is checked for shape and media type only. rtpflux runs
   ICE connectivity checks (STUN) towards the candidates a client sends, so a
-  client can make rtpengine send STUN packets to an address of its choosing.
-  Media flows only after ICE succeeds. Run rtpengine where its outbound UDP is
+  client can make rtpflux send STUN packets to an address of its choosing.
+  Media flows only after ICE succeeds. Run rtpflux where its outbound UDP is
   limited to what browsers need, and keep the NG port private.
 - There is no per-user call block list: any user who negotiated the
   capability can ring any other one. `calls_per_minute` applies per
@@ -264,18 +285,18 @@ lines are not included in command logging.
 
 ## Testing
 
-`test/calls/run` starts briskd, the rtpengine image, and two Python WebRTC
+`test/calls/run` starts briskd, the rtpflux image, and two Python WebRTC
 clients (aiortc) on a Docker network. The clients call each other over IRC,
 check that neither sees the other's address, and require two seconds of audio
-to arrive in each direction through rtpengine; a second test makes a video
+to arrive in each direction through rtpflux; a second test makes a video
 call and requires audio and video frames in both directions. WebIRC's call
 manager is unit-tested with fake devices (`webui/src/calls_lifecycle_test.ts`:
 camera on, off, hold, missing camera, answering with or without video, device
 changes, and release on every way a call ends). CI runs it. The unit and
-protocol tests (`test/briskd_call_tests.erl`) use a fake rtpengine.
+protocol tests (`test/briskd_call_tests.erl`) use a fake rtpflux.
 
 `test/calls/browser/run` makes a real WebIRC video call: briskd (with the
-assets built from the checkout), rtpengine, and two headless Chromium tabs
+assets built from the checkout), rtpflux, and two headless Chromium tabs
 with fake cameras and microphones on one Docker network. alice starts the
 call with `/videocall`, bob answers with video, and the test requires each
 side to decode the other's video, "Camera off" and the picture's return when
@@ -283,7 +304,7 @@ either side switches the camera, the minimized stage, and the hang-up closing
 both stages and recording the call, with no page or console errors. It keeps
 screenshots in `test/calls/browser/shots/`. CI runs it.
 
-The development compose file includes rtpengine, advertising `127.0.0.1` with
+The development compose file includes rtpflux, advertising `127.0.0.1` with
 UDP ports 30000–30100 published, and `config/briskd.dev.json` enables calls, so
 two browser windows on the same machine can call each other. For calls from
 other devices (HTTPS and a reachable media address), see "Using the

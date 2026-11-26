@@ -5,8 +5,9 @@
 Docker Compose provides OTP 29, Rebar3, and `just`, and mounts the checkout at
 `/workspace`. The development image is Debian-based (`erlang:29.1.2`) because
 Deno and ELP publish glibc Linux builds only; the production, search, and
-browser-test images are Alpine 3.24. The rtpengine image stays on Debian:
-Alpine's rtpengine package fails the DTLS handshake with Chromium. The container reads its environment from `.dev.env`, which is
+browser-test images are Alpine 3.24. The rtpflux image builds a pinned
+rtpflux commit with the Rust toolchain rtpflux pins and runs it on Debian;
+the first build compiles it and takes a few minutes. The container reads its environment from `.dev.env`, which is
 not committed; create it once from the example:
 
 ```sh
@@ -70,7 +71,7 @@ high-load clients over both servers, so every channel spans the link (see
 
 Browsers allow the camera and microphone only on HTTPS pages (or
 `localhost`), so calls from another device need the web UI over HTTPS, and
-rtpengine must announce an address that device can reach. With
+rtpflux must announce an address that device can reach. With
 [Tailscale](https://tailscale.com) on the development host:
 
 1. Enable Serve and HTTPS certificates for the tailnet (the first
@@ -86,11 +87,11 @@ rtpengine must announce an address that device can reach. With
    `wss://<page host>/ws`, which the second line forwards to briskd's
    WebSocket port.
 3. Announce the host's Tailscale address for media, in `.env` next to the
-   compose file (gitignored), and recreate rtpengine:
+   compose file (gitignored), and recreate rtpflux:
 
    ```sh
-   echo "RTPENGINE_ADVERTISE=$(tailscale ip -4)" >> .env
-   docker compose -f docker-compose.dev.yml up -d --force-recreate rtpengine
+   echo "RTPFLUX_ADVERTISE=$(tailscale ip -4)" >> .env
+   docker compose -f docker-compose.dev.yml up -d --force-recreate rtpflux
    ```
 
    Media then flows over the tailnet to the published UDP ports
@@ -265,7 +266,7 @@ does not start it. Each job then runs only when that push touches a file the
 job builds or tests: the Erlang suite and WebUI unit checks for `src/`,
 `include/`, `test/*.erl`, `webui/`, and the build files; `test/e2ee/run` for
 the server tree and `test/e2ee/`; the search checks for `search/`;
-`test/calls/run` for the server tree, `docker/rtpengine/`, and `test/calls/`
+`test/calls/run` for the server tree, `docker/rtpflux/`, and `test/calls/`
 outside the browser harness; `test/calls/browser/run` and `test/webui/run`
 for the server tree, `webui/`, and their own harnesses.
 
@@ -276,9 +277,9 @@ and runs `just format-check`, `just lint` and `just eqwalize` (ELP),
 OTP, Rebar3, `just`, Deno, and ELP versions as local development. The search
 job runs `cargo fmt`, `clippy`, and `cargo test` in `search/` and builds its
 image. `test/e2ee/run` is the end-to-end encryption tests on two linked
-servers. `test/calls/run` is the voice-call test with rtpengine and WebRTC
+servers. `test/calls/run` is the voice-call test with rtpflux and WebRTC
 clients. `test/calls/browser/run` is a WebIRC video call between two
-headless Chromium tabs through rtpengine. `test/webui/run` opens WebIRC in
+headless Chromium tabs through rtpflux. `test/webui/run` opens WebIRC in
 a browser in light and dark themes. The browser jobs keep their screenshots
 as build artifacts.
 

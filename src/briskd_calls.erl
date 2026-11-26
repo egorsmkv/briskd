@@ -1,12 +1,12 @@
 -module(briskd_calls).
 -moduledoc """
-User-to-user voice and video calls relayed through [rtpengine](https://github.com/sipwise/rtpengine)
+User-to-user voice and video calls relayed through [rtpflux](https://github.com/RustedBytes/rtpflux)
 (the `calls` configuration key, vendor capability `egorsmkv.github.io/calls`).
 
 This is a server extension, not an IRC or IRCv3 specification. Clients that
 negotiate the capability exchange WebRTC session descriptions with the
-`CALL` command; the server passes each description through rtpengine's NG
-control protocol, so media flows browser → rtpengine → browser and neither
+`CALL` command; the server passes each description through rtpflux's NG
+control protocol, so media flows browser → rtpflux → browser and neither
 side learns the other's address.
 
 ```text
@@ -28,7 +28,7 @@ Errors are `FAIL CALL <code> <token> :<text>`.
 
 `HOLD` and `RESUME` only tell the other party that a user put an active
 call on hold (and plays hold audio in place of the microphone) or took it off
-hold; the media path through rtpengine is unchanged, so the call keeps
+hold; the media path through rtpflux is unchanged, so the call keeps
 running and `max_duration` still applies.
 
 Calls to users on other servers (RFC 2813 links) use the same command
@@ -42,10 +42,10 @@ target user's server like a private message (`receive_link/3`):
 ```
 
 The caller's server is the media anchor: it passes the offer and the
-callee's answer through its own rtpengine, so each user still sees only the
+callee's answer through its own rtpflux, so each user still sees only the
 relay's address. The callee's server checks the callee (capability,
 account, busy, limits) and relays lines between its user and the link
-without touching rtpengine (`relay` mode). Each side ends its record when
+without touching rtpflux (`relay` mode). Each side ends its record when
 the other user quits or is split away, re-keys it on a nick change, and
 keeps its own ring and duration timers. A peer that does not know `CALL`
 ignores it, so the caller hears no answer until the ring timeout.
@@ -53,7 +53,7 @@ ignores it, so the caller hears no answer until the ring timeout.
 Process model: `command/3` runs inside `m:briskd_state`, validates syntax,
 resolves the callee among local users or users behind a link, checks the
 capabilities it can see, and casts to this process. This process owns the call table, chunk reassembly, the UDP
-socket to rtpengine, the ring and duration timers, and a monitor on each
+socket to rtpflux, the ring and duration timers, and a monitor on each
 party; it reads client rows from Mnesia and sends lines straight to session
 processes. It never calls `m:briskd_state`, so there is no call cycle.
 
@@ -61,7 +61,7 @@ Bounds: one call per user (ringing or active), `max_calls` calls in total,
 `calls_per_minute` new calls per caller, descriptions of at most 40 chunks
 and 12 KiB (`m:briskd_call_proto`), and a 10-second window to finish sending a
 description. NG requests are retried twice (after 1 s each) with the same
-cookie, which rtpengine answers from its cache, then treated as failed.
+cookie, which rtpflux answers from its cache, then treated as failed.
 Call state is in memory only; a restart ends every call.
 """.
 -behaviour(gen_server).
@@ -483,7 +483,7 @@ remote_renamed(OldKey, NewKey) ->
 init(Config) ->
     Calls = maps:get(calls, Config),
     {ok, Sock} = gen_udp:open(0, [binary, {active, true}]),
-    {Host, Port} = maps:get(rtpengine, Calls),
+    {Host, Port} = maps:get(rtpflux, Calls),
     State = #{
         server => maps:get(name, Config),
         limits => Calls,
@@ -558,7 +558,7 @@ handle_info({udp, Sock, Ip, Port, Packet}, #{sock := Sock, ng := {_, Port}, ng_i
         error -> {noreply, State}
     end;
 handle_info({udp, Sock, _Ip, _Port, _Packet}, #{sock := Sock} = State) ->
-    %% Only rtpengine's NG address may answer; anything else is dropped
+    %% Only rtpflux's NG address may answer; anything else is dropped
     %% before parsing (the random cookie is the second line of defense).
     {noreply, State};
 handle_info({ng_retry, Cookie}, #{pending := Pending} = State) ->

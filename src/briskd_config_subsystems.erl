@@ -801,7 +801,10 @@ search_int(Key, Value, _Min, _Max) ->
     erlang:error({invalid_search, Key, Value}).
 
 -doc """
-Parse voice/video `calls` (rtpengine NG) configuration.
+Parse voice/video `calls` configuration. `rtpflux` is the `host:port` of the
+media relay's NG control socket (rtpflux, or any relay that speaks rtpengine's
+NG protocol). `rtpengine` is the deprecated name of the same key; a config
+that sets both is rejected.
 """.
 -spec calls(term()) -> briskd_config:calls().
 calls(null) ->
@@ -810,7 +813,7 @@ calls(false) ->
     null;
 calls(Map) when is_map(Map) ->
     #{
-        rtpengine => rtpengine_address(maps:get(<<"rtpengine">>, Map, undefined)),
+        rtpflux => ng_address(ng_setting(Map)),
         ring_timeout => calls_int(ring_timeout, maps:get(<<"ring_timeout">>, Map, 45), 5, 300),
         max_duration => calls_int(max_duration, maps:get(<<"max_duration">>, Map, 7200), 0, 86400),
         max_calls => calls_int(max_calls, maps:get(<<"max_calls">>, Map, 100), 1, 10000),
@@ -825,7 +828,14 @@ calls(Map) when is_map(Map) ->
 calls(Value) ->
     erlang:error({invalid_calls, Value}).
 
-rtpengine_address(Value) when is_binary(Value) ->
+ng_setting(#{<<"rtpflux">> := _, <<"rtpengine">> := _}) ->
+    erlang:error({invalid_calls, rtpflux, both_rtpflux_and_rtpengine});
+ng_setting(#{<<"rtpengine">> := Value}) ->
+    Value;
+ng_setting(Map) ->
+    maps:get(<<"rtpflux">>, Map, undefined).
+
+ng_address(Value) when is_binary(Value) ->
     case
         re:run(Value, <<"^([A-Za-z0-9.-]{1,253}):([0-9]{1,5})$">>, [
             {capture, all_but_first, binary}
@@ -834,13 +844,13 @@ rtpengine_address(Value) when is_binary(Value) ->
         {match, [Host, PortBin]} ->
             case binary_to_integer(PortBin) of
                 Port when is_integer(Port, 1, 65535) -> {briskd_wire:retain(Host), Port};
-                _ -> erlang:error({invalid_calls, rtpengine, Value})
+                _ -> erlang:error({invalid_calls, rtpflux, Value})
             end;
         nomatch ->
-            erlang:error({invalid_calls, rtpengine, Value})
+            erlang:error({invalid_calls, rtpflux, Value})
     end;
-rtpengine_address(Value) ->
-    erlang:error({invalid_calls, rtpengine, Value}).
+ng_address(Value) ->
+    erlang:error({invalid_calls, rtpflux, Value}).
 
 calls_int(_Key, Value, Min, Max) when is_integer(Value, Min, Max) ->
     Value;

@@ -1,6 +1,6 @@
-# End-to-end test for voice calls: briskd, a real rtpengine, and two Python
+# End-to-end test for voice calls: briskd, a real rtpflux, and two Python
 # WebRTC clients (aiortc) that call each other over IRC and check that audio
-# flows both ways through rtpengine (test/calls/run).
+# flows both ways through rtpflux (test/calls/run).
 #
 #   docker compose -f test/calls/docker-compose.yml up --build \
 #       --abort-on-container-exit --exit-code-from tests
@@ -21,13 +21,13 @@ services:
       timeout: 3s
       retries: 60
     depends_on:
-      - rtpengine
-  rtpengine:
+      - rtpflux
+  rtpflux:
     build:
-      context: ../../docker/rtpengine
-    image: briskd-rtpengine
+      context: ../../docker/rtpflux
+    image: briskd-rtpflux
     environment:
-      RTPENGINE_LOG_LEVEL: "6"
+      RTPFLUX_LOG_LEVEL: info
   tests:
     image: python:3.12.12-slim
     working_dir: /tests
@@ -35,7 +35,7 @@ services:
       - .:/tests:ro
     environment:
       CALLS_IRC: briskd:6667
-      CALLS_NG: rtpengine:2223
+      CALLS_NG: rtpflux:2223
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PYTHONDONTWRITEBYTECODE: "1"
     command:

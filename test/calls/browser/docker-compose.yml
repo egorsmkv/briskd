@@ -1,5 +1,5 @@
 # Video calls in real browsers: WebIRC in two headless Chromium tabs with fake
-# cameras and microphones calls itself through briskd and a real rtpengine
+# cameras and microphones calls itself through briskd and a real rtpflux
 # (test/calls/browser/run). Screenshots land in test/calls/browser/shots/.
 #
 #   docker compose -f test/calls/browser/docker-compose.yml up --build \
@@ -22,11 +22,11 @@ services:
       timeout: 3s
       retries: 100
     depends_on:
-      - rtpengine
-  rtpengine:
+      - rtpflux
+  rtpflux:
     build:
-      context: ../../../docker/rtpengine
-    image: briskd-rtpengine
+      context: ../../../docker/rtpflux
+    image: briskd-rtpflux
   browser:
     build: ../../webui
     image: briskd-webui-browser

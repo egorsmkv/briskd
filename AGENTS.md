@@ -110,9 +110,9 @@ src/briskd_links.erl           # link supervisor
 src/briskd_bots.erl            # AI assistant bot supervisor (transient, started last)
 src/briskd_bot.erl             # one configured AI assistant bot (socketless local client)
 src/briskd_bot_ai.erl          # bot addressing, chat/completions request/reply, line splitting (pure + HTTP)
-src/briskd_calls.erl           # voice calls: call table, CALL relay, rtpengine NG socket and timers
+src/briskd_calls.erl           # voice calls: call table, CALL relay, rtpflux NG socket and timers
 src/briskd_call_proto.erl      # CALL parameter/SDP validation, SDP chunking, NG messages (pure)
-src/briskd_bencode.erl         # bounded bencode codec for the rtpengine NG protocol (pure)
+src/briskd_bencode.erl         # bounded bencode codec for the rtpflux NG protocol (pure)
 src/briskd_log.erl
 include/briskd_state.hrl       # includes the records below
 include/briskd_client.hrl
@@ -321,7 +321,7 @@ just test
 
 `just lint` runs ELP's linter over `src/`, `test/`, and `include/` and fails on any diagnostic (configuration in `.elp_lint.toml`; see `docs/development.md`). Fix a finding rather than suppress it; a suppression (`% elp:ignore Wxxxx (reason)`) needs the reason. After applying an ELP auto-fix, build and run the tests: fixes are not always safe. `just eqwalize` type-checks `src/` and `test/` with eqWAlizer and fails on any finding. Give new code precise specs instead of `term()`, read configuration through `briskd_config:current/0`, and narrow untyped data with a guard where it enters; `docs/development.md` lists the conventions.
 
-GitHub Actions (`.github/workflows/ci.yml`) runs on push, not on pull requests, and each job runs only when a path it builds or tests changed. It builds the development image and runs `just format-check`, `just lint`, `just eqwalize`, `just test-webui`, and `just test`; separate jobs run the `search/` Rust checks, `test/e2ee/run`, `test/calls/run`, `test/calls/browser/run` (a WebIRC video call in headless Chromium through rtpengine), and `test/webui/run` (WebIRC in light and dark themes in a browser). For WebUI changes, keep `src/common/theme_tokens_test.ts` passing: new colors go in `styles/_tokens.scss` as tokens with at least 4.5:1 contrast in light and dark. `just test` includes `briskd_interop_tests`, which starts two briskd OS processes linked over TCP; keep it green for link changes. Keep that workflow on the same OTP image as the Dockerfile.
+GitHub Actions (`.github/workflows/ci.yml`) runs on push, not on pull requests, and each job runs only when a path it builds or tests changed. It builds the development image and runs `just format-check`, `just lint`, `just eqwalize`, `just test-webui`, and `just test`; separate jobs run the `search/` Rust checks, `test/e2ee/run`, `test/calls/run`, `test/calls/browser/run` (a WebIRC video call in headless Chromium through rtpflux), and `test/webui/run` (WebIRC in light and dark themes in a browser). For WebUI changes, keep `src/common/theme_tokens_test.ts` passing: new colors go in `styles/_tokens.scss` as tokens with at least 4.5:1 contrast in light and dark. `just test` includes `briskd_interop_tests`, which starts two briskd OS processes linked over TCP; keep it green for link changes. Keep that workflow on the same OTP image as the Dockerfile.
 
 Add `rebar3 dialyzer`, `rebar3 xref`, Common Test, and a release smoke test when those providers exist for the change. `rebar.config` enables `warnings_as_errors` and erlfmt. A new warning or format drift is a defect. Say so when a check is skipped because the container or a plugin is absent.
 

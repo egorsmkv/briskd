@@ -6,7 +6,7 @@
 // receives the other's video.
 //
 // Signalling travels as IRC `CALL` lines; the server relays each session
-// description through rtpengine, so media goes browser → rtpengine → browser.
+// description through rtpflux, so media goes browser → rtpflux → browser.
 // Descriptions are complete (ICE gathering finishes before sending) and travel
 // base64-encoded in numbered chunks:
 //   CALL OFFER|ANSWER <nick> <token> <part> <total> :<chunk>
@@ -669,11 +669,11 @@ export class CallManager {
     }
     this.stream = stream;
     this.camera = stream.getVideoTracks?.()[0] ?? null;
-    // rtpengine terminates ICE and DTLS on each leg; no STUN/TURN is needed.
-    // The bundle policy stays at the default ("balanced"): rtpengine 12 drops
-    // the `a=group:BUNDLE` line when it rewrites a description, and browsers
-    // refuse a remote offer without one under "max-bundle". Each media
-    // section then has its own transport through rtpengine.
+    // rtpflux terminates ICE and DTLS on each leg; no STUN/TURN is needed.
+    // The bundle policy stays at the default ("balanced"): browsers refuse a
+    // remote offer without an `a=group:BUNDLE` line under "max-bundle", and
+    // "balanced" works whether or not the relay keeps that line. Each media
+    // section then has its own transport through the relay.
     const pc = new RTCPeerConnection({
       iceServers: [],
       rtcpMuxPolicy: "require",

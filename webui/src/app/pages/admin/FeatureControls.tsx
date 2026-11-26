@@ -78,7 +78,7 @@ const META: Record<string, Meta> = {
   },
   calls: {
     title: "Voice calls",
-    desc: "One-to-one calls through rtpengine.",
+    desc: "One-to-one calls through rtpflux.",
   },
   voice: {
     title: "Voice messages",

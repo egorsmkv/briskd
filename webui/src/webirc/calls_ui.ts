@@ -12,7 +12,7 @@ import { buffers, S } from "./state.ts";
 import { avatarOf, displayNameOf, peekUser } from "./users.ts";
 import { isChan, NICK_COLORS, nickClass } from "./util.ts";
 
-// --- Voice calls (egorsmkv.github.io/calls, relayed through rtpengine) ---
+// --- Voice calls (egorsmkv.github.io/calls, relayed through rtpflux) ---
 
 export const calls = new CallManager({
   send: (line) => sendRaw(line),

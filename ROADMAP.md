@@ -302,26 +302,26 @@ always-on bouncer details, and Sable's PostgreSQL history server.
 - [x] `calls` configuration and vendor capability `egorsmkv.github.io/calls`
   ([guide](docs/calls.md)): one-to-one audio calls between local users.
 - [x] `CALL OFFER|ANSWER|RINGING|REJECT|HANGUP` signalling with chunked
-  base64 SDP (`briskd_call_proto`), relayed through rtpengine's NG protocol
+  base64 SDP (`briskd_call_proto`), relayed through rtpflux's NG protocol
   (`briskd_calls`, `briskd_bencode`) so peers never see each other's address.
 - [x] Ring timeout, maximum duration, per-user and server limits, busy
   handling, and cleanup on disconnect.
 - [x] WebIRC call button, incoming-call dialog, call dock with mute and
   hang-up, `/call` and `/hangup`.
-- [x] rtpengine image (`docker/rtpengine`) in the development environment and
+- [x] rtpflux image (`docker/rtpflux`) in the development environment and
   an end-to-end test with WebRTC clients (`test/calls/run`, in CI).
 - [x] Calls to users on linked servers: `CALL` over RFC 2813 links with the
   user's prefix, routed hop by hop; the caller's server anchors the media
-  in its rtpengine and the callee's server relays; quits, kills, and
+  in its rtpflux and the callee's server relays; quits, kills, and
   netsplits end the call and nick changes keep it (`briskd_call_link_tests`,
   two linked server processes).
 - [x] One-to-one video calls (`calls.video`, `video` in the capability value):
   one video section next to the audio, 24 KiB descriptions, relayed by
-  rtpengine without transcoding; WebIRC video stage with camera on/off
+  rtpflux without transcoding; WebIRC video stage with camera on/off
   (no renegotiation), answering with or without video, hold, minimize, full
   screen, camera choice, and `/videocall` (aiortc audio+video test through
-  rtpengine, browser call manager tests).
-- [ ] Group calls (needs a selective forwarding unit, not rtpengine's
+  rtpflux, browser call manager tests).
+- [ ] Group calls (needs a selective forwarding unit, not rtpflux's
   two-party relay).
 
 ## Message search (server-specific extension)

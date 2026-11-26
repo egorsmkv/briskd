@@ -35,7 +35,7 @@
     "max_bytes": 10485760
   },
   "calls": {
-    "rtpengine": "rtpengine:2223"
+    "rtpflux": "rtpflux:2223"
   },
   "features": {
     "reactions": true,

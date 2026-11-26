@@ -11,7 +11,7 @@ on:
       - "webui/**"
       - "priv/webui/**"
       - "search/**"
-      - "docker/rtpengine/**"
+      - "docker/rtpflux/**"
       - "Dockerfile"
       - "rebar.config"
       - "rebar.lock"
@@ -84,7 +84,7 @@ jobs:
           calls=false
           browser=false
           # WebUI sources do not affect the Python voice-call harness.
-          if [ "$all" = true ] || hit "${server}|^docker/rtpengine/"; then
+          if [ "$all" = true ] || hit "${server}|^docker/rtpflux/"; then
             calls=true
             browser=true
           fi
@@ -160,7 +160,7 @@ jobs:
         run: docker build -t briskd-search-ci search
 
   calls:
-    name: Voice calls end-to-end (briskd, rtpengine, WebRTC clients)
+    name: Voice calls end-to-end (briskd, rtpflux, WebRTC clients)
     needs: changes
     if: needs.changes.outputs.calls == 'true'
     runs-on: ubuntu-latest
@@ -173,7 +173,7 @@ jobs:
         run: test/calls/run
 
   calls-browser:
-    name: Video calls in a browser (WebIRC, rtpengine, headless Chromium)
+    name: Video calls in a browser (WebIRC, rtpflux, headless Chromium)
     needs: changes
     if: needs.changes.outputs.calls_browser == 'true'
     runs-on: ubuntu-latest

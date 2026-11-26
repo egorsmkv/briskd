@@ -21,17 +21,17 @@ services:
       - rustfs-data:/data
 
   # Media relay for WebIRC calls. It tells browsers to send media to
-  # RTPENGINE_ADVERTISE on the published UDP port range: 127.0.0.1 (the
+  # RTPFLUX_ADVERTISE on the published UDP port range: 127.0.0.1 (the
   # default) works for browsers on this machine only. For calls from other
   # devices set it to an address they reach, for example this host's Tailscale
   # IP, in `.env` (gitignored; see docs/development.md).
-  rtpengine:
+  rtpflux:
     build:
-      context: docker/rtpengine
+      context: docker/rtpflux
     environment:
-      RTPENGINE_ADVERTISE: ${RTPENGINE_ADVERTISE:-127.0.0.1}
-      RTPENGINE_PORT_MIN: "30000"
-      RTPENGINE_PORT_MAX: "30100"
+      RTPFLUX_ADVERTISE: ${RTPFLUX_ADVERTISE:-127.0.0.1}
+      RTPFLUX_PORT_MIN: "30000"
+      RTPFLUX_PORT_MAX: "30100"
     ports:
       - "30000-30100:30000-30100/udp"
 
@@ -68,7 +68,7 @@ services:
     depends_on:
       - inbucket
       - rustfs
-      - rtpengine
+      - rtpflux
       - briskd-search
     env_file:
       - .dev.env

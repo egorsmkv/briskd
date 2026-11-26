@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run the browser video-call test: briskd with WebIRC, rtpengine, and headless
+# Run the browser video-call test: briskd with WebIRC, rtpflux, and headless
 # Chromium (see docker-compose.yml). Screenshots go to test/calls/browser/shots/.
 set -eu
 cd "$(dirname "$0")"

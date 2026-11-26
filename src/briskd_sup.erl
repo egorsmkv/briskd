@@ -72,7 +72,7 @@ init(Config) ->
                 #{id => briskd_webui, start => {briskd_webui, start_link, [Config]}}
              || maps:get(webui, Config, null) =/= null
             ],
-    %% Voice calls: the call table and the rtpengine control socket.
+    %% Voice calls: the call table and the rtpflux control socket.
     Calls = [
         #{id => briskd_calls, start => {briskd_calls, start_link, [Config]}}
      || maps:get(calls, Config, null) =/= null

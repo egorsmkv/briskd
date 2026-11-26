@@ -7,5 +7,5 @@
   "log_format": "text",
   "retention": "transient",
   "mnesia_dir": "/tmp/mnesia",
-  "calls": { "rtpengine": "rtpengine:2223", "ring_timeout": 30 }
+  "calls": { "rtpflux": "rtpflux:2223", "ring_timeout": 30 }
 }

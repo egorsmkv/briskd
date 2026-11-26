@@ -1,7 +1,7 @@
 -module(briskd_call_proto).
 -moduledoc """
 Pure helpers for user-to-user voice calls (`m:briskd_calls`): validation of
-`CALL` parameters, SDP transport over IRC lines, and rtpengine NG messages.
+`CALL` parameters, SDP transport over IRC lines, and rtpflux NG messages.
 
 SDP does not fit one IRC line (RFC 1459: 512 octets) and contains CRLF, so
 it travels base64-encoded in numbered chunks:
@@ -12,11 +12,11 @@ codecs). A description has one or more audio media sections and, when video
 calls are allowed, at most one video section; no other media.
 
 NG messages are `<cookie> <bencoded dictionary>` UDP datagrams. `offer/3` and
-`answer/4` carry the flags that make rtpengine the ICE and DTLS-SRTP
+`answer/4` carry the flags that make rtpflux the ICE and DTLS-SRTP
 endpoint on both legs (WebRTC to WebRTC): `ICE=force`, `UDP/TLS/RTP/SAVPF`,
-`rtcp-mux` required, SDES off, and the origin replaced; rtpengine also
+`rtcp-mux` required, SDES off, and the origin replaced; rtpflux also
 substitutes its own connection address and candidates, so neither browser
-learns the other's address. The DTLS role is left to rtpengine: it starts
+learns the other's address. The DTLS role is left to rtpflux: it starts
 ICE and DTLS with the caller as soon as it sees the offer, so forcing
 `passive` would make both ends act as DTLS client on the caller's leg.
 """.

@@ -1,5 +1,5 @@
 // A WebIRC video call between two headless Chromium tabs (fake camera and
-// microphone) through briskd and a real rtpengine (test/calls/browser/run).
+// microphone) through briskd and a real rtpflux (test/calls/browser/run).
 //
 // alice starts it with /videocall; bob answers with video. Checks, each
 // failing the run:

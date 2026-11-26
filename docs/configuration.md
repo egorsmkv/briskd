@@ -59,7 +59,7 @@ link and session status output drops the link password.
 | `log_format` | `json` | `json` (one object per line: `level`, `time` in microseconds, and the event's fields, or `message` for plain text) or `text` |
 | `max_clients` | `10000` | Maximum active client sessions |
 | `ai_providers` | `{}` | OpenAI-compatible endpoints for AI assistant bots: `base_url`, `api_key` or `api_key_env`, `model`, `timeout`. See [AI assistant bots](bots.md) |
-| `calls` | `null` | User-to-user voice and video calls relayed through rtpengine. `null` or `false` disables. See [Calls](#calls) and [Voice and video calls](calls.md) |
+| `calls` | `null` | User-to-user voice and video calls relayed through rtpflux. `null` or `false` disables. See [Calls](#calls) and [Voice and video calls](calls.md) |
 | `bots` | `[]` | AI assistant bots. See [Bots](#bots) and [AI assistant bots](bots.md) |
 | `max_sendq` | `10000` | Lines queued for one client before it is disconnected with `ERROR :Closing Link: <server> (Max SendQ exceeded)` (100..1000000). Server links, inbound or outbound, allow a fixed 50000 |
 | `flood` | See below | Client flood and spam token buckets (`lines_burst`, `lines_per_second`, `messages_burst`, `messages_per_second`, `join_burst`, `join_per_minute`, `nick_burst`, `nick_per_minute`, `register_per_minute`); `null` disables |
@@ -223,14 +223,16 @@ field is rejected. The protocol is in [End-to-end encryption](e2ee.md).
 ## Calls
 
 `calls` set to `null` or `false` disables calls. An object requires
-`rtpengine`, a `host:port` string for rtpengine's NG control socket (UDP).
+`rtpflux`, a `host:port` string for rtpflux's NG control socket (UDP).
+`rtpengine`, the key's former name, is still accepted; a `calls` object with
+both is rejected.
 The host is a name or an IPv4 address, and the port is 1 to 65535. The other
 fields are optional. Setup and the wire protocol are in
 [Voice and video calls](calls.md).
 
 | Field | Default | Range |
 | --- | --- | --- |
-| `rtpengine` | none | required, `host:port` |
+| `rtpflux` | none | required, `host:port` |
 | `ring_timeout` | `45` | 5 to 300 seconds |
 | `max_duration` | `7200` | 0 to 86400 seconds (`0` means no limit) |
 | `max_calls` | `100` | 1 to 10000 |
@@ -239,7 +241,7 @@ fields are optional. Setup and the wire protocol are in
 | `video` | `true` | boolean; `false` accepts audio only |
 
 ```json
-"calls": { "rtpengine": "rtpengine:2223" }
+"calls": { "rtpflux": "rtpflux:2223" }
 ```
 
 ## Voice messages
@@ -371,7 +373,7 @@ as `admin_feature_changed`, and is announced to IRC operators. It is stored
 in Mnesia (`setting`) and applied over the file at startup and on every
 `REHASH`, so it lasts until it is reset to the file's value in the panel. A
 subsystem can be turned on there only when the file configures it (an S3
-endpoint, an rtpengine address, and so on); turning one off keeps its file
+endpoint, an rtpflux address, and so on); turning one off keeps its file
 settings for when it is turned back on.
 
 ## Retention

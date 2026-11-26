@@ -9,7 +9,7 @@
   "retention": "transient",
   "mnesia_dir": "/tmp/mnesia",
   "flood": null,
-  "calls": { "rtpengine": "rtpengine:2223", "ring_timeout": 30 },
+  "calls": { "rtpflux": "rtpflux:2223", "ring_timeout": 30 },
   "webui": {
     "bind": "0.0.0.0",
     "port": 8081,

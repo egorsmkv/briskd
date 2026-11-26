@@ -1,6 +1,6 @@
 """Voice calls end to end: two WebRTC clients (aiortc) call each other over
 IRC `CALL` signalling; briskd passes the session descriptions through a real
-rtpengine, and audio must arrive in both directions through the relay."""
+rtpflux, and audio must arrive in both directions through the relay."""
 
 import asyncio
 import base64
@@ -129,8 +129,8 @@ def counting_peer(freq, video=False):
     return pc, received
 
 
-def rtpengine_calls():
-    """Raw NG `list` reply: the call-ids rtpengine currently holds."""
+def rtpflux_calls():
+    """Raw NG `list` reply: the call-ids rtpflux currently holds."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.settimeout(2)
     try:
@@ -145,15 +145,15 @@ def rtpengine_calls():
 
 
 async def until_released(timeout=5):
-    """Poll rtpengine until it holds no call from this server."""
+    """Poll rtpflux until it holds no call from this server."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while True:
-        listing = rtpengine_calls()
+        listing = rtpflux_calls()
         if b"irc.calltest-" not in listing:
             return
         if loop.time() > deadline:
-            raise AssertionError(f"rtpengine still holds a call: {listing!r}")
+            raise AssertionError(f"rtpflux still holds a call: {listing!r}")
         await asyncio.sleep(0.2)
 
 
@@ -161,11 +161,11 @@ def own_ip():
     return socket.gethostbyname(socket.gethostname())
 
 
-def test_call_through_rtpengine():
-    asyncio.run(call_through_rtpengine())
+def test_call_through_rtpflux():
+    asyncio.run(call_through_rtpflux())
 
 
-async def call_through_rtpengine():
+async def call_through_rtpflux():
     alice = await Irc.connect("alice")
     bob = await Irc.connect("bob")
     token = secrets.token_hex(8)
@@ -179,7 +179,7 @@ async def call_through_rtpengine():
 
         sender, offer = await bob.receive_sdp("OFFER", token)
         assert sender == "alice"
-        # rtpengine replaced the media address: Bob never sees Alice's.
+        # rtpflux replaced the media address: Bob never sees Alice's.
         assert own_ip() not in offer
         assert "a=candidate" in offer
         bob.send(f"CALL RINGING alice {token}")
@@ -194,7 +194,7 @@ async def call_through_rtpengine():
         assert own_ip() not in answer
         await pc_a.setRemoteDescription(RTCSessionDescription(answer, "answer"))
 
-        # Two seconds of audio must arrive on each side through rtpengine.
+        # Two seconds of audio must arrive on each side through rtpflux.
         loop = asyncio.get_running_loop()
         deadline = loop.time() + 20
         while loop.time() < deadline and min(got_a["loud"], got_b["loud"]) < 100:
@@ -205,8 +205,8 @@ async def call_through_rtpengine():
         assert got_a["loud"] >= 100, got_a
         assert got_b["loud"] >= 100, got_b
 
-        # While the call is up rtpengine holds it...
-        assert b"irc.calltest-" in rtpengine_calls()
+        # While the call is up rtpflux holds it...
+        assert b"irc.calltest-" in rtpflux_calls()
 
         alice.send(f"CALL HANGUP bob {token} :normal")
         await bob.expect(lambda l: f"CALL HANGUP bob {token} :normal" in l)
@@ -217,13 +217,13 @@ async def call_through_rtpengine():
         await pc_b.close()
 
 
-def test_video_call_through_rtpengine():
-    asyncio.run(video_call_through_rtpengine())
+def test_video_call_through_rtpflux():
+    asyncio.run(video_call_through_rtpflux())
 
 
-async def video_call_through_rtpengine():
+async def video_call_through_rtpflux():
     """Audio and video in one call: the description keeps both sections
-    through rtpengine, and both media arrive on each side."""
+    through rtpflux, and both media arrive on each side."""
     alice = await Irc.connect("valice")
     bob = await Irc.connect("vbob")
     # The capability advertises video calls.

@@ -1,6 +1,6 @@
 -module(briskd_calls_ng).
 -moduledoc """
-Call lifecycle transitions, per-caller rate limiting, and rtpengine NG control
+Call lifecycle transitions, per-caller rate limiting, and rtpflux NG control
 socket handling for `m:briskd_calls`.
 """.
 
@@ -91,7 +91,7 @@ start_call(Caller, Callee, Token, Sdp, #{busy := Busy, server := Server} = State
                         State1
                     );
                 relay ->
-                    %% The offer was rewritten by the caller's rtpengine.
+                    %% The offer was rewritten by the caller's rtpflux.
                     media_result(offer, {ok, Sdp}, Call, State1)
             end
     end.
@@ -146,7 +146,7 @@ answer_call(Callee, Token, Sdp, State) ->
                     ng_request(Id, answer, briskd_call_proto:answer(Id, From, To, Sdp), State1);
                 relay ->
                     %% The caller's server passes the answer through its
-                    %% rtpengine before the caller sees it.
+                    %% rtpflux before the caller sees it.
                     media_result(answer, {ok, Sdp}, Answering, State1)
             end;
         _ ->
@@ -220,7 +220,7 @@ hangup(Pid, Token, Reason, State) ->
                     Caller -> Callee;
                     Callee -> Caller
                 end,
-            %% The callee has not seen an offer that rtpengine is still handling.
+            %% The callee has not seen an offer that rtpflux is still handling.
             case Pid =:= Caller andalso CallState =:= offering of
                 true -> ok;
                 false -> relay(Pid, Other, [<<"HANGUP">>], Token, Reason)
@@ -248,7 +248,7 @@ end_call(
             {except, Pid} -> [Caller, Callee] -- [Pid];
             none -> []
         end,
-    %% A callee never saw an offer still being processed by rtpengine.
+    %% A callee never saw an offer still being processed by rtpflux.
     Seen =
         case maps:get(state, Call) of
             offering -> [P || P <- Targets, P =/= Callee];
@@ -316,10 +316,10 @@ cancel(Timer) ->
     _ = erlang:cancel_timer(Timer),
     ok.
 
-%%% rtpengine NG
+%%% rtpflux NG
 
 ng_request(Id, Op, Message, State0) ->
-    %% Re-resolve once per request so a restarted rtpengine container with a
+    %% Re-resolve once per request so a restarted rtpflux container with a
     %% new address is found; retries and deletes reuse the address.
     #{pending := Pending} = State = resolve_ng(State0),
     Cookie = cookie(),
@@ -330,7 +330,7 @@ ng_request(Id, Op, Message, State0) ->
     State#{pending := Pending#{Cookie => Req}}.
 
 %% A request still in flight for an ended call must not be retried after the
-%% NG `delete`: a retransmitted `offer` would recreate the call in rtpengine.
+%% NG `delete`: a retransmitted `offer` would recreate the call in rtpflux.
 drop_pending(Id, Pending) ->
     maps:filter(
         fun
@@ -343,28 +343,28 @@ drop_pending(Id, Pending) ->
         Pending
     ).
 
--doc "Resolve the configured rtpengine NG hostname to an IPv4 address.".
+-doc "Resolve the configured rtpflux NG hostname to an IPv4 address.".
 -spec resolve_ng(map()) -> map().
 resolve_ng(#{ng := {Host, _}, ng_ip := Old} = State) ->
     case inet:getaddr(Host, inet) of
         {ok, Ip} ->
             State#{ng_ip := Ip};
         {error, Reason} ->
-            logger:warning(#{event => rtpengine_resolve_failed, reason => Reason}),
+            logger:warning(#{event => rtpflux_resolve_failed, reason => Reason}),
             State#{ng_ip := Old}
     end.
 
--doc "Send an encoded rtpengine NG packet over the UDP socket.".
+-doc "Send an encoded rtpflux NG packet over the UDP socket.".
 -spec send_ng(iodata(), map()) -> ok.
 send_ng(_Packet, #{ng_ip := undefined}) ->
-    logger:warning(#{event => rtpengine_send_failed, reason => unresolved});
+    logger:warning(#{event => rtpflux_send_failed, reason => unresolved});
 send_ng(Packet, #{sock := Sock, ng := {_, Port}, ng_ip := Ip}) ->
     case gen_udp:send(Sock, Ip, Port, Packet) of
         ok -> ok;
-        {error, Reason} -> logger:warning(#{event => rtpengine_send_failed, reason => Reason})
+        {error, Reason} -> logger:warning(#{event => rtpflux_send_failed, reason => Reason})
     end.
 
--doc "Handle a decoded rtpengine NG reply or timeout for `Cookie`.".
+-doc "Handle a decoded rtpflux NG reply or timeout for `Cookie`.".
 -spec ng_reply(binary(), {ok, undefined | binary()} | {error, term()}, map()) -> map().
 ng_reply(Cookie, Result, #{pending := Pending} = State) ->
     case maps:take(Cookie, Pending) of

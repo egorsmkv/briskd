@@ -102,7 +102,7 @@ upper_test() ->
 
 %%% NG socket
 
-%% Replies are accepted only from rtpengine's address and port; a datagram
+%% Replies are accepted only from rtpflux's address and port; a datagram
 %% from anywhere else is dropped even when it carries a pending cookie.
 ng_source_test() ->
     {ok, Sock} = gen_udp:open(0, [binary, {active, false}]),
@@ -130,7 +130,7 @@ ng_source_test() ->
     end.
 
 %% Ending a call drops its NG requests still in flight, so a retry cannot
-%% send the offer again after the delete and recreate the call in rtpengine.
+%% send the offer again after the delete and recreate the call in rtpflux.
 ng_pending_dropped_on_end_test() ->
     {ok, Sock} = gen_udp:open(0, [binary, {active, false}]),
     try
@@ -205,7 +205,7 @@ config_test() ->
     ?assertMatch(
         {ok, #{
             calls := #{
-                rtpengine := {<<"rtpengine">>, 2223},
+                rtpflux := {<<"rtpflux">>, 2223},
                 ring_timeout := 45,
                 max_duration := 7200,
                 max_calls := 100,
@@ -213,17 +213,27 @@ config_test() ->
                 require_account := false
             }
         }},
-        load(<<",\"calls\":{\"rtpengine\":\"rtpengine:2223\"}">>)
+        load(<<",\"calls\":{\"rtpflux\":\"rtpflux:2223\"}">>)
     ),
     ?assertMatch(
         {ok, #{calls := #{max_duration := 0, ring_timeout := 5}}},
-        load(<<",\"calls\":{\"rtpengine\":\"127.0.0.1:1\",\"max_duration\":0,\"ring_timeout\":5}">>)
+        load(<<",\"calls\":{\"rtpflux\":\"127.0.0.1:1\",\"max_duration\":0,\"ring_timeout\":5}">>)
     ),
     ?assertMatch({error, _}, load(<<",\"calls\":{}">>)),
-    ?assertMatch({error, _}, load(<<",\"calls\":{\"rtpengine\":\"host\"}">>)),
+    ?assertMatch({error, _}, load(<<",\"calls\":{\"rtpflux\":\"host\"}">>)),
+    ?assertMatch({error, _}, load(<<",\"calls\":{\"rtpflux\":\"h:70000\"}">>)),
+    ?assertMatch({error, _}, load(<<",\"calls\":{\"rtpflux\":\"h:1\",\"ring_timeout\":4}">>)),
+    ?assertMatch({error, _}, load(<<",\"calls\":{\"rtpflux\":\"h:1\",\"max_calls\":0}">>)),
+    %% `rtpengine` is the deprecated name of `rtpflux`, validated the same way.
+    ?assertMatch(
+        {ok, #{calls := #{rtpflux := {<<"relay">>, 2223}}}},
+        load(<<",\"calls\":{\"rtpengine\":\"relay:2223\"}">>)
+    ),
     ?assertMatch({error, _}, load(<<",\"calls\":{\"rtpengine\":\"h:70000\"}">>)),
-    ?assertMatch({error, _}, load(<<",\"calls\":{\"rtpengine\":\"h:1\",\"ring_timeout\":4}">>)),
-    ?assertMatch({error, _}, load(<<",\"calls\":{\"rtpengine\":\"h:1\",\"max_calls\":0}">>)).
+    ?assertMatch(
+        {error, _},
+        load(<<",\"calls\":{\"rtpflux\":\"a:1\",\"rtpengine\":\"b:1\"}">>)
+    ).
 
 load(Extra) ->
     Path = filename:join(
@@ -236,7 +246,7 @@ load(Extra) ->
         file:delete(Path)
     end.
 
-%%% Live: two clients calling through a fake rtpengine.
+%%% Live: two clients calling through a fake rtpflux.
 
 live_test_() ->
     {timeout, 60, fun live/0}.
@@ -292,16 +302,16 @@ live() ->
         ?assert(has(recv_until(Carol, <<"still-here">>), <<"PONG">>)),
         ?assertEqual(StatePid, whereis(briskd_state)),
 
-        %% Offer in two chunks; rtpengine sees the joined description.
+        %% Offer in two chunks; rtpflux sees the joined description.
         Offer = <<(sdp(<<"audio">>))/binary, (binary:copy(<<"a=x-pad:1\r\n">>, 40))/binary>>,
         send_sdp(Alice, <<"OFFER">>, <<"bob">>, <<"call0001">>, Offer),
         {offer, OfferMsg} = ng_recv(),
         ?assertEqual(Offer, maps:get(<<"sdp">>, OfferMsg)),
         CallId = maps:get(<<"call-id">>, OfferMsg),
-        %% Bob receives rtpengine's description, from Alice's prefix.
+        %% Bob receives rtpflux's description, from Alice's prefix.
         BobOffer = recv_until(Bob, <<"CALL OFFER bob call0001">>, fun sdp_complete/1),
         ?assert(has(BobOffer, <<":alice!alice@127.0.0.1 CALL OFFER bob call0001 1 ">>)),
-        ?assertEqual(fake_sdp(<<"FROM-RTPENGINE-OFFER">>), sdp_of(BobOffer, <<"OFFER">>)),
+        ?assertEqual(fake_sdp(<<"FROM-RTPFLUX-OFFER">>), sdp_of(BobOffer, <<"OFFER">>)),
 
         %% Ringing reaches the caller.
         send(Bob, <<"CALL RINGING alice call0001\r\n">>),
@@ -325,14 +335,14 @@ live() ->
         send_sdp(Carol, <<"OFFER">>, <<"bob">>, <<"carolcall1">>, sdp(<<"audio">>)),
         ?assert(has(recv_until(Carol, <<"TARGET_BUSY">>), <<"FAIL CALL TARGET_BUSY carolcall1">>)),
 
-        %% Answer: rtpengine gets the same call with both tags.
+        %% Answer: rtpflux gets the same call with both tags.
         send_sdp(Bob, <<"ANSWER">>, <<"alice">>, <<"call0001">>, sdp(<<"audio">>)),
         {answer, AnswerMsg} = ng_recv(),
         ?assertEqual(CallId, maps:get(<<"call-id">>, AnswerMsg)),
         ?assertEqual(maps:get(<<"from-tag">>, OfferMsg), maps:get(<<"from-tag">>, AnswerMsg)),
         ?assert(is_map_key(<<"to-tag">>, AnswerMsg)),
         AliceAnswer = recv_until(Alice, <<"CALL ANSWER alice call0001">>, fun sdp_complete/1),
-        ?assertEqual(fake_sdp(<<"FROM-RTPENGINE-ANSWER">>), sdp_of(AliceAnswer, <<"ANSWER">>)),
+        ?assertEqual(fake_sdp(<<"FROM-RTPFLUX-ANSWER">>), sdp_of(AliceAnswer, <<"ANSWER">>)),
 
         %% Hold and resume go to the other party only, from either side; a
         %% third user's HOLD with the same token is not a call of theirs.
@@ -360,7 +370,7 @@ live() ->
         send(Carol, <<"CALL HOLD bob call0001\r\n">>),
         ?assert(has(recv_until(Carol, <<"UNKNOWN_CALL">>), <<"FAIL CALL UNKNOWN_CALL call0001">>)),
 
-        %% Hang up: Bob is told, rtpengine deletes the call.
+        %% Hang up: Bob is told, rtpflux deletes the call.
         send(Alice, <<"CALL HANGUP bob call0001 :normal\r\n">>),
         ?assert(
             has(
@@ -399,7 +409,7 @@ live() ->
         ?assert(has(recv_until(Alice, <<"MEDIA_ERROR">>), <<"FAIL CALL MEDIA_ERROR call0004">>)),
         {delete, _} = ng_recv(),
 
-        %% Video is refused before reaching rtpengine.
+        %% Video is refused before reaching rtpflux.
         send_sdp(Alice, <<"OFFER">>, <<"bob">>, <<"call0005">>, sdp(<<"video">>)),
         ?assert(has(recv_until(Alice, <<"INVALID_SDP">>), <<"FAIL CALL INVALID_SDP call0005">>)),
 
@@ -446,7 +456,7 @@ live_config(Db, NgPort) ->
     iolist_to_binary([
         <<"{\"name\":\"irc.test\",\"bind\":\"127.0.0.1\",\"tcp_port\":0,\"tls_port\":null,">>,
         <<"\"log_level\":\"warning\",\"log_format\":\"text\",\"retention\":\"transient\",">>,
-        <<"\"calls\":{\"rtpengine\":\"127.0.0.1:">>,
+        <<"\"calls\":{\"rtpflux\":\"127.0.0.1:">>,
         integer_to_binary(NgPort),
         <<"\",\"ring_timeout\":5},\"mnesia_dir\":\"">>,
         list_to_binary(Db),
@@ -519,7 +529,7 @@ sdp_complete(Lines) ->
         binary:split(Lines, <<"\r\n">>, [global])
     ).
 
-%% A fake rtpengine: decodes NG requests, reports them to the test, and
+%% A fake rtpflux: decodes NG requests, reports them to the test, and
 %% answers offers and answers with a recognizable description.
 start_fake_ng(Test) ->
     Parent = self(),
@@ -553,9 +563,9 @@ ng_loop(S, Test, FailNext) ->
                     {_, true} ->
                         {#{result => error, 'error-reason' => <<"no ports">>}, false};
                     {<<"offer">>, false} ->
-                        {#{result => ok, sdp => fake_sdp(<<"FROM-RTPENGINE-OFFER">>)}, false};
+                        {#{result => ok, sdp => fake_sdp(<<"FROM-RTPFLUX-OFFER">>)}, false};
                     {<<"answer">>, false} ->
-                        {#{result => ok, sdp => fake_sdp(<<"FROM-RTPENGINE-ANSWER">>)}, false}
+                        {#{result => ok, sdp => fake_sdp(<<"FROM-RTPFLUX-ANSWER">>)}, false}
                 end,
             ok = gen_udp:send(S, Ip, Port, [Cookie, " ", briskd_bencode:encode(Reply)]),
             ng_loop(S, Test, Fail1)

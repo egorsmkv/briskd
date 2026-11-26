@@ -1,6 +1,6 @@
 -module(briskd_bencode).
 -moduledoc """
-Bencode encoding and decoding for the rtpengine NG control protocol
+Bencode encoding and decoding for the rtpflux NG control protocol
 (`m:briskd_calls`).
 
 Encoding accepts maps (keys are atoms or binaries, written in sorted byte

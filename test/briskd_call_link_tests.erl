@@ -3,8 +3,8 @@
 
 %% Voice calls between users on two linked servers: two briskd OS processes
 %% (alpha and beta) linked over RFC 2813 TCP, each with its own fake
-%% rtpengine. The caller's server (alpha) anchors the media: only its
-%% rtpengine sees offer, answer, and delete; beta relays.
+%% rtpflux. The caller's server (alpha) anchors the media: only its
+%% rtpflux sees offer, answer, and delete; beta relays.
 
 -define(CAP, <<"egorsmkv.github.io/calls">>).
 
@@ -29,7 +29,7 @@ run() ->
         stop_node(B),
         NgA ! stop,
         NgB ! stop,
-        %% Node output and fake rtpengine reports must not reach the next
+        %% Node output and fake rtpflux reports must not reach the next
         %% test, which runs in this process.
         flush()
     end.
@@ -62,7 +62,7 @@ scenario(PortA, PortB) ->
     ?assertMatch({alpha, delete, _}, ng_recv()),
     _ = collect(Carol),
 
-    %% Offer: alpha's rtpengine rewrites it; bob sees alice's prefix.
+    %% Offer: alpha's rtpflux rewrites it; bob sees alice's prefix.
     Offer = <<(sdp(<<"audio">>))/binary, (binary:copy(<<"a=x-pad:1\r\n">>, 40))/binary>>,
     send_sdp(Alice, <<"OFFER">>, <<"bob">>, <<"tokbob001">>, Offer),
     {alpha, offer, OfferMsg} = ng_recv(),
@@ -71,7 +71,7 @@ scenario(PortA, PortB) ->
     ?assert(has(BobOffer, <<":alice!">>)),
     ?assertEqual(fake_sdp(<<"alpha-offer">>), sdp_of(BobOffer, <<"OFFER">>)),
 
-    %% Ringing, then the answer through alpha's rtpengine.
+    %% Ringing, then the answer through alpha's rtpflux.
     send(Bob, <<"CALL RINGING alice tokbob001">>),
     ?assert(has(wait_for(Alice, <<"CALL RINGING alice tokbob001">>), <<":bob!">>)),
     Answer = sdp(<<"audio">>),
@@ -109,9 +109,9 @@ scenario(PortA, PortB) ->
     ),
     ?assertMatch({alpha, delete, _}, ng_recv()),
 
-    %% beta never used its rtpengine: it only relayed.
+    %% beta never used its rtpflux: it only relayed.
     receive
-        {ng, beta, Cmd, _} -> erlang:error({beta_used_rtpengine, Cmd})
+        {ng, beta, Cmd, _} -> erlang:error({beta_used_rtpflux, Cmd})
     after 500 -> ok
     end,
     lists:foreach(fun gen_tcp:close/1, [Alice, Bob, Carol]).
@@ -176,7 +176,7 @@ sdp_complete(Lines) ->
         binary:split(Lines, <<"\r\n">>, [global])
     ).
 
-%%% Fake rtpengine (one per server, tagged)
+%%% Fake rtpflux (one per server, tagged)
 
 start_fake_ng(Test, Tag) ->
     Parent = self(),
@@ -241,7 +241,7 @@ start_node(Base, Name, Port, NgPort, Links) ->
             <<".test\",\"bind\":\"127.0.0.1\",\"tcp_port\":">>,
             integer_to_binary(Port),
             <<",\"log_level\":\"error\",\"log_format\":\"text\",">>,
-            <<"\"calls\":{\"rtpengine\":\"127.0.0.1:">>,
+            <<"\"calls\":{\"rtpflux\":\"127.0.0.1:">>,
             integer_to_binary(NgPort),
             <<"\",\"ring_timeout\":30},\"mnesia_dir\":\"">>,
             filename:join(Dir, "db"),

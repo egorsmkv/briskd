@@ -270,13 +270,13 @@ See `m:briskd_search`.
     }.
 
 -doc """
-Voice and video call settings, or `null` when calls are off: the rtpengine
+Voice and video call settings, or `null` when calls are off: the rtpflux NG
 address, ring and duration limits, and whether an account is required.
 """.
 -type calls() ::
     null
     | #{
-        rtpengine := {binary(), 1..65535},
+        rtpflux := {binary(), 1..65535},
         ring_timeout := 5..300,
         max_duration := 0..86400,
         max_calls := 1..10000,
