@@ -95,6 +95,22 @@ export function presenceClass(nick: string): string {
   return u.away !== undefined ? "away" : "online";
 }
 
+/**
+ * The header dot. In a DM it shows the peer's presence (online, away,
+ * offline; hidden when unknown, as without MONITOR); elsewhere it shows our
+ * own connection. Being disconnected (`off`, set by the connection) wins.
+ */
+export function updateHeadPresence(): void {
+  const dot = $("status-dot");
+  const buf = buffers.get(S.activeBuf);
+  const dm = !!buf && buf.name !== "*status" && !isChan(buf.name);
+  const presence = dm ? presenceClass(buf.name) : "";
+  if (presence) dot.dataset.presence = presence;
+  else delete dot.dataset.presence;
+  dot.classList.toggle("unknown", dm && !presence);
+  dot.title = dm ? presenceText(buf.name) : "";
+}
+
 export function userTooltip(nick: string): string {
   const u = peekUser(nick);
   if (!u) return nick;
@@ -146,6 +162,7 @@ export function scheduleUserRender(messages = false): void {
     if (buf && !isChan(buf.name)) {
       $("active-topic").textContent = bufSubtitle(buf);
     }
+    updateHeadPresence();
     if (S.userRenderMessages) {
       S.userRenderMessages = false;
       renderActiveMessages();

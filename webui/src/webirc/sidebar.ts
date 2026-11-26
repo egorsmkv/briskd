@@ -23,6 +23,7 @@ import {
   peekUser,
   presenceClass,
   presenceText,
+  updateHeadPresence,
   userTooltip,
 } from "./users.ts";
 import { isChan } from "./util.ts";
@@ -85,6 +86,7 @@ export function switchBuf(key: string, updateUrl = true): void {
   const topicEl = $("active-topic");
   topicEl.dir = "auto";
   topicEl.textContent = bufSubtitle(buf);
+  updateHeadPresence();
   updateTopicButton();
 
   S.renderWindow = savedWindow(key);
